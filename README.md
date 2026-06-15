@@ -5,6 +5,10 @@ Audio is generated on-device by the [AMY](https://github.com/shorepine/amy)
 synth engine and streamed to a PC/DAW over USB Audio or directly via I2S DAC, with an OLED + encoder UI
 for live editing.
 
+
+## Prototype Video
+
+[![Demo](assets/1.png)](assets/amybox%20(2).mp4)
 ## What it is
 
 S3-Amysynth runs a multi-layer step sequencer that drives the AMY engine in

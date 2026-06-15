@@ -1,3 +1,7 @@
+
+
+
+
 # S3-Amysynth
 
 A handheld synthesizer and step sequencer built on the ESP32-S3 with ESP-IDF.
@@ -7,6 +11,10 @@ for live editing.
 
 
 ## Prototype Video
+
+
+https://github.com/user-attachments/assets/c1125515-0647-46e4-b6fc-ae1bccc93855
+
 
 <video src="https://rt-rtos.github.io/assets/amybox%20(2).mp4" poster="assets/1.jpg" controls muted loop playsinline width="640">
   <a href="https://rt-rtos.github.io/assets/amybox%20(2).mp4"><img src="assets/1.jpg" alt="S3-Amysynth prototype demo" width="640"></a>

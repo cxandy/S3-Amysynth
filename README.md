@@ -13,36 +13,29 @@
 
 
 
+A handheld synthesizer and step sequencer built on the ESP32-S3 with ESP-IDF.
+Audio is generated on-device by the [AMY](https://github.com/shorepine/amy)
+synth engine and streamed to a PC/DAW over USB Audio or directly via I2S DAC, with an OLED + encoder UI
+for live editing.
 
+## What it is
 
-## Overview
+S3-Amysynth runs a multi-layer step sequencer that drives the AMY engine in
+real time:
 
-**S3-Amysynth** is an embedded audio project built on the **ESP32-S3** using **ESP-IDF**. It combines firmware development, real-time audio generation, hardware interfacing, and UI design in a custom handheld synthesizer platform.
+- **Drum layer** — a 16/32-step grid across 4 tracks, live-editable while playing.
+- **Melodic layers** — added/removed at runtime, each with per-row synths so
+  stacked notes don't collapse into one voice.
+- **Envelope editor** — an on-OLED graph for shaping a row's amplitude envelope
+  (attack / sustain level / release), with auto-derived decay.
+- **Patch selection** — cycles AMY's built-in Juno/DX7/piano presets at runtime.
+- **Scale quantizer** — snaps melodic notes to a selectable musical scale.
 
-The project is designed to demonstrate practical embedded engineering skills in a form that is easy to assess at a glance: what the system does, how it is built, and what technical areas it develops.
+Audio currently leaves the device over **USB Audio Class 2.0** (48 kHz stereo,
+16-bit) via TinyUSB. The board also wires an I2S PCM5102 DAC for standalone
+output, which is planned but not yet the active path.
 
-
-
-## What the Project Does
-
-S3-Amysynth is a microcontroller-based synthesizer and drum sequencer with a hardware interface and live audio output.
-
-### Core functionality
-
-- Real-time audio generation using the **AMY synth engine**
-- **16-step drum sequencer** with editable playback
-- **Dynamic Melodic Layers** Additional Melodic layers can be added and removed
-- **OLED user interface** for sequencer state and controls
-- **Rotary encoder** and **buttons** for navigation and tempo/input control
-- **USB Audio Class 2.0** audio streaming to a PC or DAW during development
-- **I2S DAC/Amp** for on device audio planed in later stages
-- Support for a custom ESP32-S3 hardware platform with dedicated audio and display peripherals
-
-
-
-## Technical Stack
-
-### Hardware
+## Hardware
 
 - **ESP32-S3-N16R8**
 - **PCM5102 I2S DAC**

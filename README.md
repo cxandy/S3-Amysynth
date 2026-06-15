@@ -8,6 +8,13 @@
 
 The project is designed to demonstrate practical embedded engineering skills in a form that is easy to assess at a glance: what the system does, how it is built, and what technical areas it develops.
 
+## Prototype
+
+[![Demo](assets/1.jpg)](https://github.com/user-attachments/assets/2acf040f-9c87-4e41-b164-4d866c334cac)
+
+
+
+
 
 
 ## What the Project Does

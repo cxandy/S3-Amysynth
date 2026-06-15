@@ -43,10 +43,15 @@ typedef struct {
     uint8_t  step_note[SEQ_TRACKS][SEQ_MAX_STEPS];   /* per-step MIDI pitch    */
     uint8_t  track_base_note[SEQ_TRACKS];            /* current base note      */
     seq_env_t env[SEQ_TRACKS];                       /* per-row ADSR envelope  */
-    uint8_t  synth_id;
-    uint16_t patch;
-    uint32_t synth_flags;
-    uint8_t  num_voices;
+    bool     env_authored[SEQ_TRACKS]; /* row's env overrides the patch only
+                                          after the user commits in the graph
+                                          editor; until then the patch's own
+                                          envelope wins (deferred authority)  */
+    uint8_t  synth_id[SEQ_TRACKS];   /* one AMY synth per row (melodic);
+                                        drum layer uses [0] for all tracks   */
+    uint16_t patch;                  /* shared timbre across the layer's rows */
+    uint32_t synth_flags;            /* shared flags across the layer's rows  */
+    uint8_t  num_voices;             /* per-synth voice count                 */
     uint8_t  step_page;                              /* display page 0|1 (32-step) */
 } seq_layer_t;
 

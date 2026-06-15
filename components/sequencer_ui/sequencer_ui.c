@@ -95,6 +95,29 @@ static float graph_ms_to_x(uint32_t ms)
  * are used as the editor's context bar, the plot fills rows 16..63. */
 #define GRAPH_TOPBAR_H 16
 
+/* ── Auto-decay rule ─────────────────────────────────────────────────────────
+ * The decay TIME is derived, not user-dragged: the sustain point's X is locked
+ * (Y-only) in the widget and recomputed here from attack time + sustain level.
+ * Lower sustain -> longer, more audible fall; decay also scales gently with
+ * attack. Tunable constants; promote to Kconfig later if desired. */
+#define DECAY_BASE_MS          40u
+#define DECAY_ATTACK_K         0.5f
+#define DECAY_SUSTAIN_SPAN_MS  400.0f
+#define DECAY_MIN_MS           20u
+#define DECAY_MAX_MS           2000u
+
+static uint32_t graph_decay_ms(uint32_t attack_ms, float sustain_frac)
+{
+    if (sustain_frac < 0.0f) sustain_frac = 0.0f;
+    if (sustain_frac > 1.0f) sustain_frac = 1.0f;
+    float d = (float)DECAY_BASE_MS
+            + (float)attack_ms * DECAY_ATTACK_K
+            + (1.0f - sustain_frac) * DECAY_SUSTAIN_SPAN_MS;
+    if (d < (float)DECAY_MIN_MS) d = (float)DECAY_MIN_MS;
+    if (d > (float)DECAY_MAX_MS) d = (float)DECAY_MAX_MS;
+    return (uint32_t)(d + 0.5f);
+}
+
 static void graph_popup_ensure_init(void)
 {
     if (s_graph_popup_inited) return;
@@ -102,7 +125,33 @@ static void graph_popup_ensure_init(void)
     graph_popup_init(&s_graph_popup, 0, GRAPH_TOPBAR_H, 128,
                      (uint8_t)(64 - GRAPH_TOPBAR_H));
     graph_popup_set_style(&s_graph_popup, GPOPUP_STYLE_ADSR);
+    /* Sustain point is Y-only: its X (decay time) is auto-derived here. */
+    graph_popup_set_adsr_lock_sx(&s_graph_popup, true);
     s_graph_popup_inited = true;
+}
+
+/* Recompute the sustain point's X (decay time) from the current attack time and
+ * sustain level, then write it back. Keeps all ms math host-side so the widget
+ * stays AMY-agnostic. Expects the standard 4-point ADSR layout. */
+static void graph_recompute_decay(void)
+{
+    gpopup_point_t pts[GPOPUP_MAX_POINTS];
+    uint8_t n = graph_popup_get_points(&s_graph_popup, pts, GPOPUP_MAX_POINTS);
+    if (n < 4) return;
+
+    uint32_t attack_ms   = graph_x_to_ms(pts[1].x);
+    float    sustain_frac = pts[2].y;
+    uint32_t decay_ms    = graph_decay_ms(attack_ms, sustain_frac);
+
+    pts[2].x = graph_ms_to_x(attack_ms + decay_ms);
+    /* Preserve edit state across the points rewrite. */
+    uint8_t saved_cursor  = s_graph_popup.cursor;
+    bool    saved_editing = s_graph_popup.editing_value;
+    bool    saved_axis_y  = s_graph_popup.adjust_axis_y;
+    graph_popup_set_points(&s_graph_popup, pts, n);
+    s_graph_popup.cursor        = saved_cursor;
+    s_graph_popup.editing_value = saved_editing;
+    s_graph_popup.adjust_axis_y = saved_axis_y;
 }
 
 /* Push the bottom-margin time tick positions for the active range. Mapped
@@ -143,6 +192,9 @@ static void graph_seed_from_env(const seq_env_t *env)
     pts[2].x = graph_ms_to_x(cum_d); pts[2].y = (float)env->sustain_pct / 100.0f; /* sustain */
     pts[3].x = graph_ms_to_x(cum_r); pts[3].y = 0.0f;                       /* release end*/
     graph_popup_set_points(&s_graph_popup, pts, 4);
+    /* Snap the sustain point's X to the auto-decay rule so the opening curve
+     * already obeys it (decay time is derived, not whatever was stored). */
+    graph_recompute_decay();
 }
 
 /* Open the editor seeded from the SELECTED ROW's stored melodic envelope. */
@@ -242,6 +294,8 @@ bool sequencer_ui_graph_handle_encoder(long delta)
 {
     if (!graph_popup_is_active(&s_graph_popup)) return false;
     graph_popup_handle_encoder(&s_graph_popup, delta);
+    /* Moving A (time) or the S level changes the derived decay; re-snap S.x. */
+    graph_recompute_decay();
     return true;
 }
 

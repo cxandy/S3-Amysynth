@@ -161,4 +161,14 @@ config SEQ_MELODIC_ENV_RELEASE_MS
 	range 0 10000
 	default 320
 
+config SEQ_ENV_DEBUG_DUMP
+	bool "Log envelope events sent to AMY on commit"
+	default n
+	help
+		Temporary verification aid. When enabled, committing an envelope in the
+		graph editor logs the exact breakpoint event sent to the row's AMY synth
+		(target synth, eg_type, attack/decay/release ms and sustain level), so
+		you can confirm on hardware that edits reach the oscillators. Leave off
+		for normal builds.
+
 endmenu

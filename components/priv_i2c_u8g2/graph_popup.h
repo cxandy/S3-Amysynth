@@ -89,6 +89,10 @@ typedef struct {
      * lives outside this widget. */
     float          ticks[GPOPUP_MAX_POINTS];
     uint8_t        num_ticks;
+    /* ADSR style: when true, the sustain point (index 2) is Y-only — its X
+     * (decay time) is owned by the host (auto-derived), never user-draggable.
+     * Removes the hidden decay-time control and the A/S marker overlap. */
+    bool           adsr_lock_sx;
 } gpopup_t;
 
 /* ── Lifecycle ──────────────────────────────────────────────────────────── */
@@ -111,6 +115,11 @@ void graph_popup_set_style(gpopup_t *p, gpopup_style_t style);
 /* Set the normalised X positions (0..1) of bottom-margin tick marks. Only drawn
  * in ADSR style. n is clamped to GPOPUP_MAX_POINTS. Pass n=0 to clear. */
 void graph_popup_set_ticks(gpopup_t *p, const float *xs, uint8_t n);
+
+/* ADSR style: lock the sustain point's X (decay time) so it is not user-editable.
+ * The host derives and writes S.x (e.g. from attack time + sustain level). The
+ * sustain point remains Y-editable (level). No-op outside ADSR style. */
+void graph_popup_set_adsr_lock_sx(gpopup_t *p, bool lock);
 
 /* Close the pop-up (sets active = false). Points are retained. */
 void graph_popup_close(gpopup_t *p);

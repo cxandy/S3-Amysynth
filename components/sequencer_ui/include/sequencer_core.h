@@ -22,9 +22,10 @@ void sequencer_core_set_melodic_patch(uint16_t patch_number);
 uint16_t sequencer_core_get_melodic_patch(void);
 
 /* ── Per-row melodic ADSR envelope (runtime-editable) ──
- * Scoped per row (per track) today; see seq_env_t in priv_u8g2_seq.h for the
- * extension path to per-step. get returns false for non-melodic/out-of-range.
- * set clamps, stores, marks the row active, and pushes it to the layer synth. */
+ * Scoped per row (per track); each row has its own AMY synth, so its envelope
+ * is fully independent. See seq_env_t in priv_u8g2_seq.h for the extension path
+ * to per-step. get returns false for non-melodic/out-of-range. set clamps,
+ * stores, and pushes the envelope to that row's own synth. */
 bool sequencer_core_get_melodic_envelope(uint8_t layer_idx, uint8_t track,
                                          seq_env_t *out);
 void sequencer_core_set_melodic_envelope(uint8_t layer_idx, uint8_t track,

@@ -60,6 +60,7 @@ static void point_to_px(const gpopup_t *p, const gpopup_point_t *pt,
 /* Forward declarations for the ADSR helpers (defined below). */
 static void adsr_apply_constraints(gpopup_t *p);
 static bool adsr_y_editable(const gpopup_t *p, uint8_t idx);
+static bool adsr_x_editable(const gpopup_t *p, uint8_t idx);
 
 /* ── Lifecycle ──────────────────────────────────────────────────────────── */
 
@@ -121,6 +122,12 @@ void graph_popup_set_ticks(gpopup_t *p, const float *xs, uint8_t n)
     p->num_ticks = n;
 }
 
+void graph_popup_set_adsr_lock_sx(gpopup_t *p, bool lock)
+{
+    if (!p) return;
+    p->adsr_lock_sx = lock;
+}
+
 /* ── ADSR role-aware constraints ─────────────────────────────────────────────
  * Points are [origin, A(attack peak), D(decay end / sustain level), R(release
  * end)]. Enforce a musically-valid shape so the user cannot create nonsensical
@@ -168,6 +175,18 @@ static bool adsr_y_editable(const gpopup_t *p, uint8_t idx)
     return (idx == 2);
 }
 
+/* Whether the selected point's X (time) is editable in ADSR style. When
+ * adsr_lock_sx is set, the sustain point (index 2) is Y-only: its X is owned by
+ * the host (auto-derived decay time), so user X nudges are ignored. A and R
+ * remain X-editable; the origin (0) is fixed regardless. */
+static bool adsr_x_editable(const gpopup_t *p, uint8_t idx)
+{
+    if (p->style != GPOPUP_STYLE_ADSR) return true;
+    if (idx == 0) return false;                 /* origin is pinned */
+    if (p->adsr_lock_sx && idx == 2) return false; /* S.x host-owned */
+    return true;
+}
+
 void graph_popup_close(gpopup_t *p)
 {
     if (!p) return;
@@ -203,6 +222,9 @@ static int curve_y_at_col(const gpopup_t *p, int col,
     int px0, py0, px1, py1;
     point_to_px(p, &p->points[0], plot_x, plot_y, plot_w, plot_h, &px0, &py0);
     if (col <= px0) return py0;
+    /* Hold the first point's level if there is no segment to walk (<=1 point);
+     * updated to each segment's far end as we iterate. */
+    py1 = py0;
     for (uint8_t i = 1; i < p->num_points; ++i) {
         point_to_px(p, &p->points[i], plot_x, plot_y, plot_w, plot_h, &px1, &py1);
         if (col <= px1) {
@@ -383,7 +405,10 @@ gpopup_result_t graph_popup_handle_encoder(gpopup_t *p, long delta)
                 pt->y = clampf01(pt->y + step);
             }
         } else {
-            pt->x = clampf01(pt->x + step);
+            /* Locked points (origin, host-owned S.x) ignore X nudges. */
+            if (adsr_x_editable(p, p->cursor)) {
+                pt->x = clampf01(pt->x + step);
+            }
         }
         /* Re-impose ADSR validity (monotonic time, role-fixed levels). */
         adsr_apply_constraints(p);

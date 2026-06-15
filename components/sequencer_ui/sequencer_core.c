@@ -47,6 +47,9 @@
 #ifndef CONFIG_SEQ_MELODIC_PATCH
 #define CONFIG_SEQ_MELODIC_PATCH 138
 #endif
+#ifndef CONFIG_SEQ_ENV_DEBUG_DUMP
+#define CONFIG_SEQ_ENV_DEBUG_DUMP 0
+#endif
 
 static const char *TAG = "seq_core";
 
@@ -72,7 +75,12 @@ extern uint32_t sequencer_ticks(void);
 
 /* ── Melodic synth defaults ──────────────────────────────────────────── */
 #define SEQ_MEL_PATCH         CONFIG_SEQ_MELODIC_PATCH
-#define SEQ_MEL_VOICES        16
+/* One AMY synth PER ROW (per track). A row only ever sounds one pitch at a
+ * time, so a single voice suffices; bump to 2 to give note-off/note-on overlap
+ * headroom at the boundary (2x osc cost). AMY default budget is 180 oscs. */
+#define SEQ_MEL_VOICES        1
+#define SEQ_MEL_SYNTH_BASE    11    /* first melodic synth slot (drum = 10) */
+#define SEQ_MAX_SYNTH         63    /* stay below AMY max_synths (64)        */
 #define SEQ_MEL_NOTE_MIN      24    /* C1 */
 #define SEQ_MEL_NOTE_MAX      96    /* C7 */
 
@@ -86,6 +94,9 @@ static uint8_t     s_cached_step[MAX_LAYERS];
 static bool        s_playing      = true;
 static uint16_t    s_bpm          = 120;
 static uint16_t    s_melodic_patch = SEQ_MEL_PATCH;
+/* Running allocator for per-row melodic synth slots. Each melodic layer claims
+ * a contiguous block of SEQ_TRACKS slots starting here; reset in core_init. */
+static uint8_t     s_next_melodic_synth = SEQ_MEL_SYNTH_BASE;
 static uint8_t     s_track_source_note[MAX_LAYERS][SEQ_TRACKS];
 static quantizer_state_t s_quantizer = {
     .root_note  = CONFIG_SEQ_QUANTIZER_DEFAULT_ROOT_NOTE,
@@ -160,9 +171,9 @@ static inline void seq_ev_send(void)
     xSemaphoreGive(s_ev_mutex);
 }
 
-/* The melodic envelope is stored PER ROW (per track). All four rows of a layer
- * currently share one AMY synth slot, so AMY can only hold ONE envelope on that
- * synth at a time: whichever row is "active" defines the live envelope. This
+/* The melodic envelope is stored PER ROW (per track). Each row now owns its own
+ * AMY synth slot (synth_id[track]), so every row holds its own independent live
+ * envelope — there is no shared synth and no "active row" to arbitrate. This
  * accessor is the single point of truth for "which env applies to (layer,track,
  * step)". For per-step support later, add a step parameter and index a wider
  * env[][] array here — callers stay unchanged. */
@@ -173,11 +184,7 @@ static seq_env_t *seq_layer_env(uint8_t layer_idx, uint8_t track)
     return &s_layers[layer_idx].env[track];
 }
 
-/* The row whose envelope is currently mirrored onto the shared AMY synth. The
- * UI sets this when the user selects a row to edit; defaults to row 0. */
-static uint8_t s_active_env_track[MAX_LAYERS] = {0};
-
-/* Push the given row's stored envelope to the layer's AMY synth. */
+/* Push the given row's stored envelope to that row's OWN AMY synth. */
 static void sequencer_configure_melodic_envelope_track(uint8_t layer_idx, uint8_t track)
 {
 #if CONFIG_SEQ_MELODIC_ENVELOPE_ENABLED
@@ -186,7 +193,7 @@ static void sequencer_configure_melodic_envelope_track(uint8_t layer_idx, uint8_
     float sustain = (float)env->sustain_pct / 100.0f;
 
     seq_ev_begin();
-    s_ev.synth = layer->synth_id;
+    s_ev.synth = layer->synth_id[track];
     s_ev.bp_is_set[0] = 1;
     s_ev.eg_type[0] = env->eg_type;
     s_ev.eg0_times[0] = env->attack_ms;
@@ -201,9 +208,18 @@ static void sequencer_configure_melodic_envelope_track(uint8_t layer_idx, uint8_
 #endif
 }
 
+/* Push each AUTHORED row's stored envelope to its own per-row synth.
+ * Deferred authority: a row's envelope only overrides the patch's own envelope
+ * once the user has committed it in the graph editor (env_authored[t]==true).
+ * Unauthored rows are left alone so the freshly-loaded patch envelope plays. */
 static void sequencer_configure_melodic_envelope(uint8_t layer_idx)
 {
-    sequencer_configure_melodic_envelope_track(layer_idx, s_active_env_track[layer_idx]);
+    const seq_layer_t *layer = &s_layers[layer_idx];
+    for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
+        if (layer->env_authored[t]) {
+            sequencer_configure_melodic_envelope_track(layer_idx, t);
+        }
+    }
 }
 
 static uint8_t sequencer_clamp_layer_note(const seq_layer_t *layer, uint8_t note)
@@ -282,7 +298,7 @@ static void sequencer_refresh_track_note(uint8_t layer_idx, uint8_t track,
      * Rapid scrolling overwrites the slot so only the last change is heard. */
     uint32_t fire_tick = sequencer_ticks() + SEQ_PREVIEW_DELAY_TICKS;
     seq_ev_begin();
-    s_ev.synth                     = layer->synth_id;
+    s_ev.synth                     = layer->synth_id[track];
     s_ev.midi_note                 = resolved_note;
     s_ev.velocity                  = 1.0f;
     s_ev.sequence[SEQUENCE_TAG]    = seq_preview_tag(layer_idx, track);
@@ -291,7 +307,7 @@ static void sequencer_refresh_track_note(uint8_t layer_idx, uint8_t track,
     seq_ev_send();
 
     seq_ev_begin();
-    s_ev.synth                     = layer->synth_id;
+    s_ev.synth                     = layer->synth_id[track];
     s_ev.midi_note                 = resolved_note;
     s_ev.velocity                  = 0.0f;
     s_ev.sequence[SEQUENCE_TAG]    = seq_preview_off_tag(layer_idx, track);
@@ -355,23 +371,34 @@ static void sequencer_emit_clear_tag(uint32_t tag)
     seq_ev_send();
 }
 
-/* (Re)configure the AMY synth for layer_idx. */
+/* (Re)configure the AMY synth(s) for layer_idx.
+ * Drums use a single synth (synth_id[0]); melodic layers configure one synth
+ * per row, all sharing the same patch/flags/voice-count but on distinct slots. */
 static void sequencer_configure_synth(uint8_t layer_idx)
 {
     seq_layer_t *layer = &s_layers[layer_idx];
-    seq_ev_begin();
-    s_ev.patch_number = layer->patch;
-    if (layer->type == SEQ_LAYER_DRUM) {
-        patches_store_patch(&s_ev, "w7f0");
-    }
-    s_ev.num_voices  = layer->num_voices;
-    s_ev.synth       = layer->synth_id;
-    s_ev.synth_flags = layer->synth_flags;
-    seq_ev_send();
 
-    if (layer->type == SEQ_LAYER_MELODIC) {
-        sequencer_configure_melodic_envelope(layer_idx);
+    if (layer->type == SEQ_LAYER_DRUM) {
+        seq_ev_begin();
+        s_ev.patch_number = layer->patch;
+        patches_store_patch(&s_ev, "w7f0");
+        s_ev.num_voices  = layer->num_voices;
+        s_ev.synth       = layer->synth_id[0];
+        s_ev.synth_flags = layer->synth_flags;
+        seq_ev_send();
+        return;
     }
+
+    /* Melodic: push the shared patch/flags/voices to each row's own synth. */
+    for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
+        seq_ev_begin();
+        s_ev.patch_number = layer->patch;
+        s_ev.num_voices   = layer->num_voices;
+        s_ev.synth        = layer->synth_id[t];
+        s_ev.synth_flags  = layer->synth_flags;
+        seq_ev_send();
+    }
+    sequencer_configure_melodic_envelope(layer_idx);
 }
 
 /* Schedule (or cancel) one grid step as a pair of repeating AMY events: a
@@ -409,8 +436,12 @@ static void sequencer_emit_step(uint8_t layer_idx, uint8_t track, uint8_t step)
         return;
     }
 
+    /* Drums share one synth (synth_id[0]); melodic rows each have their own. */
+    uint8_t synth = (layer->type == SEQ_LAYER_DRUM)
+                    ? layer->synth_id[0] : layer->synth_id[track];
+
     seq_ev_begin();
-    s_ev.synth                     = layer->synth_id;
+    s_ev.synth                     = synth;
     s_ev.midi_note                 = layer->step_note[track][step];
     s_ev.velocity                  = note_velocity;
     s_ev.sequence[SEQUENCE_TAG]    = tag_on;
@@ -419,7 +450,7 @@ static void sequencer_emit_step(uint8_t layer_idx, uint8_t track, uint8_t step)
     seq_ev_send();
 
     seq_ev_begin();
-    s_ev.synth                     = layer->synth_id;
+    s_ev.synth                     = synth;
     s_ev.midi_note                 = layer->step_note[track][step];
     s_ev.velocity                  = 0.0f;
     s_ev.sequence[SEQUENCE_TAG]    = tag_off;
@@ -474,6 +505,7 @@ void sequencer_core_init(void)
         configASSERT(s_ev_mutex != NULL);
     }
     s_num_layers = 0;
+    s_next_melodic_synth = SEQ_MEL_SYNTH_BASE;
     memset(s_layers, 0, sizeof(s_layers));
     memset(s_cached_step, 0, sizeof(s_cached_step));
     memset(s_track_source_note, 0, sizeof(s_track_source_note));
@@ -506,7 +538,11 @@ uint8_t sequencer_core_add_layer(seq_layer_type_t type, uint8_t num_steps)
     layer->step_page  = 0;
 
     if (type == SEQ_LAYER_DRUM) {
-        layer->synth_id    = SEQ_DRUM_SYNTH;
+        /* Drums use a single synth for all tracks (MIDI-drum pitch separation
+         * keeps voices distinct); mirror it into every synth_id[] slot. */
+        for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
+            layer->synth_id[t] = SEQ_DRUM_SYNTH;
+        }
         layer->patch       = SEQ_DRUM_PATCH;
         layer->synth_flags = (uint32_t)(_SYNTH_FLAGS_MIDI_DRUMS
                                         | _SYNTH_FLAGS_IGNORE_NOTE_OFFS);
@@ -520,11 +556,22 @@ uint8_t sequencer_core_add_layer(seq_layer_type_t type, uint8_t num_steps)
             }
         }
     } else {
-        /* Melodic: give each layer its own AMY synth slot, offset past the
-         * fixed drum slot so layers never share a synth (and thus voices). */
-        uint8_t sid = (uint8_t)(SEQ_DRUM_SYNTH + idx + 1);
-        if (sid >= 63) sid = 62; /* stay below AMY max_synths */
-        layer->synth_id    = sid;
+        /* Melodic: claim a contiguous block of SEQ_TRACKS synth slots from the
+         * running allocator, one synth per row, so identical pitches on
+         * different rows land in distinct instruments (no voice collapse).
+         * Guard against exceeding AMY's synth ceiling; if we would, reuse the
+         * last valid block (degrades to shared-synth rather than corruption). */
+        uint8_t base = s_next_melodic_synth;
+        if (base + SEQ_TRACKS - 1 > SEQ_MAX_SYNTH) {
+            base = (uint8_t)(SEQ_MAX_SYNTH - (SEQ_TRACKS - 1));
+            ESP_LOGW(TAG, "add_layer[%d]: melodic synth ceiling reached, "
+                          "reusing slots %u..%u", idx, base, base + SEQ_TRACKS - 1);
+        } else {
+            s_next_melodic_synth = (uint8_t)(base + SEQ_TRACKS);
+        }
+        for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
+            layer->synth_id[t] = (uint8_t)(base + t);
+        }
         layer->patch       = s_melodic_patch;
         layer->synth_flags = 0;
         layer->num_voices  = SEQ_MEL_VOICES;
@@ -543,12 +590,11 @@ uint8_t sequencer_core_add_layer(seq_layer_type_t type, uint8_t num_steps)
             layer->env[t].release_ms  = CONFIG_SEQ_MELODIC_ENV_RELEASE_MS;
             layer->env[t].eg_type     = CONFIG_SEQ_MELODIC_ENV_EG0_TYPE;
         }
-        s_active_env_track[idx] = 0;
     }
 
     sequencer_configure_synth(idx);
-    ESP_LOGI(TAG, "add_layer[%d]: type=%d synth=%d patch=%d steps=%d",
-             idx, type, layer->synth_id, layer->patch, layer->num_steps);
+    ESP_LOGI(TAG, "add_layer[%d]: type=%d synth0=%d patch=%d steps=%d",
+             idx, type, layer->synth_id[0], layer->patch, layer->num_steps);
     return idx;
 }
 
@@ -604,12 +650,23 @@ void sequencer_core_set_melodic_envelope(uint8_t layer_idx, uint8_t track,
     dst->release_ms  = SEQ_CLAMP_U32(env->release_ms, 0, 60000);
     dst->eg_type     = env->eg_type;
 
-    /* This row now owns the shared synth's live envelope. */
-    s_active_env_track[layer_idx] = track;
+    /* Committing in the graph editor establishes this row's authority over the
+     * patch's own envelope. From now on patch changes re-impose this custom env
+     * (until the user re-authors). Each row owns its own synth, so the push
+     * affects only this row. */
+    layer->env_authored[track] = true;
     sequencer_configure_melodic_envelope_track(layer_idx, track);
-    ESP_LOGI(TAG, "env L%u row%u -> A%u D%u S%u%% R%u",
+    ESP_LOGI(TAG, "env L%u row%u -> A%u D%u S%u%% R%u (authored)",
              layer_idx, track, (unsigned)dst->attack_ms, (unsigned)dst->decay_ms,
              (unsigned)dst->sustain_pct, (unsigned)dst->release_ms);
+#if CONFIG_SEQ_ENV_DEBUG_DUMP
+    ESP_LOGW(TAG, "ENVDUMP sent to synth %u: eg_type=%u bp0=[%ums,1.0] "
+                  "bp1=[%ums,%.3f] bp2=[%ums,0.0]",
+             (unsigned)layer->synth_id[track], (unsigned)dst->eg_type,
+             (unsigned)dst->attack_ms,
+             (unsigned)dst->decay_ms, (double)dst->sustain_pct / 100.0,
+             (unsigned)dst->release_ms);
+#endif
 }
 
 uint8_t sequencer_core_get_num_layers(void)

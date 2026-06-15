@@ -1,7 +1,25 @@
 #pragma once
 
 #include <stdint.h>
+/**
+ * @file seq_clamp.h
+ * @brief Type-safe, double-evaluation-safe boundary clamping utilities.
+ *
+ * @section DESIGN_BENEFITS
+ * - Eliminates double-evaluation bugs (e.g., passing 'step++' is completely safe).
+ * - Accepts signed inputs for unsigned destinations, allowing negative intermediate 
+ * sequencer math (e.g., current + negative_delta) to safely underflow before clamping.
+ *
+ * @section CRITICAL_LIMITATIONS
+ * 1. NOT FOR COMPILE-TIME CONSTANTS: Because these wrappers rely on static inline 
+ * functions, they cannot be used in global/static array initializers or struct 
+ * definitions. Use raw ternary macros for static compilation targets.
 
+ * * 3. EXTREME UNSIGNED OVERFLOW: Passing a pre-existing uint32_t greater than INT32_MAX 
+ * (> 2,147,483,647) into the u8/u16/int helpers will cause a signed rollover, 
+ * resulting in a false underflow clamp to min_value. Ensure massive upstream values 
+ * are validated before down-casting.
+ */
 /* Type-specific helpers avoid macro double-evaluation pitfalls. */
 /* Using 'int' for the input 'value' in unsigned helpers allows negative results 
    from (current + delta) to be safely evaluated before returning the clamped type. */
@@ -33,11 +51,21 @@ static inline uint32_t seq_clamp_u32(int64_t value, uint32_t min_value, uint32_t
     return (uint32_t)value;
 }
 
-static inline float seq_clamp_f32(float value, float min_value, float max_value)
+/*static inline float seq_clamp_f32(float value, float min_value, float max_value)
 {
     if (value < min_value) return min_value;
     if (value > max_value) return max_value;
     return value;
+}*/
+static inline float seq_clamp_f32(float value, float min_value, float max_value)
+{
+    // If value is NaN, both comparisons fail. 
+    // By structures, it falls through to explicitly return a known valid boundary.
+    if (value > min_value && value < max_value) return value;
+    if (value >= max_value) return max_value;
+    
+    // Fallback captures both true underflows AND any NaN corruptions
+    return min_value; 
 }
 
 #ifndef SEQ_CLAMP_INT

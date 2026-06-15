@@ -8,7 +8,12 @@ for live editing.
 
 ## Prototype Video
 
-[![Demo](assets/1.png)](assets/amybox%20(2).mp4)
+<video src="https://rt-rtos.github.io/assets/amybox%20(2).mp4" poster="assets/1.jpg" controls muted loop playsinline width="640">
+  <a href="https://rt-rtos.github.io/assets/amybox%20(2).mp4"><img src="assets/1.jpg" alt="S3-Amysynth prototype demo" width="640"></a>
+</video>
+
+> Video not playing? [Watch the prototype demo](https://rt-rtos.github.io/assets/amybox%20(2).mp4)
+
 ## What it is
 
 S3-Amysynth runs a multi-layer step sequencer that drives the AMY engine in
@@ -110,13 +115,6 @@ scope is intentionally ambitious for its stage.
 **S3-Amysynth** is an embedded audio project built on the **ESP32-S3** using **ESP-IDF**. It combines firmware development, real-time audio generation, hardware interfacing, and UI design in a custom handheld synthesizer platform.
 
 The project is designed to demonstrate practical embedded engineering skills in a form that is easy to assess at a glance: what the system does, how it is built, and what technical areas it develops.
-
-## Prototype
-
-[![Demo](assets/1.jpg)](https://github.com/user-attachments/assets/2acf040f-9c87-4e41-b164-4d866c334cac)
-
-
-
 
 
 

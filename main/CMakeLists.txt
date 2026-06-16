@@ -9,5 +9,5 @@ target_compile_options(${COMPONENT_TARGET} PUBLIC
     -Wno-uninitialized
     -DESP_PLATFORM
 )
-
+target_compile_options(${COMPONENT_LIB} PRIVATE "-Wstack-usage=1024")
 # `amy.c` needs relaxed strict-aliasing warnings; handled by the `amy` component.

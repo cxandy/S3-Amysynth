@@ -77,6 +77,16 @@ permanently shadow every future preset on that row, so authority is **deferred**
   *retained* in `layer->env[track]`, but they don't override a new preset until the
   user re-opens the editor and commits again.
 
+```mermaid
+flowchart TD
+    A["layer created"] --> B["env seeded from Kconfig; authored=false"]
+    C["patch change"] --> D["configure_synth: push patch"]
+    D --> E{"row authored?"}
+    E -->|no| F["patch envelope wins (no env push)"]
+    E -->|yes| G["re-push row env over patch"]
+    H["user opens graph + commits"] --> I["set_melodic_envelope: authored=true; push env"]
+```
+
 Net effect: switch an *unauthored* row to a Juno preset and you hear Juno's
 envelope; customize a row in the editor (authoring it) and it keeps your curve
 across later patch changes. The `env_authored` flag is the single switch

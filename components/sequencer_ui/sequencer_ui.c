@@ -1,17 +1,38 @@
 #include "sequencer_ui.h"
 #include "priv_u8g2_seq.h"
+#include "priv_u8g2_menu.h"
+#include "priv_u8g2_arp.h"
 #include "seq_clamp.h"
 #include "sequencer_core.h"
+#include "arp_core.h"
+#include "quantizer.h"
 #include "graph_popup.h"
 #include "patch_names.h"
 #include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include <string.h>
 #include <math.h>
 
 static const char *TAG = "sequencer_ui";
+
+/* DEBUG: bisect heap corruption inside the init chain. Gated by
+ * CONFIG_AMYSYNTH_HEAP_CHECK (menuconfig: Heap Diagnostics); off by default, in
+ * which case every checkpoint compiles to nothing. When on, the first
+ * "HEAP CORRUPT" line names the exact sub-step that smashed the heap. */
+#if CONFIG_AMYSYNTH_HEAP_CHECK
+#define SEQ_HEAP_CHECK(where) do { \
+    if (!heap_caps_check_integrity_all(true)) { \
+        ESP_LOGE(TAG, "HEAP CORRUPT detected at: %s", where); \
+    } else { \
+        ESP_LOGI(TAG, "HEAP OK at: %s", where); \
+    } \
+} while (0)
+#else
+#define SEQ_HEAP_CHECK(where) do { (void)(where); } while (0)
+#endif
 
 /* ── Graph pop-up integration (isolated, easily removable) ───────────────────
  * Everything between this block and the matching "graph pop-up: end" marker is
@@ -321,6 +342,19 @@ bool sequencer_ui_graph_handle_button(bool is_long)
     return true;
 }
 
+/* Commit the current edits and close the editor. Used by the encoder long-press
+ * (symmetric with the long-press that opens it): closing keeps your work. The
+ * separate discard path is sequencer_ui_graph_handle_button(true) (cancel). */
+bool sequencer_ui_graph_close_commit(void)
+{
+    if (!graph_popup_is_active(&s_graph_popup)) return false;
+    ESP_LOGI(TAG, "graph editor close (commit envelope)");
+    graph_commit_to_env();
+    graph_popup_close(&s_graph_popup);
+    s_force_redraw = true;
+    return true;
+}
+
 /* Flip the active adjust axis (vertical level <-> horizontal time). Only does
  * anything while the editor is open; returns true when it consumed the event so
  * the host knows the press belonged to the graph and not a background action. */
@@ -454,6 +488,47 @@ static uint32_t seq_view_signature(void)
     return h;
 }
 
+/* Forward decls for menu/arp view builders used by the signature + task. */
+static void menu_build_view(menu_view_t *out);
+static void arp_build_view(arp_view_t *out);
+
+/* Signature of the menu overlay. */
+static uint32_t menu_view_signature(void)
+{
+    uint32_t h = FNV1A_OFFSET;
+    menu_view_t v;
+    menu_build_view(&v);
+    h = fnv1a_bytes(h, &v.cursor, sizeof(v.cursor));
+    h = fnv1a_bytes(h, &v.editing, sizeof(v.editing));
+    for (uint8_t i = 0; i < v.count; i++) {
+        h = fnv1a_bytes(h, v.items[i].label, sizeof(v.items[i].label));
+        h = fnv1a_bytes(h, v.items[i].value, sizeof(v.items[i].value));
+    }
+    return h;
+}
+
+/* Signature of the arp screen. */
+static uint32_t arp_view_signature(void)
+{
+    uint32_t h = FNV1A_OFFSET;
+    arp_view_t v;
+    arp_build_view(&v);
+    h = fnv1a_bytes(h, &v.enabled, sizeof(v.enabled));
+    h = fnv1a_bytes(h, &v.octaves, sizeof(v.octaves));
+    h = fnv1a_bytes(h, &v.gate_pct, sizeof(v.gate_pct));
+    h = fnv1a_bytes(h, &v.cursor, sizeof(v.cursor));
+    h = fnv1a_bytes(h, &v.editing, sizeof(v.editing));
+    h = fnv1a_bytes(h, &v.patch, sizeof(v.patch));
+    h = fnv1a_bytes(h, &v.patch_select, sizeof(v.patch_select));
+    h = fnv1a_bytes(h, v.rate_str, 4);
+    h = fnv1a_bytes(h, v.mode_str, 4);
+    for (uint8_t i = 0; i < ARP_VIEW_SLOTS; i++) {
+        h = fnv1a_bytes(h, &v.slot_active[i], sizeof(v.slot_active[i]));
+        h = fnv1a_bytes(h, v.slot_name[i], sizeof(v.slot_name[i]));
+    }
+    return h;
+}
+
 /* Signature of the graph editor (everything graph_popup_draw + the top bar read). */
 static uint32_t graph_view_signature(void)
 {
@@ -521,30 +596,58 @@ static void sequencer_ui_task(void *pvParameters)
     TickType_t last_wake_time = xTaskGetTickCount();
     const TickType_t delay = pdMS_TO_TICKS(50); /* 20 Hz */
     uint32_t last_sig = 0;
-    bool     last_was_graph = false;
+    /* Which top-level view was rendered last frame; a change forces a redraw. */
+    enum { V_SEQ, V_ARP, V_MENU, V_GRAPH } last_view = V_SEQ;
     for (;;) {
+        /* Coalesced arp re-emit: setters mark the arp dirty; we perform at most
+         * one full re-emit per frame here, collapsing fast encoder edits. */
+        arp_core_service();
+
         seq_state.current_step =
             sequencer_core_get_current_step(seq_state.active_layer_idx);
         if (s_u8g2) {
+            /* Precedence: graph editor > menu overlay > arp screen > sequencer. */
             bool graph = graph_popup_is_active(&s_graph_popup);
-            uint32_t sig = graph ? graph_view_signature() : seq_view_signature();
-            bool force = s_force_redraw || (graph != last_was_graph);
+            int view;
+            uint32_t sig;
+            if (graph) {
+                view = V_GRAPH; sig = graph_view_signature();
+            } else if (seq_state.menu_open) {
+                view = V_MENU;  sig = menu_view_signature();
+            } else if (seq_state.ui_mode == UI_MODE_ARP) {
+                view = V_ARP;   sig = arp_view_signature();
+            } else {
+                view = V_SEQ;   sig = seq_view_signature();
+            }
+            bool force = s_force_redraw || (view != last_view);
 
             if (force || sig != last_sig) {
-                if (graph) {
-                    /* Full-screen envelope editor: yellow context bar (rows
-                     * 0..15) + the ADSR plot below. The widget owns the plot;
-                     * the bar and buffer flush are owned here. */
-                    u8g2_ClearBuffer(s_u8g2);
-                    u8g2_SetDrawColor(s_u8g2, 1);
-                    graph_draw_topbar(s_u8g2);
-                    graph_popup_draw(s_u8g2, &s_graph_popup);
-                    u8g2_SendBuffer(s_u8g2);
-                } else {
-                    priv_u8g2_seq_draw_frame(s_u8g2, &seq_state);
+                switch (view) {
+                    case V_GRAPH:
+                        u8g2_ClearBuffer(s_u8g2);
+                        u8g2_SetDrawColor(s_u8g2, 1);
+                        graph_draw_topbar(s_u8g2);
+                        graph_popup_draw(s_u8g2, &s_graph_popup);
+                        u8g2_SendBuffer(s_u8g2);
+                        break;
+                    case V_MENU: {
+                        menu_view_t mv;
+                        menu_build_view(&mv);
+                        priv_u8g2_menu_draw_frame(s_u8g2, &mv);
+                        break;
+                    }
+                    case V_ARP: {
+                        arp_view_t av;
+                        arp_build_view(&av);
+                        priv_u8g2_arp_draw_frame(s_u8g2, &av);
+                        break;
+                    }
+                    default:
+                        priv_u8g2_seq_draw_frame(s_u8g2, &seq_state);
+                        break;
                 }
                 last_sig = sig;
-                last_was_graph = graph;
+                last_view = view;
                 s_force_redraw = false;
             }
         }
@@ -557,12 +660,21 @@ static void sequencer_ui_task(void *pvParameters)
 void sequencer_ui_init(u8g2_t *u8g2)
 {
     s_u8g2 = u8g2;
-    seq_state.playing = true;
+    seq_state.playing  = true;
+    seq_state.ui_mode  = UI_MODE_SEQUENCER;
+    seq_state.menu_open = false;
+    seq_state.menu_cursor = 0;
+    seq_state.menu_editing = false;
 
+    SEQ_HEAP_CHECK("ui_init: entry");
     sequencer_core_init();
+    SEQ_HEAP_CHECK("ui_init: after sequencer_core_init");
+    arp_core_init();
+    SEQ_HEAP_CHECK("ui_init: after arp_core_init");
 
     /* Add drum layer (index 0). */
     sequencer_ui_add_layer(SEQ_LAYER_DRUM, SEQ_STEPS);
+    SEQ_HEAP_CHECK("ui_init: after add_layer(drum)");
 
     /* Default pattern: 4-on-the-floor hi-hat + backbeat kick. */
     seq_layer_t *drum = &seq_state.layers[0];
@@ -571,7 +683,9 @@ void sequencer_ui_init(u8g2_t *u8g2)
     drum->grid[1][4] = drum->grid[1][12]  = true;
 
     sync_layer_to_core(0);
+    SEQ_HEAP_CHECK("ui_init: after sync_layer_to_core(0)");
     sequencer_core_set_playing(true);
+    SEQ_HEAP_CHECK("ui_init: after set_playing");
 
     /* Pin to Core 0: the OLED refresh does blocking I2C and is not latency
      * critical, so keep it off Core 1 where the AMY DSP now runs. */
@@ -722,6 +836,27 @@ void sequencer_ui_set_patch_select_mode(bool held)
     seq_state.patch_select_mode = held;
 }
 
+/* Shared patch-cycle stepping used by both the melodic layers and the arp.
+ * Returns the next patch number after `current` walked `dir` (±1) steps through
+ * the active browse mode (curated shortlist or full 0..256 range), wrapping at
+ * the ends. One patch per call regardless of encoder sub-steps. */
+static uint16_t next_patch_in_cycle(uint16_t current, int dir)
+{
+    dir = (dir > 0) ? 1 : -1;
+#if CONFIG_SEQ_PATCH_BROWSE_FULL_RANGE
+    int n = SEQ_PATCH_FULL_MAX + 1;          /* inclusive count */
+    int cur = (int)current;
+    if (cur < 0 || cur > SEQ_PATCH_FULL_MAX) cur = 0;  /* off-range -> start */
+    int idx = (cur + dir + n) % n;
+    return (uint16_t)idx;
+#else
+    int n = SEQ_RUNTIME_PATCH_COUNT;
+    int idx = sequencer_patch_cycle_index_for(current);
+    int ni = (idx + dir + n) % n;
+    return s_melodic_patch_cycle[ni];
+#endif
+}
+
 void sequencer_ui_cycle_melodic_patch(int delta)
 {
     if (delta == 0) return;
@@ -730,28 +865,8 @@ void sequencer_ui_cycle_melodic_patch(int delta)
     if (li >= seq_state.num_layers) return;
     if (seq_state.layers[li].type != SEQ_LAYER_MELODIC) return;
 
-    /* One patch per detent regardless of how many sub-steps the encoder
-     * reported: patch select is a discrete chooser, not a value knob. Multi-tick
-     * deltas (jitter, fast turns) otherwise skipped entries and looked erratic. */
     int dir = (delta > 0) ? 1 : -1;
-
-    uint16_t current = sequencer_core_get_melodic_patch();
-    uint16_t next;
-
-#if CONFIG_SEQ_PATCH_BROWSE_FULL_RANGE
-    /* Walk the full 0..SEQ_PATCH_FULL_MAX range, wrapping at the ends. */
-    int n = SEQ_PATCH_FULL_MAX + 1;          /* inclusive count */
-    int cur = (int)current;
-    if (cur < 0 || cur > SEQ_PATCH_FULL_MAX) cur = 0;  /* off-range -> start */
-    int idx = (cur + dir + n) % n;
-    next = (uint16_t)idx;
-#else
-    /* Walk the curated shortlist in order, wrapping at the ends. */
-    int n = SEQ_RUNTIME_PATCH_COUNT;
-    int idx = sequencer_patch_cycle_index_for(current);
-    int ni = (idx + dir + n) % n;
-    next = s_melodic_patch_cycle[ni];
-#endif
+    uint16_t next = next_patch_in_cycle(sequencer_core_get_melodic_patch(), dir);
 
     sequencer_core_set_melodic_patch(next);
     sequencer_ui_sync_melodic_patch_cache();
@@ -763,6 +878,320 @@ void sequencer_ui_cycle_melodic_patch(int delta)
     } else {
         ESP_LOGI(TAG, "melodic patch cycle -> %u", (unsigned)applied);
     }
+}
+
+/* Cycle the arp's OWN patch (independent of the sequencer's melodic patch).
+ * Reuses the same browse-mode stepping + name lookup as the sequencer. */
+void sequencer_ui_arp_cycle_patch(int delta)
+{
+    if (delta == 0) return;
+    int dir = (delta > 0) ? 1 : -1;
+    uint16_t next = next_patch_in_cycle(arp_get_patch(), dir);
+    arp_set_patch(next);
+
+    const char *name = patch_name_for(next);
+    if (name) {
+        ESP_LOGI(TAG, "arp patch cycle -> %u (%s)", (unsigned)next, name);
+    } else {
+        ESP_LOGI(TAG, "arp patch cycle -> %u", (unsigned)next);
+    }
+}
+
+/* ── Note-name helper (local; mirrors priv_u8g2_seq.c's static one) ─────── */
+static void ui_note_name(uint8_t midi_note, char buf[4])
+{
+    static const char *const names[] = {
+        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"
+    };
+    int octave = (int)midi_note / 12 - 1;
+    snprintf(buf, 4, "%s%d", names[midi_note % 12], octave);
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+ *  MENU OVERLAY
+ * ════════════════════════════════════════════════════════════════════════
+ * A small modal list. Items are either ACTIONS (run on click, no value) or
+ * VALUE items (click to enter editing, encoder changes the value, click to
+ * exit). The model is a static table; values are read/written live from the
+ * sequencer_core quantizer + arp_core. */
+
+typedef enum {
+    MI_SCREEN_SEQ = 0,
+    MI_SCREEN_ARP,
+    MI_BPM,
+    MI_QUANT_ENABLED,
+    MI_QUANT_SCALE,
+    MI_QUANT_ROOT,
+    MI_ARP_ENABLED,
+    MI_COUNT
+} menu_item_id_t;
+
+static menu_item_view_t s_menu_items[MI_COUNT];
+
+/* Format the current value of each menu item into the flat view array. */
+static void menu_build_view(menu_view_t *out)
+{
+    for (uint8_t i = 0; i < MI_COUNT; i++) {
+        s_menu_items[i].value[0] = '\0';
+    }
+
+    snprintf(s_menu_items[MI_SCREEN_SEQ].label, MENU_LABEL_LEN, "Screen: Seq");
+    snprintf(s_menu_items[MI_SCREEN_ARP].label, MENU_LABEL_LEN, "Screen: Arp");
+
+    snprintf(s_menu_items[MI_BPM].label, MENU_LABEL_LEN, "BPM");
+    snprintf(s_menu_items[MI_BPM].value, MENU_VALUE_LEN, "%u",
+             (unsigned)seq_state.bpm);
+
+    snprintf(s_menu_items[MI_QUANT_ENABLED].label, MENU_LABEL_LEN, "Quant");
+    snprintf(s_menu_items[MI_QUANT_ENABLED].value, MENU_VALUE_LEN, "%s",
+             sequencer_core_get_quantizer_enabled() ? "ON" : "OFF");
+
+    snprintf(s_menu_items[MI_QUANT_SCALE].label, MENU_LABEL_LEN, "Scale");
+    {
+        const musical_scale_t *sc =
+            quantizer_get_scale(sequencer_core_get_quantizer_scale());
+        snprintf(s_menu_items[MI_QUANT_SCALE].value, MENU_VALUE_LEN, "%s",
+                 sc ? sc->name : "?");
+    }
+
+    snprintf(s_menu_items[MI_QUANT_ROOT].label, MENU_LABEL_LEN, "Root");
+    {
+        char nn[4];
+        ui_note_name(sequencer_core_get_quantizer_root_note(), nn);
+        snprintf(s_menu_items[MI_QUANT_ROOT].value, MENU_VALUE_LEN, "%s", nn);
+    }
+
+    snprintf(s_menu_items[MI_ARP_ENABLED].label, MENU_LABEL_LEN, "Arp");
+    snprintf(s_menu_items[MI_ARP_ENABLED].value, MENU_VALUE_LEN, "%s",
+             arp_get_enabled() ? "ON" : "OFF");
+
+    out->items   = s_menu_items;
+    out->count   = MI_COUNT;
+    out->cursor  = seq_state.menu_cursor;
+    out->editing = seq_state.menu_editing;
+}
+
+/* True for items that hold an adjustable value (vs. one-shot actions). */
+static bool menu_item_is_value(menu_item_id_t id)
+{
+    switch (id) {
+        case MI_BPM:
+        case MI_QUANT_ENABLED:
+        case MI_QUANT_SCALE:
+        case MI_QUANT_ROOT:
+        case MI_ARP_ENABLED:
+            return true;
+        default:
+            return false;
+    }
+}
+
+/* Apply an encoder delta to the currently-entered menu value. */
+static void menu_edit_value(menu_item_id_t id, int delta)
+{
+    int dir = (delta > 0) ? 1 : (delta < 0 ? -1 : 0);
+    switch (id) {
+        case MI_BPM:
+            sequencer_ui_set_bpm((uint16_t)((int)seq_state.bpm + delta));
+            break;
+        case MI_QUANT_ENABLED:
+            if (dir != 0)
+                sequencer_core_set_quantizer_enabled(
+                    !sequencer_core_get_quantizer_enabled());
+            break;
+        case MI_QUANT_SCALE: {
+            int n = (int)quantizer_scale_count();
+            int cur = (int)sequencer_core_get_quantizer_scale();
+            int ni = (cur + dir + n) % n;
+            sequencer_core_set_quantizer_scale((uint8_t)ni);
+            break;
+        }
+        case MI_QUANT_ROOT: {
+            int r = (int)sequencer_core_get_quantizer_root_note() + delta;
+            r = SEQ_CLAMP_INT(r, 0, 127);
+            sequencer_core_set_quantizer_root_note((uint8_t)r);
+            break;
+        }
+        case MI_ARP_ENABLED:
+            if (dir != 0) arp_set_enabled(!arp_get_enabled());
+            break;
+        default:
+            break;
+    }
+}
+
+void sequencer_ui_menu_toggle(void)
+{
+    /* The graph editor is the top overlay; don't let the menu fight it. */
+    if (sequencer_ui_graph_is_active()) return;
+    seq_state.menu_open    = !seq_state.menu_open;
+    seq_state.menu_editing = false;
+    if (seq_state.menu_open && seq_state.menu_cursor >= MI_COUNT) {
+        seq_state.menu_cursor = 0;
+    }
+    s_force_redraw = true;
+    ESP_LOGI(TAG, "menu %s", seq_state.menu_open ? "open" : "closed");
+}
+
+bool sequencer_ui_menu_is_active(void)
+{
+    return seq_state.menu_open;
+}
+
+bool sequencer_ui_menu_handle_encoder(long delta)
+{
+    if (!seq_state.menu_open) return false;
+    if (delta == 0) return true;
+
+    if (seq_state.menu_editing) {
+        menu_edit_value((menu_item_id_t)seq_state.menu_cursor, (int)delta);
+    } else {
+        int n = (int)MI_COUNT;
+        int c = (int)seq_state.menu_cursor + (int)delta;
+        /* clamp (no wrap) so the list feels bounded */
+        c = SEQ_CLAMP_INT(c, 0, n - 1);
+        seq_state.menu_cursor = (uint8_t)c;
+    }
+    s_force_redraw = true;
+    return true;
+}
+
+bool sequencer_ui_menu_handle_button(void)
+{
+    if (!seq_state.menu_open) return false;
+
+    menu_item_id_t id = (menu_item_id_t)seq_state.menu_cursor;
+
+    if (menu_item_is_value(id)) {
+        /* Toggle in/out of editing this value. */
+        seq_state.menu_editing = !seq_state.menu_editing;
+    } else {
+        /* Action item: run it and close the menu. */
+        switch (id) {
+            case MI_SCREEN_SEQ:
+                seq_state.ui_mode = UI_MODE_SEQUENCER;
+                seq_state.menu_open = false;
+                break;
+            case MI_SCREEN_ARP:
+                seq_state.ui_mode = UI_MODE_ARP;
+                seq_state.menu_open = false;
+                break;
+            default:
+                break;
+        }
+        seq_state.menu_editing = false;
+    }
+    s_force_redraw = true;
+    return true;
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+ *  ARP SCREEN
+ * ════════════════════════════════════════════════════════════════════════ */
+
+bool sequencer_ui_arp_is_active(void)
+{
+    return seq_state.ui_mode == UI_MODE_ARP
+        && !seq_state.menu_open
+        && !sequencer_ui_graph_is_active();
+}
+
+/* The arp screen keeps its own cursor + editing flags, independent of the
+ * menu's. We stash them in file-static state (the screen is a singleton). */
+static uint8_t s_arp_cursor  = ARP_CUR_ENABLE;
+static bool    s_arp_editing = false;
+
+/* Build the flat arp view from arp_core for the renderer. */
+static void arp_build_view(arp_view_t *out)
+{
+    out->enabled  = arp_get_enabled();
+    out->mode_str = (arp_get_direction() == ARP_DOWN) ? "DOWN" : "UP";
+    out->octaves  = arp_get_octaves();
+    out->rate_str = arp_rate_name(arp_get_rate());
+    out->gate_pct = arp_get_gate_pct();
+    for (uint8_t i = 0; i < ARP_VIEW_SLOTS; i++) {
+        int16_t snapped = arp_get_slot_snapped(i);
+        if (snapped >= 0) {
+            out->slot_active[i] = true;
+            ui_note_name((uint8_t)snapped, out->slot_name[i]);
+        } else {
+            out->slot_active[i] = false;
+            out->slot_name[i][0] = '\0';
+        }
+    }
+    out->cursor  = s_arp_cursor;
+    out->editing = s_arp_editing;
+
+    /* Patch indicator: mirror the sequencer view. Number is always available;
+     * the name banner shows only while the patch hold+turn gesture is active. */
+    out->patch        = arp_get_patch();
+    out->patch_select = seq_state.patch_select_mode;
+    out->patch_name   = patch_name_for(out->patch);
+}
+
+static void arp_edit_value(uint8_t cursor, int delta)
+{
+    int dir = (delta > 0) ? 1 : (delta < 0 ? -1 : 0);
+    switch (cursor) {
+        case ARP_CUR_ENABLE:
+            if (dir != 0) arp_set_enabled(!arp_get_enabled());
+            break;
+        case ARP_CUR_MODE:
+            if (dir != 0)
+                arp_set_direction(arp_get_direction() == ARP_UP ? ARP_DOWN : ARP_UP);
+            break;
+        case ARP_CUR_OCT:
+            arp_set_octaves((uint8_t)SEQ_CLAMP_INT(
+                (int)arp_get_octaves() + dir, 1, ARP_OCT_MAX));
+            break;
+        case ARP_CUR_RATE: {
+            int r = (int)arp_get_rate() + dir;
+            r = SEQ_CLAMP_INT(r, 0, ARP_RATE_COUNT - 1);
+            arp_set_rate((arp_rate_t)r);
+            break;
+        }
+        case ARP_CUR_GATE:
+            arp_set_gate_pct((uint8_t)SEQ_CLAMP_INT(
+                (int)arp_get_gate_pct() + dir * 5, 10, 100));
+            break;
+        default: {
+            /* Slot edit: chromatic note, or clear below the floor. */
+            uint8_t slot = (uint8_t)(cursor - ARP_CUR_SLOT0);
+            if (slot >= ARP_VIEW_SLOTS) break;
+            int16_t cur = arp_get_slot(slot);
+            if (cur < 0) {
+                /* Empty: first turn seeds from the arp root note. */
+                if (dir > 0) arp_set_slot(slot, (int16_t)arp_get_root_note());
+            } else {
+                int nv = (int)cur + dir;
+                if (nv < 24) {
+                    arp_set_slot(slot, -1);   /* turn below floor clears slot */
+                } else {
+                    arp_set_slot(slot, (int16_t)nv);
+                }
+            }
+            break;
+        }
+    }
+}
+
+void sequencer_ui_arp_handle_encoder(long delta)
+{
+    if (delta == 0) return;
+    if (s_arp_editing) {
+        arp_edit_value(s_arp_cursor, (int)delta);
+    } else {
+        int c = (int)s_arp_cursor + (int)delta;
+        c = SEQ_CLAMP_INT(c, 0, ARP_CUR_COUNT - 1);
+        s_arp_cursor = (uint8_t)c;
+    }
+    s_force_redraw = true;
+}
+
+void sequencer_ui_arp_handle_button(void)
+{
+    s_arp_editing = !s_arp_editing;
+    s_force_redraw = true;
 }
 
 

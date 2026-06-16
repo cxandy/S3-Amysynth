@@ -33,6 +33,25 @@ void sequencer_ui_cycle_melodic_patch(int delta);
 void sequencer_ui_set_drum_select_mode(bool held);
 void sequencer_ui_set_patch_select_mode(bool held);
 
+/* ── Menu overlay (opened by the GPIO1 menu button) ──────────────────────
+ * The menu is a modal overlay above the active screen (but below the graph
+ * editor). While open it captures the encoder + encoder-button:
+ *   - not editing: encoder scrolls items, click enters an item (or runs an
+ *     action item like switching screens)
+ *   - editing:     encoder changes the item's value, click exits editing */
+void sequencer_ui_menu_toggle(void);
+bool sequencer_ui_menu_is_active(void);
+bool sequencer_ui_menu_handle_encoder(long delta); /* true if consumed */
+bool sequencer_ui_menu_handle_button(void);        /* true if consumed */
+
+/* ── Arp screen ──────────────────────────────────────────────────────────
+ * Active when seq_state.ui_mode == UI_MODE_ARP and no overlay is up. */
+bool sequencer_ui_arp_is_active(void);
+void sequencer_ui_arp_handle_encoder(long delta);
+void sequencer_ui_arp_handle_button(void);
+/* Cycle the arp's own patch (hold+turn gesture on the arp screen). */
+void sequencer_ui_arp_cycle_patch(int delta);
+
 /* Global state (bpm is read directly by encoder_task in main.c) */
 extern sequencer_ui_state_t seq_state;
 
@@ -52,6 +71,11 @@ void sequencer_ui_graph_open_envelope(void);
  * sequencer_ui_graph_handle_button(is_long): is_long=true => long-press/cancel. */
 bool sequencer_ui_graph_handle_encoder(long delta);
 bool sequencer_ui_graph_handle_button(bool is_long);
+
+/* Commit the current edits and close the editor (encoder long-press path,
+ * symmetric with the long-press that opens it). Distinct from
+ * sequencer_ui_graph_handle_button(true), which discards on cancel. */
+bool sequencer_ui_graph_close_commit(void);
 
 /* Toggle the encoder adjust axis (vertical level <-> horizontal time) while the
  * graph editor is open. Returns true if the event was consumed (graph open). */

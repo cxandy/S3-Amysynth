@@ -20,6 +20,12 @@ typedef enum {
     SEQ_LAYER_MELODIC = 1,
 } seq_layer_type_t;
 
+/* ── Top-level screen the UI is showing ── */
+typedef enum {
+    UI_MODE_SEQUENCER = 0,
+    UI_MODE_ARP       = 1,
+} ui_mode_t;
+
 /* ── ADSR envelope (one AMY EG0 breakpoint set) ──
  * Stored as concrete ms/percent so it survives patch changes and can be edited
  * at runtime by the graph UI. Currently scoped PER ROW (per track); the storage
@@ -69,6 +75,12 @@ typedef struct {
     bool        edit_mode;
     bool        drum_select_mode;   /* true while note-select btn held   */
     bool        patch_select_mode;  /* true while patch-select btn held  */
+
+    /* ── Screen + menu overlay ── */
+    ui_mode_t   ui_mode;            /* which top-level screen is active   */
+    bool        menu_open;          /* true while the menu overlay is up  */
+    uint8_t     menu_cursor;        /* highlighted menu item index        */
+    bool        menu_editing;       /* true while editing the entered item*/
 } priv_u8g2_seq_state_t;
 
 /**

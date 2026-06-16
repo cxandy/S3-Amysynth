@@ -45,6 +45,40 @@ int32_t highest_tag = -1;
 static volatile bool sequencer_running = true;
 static volatile bool sequencer_external_clock = false;
 
+/* ── Active-tag index ─────────────────────────────────────────────────────
+ * The per-tick scan used to walk 0..highest_tag, where highest_tag is a
+ * high-water mark that only ever grows (e.g. the arp pushes it to ~1119 and it
+ * stays there forever). That made every 500us tick O(highest tag ever used),
+ * scanning thousands of mostly-NULL slots on the audio-critical Core-0 timer.
+ *
+ * Instead we keep a compact list of only the tags that currently have deltas,
+ * so the tick is O(active events) regardless of tag magnitude. s_active_tags is
+ * the dense list; s_tag_slot maps tag -> its index in that list (-1 = inactive)
+ * for O(1) swap-removal. Both are sized to max_sequences and guarded by the
+ * same SEQ_LOCK as sequences[]. */
+static int32_t *s_active_tags = NULL;   // dense list of active tag ids
+static int32_t *s_tag_slot    = NULL;   // tag -> position in s_active_tags, or -1
+static int32_t  s_num_active  = 0;
+
+/* Mark `tag` active (has deltas). O(1). Caller holds SEQ_LOCK. */
+static inline void seq_active_add(int32_t tag) {
+    if (s_tag_slot == NULL || s_tag_slot[tag] >= 0) return;  // already active
+    s_tag_slot[tag] = s_num_active;
+    s_active_tags[s_num_active++] = tag;
+}
+
+/* Mark `tag` inactive (deltas cleared). O(1) swap-remove. Caller holds SEQ_LOCK. */
+static inline void seq_active_remove(int32_t tag) {
+    if (s_tag_slot == NULL) return;
+    int32_t pos = s_tag_slot[tag];
+    if (pos < 0) return;  // not active
+    int32_t last = --s_num_active;
+    int32_t moved = s_active_tags[last];
+    s_active_tags[pos] = moved;
+    s_tag_slot[moved]  = pos;
+    s_tag_slot[tag]    = -1;
+}
+
 // Declared per-platform below.
 void _sequencer_start();
 void _sequencer_stop();
@@ -53,10 +87,16 @@ void sequencer_init(int max_sequencer_tags) {
     max_sequences = max_sequencer_tags;
     sequences = (struct sequence_info_t *)malloc_caps(max_sequences * sizeof(struct sequence_info_t),
                                                       amy_global.config.ram_caps_synth);
+    s_active_tags = (int32_t *)malloc_caps(max_sequences * sizeof(int32_t),
+                                           amy_global.config.ram_caps_synth);
+    s_tag_slot    = (int32_t *)malloc_caps(max_sequences * sizeof(int32_t),
+                                           amy_global.config.ram_caps_synth);
+    s_num_active  = 0;
     for (int32_t i = 0; i < max_sequences; ++i) {
         sequences[i].deltas = NULL;
         sequences[i].tick = 0;
         sequences[i].period = 0;
+        s_tag_slot[i] = -1;
     }
     // We are read to go.
     //sequencer_start();
@@ -76,7 +116,9 @@ void sequencer_reset() {
             sequences[i].tick = 0;
             sequences[i].period = 0;
         }
+        if (s_tag_slot) s_tag_slot[i] = -1;
     }
+    s_num_active = 0;
     highest_tag = -1;
 }
 
@@ -84,6 +126,8 @@ void sequencer_deinit() {
     _sequencer_stop();
     sequencer_reset();
     if (sequences != NULL) free(sequences);
+    if (s_active_tags != NULL) { free(s_active_tags); s_active_tags = NULL; }
+    if (s_tag_slot != NULL)    { free(s_tag_slot);    s_tag_slot = NULL; }
     max_sequences = 0;
 }
 
@@ -106,7 +150,11 @@ static void sequencer_process_tick(void) {
     amy_global.sequencer_tick_count++;
     // Scan through LL looking for matches
     SEQ_LOCK();
-    for (int32_t tag = 0; tag <= highest_tag; ++tag) {
+    /* Scan only the currently-active tags (O(active events)), not 0..highest_tag.
+     * Walk the dense list backwards so an absolute-tick swap-remove (which moves
+     * the last entry into the freed slot) never skips an entry. */
+    for (int32_t i = s_num_active - 1; i >= 0; --i) {
+        int32_t tag = s_active_tags[i];
         if (sequences[tag].deltas != NULL) {
             bool hit = false;
             bool delete = false;
@@ -128,6 +176,7 @@ static void sequencer_process_tick(void) {
                 if(delete) {
                     delta_release_list(sequences[tag].deltas);
                     sequences[tag].deltas = NULL;
+                    seq_active_remove(tag);
                 }
             }
         }
@@ -183,8 +232,10 @@ uint8_t sequencer_add_event(amy_event *e) {
     delta_release_list(sequences[tag].deltas);
     sequences[tag].deltas = NULL;
 
-    if(e->sequence[SEQUENCE_TICK] == 0 && e->sequence[SEQUENCE_PERIOD] == 0) { SEQ_UNLOCK(); return 0; } // Ignore non-schedulable event.
-    if(e->sequence[SEQUENCE_TICK] != 0 && e->sequence[SEQUENCE_PERIOD] == 0 && e->sequence[SEQUENCE_TICK] <= amy_global.sequencer_tick_count) { SEQ_UNLOCK(); return 0; } // don't schedule things in the past.
+    // Clearing a tag (no tick/period, or scheduled in the past) makes it
+    // inactive: drop it from the active-tag index so the per-tick scan shrinks.
+    if(e->sequence[SEQUENCE_TICK] == 0 && e->sequence[SEQUENCE_PERIOD] == 0) { seq_active_remove(tag); SEQ_UNLOCK(); return 0; } // Ignore non-schedulable event.
+    if(e->sequence[SEQUENCE_TICK] != 0 && e->sequence[SEQUENCE_PERIOD] == 0 && e->sequence[SEQUENCE_TICK] <= amy_global.sequencer_tick_count) { seq_active_remove(tag); SEQ_UNLOCK(); return 0; } // don't schedule things in the past.
 
     // Save the tick & period.
     sequences[tag].tick = e->sequence[SEQUENCE_TICK];
@@ -192,7 +243,8 @@ uint8_t sequencer_add_event(amy_event *e) {
     // Copy all the deltas for this event to the sequences entry.
     amy_event_to_deltas_queue(e, 0, &sequences[tag].deltas);
 
-    if (tag > highest_tag) highest_tag = tag;  // To limit scanning through tags.
+    seq_active_add(tag);                        // now has deltas: track it
+    if (tag > highest_tag) highest_tag = tag;  // kept for sequencer_debug() only
     SEQ_UNLOCK();
     return 1;
 }

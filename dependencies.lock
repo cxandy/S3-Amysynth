@@ -20,7 +20,7 @@ dependencies:
       require: private
       version: '>=4.1'
     source:
-      registry_url: https://components.espressif.com
+      registry_url: https://components.espressif.com/
       type: service
     version: 1.1.1
   espressif/tinyusb:
@@ -65,8 +65,9 @@ dependencies:
     version: 6.0.0
 direct_dependencies:
 - espressif/button
+- espressif/cmake_utilities
 - espressif/usb_device_uac
 - idf
-manifest_hash: b72e9cea80fc59920f0021df00f8ee86b00fb29644532f1dd3002015c378a0fb
+manifest_hash: b327f0946276c034738997c13320ab040ed81e1d6bc59c97ed286d64197f7e27
 target: esp32s3
 version: 3.0.0

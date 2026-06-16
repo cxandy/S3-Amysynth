@@ -17,3 +17,4 @@ dependencies:
   # # For local components:
   espressif/usb_device_uac: '*'
   espressif/button: =*
+  espressif/cmake_utilities: '*'

@@ -24,8 +24,25 @@
 #include "usb_audio.h"
 #include "esp_timer.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 
 static const char *TAG = "main"; // For ESP_LOG and related logs in this file
+
+/* DEBUG: bisect heap corruption. Gated by CONFIG_AMYSYNTH_HEAP_CHECK; when the
+ * option is off (default) this compiles to nothing. Enable it in menuconfig
+ * (Heap Diagnostics) only while hunting corruption — the integrity scan is slow
+ * under comprehensive poisoning. */
+#if CONFIG_AMYSYNTH_HEAP_CHECK
+#define HEAP_CHECK(where) do { \
+    if (!heap_caps_check_integrity_all(true)) { \
+        ESP_LOGE(TAG, "HEAP CORRUPT detected at: %s", where); \
+    } else { \
+        ESP_LOGI(TAG, "HEAP OK at: %s", where); \
+    } \
+} while (0)
+#else
+#define HEAP_CHECK(where) do { (void)(where); } while (0)
+#endif
 
 #include "driver/i2s_std.h"
 #include "soc/gpio_num.h"
@@ -57,19 +74,11 @@ static volatile uint32_t s_last_seq_tick = 0;
 static volatile uint32_t s_seq_tick_hook_count = 0;
 static volatile uint32_t s_render_block_count = 0;
 static volatile uint32_t s_last_render_sysclock_ms = 0;
-// Set true while the BPM-adjust button (MY_BUTTON_1) is held;
-// encoder turns will adjust BPM instead of moving the sequencer selection.
-static volatile bool s_bpm_mode_held = false;
-// esp_timer timestamp (us) captured when MY_BUTTON_1 went down. Used to detect
-// a long (>=3s) hold that latches the button into melodic-patch-select mode.
-static volatile int64_t s_bpm_press_us = 0;
-// Latched true once MY_BUTTON_1 has been held past the patch threshold for the
-// current press; encoder turns then cycle melodic patches instead of BPM.
-// Cleared on release. This temporary overload exists until the next hardware
-// revision adds a dedicated patch control.
-static volatile bool s_bpm_patch_latched = false;
-// Time MY_BUTTON_1 must be held before BPM mode flips to patch-select mode.
-#define BPM_PATCH_HOLD_US (3 * 1000 * 1000)
+// Set true while the patch-select button (MY_BUTTON_1) is held; encoder turns
+// then cycle the patch (melodic layer's patch on the sequencer screen, or the
+// arp's own patch on the arp screen) instead of moving the selection. This is
+// a plain hold+turn gesture — no timer/latch. BPM lives in the menu overlay.
+static volatile bool s_patch_held = false;
 // Set true while the drum-sound-select button (MY_BUTTON_2) is held;
 // encoder turns will step through GM drum notes for the active track.
 static volatile bool s_drum_select_held = false;
@@ -277,21 +286,46 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
 {
     (void)user_data;
 
-    // MY_BUTTON_1 is the BPM-adjust hold button — track press/release directly
-    // so the flag is always in sync regardless of queue state. A long (>=3s)
-    // hold latches into melodic-patch-select mode; the encoder task reads the
-    // press timestamp to decide which action applies on each turn.
+    // MY_BUTTON_1 is the patch-select hold button. Plain hold+turn: while held,
+    // the encoder cycles the patch (no timer/latch). On press we enter
+    // patch-select display mode; on release we leave it.
     if (button_id == MY_BUTTON_1) {
         if (event == BUTTON_PRESS_DOWN) {
-            s_bpm_mode_held = true;
-            s_bpm_patch_latched = false;
-            s_bpm_press_us = esp_timer_get_time();
+            s_patch_held = true;
+            sequencer_ui_set_patch_select_mode(true);
         } else if (event == BUTTON_PRESS_UP) {
-            s_bpm_mode_held = false;
-            s_bpm_patch_latched = false;
+            s_patch_held = false;
             sequencer_ui_set_patch_select_mode(false);
         }
         return;
+    }
+
+    /* Arp screen isolation: while the arp screen is showing (and neither the
+     * graph editor nor the menu is up), the sequencer's editing gestures must
+     * NOT leak through and mutate sequencer state behind the hidden grid. The
+     * arp screen's own input (encoder nav + MY_BUTTON_ENC field edit + the
+     * MY_BUTTON_1 patch hold/turn) is handled elsewhere and is unaffected; the
+     * menu toggle (MY_BUTTON_3) and global play/pause (MY_BUTTON_0 long-press)
+     * also stay live. Everything else is suppressed here. */
+    if (sequencer_ui_arp_is_active()) {
+        switch (button_id) {
+            case MY_BUTTON_2:
+                /* Drum-sound-select hold: pure sequencer state. Block, and make
+                 * sure we never leave the latch stuck on if it was held when the
+                 * screen switched. */
+                s_drum_select_held = false;
+                sequencer_ui_set_drum_select_mode(false);
+                return;
+            case MY_BUTTON_0:
+                /* Layer cycle (single-click) is sequencer-only; suppress it.
+                 * Keep global play/pause on long-press. */
+                if (event == BUTTON_LONG_PRESS_START) {
+                    sequencer_ui_toggle_playing();
+                }
+                return;
+            default:
+                break;
+        }
     }
 
     // MY_BUTTON_2 is normally the drum-sound-select hold button. While the graph
@@ -314,13 +348,18 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
         return;
     }
 
-    // MY_BUTTON_3 was the patch-select hold button; patch select has moved to a
-    // 3s hold of MY_BUTTON_1 (BPM). This button is now the graph editor's
-    // vertical<->horizontal axis toggle. It is ONLY consumed while the graph is
-    // open, so it never affects sequencer state in the background.
+    // MY_BUTTON_3 (GPIO42): inside the graph editor it is the vertical<->horizontal
+    // axis toggle. Outside the graph editor it is the menu toggle (single-click),
+    // replacing the removed shoulder button (GPIO1).
     if (button_id == MY_BUTTON_3) {
-        if (event == BUTTON_PRESS_DOWN && sequencer_ui_graph_is_active()) {
-            sequencer_ui_graph_toggle_axis();
+        if (sequencer_ui_graph_is_active()) {
+            if (event == BUTTON_PRESS_DOWN) {
+                sequencer_ui_graph_toggle_axis();
+            }
+            return;
+        }
+        if (event == BUTTON_SINGLE_CLICK) {
+            sequencer_ui_menu_toggle();
         }
         return;
     }
@@ -331,8 +370,28 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
      * Remove this block to revert the integration. */
     if (button_id == MY_BUTTON_ENC) {
         if (sequencer_ui_graph_is_active()) {
-            if (event == BUTTON_PRESS_DOWN) {
+            /* Long-press closes the editor and COMMITS, symmetric with the
+             * long-press that opens it. Short-press toggles select<->adjust.
+             * (Discard-on-close stays on MY_BUTTON_0 long-press below.) */
+            if (event == BUTTON_LONG_PRESS_START) {
+                sequencer_ui_graph_close_commit(); /* long = commit + close */
+            } else if (event == BUTTON_PRESS_DOWN) {
                 sequencer_ui_graph_handle_button(false); /* short press */
+            }
+            return;
+        }
+        /* Menu overlay captures the encoder push (enter/exit editing, or run an
+         * action item). Highest priority below the graph editor. */
+        if (sequencer_ui_menu_is_active()) {
+            if (event == BUTTON_PRESS_DOWN) {
+                sequencer_ui_menu_handle_button();
+            }
+            return;
+        }
+        /* Arp screen: encoder push toggles edit on the focused field/slot. */
+        if (sequencer_ui_arp_is_active()) {
+            if (event == BUTTON_PRESS_DOWN) {
+                sequencer_ui_arp_handle_button();
             }
             return;
         }
@@ -411,25 +470,26 @@ static void encoder_task(void *pvParameters)
                 goto next_poll;
             }
 
-            if (s_bpm_mode_held) {
-                // MY_BUTTON_1 hold + encoder. A short hold adjusts BPM (the
-                // common, fast case). Holding past BPM_PATCH_HOLD_US latches the
-                // press into melodic-patch-select for the rest of the hold.
-                if (!s_bpm_patch_latched &&
-                    (esp_timer_get_time() - s_bpm_press_us) >= BPM_PATCH_HOLD_US) {
-                    s_bpm_patch_latched = true;
-                    sequencer_ui_set_patch_select_mode(true);
-                    ESP_LOGI(TAG, "BPM button held >=3s -> patch-select mode");
-                }
-                if (s_bpm_patch_latched) {
-                    sequencer_ui_cycle_melodic_patch((int)steps);
+            // Menu overlay captures the encoder (scroll items, or change the
+            // value of the entered item). Highest priority below the graph.
+            if (sequencer_ui_menu_handle_encoder(steps)) {
+                goto next_poll;
+            }
+
+            if (s_patch_held) {
+                // Plain patch hold+turn. On the arp screen this cycles the
+                // arp's own patch; otherwise the melodic layer's patch.
+                if (sequencer_ui_arp_is_active()) {
+                    sequencer_ui_arp_cycle_patch((int)steps);
                 } else {
-                    uint16_t new_bpm = SEQ_CLAMP_U16(seq_state.bpm + (int)steps, 40, 300);
-                    sequencer_ui_set_bpm(new_bpm);
+                    sequencer_ui_cycle_melodic_patch((int)steps);
                 }
             } else if (s_drum_select_held) {
                 // Drum-select mode: hold MY_BUTTON_2 + turn encoder
                 sequencer_ui_adjust_track_note((int)steps);
+            } else if (sequencer_ui_arp_is_active()) {
+                // Arp screen: encoder moves the cursor / edits the focused field.
+                sequencer_ui_arp_handle_encoder(steps);
             } else {
                 sequencer_ui_handle_encoder(steps);
             }
@@ -536,20 +596,28 @@ extern struct state amy_global;
     amy_cfg.amy_external_sequencer_hook = main_sequencer_tick_hook;
     /* Default is 256, which only covers layer 0 (drum).  Each additional
      * layer needs SEQ_TRACKS * SEQ_MAX_STEPS * 2 extra tags.  With
-     * MAX_LAYERS=4, SEQ_TRACKS=4, SEQ_MAX_STEPS=32 our highest tag is 1039
-     * (preview slots).  Set to 1100 to stay well clear of the off-by-one
-     * in sequencer_add_event's `tag > max_sequences` guard. */
-    amy_cfg.max_sequencer_tags = 1100;
+     * MAX_LAYERS=4, SEQ_TRACKS=4, SEQ_MAX_STEPS=32 the sequencer's highest tag
+     * is 1055 (preview slots).  The standalone arp then occupies tags
+     * 1056..1119 (SEQ_ARP_TAG_BASE + ARP_MAX_SLOTS*ARP_OCT_MAX*2).  Set to 1200
+     * so the table covers the arp range AND stays clear of the off-by-one in
+     * sequencer_add_event's `tag > max_sequences` guard (writes sequences[tag]).
+     * Keep in sync with SEQ_ARP_TAG_BASE/COUNT in sequencer_core.c. */
+    amy_cfg.max_sequencer_tags = 1200;
     ESP_LOGI(TAG, "Starting AMY synth engine... (audio=%d, Fs=%d)", amy_cfg.audio, AMY_SAMPLE_RATE);
     ESP_LOGI(TAG, "[startup] before amy_start");
+    HEAP_CHECK("before amy_start");
     amy_start(amy_cfg);
+    HEAP_CHECK("after amy_start");
     
     // Our USB Audio (must be after TinyUSB init)
     ESP_ERROR_CHECK(usb_audio_init());
+    HEAP_CHECK("after usb_audio_init");
 
     sequencer_ui_init(s_u8g2);
+    HEAP_CHECK("after sequencer_ui_init");
     /* Add the first melodic layer (DX7, 16 steps). */
     sequencer_ui_add_layer(SEQ_LAYER_MELODIC, SEQ_STEPS);
+    HEAP_CHECK("after add_layer melodic");
     ESP_LOGI(TAG, "[startup] after amy_start");
     
     TaskHandle_t amy_render_task_handle = NULL;
@@ -559,7 +627,7 @@ extern struct state amy_global;
          "amy_render",
          8192,
          NULL,
-         7,
+         23,
          &amy_render_task_handle,
          0);
 #else
@@ -571,7 +639,7 @@ extern struct state amy_global;
          "amy_render",
          8192,
           NULL,
-          7,
+          23,
           &amy_render_task_handle,
           1); 
 #endif
@@ -581,7 +649,7 @@ extern struct state amy_global;
              "amy_render",
              8192,
              NULL,
-             7,
+             23,
              &amy_render_task_handle,
              0);
     }
@@ -609,6 +677,7 @@ extern struct state amy_global;
             s_button_queue = NULL;
         }
     }
+    HEAP_CHECK("before my_buttons_init");
     esp_err_t btn_err = my_buttons_init();
     if (btn_err != ESP_OK) {
         ESP_LOGE(TAG, "my_buttons_init failed: %s", esp_err_to_name(btn_err));

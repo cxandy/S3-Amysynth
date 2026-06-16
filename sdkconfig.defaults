@@ -20,3 +20,8 @@ CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 # DSP render task, which is pinned to Core 1.
 CONFIG_UAC_TINYUSB_TASK_CORE=0
 CONFIG_UAC_MIC_TASK_CORE=0
+#
+# TEMP DEBUG: comprehensive heap poisoning to catch heap corruption at its source
+#
+CONFIG_HEAP_POISONING_COMPREHENSIVE=no
+CONFIG_CU_GCC_LTO_ENABLE=y

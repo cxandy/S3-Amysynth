@@ -1,12 +1,28 @@
 #include "sequencer_core.h"
+#include "arp_core.h"
 #include "amy.h"
 #include "sequencer.h"
 #include "quantizer.h"
 #include "seq_clamp.h"
 #include "sdkconfig.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include <string.h>
 #include "freertos/semphr.h"
+
+/* DEBUG: bisect heap corruption inside core init. Gated by
+ * CONFIG_AMYSYNTH_HEAP_CHECK; compiles to nothing when off (default). */
+#if CONFIG_AMYSYNTH_HEAP_CHECK
+#define CORE_HEAP_CHECK(where) do { \
+    if (!heap_caps_check_integrity_all(true)) { \
+        ESP_LOGE(TAG, "HEAP CORRUPT detected at: %s", where); \
+    } else { \
+        ESP_LOGI(TAG, "HEAP OK at: %s", where); \
+    } \
+} while (0)
+#else
+#define CORE_HEAP_CHECK(where) do { (void)(where); } while (0)
+#endif
 
 #ifndef CONFIG_SEQ_QUANTIZER_DEFAULT_ENABLED
 #define CONFIG_SEQ_QUANTIZER_DEFAULT_ENABLED 1
@@ -80,9 +96,15 @@ extern uint32_t sequencer_ticks(void);
  * headroom at the boundary (2x osc cost). AMY default budget is 180 oscs. */
 #define SEQ_MEL_VOICES        1
 #define SEQ_MEL_SYNTH_BASE    11    /* first melodic synth slot (drum = 10) */
-#define SEQ_MAX_SYNTH         63    /* stay below AMY max_synths (64)        */
+#define SEQ_MAX_SYNTH         62    /* melodic ceiling; slot 63 reserved for arp */
 #define SEQ_MEL_NOTE_MIN      24    /* C1 */
 #define SEQ_MEL_NOTE_MAX      96    /* C7 */
+
+/* ── Arpeggiator synth slot ──────────────────────────────────────────────
+ * Dedicated AMY slot for the standalone arp, reserved above the melodic
+ * ceiling so it never collides with a melodic layer's per-row block. */
+#define SEQ_ARP_SYNTH         63
+#define SEQ_ARP_VOICES        4     /* allow note overlap at fast rates       */
 
 /* One-shot preview fires this many ticks after an adjustment */
 #define SEQ_PREVIEW_DELAY_TICKS 4
@@ -518,7 +540,9 @@ void sequencer_core_init(void)
     if (s_quantizer.scale_index >= quantizer_scale_count()) {
         s_quantizer.scale_index = 0;
     }
+    CORE_HEAP_CHECK("core_init: before push_tempo");
     sequencer_push_tempo(s_bpm);
+    CORE_HEAP_CHECK("core_init: after push_tempo");
     ESP_LOGI(TAG, "sequencer_core initialized");
 }
 
@@ -592,7 +616,9 @@ uint8_t sequencer_core_add_layer(seq_layer_type_t type, uint8_t num_steps)
         }
     }
 
+    CORE_HEAP_CHECK("add_layer: before configure_synth");
     sequencer_configure_synth(idx);
+    CORE_HEAP_CHECK("add_layer: after configure_synth");
     ESP_LOGI(TAG, "add_layer[%d]: type=%d synth0=%d patch=%d steps=%d",
              idx, type, layer->synth_id[0], layer->patch, layer->num_steps);
     return idx;
@@ -623,6 +649,86 @@ void sequencer_core_set_melodic_patch(uint16_t patch_number)
 uint16_t sequencer_core_get_melodic_patch(void)
 {
     return s_melodic_patch;
+}
+
+/* ── Arpeggiator support ─────────────────────────────────────────────────
+ * Arp tags sit just above the sequencer's tag space. The sequencer uses:
+ *   step on/off : 0 .. MAX_LAYERS*SEQ_TRACKS*SEQ_MAX_STEPS*2 - 1   (0..1023)
+ *   previews    : 1024 .. 1024 + MAX_LAYERS*SEQ_TRACKS*2 - 1       (..1055)
+ * so the highest sequencer tag is 1055. We base the arp at 1056 and it needs
+ * ARP_MAX_SLOTS*ARP_OCT_MAX*2 = 64 tags (1056..1119).
+ *
+ * IMPORTANT: AMY's sequencer_add_event guards with `tag > max_sequences`
+ * (NOT >=), so `sequences[]` must have at least (highest_tag + 2) entries to
+ * stay clear of that off-by-one. main.c sets amy_cfg.max_sequencer_tags
+ * accordingly — keep these in sync. */
+#define SEQ_ARP_TAG_BASE 1056u
+#define SEQ_ARP_TAG_COUNT (ARP_MAX_SLOTS * ARP_OCT_MAX * 2)  /* = 64 */
+#define SEQ_ARP_TAG_MAX  (SEQ_ARP_TAG_BASE + SEQ_ARP_TAG_COUNT - 1)  /* 1119 */
+
+uint8_t sequencer_core_arp_synth(void)  { return SEQ_ARP_SYNTH; }
+uint8_t sequencer_core_arp_voices(void) { return SEQ_ARP_VOICES; }
+uint32_t sequencer_core_arp_tag_base(void) { return SEQ_ARP_TAG_BASE; }
+
+uint8_t sequencer_core_clamp_melodic_note(int32_t midi_note)
+{
+    return SEQ_CLAMP_U8(midi_note, SEQ_MEL_NOTE_MIN, SEQ_MEL_NOTE_MAX);
+}
+
+void sequencer_core_arp_configure(uint16_t patch_number, uint8_t num_voices)
+{
+    patch_number = SEQ_CLAMP_U16(patch_number, 0, 256);
+    seq_ev_begin();
+    s_ev.patch_number = patch_number;
+    s_ev.num_voices   = num_voices;
+    s_ev.synth        = SEQ_ARP_SYNTH;
+    s_ev.synth_flags  = 0;
+    seq_ev_send();
+    ESP_LOGI(TAG, "arp synth %u patch -> %u (%u voices)",
+             (unsigned)SEQ_ARP_SYNTH, (unsigned)patch_number, (unsigned)num_voices);
+}
+
+void sequencer_core_arp_emit_note(uint32_t tag_base, uint8_t midi_note,
+                                  float velocity, uint32_t tick_on,
+                                  uint32_t gate_ticks, uint32_t period)
+{
+    /* Defensive: never let an out-of-range tag reach AMY. Its sequences[] table
+     * is sized to max_sequencer_tags and add_event has a `tag > max` off-by-one,
+     * so a stray tag would smash the heap. Cap to the reserved arp window. */
+    if (tag_base + 1 > SEQ_ARP_TAG_MAX) {
+        ESP_LOGE(TAG, "arp tag %u out of range (max %u) - dropped",
+                 (unsigned)tag_base, (unsigned)SEQ_ARP_TAG_MAX);
+        return;
+    }
+
+    uint32_t tick_off = (period > 0) ? ((tick_on + gate_ticks) % period)
+                                     : (tick_on + gate_ticks);
+    if (tick_off == 0) tick_off = 1; /* tick 0 is reserved (clear) */
+    if (tick_on  == 0) tick_on  = 1;
+
+    seq_ev_begin();
+    s_ev.synth                     = SEQ_ARP_SYNTH;
+    s_ev.midi_note                 = midi_note;
+    s_ev.velocity                  = velocity;
+    s_ev.sequence[SEQUENCE_TAG]    = tag_base;
+    s_ev.sequence[SEQUENCE_TICK]   = tick_on;
+    s_ev.sequence[SEQUENCE_PERIOD] = period;
+    seq_ev_send();
+
+    seq_ev_begin();
+    s_ev.synth                     = SEQ_ARP_SYNTH;
+    s_ev.midi_note                 = midi_note;
+    s_ev.velocity                  = 0.0f;
+    s_ev.sequence[SEQUENCE_TAG]    = tag_base + 1;
+    s_ev.sequence[SEQUENCE_TICK]   = tick_off;
+    s_ev.sequence[SEQUENCE_PERIOD] = period;
+    seq_ev_send();
+}
+
+void sequencer_core_arp_clear_note(uint32_t tag_base)
+{
+    sequencer_emit_clear_tag(tag_base);
+    sequencer_emit_clear_tag(tag_base + 1);
 }
 
 /* ── Per-row melodic envelope (runtime-editable) ─────────────────────────── */

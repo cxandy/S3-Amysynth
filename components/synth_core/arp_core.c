@@ -44,6 +44,7 @@ static const char *TAG = "arp_core";
 
 /* AMY_SEQUENCER_PPQ = 48 → 1/16 = 12 ticks. */
 static const uint32_t s_rate_ticks[ARP_RATE_COUNT] = {
+    [ARP_RATE_1_1]  = 192,
     [ARP_RATE_1_4]  = 48,
     [ARP_RATE_1_8]  = 24,
     [ARP_RATE_1_16] = 12,
@@ -51,6 +52,7 @@ static const uint32_t s_rate_ticks[ARP_RATE_COUNT] = {
 };
 
 static const char *s_rate_names[ARP_RATE_COUNT] = {
+    [ARP_RATE_1_1]  = "1/1",
     [ARP_RATE_1_4]  = "1/4",
     [ARP_RATE_1_8]  = "1/8",
     [ARP_RATE_1_16] = "1/16",
@@ -67,6 +69,8 @@ typedef struct {
     uint8_t    scale_index;
     uint8_t    root_note;
     uint16_t   patch;
+    seq_env_t  env;           /* runtime-editable ADSR (shared graph editor) */
+    bool       env_authored;  /* true once the user commits a custom env      */
 } arp_state_t;
 
 static arp_state_t s_arp;
@@ -140,6 +144,14 @@ void arp_core_init(void)
     s_arp.scale_index = CONFIG_SEQ_ARP_DEFAULT_SCALE;
     s_arp.root_note   = CONFIG_SEQ_ARP_DEFAULT_ROOT_NOTE;
     s_arp.patch       = CONFIG_SEQ_ARP_DEFAULT_PATCH;
+    /* Default ADSR mirrors the melodic compile-time defaults; not authored until
+     * the user commits in the graph editor (patch's own env wins until then). */
+    s_arp.env.attack_ms   = 12;
+    s_arp.env.decay_ms    = 220;
+    s_arp.env.sustain_pct = 58;
+    s_arp.env.release_ms  = 280;
+    s_arp.env.eg_type     = 0;   /* ENVELOPE_NORMAL */
+    s_arp.env_authored    = false;
     if (s_arp.octaves < 1) s_arp.octaves = 1;
     if (s_arp.octaves > ARP_OCT_MAX) s_arp.octaves = ARP_OCT_MAX;
     if (s_arp.scale_index >= quantizer_scale_count()) s_arp.scale_index = 0;
@@ -254,7 +266,28 @@ void arp_set_patch(uint16_t patch_number)
     if (s_arp.patch == patch_number) return;
     s_arp.patch = patch_number;
     sequencer_core_arp_configure(s_arp.patch, sequencer_core_arp_voices());
+    /* Reloading the patch resets the synth's osc envelopes; re-impose the user's
+     * custom env if they have authored one (deferred authority, like melodic). */
+    if (s_arp.env_authored) {
+        sequencer_core_push_envelope(sequencer_core_arp_synth(), &s_arp.env);
+    }
     /* Patch reconfig does not change scheduling; no re-emit needed. */
+}
+
+void arp_get_envelope(seq_env_t *out)
+{
+    if (out) *out = s_arp.env;
+}
+
+void arp_set_envelope(const seq_env_t *env)
+{
+    if (!env) return;
+    s_arp.env = *env;
+    s_arp.env_authored = true;
+    sequencer_core_push_envelope(sequencer_core_arp_synth(), &s_arp.env);
+    ESP_LOGI(TAG, "arp env -> A%u D%u S%u%% R%u",
+             (unsigned)s_arp.env.attack_ms, (unsigned)s_arp.env.decay_ms,
+             (unsigned)s_arp.env.sustain_pct, (unsigned)s_arp.env.release_ms);
 }
 
 void arp_set_slot(uint8_t idx, int16_t chromatic_note)

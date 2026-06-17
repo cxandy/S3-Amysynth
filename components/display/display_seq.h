@@ -24,6 +24,7 @@ typedef enum {
 typedef enum {
     UI_MODE_SEQUENCER = 0,
     UI_MODE_ARP       = 1,
+    UI_MODE_DRONE     = 2,
 } ui_mode_t;
 
 /* ── ADSR envelope (one AMY EG0 breakpoint set) ──
@@ -53,9 +54,15 @@ typedef struct {
                                           after the user commits in the graph
                                           editor; until then the patch's own
                                           envelope wins (deferred authority)  */
-    uint8_t  synth_id[SEQ_TRACKS];   /* one AMY synth per row (melodic);
-                                        drum layer uses [0] for all tracks   */
-    uint16_t patch;                  /* shared timbre across the layer's rows */
+    uint8_t  synth_id[SEQ_TRACKS];   /* one AMY synth per row (both melodic and
+                                        drum layers: each track has its own slot */
+    uint16_t patch;                  /* shared timbre across the layer's rows
+                                        (melodic). Drums use track_patch[] instead;
+                                        `patch` mirrors track_patch[0] for display
+                                        fallback only.                          */
+    uint16_t track_patch[SEQ_TRACKS];/* per-track timbre (drum layer): each drum
+                                        track loads its own AMY patch. Unused by
+                                        melodic layers (they share `patch`).     */
     uint32_t synth_flags;            /* shared flags across the layer's rows  */
     uint8_t  num_voices;             /* per-synth voice count                 */
     uint8_t  step_page;                              /* display page 0|1 (32-step) */
@@ -81,12 +88,12 @@ typedef struct {
     bool        menu_open;          /* true while the menu overlay is up  */
     uint8_t     menu_cursor;        /* highlighted menu item index        */
     bool        menu_editing;       /* true while editing the entered item*/
-} priv_u8g2_seq_state_t;
+} display_seq_state_t;
 
 /**
  * @brief Draw one full sequencer frame from the provided state.
  */
-void priv_u8g2_seq_draw_frame(u8g2_t *u8g2, const priv_u8g2_seq_state_t *state);
+void display_seq_draw_frame(u8g2_t *u8g2, const display_seq_state_t *state);
 
 #ifdef __cplusplus
 }

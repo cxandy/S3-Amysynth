@@ -19,12 +19,14 @@
 #include "freertos/event_groups.h"
 #include "esp_err.h"
 #include "rotary_encoder.h"
-#include "sequencer_ui.h"
+#include "synth_ui.h"
+#include "sequencer_core.h"
 #include "seq_clamp.h"
 #include "usb_audio.h"
 #include "esp_timer.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include "esp_task_wdt.h"
 
 static const char *TAG = "main"; // For ESP_LOG and related logs in this file
 
@@ -79,8 +81,9 @@ static volatile uint32_t s_last_render_sysclock_ms = 0;
 // arp's own patch on the arp screen) instead of moving the selection. This is
 // a plain hold+turn gesture — no timer/latch. BPM lives in the menu overlay.
 static volatile bool s_patch_held = false;
-// Set true while the drum-sound-select button (MY_BUTTON_2) is held;
-// encoder turns will step through GM drum notes for the active track.
+// Set true while the pitch-edit button (MY_BUTTON_2) is held; encoder turns
+// transpose the selected track's pitch (both drum and melodic layers). Drum
+// patch selection is the patch-hold gesture (MY_BUTTON_1 + encoder) instead.
 static volatile bool s_drum_select_held = false;
 
 static QueueHandle_t s_button_queue = NULL;
@@ -217,6 +220,7 @@ static void log_rtos_stats(void)
 
 
 static void amy_usb_render_task(void *arg) {
+    //esp_task_wdt_delete(NULL);
     (void)arg;
     const uint64_t block_us = ((uint64_t)AMY_BLOCK_SIZE * 1000000ULL) / (uint64_t)AMY_SAMPLE_RATE;
     uint64_t next_deadline_us = (uint64_t)esp_timer_get_time();
@@ -267,13 +271,13 @@ static void button_handler_task(void *pvParameters)
             switch (msg.id) {
                 case MY_BUTTON_0:
                     if (msg.event == BUTTON_SINGLE_CLICK) {
-                        sequencer_ui_cycle_active_layer();
+                        synth_ui_cycle_active_layer();
                     } else if (msg.event == BUTTON_LONG_PRESS_START) {
-                        sequencer_ui_toggle_playing();
+                        synth_ui_toggle_playing();
                     }
                     break;
                 case MY_BUTTON_ENC:
-                    sequencer_ui_handle_button();
+                    synth_ui_handle_button();
                     break;
                 default:
                     break;
@@ -292,10 +296,10 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
     if (button_id == MY_BUTTON_1) {
         if (event == BUTTON_PRESS_DOWN) {
             s_patch_held = true;
-            sequencer_ui_set_patch_select_mode(true);
+            synth_ui_set_patch_select_mode(true);
         } else if (event == BUTTON_PRESS_UP) {
             s_patch_held = false;
-            sequencer_ui_set_patch_select_mode(false);
+            synth_ui_set_patch_select_mode(false);
         }
         return;
     }
@@ -307,20 +311,20 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
      * MY_BUTTON_1 patch hold/turn) is handled elsewhere and is unaffected; the
      * menu toggle (MY_BUTTON_3) and global play/pause (MY_BUTTON_0 long-press)
      * also stay live. Everything else is suppressed here. */
-    if (sequencer_ui_arp_is_active()) {
+    if (synth_ui_arp_is_active()) {
         switch (button_id) {
             case MY_BUTTON_2:
                 /* Drum-sound-select hold: pure sequencer state. Block, and make
                  * sure we never leave the latch stuck on if it was held when the
                  * screen switched. */
                 s_drum_select_held = false;
-                sequencer_ui_set_drum_select_mode(false);
+                synth_ui_set_drum_select_mode(false);
                 return;
             case MY_BUTTON_0:
                 /* Layer cycle (single-click) is sequencer-only; suppress it.
                  * Keep global play/pause on long-press. */
                 if (event == BUTTON_LONG_PRESS_START) {
-                    sequencer_ui_toggle_playing();
+                    synth_ui_toggle_playing();
                 }
                 return;
             default:
@@ -328,22 +332,45 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
         }
     }
 
-    // MY_BUTTON_2 is normally the drum-sound-select hold button. While the graph
-    // editor is open it is repurposed (gated) as the SHORT<->LONG time-range
-    // toggle so it never touches drum state in that context.
+    /* Drone screen isolation: same rationale as the arp guard above. While the
+     * drone screen is showing (no graph/menu), suppress the sequencer's editing
+     * gestures so they don't mutate sequencer state behind the hidden grid. The
+     * drone's own input (encoder nav + MY_BUTTON_ENC row edit + MY_BUTTON_1
+     * patch hold/turn in PATCH mode) is handled elsewhere; the menu toggle
+     * (MY_BUTTON_3) and play/pause (MY_BUTTON_0 long-press) stay live. */
+    if (synth_ui_drone_is_active()) {
+        switch (button_id) {
+            case MY_BUTTON_2:
+                s_drum_select_held = false;
+                synth_ui_set_drum_select_mode(false);
+                return;
+            case MY_BUTTON_0:
+                if (event == BUTTON_LONG_PRESS_START) {
+                    synth_ui_toggle_playing();
+                }
+                return;
+            default:
+                break;
+        }
+    }
+
+    // MY_BUTTON_2 is normally the pitch-edit hold button (transpose the selected
+    // track via the encoder). While the graph editor is open it is repurposed
+    // (gated) as the SHORT<->LONG time-range toggle so it never touches that
+    // state in that context.
     if (button_id == MY_BUTTON_2) {
-        if (sequencer_ui_graph_is_active()) {
+        if (synth_ui_graph_is_active()) {
             if (event == BUTTON_PRESS_DOWN) {
-                sequencer_ui_graph_toggle_range();
+                synth_ui_graph_toggle_range();
             }
             return;
         }
         if (event == BUTTON_PRESS_DOWN) {
             s_drum_select_held = true;
-            sequencer_ui_set_drum_select_mode(true);
+            synth_ui_set_drum_select_mode(true);
         } else if (event == BUTTON_PRESS_UP) {
             s_drum_select_held = false;
-            sequencer_ui_set_drum_select_mode(false);
+            synth_ui_set_drum_select_mode(false);
         }
         return;
     }
@@ -352,14 +379,14 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
     // axis toggle. Outside the graph editor it is the menu toggle (single-click),
     // replacing the removed shoulder button (GPIO1).
     if (button_id == MY_BUTTON_3) {
-        if (sequencer_ui_graph_is_active()) {
+        if (synth_ui_graph_is_active()) {
             if (event == BUTTON_PRESS_DOWN) {
-                sequencer_ui_graph_toggle_axis();
+                synth_ui_graph_toggle_axis();
             }
             return;
         }
         if (event == BUTTON_SINGLE_CLICK) {
-            sequencer_ui_menu_toggle();
+            synth_ui_menu_toggle();
         }
         return;
     }
@@ -369,43 +396,56 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
      * - short press (editor open)  toggles select<->adjust, or confirms in VIEW
      * Remove this block to revert the integration. */
     if (button_id == MY_BUTTON_ENC) {
-        if (sequencer_ui_graph_is_active()) {
+        if (synth_ui_graph_is_active()) {
             /* Long-press closes the editor and COMMITS, symmetric with the
              * long-press that opens it. Short-press toggles select<->adjust.
              * (Discard-on-close stays on MY_BUTTON_0 long-press below.) */
             if (event == BUTTON_LONG_PRESS_START) {
-                sequencer_ui_graph_close_commit(); /* long = commit + close */
+                synth_ui_graph_close_commit(); /* long = commit + close */
             } else if (event == BUTTON_PRESS_DOWN) {
-                sequencer_ui_graph_handle_button(false); /* short press */
+                synth_ui_graph_handle_button(false); /* short press */
             }
             return;
         }
         /* Menu overlay captures the encoder push (enter/exit editing, or run an
          * action item). Highest priority below the graph editor. */
-        if (sequencer_ui_menu_is_active()) {
+        if (synth_ui_menu_is_active()) {
             if (event == BUTTON_PRESS_DOWN) {
-                sequencer_ui_menu_handle_button();
+                synth_ui_menu_handle_button();
             }
             return;
         }
-        /* Arp screen: encoder push toggles edit on the focused field/slot. */
-        if (sequencer_ui_arp_is_active()) {
-            if (event == BUTTON_PRESS_DOWN) {
-                sequencer_ui_arp_handle_button();
+        /* Arp screen: short press toggles edit on the focused field/slot; long
+         * press opens the ADSR editor bound to the arp envelope. */
+        if (synth_ui_arp_is_active()) {
+            if (event == BUTTON_LONG_PRESS_START) {
+                synth_ui_graph_open_envelope();
+            } else if (event == BUTTON_PRESS_DOWN) {
+                synth_ui_arp_handle_button();
+            }
+            return;
+        }
+        /* Drone screen: short press toggles edit on the focused row; long press
+         * opens the ADSR editor bound to the drone envelope. */
+        if (synth_ui_drone_is_active()) {
+            if (event == BUTTON_LONG_PRESS_START) {
+                synth_ui_graph_open_envelope();
+            } else if (event == BUTTON_PRESS_DOWN) {
+                synth_ui_drone_handle_button();
             }
             return;
         }
         if (event == BUTTON_LONG_PRESS_START) {
-            sequencer_ui_graph_open_envelope();
+            synth_ui_graph_open_envelope();
             return;
         }
         /* else fall through to the normal PRESS_DOWN queueing below */
     }
 
     /* graph pop-up: MY_BUTTON_0 long press cancels the editor while it is open. */
-    if (button_id == MY_BUTTON_0 && sequencer_ui_graph_is_active()) {
+    if (button_id == MY_BUTTON_0 && synth_ui_graph_is_active()) {
         if (event == BUTTON_LONG_PRESS_START) {
-            sequencer_ui_graph_handle_button(true); /* long = cancel */
+            synth_ui_graph_handle_button(true); /* long = cancel */
         }
         return;
     }
@@ -417,8 +457,8 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
                 button_msg_t msg = { .id = button_id, .event = event };
                 (void)xQueueSend(s_button_queue, &msg, 0);
             } else {
-                if (event == BUTTON_SINGLE_CLICK)      sequencer_ui_cycle_active_layer();
-                else if (event == BUTTON_LONG_PRESS_START) sequencer_ui_toggle_playing();
+                if (event == BUTTON_SINGLE_CLICK)      synth_ui_cycle_active_layer();
+                else if (event == BUTTON_LONG_PRESS_START) synth_ui_toggle_playing();
             }
         }
         return;
@@ -433,7 +473,7 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
     } else {
         switch (button_id) {
             case MY_BUTTON_ENC:
-                sequencer_ui_handle_button();
+                synth_ui_handle_button();
                 break;
             default:
                 break;
@@ -466,32 +506,45 @@ static void encoder_task(void *pvParameters)
 
             /* graph pop-up: when open, the encoder drives the curve editor and
              * normal sequencer routing is skipped. Remove this branch to revert. */
-            if (sequencer_ui_graph_handle_encoder(steps)) {
+            if (synth_ui_graph_handle_encoder(steps)) {
                 goto next_poll;
             }
 
             // Menu overlay captures the encoder (scroll items, or change the
             // value of the entered item). Highest priority below the graph.
-            if (sequencer_ui_menu_handle_encoder(steps)) {
+            if (synth_ui_menu_handle_encoder(steps)) {
                 goto next_poll;
             }
 
             if (s_patch_held) {
                 // Plain patch hold+turn. On the arp screen this cycles the
-                // arp's own patch; otherwise the melodic layer's patch.
-                if (sequencer_ui_arp_is_active()) {
-                    sequencer_ui_arp_cycle_patch((int)steps);
+                // arp's own patch; on the drone screen the drone's PATCH-mode
+                // preset. On the sequencer screen it cycles the active layer's
+                // patch: the melodic layer's shared patch, or — for a drum
+                // layer — the SELECTED drum track's own patch (drums are
+                // per-track Juno patches now).
+                if (synth_ui_drone_is_active()) {
+                    synth_ui_drone_cycle_patch((int)steps);
+                } else if (synth_ui_arp_is_active()) {
+                    synth_ui_arp_cycle_patch((int)steps);
+                } else if (sequencer_core_get_layer_type(seq_state.active_layer_idx)
+                           == SEQ_LAYER_DRUM) {
+                    synth_ui_cycle_drum_patch((int)steps);
                 } else {
-                    sequencer_ui_cycle_melodic_patch((int)steps);
+                    synth_ui_cycle_melodic_patch((int)steps);
                 }
+            } else if (synth_ui_drone_is_active()) {
+                // Drone screen: encoder moves the cursor / edits the focused row.
+                synth_ui_drone_handle_encoder(steps);
             } else if (s_drum_select_held) {
-                // Drum-select mode: hold MY_BUTTON_2 + turn encoder
-                sequencer_ui_adjust_track_note((int)steps);
-            } else if (sequencer_ui_arp_is_active()) {
+                // Pitch-edit mode: hold MY_BUTTON_2 + turn encoder edits the
+                // selected track's pitch (works for both drum and melodic).
+                synth_ui_adjust_track_note((int)steps);
+            } else if (synth_ui_arp_is_active()) {
                 // Arp screen: encoder moves the cursor / edits the focused field.
-                sequencer_ui_arp_handle_encoder(steps);
+                synth_ui_arp_handle_encoder(steps);
             } else {
-                sequencer_ui_handle_encoder(steps);
+                synth_ui_handle_encoder(steps);
             }
         }
 
@@ -603,6 +656,13 @@ extern struct state amy_global;
      * sequencer_add_event's `tag > max_sequences` guard (writes sequences[tag]).
      * Keep in sync with SEQ_ARP_TAG_BASE/COUNT in sequencer_core.c. */
     amy_cfg.max_sequencer_tags = 1200;
+    /* Raise the instrument table from the default 64 so the standalone drone
+     * synth (custompatches/drone_core) can claim dedicated slots above the
+     * existing map (drum 6..9, melodic 11..62, arp 63). The drone uses slots
+     * DRONE_SYNTH_MAIN=64 and DRONE_SYNTH_SUB=65. instruments_init() sizes the
+     * table from this value, and max_oscs=180 leaves ample osc headroom for the
+     * drone's 2 voices x 2 oscs. Keep in sync with drone_core.c. */
+    amy_cfg.max_synths = 66;
     ESP_LOGI(TAG, "Starting AMY synth engine... (audio=%d, Fs=%d)", amy_cfg.audio, AMY_SAMPLE_RATE);
     ESP_LOGI(TAG, "[startup] before amy_start");
     HEAP_CHECK("before amy_start");
@@ -613,10 +673,10 @@ extern struct state amy_global;
     ESP_ERROR_CHECK(usb_audio_init());
     HEAP_CHECK("after usb_audio_init");
 
-    sequencer_ui_init(s_u8g2);
-    HEAP_CHECK("after sequencer_ui_init");
+    synth_ui_init(s_u8g2);
+    HEAP_CHECK("after synth_ui_init");
     /* Add the first melodic layer (DX7, 16 steps). */
-    sequencer_ui_add_layer(SEQ_LAYER_MELODIC, SEQ_STEPS);
+    synth_ui_add_layer(SEQ_LAYER_MELODIC, SEQ_STEPS);
     HEAP_CHECK("after add_layer melodic");
     ESP_LOGI(TAG, "[startup] after amy_start");
     
@@ -639,7 +699,7 @@ extern struct state amy_global;
          "amy_render",
          8192,
           NULL,
-          23,
+          22,
           &amy_render_task_handle,
           1); 
 #endif
@@ -649,7 +709,7 @@ extern struct state amy_global;
              "amy_render",
              8192,
              NULL,
-             23,
+             22,
              &amy_render_task_handle,
              0);
     }

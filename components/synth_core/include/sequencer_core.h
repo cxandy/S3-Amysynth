@@ -2,7 +2,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
-#include "priv_u8g2_seq.h"   /* seq_layer_type_t, seq_layer_t, SEQ_* defines */
+#include "display_seq.h"   /* seq_layer_type_t, seq_layer_t, SEQ_* defines */
 
 #ifdef __cplusplus
 extern "C" {
@@ -21,9 +21,20 @@ uint8_t sequencer_core_get_quantizer_scale(void);
 void sequencer_core_set_melodic_patch(uint16_t patch_number);
 uint16_t sequencer_core_get_melodic_patch(void);
 
+/* ── Drum per-track patch (curated Juno list) ──
+ * Drum layers are per-track Juno-patch layers: each track owns its own patch.
+ * set/get operate on (layer_idx, track); cycle steps the curated drum list by
+ * `dir` (+/-1) and returns the newly-applied patch. No-ops for non-drum/out-of-
+ * range layers. */
+void     sequencer_core_set_drum_patch(uint8_t layer_idx, uint8_t track,
+                                       uint16_t patch_number);
+uint16_t sequencer_core_get_drum_patch(uint8_t layer_idx, uint8_t track);
+uint16_t sequencer_core_cycle_drum_patch(uint8_t layer_idx, uint8_t track,
+                                         int dir);
+
 /* ── Per-row melodic ADSR envelope (runtime-editable) ──
  * Scoped per row (per track); each row has its own AMY synth, so its envelope
- * is fully independent. See seq_env_t in priv_u8g2_seq.h for the extension path
+ * is fully independent. See seq_env_t in display_seq.h for the extension path
  * to per-step. get returns false for non-melodic/out-of-range. set clamps,
  * stores, and pushes the envelope to that row's own synth. */
 bool sequencer_core_get_melodic_envelope(uint8_t layer_idx, uint8_t track,
@@ -50,6 +61,14 @@ void    sequencer_core_set_track_midi_note(uint8_t layer_idx, uint8_t track,
                                            uint8_t midi_note);
 uint8_t sequencer_core_get_track_midi_note(uint8_t layer_idx, uint8_t track);
 uint8_t sequencer_core_get_track_source_note(uint8_t layer_idx, uint8_t track);
+
+/* ── Generic envelope push ────────────────────────────────────────────────
+ * Push an ADSR (EG0 breakpoint set) to an arbitrary AMY synth slot's voices.
+ * Shared by the arp and the standalone drone so they reuse the exact same EG0
+ * delta path as the melodic layers. The synth's osc0 must have its amp EG0 coef
+ * enabled (patch-loaded synths do by default; the drone enables it explicitly).
+ * Does nothing for an out-of-range eg_type. */
+void sequencer_core_push_envelope(uint8_t synth, const seq_env_t *env);
 
 /* ── Arpeggiator support ──────────────────────────────────────────────────
  * The arp lives in its own module (arp_core) but routes all AMY traffic

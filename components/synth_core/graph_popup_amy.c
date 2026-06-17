@@ -3,7 +3,7 @@
  *
  * Converts between AMY envelope breakpoint arrays (times in milliseconds,
  * values 0..1) and the normalised point model used by the graph_popup widget.
- * This lives in sequencer_ui (which already REQUIRES amy) so the display
+ * This lives in synth_core (which already REQUIRES amy) so the display
  * component (priv_i2c_u8g2) stays free of any AMY dependency.
  *
  * Normalisation:

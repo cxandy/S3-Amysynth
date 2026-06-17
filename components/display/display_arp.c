@@ -1,4 +1,4 @@
-#include "priv_u8g2_arp.h"
+#include "display_arp.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -20,7 +20,7 @@ static void draw_field(u8g2_t *u8g2, uint8_t x, uint8_t y, const char *text,
     u8g2_DrawStr(u8g2, x, y, text);
 }
 
-void priv_u8g2_arp_draw_frame(u8g2_t *u8g2, const arp_view_t *view)
+void display_arp_draw_frame(u8g2_t *u8g2, const arp_view_t *view)
 {
     u8g2_ClearBuffer(u8g2);
     u8g2_SetDrawColor(u8g2, 1);

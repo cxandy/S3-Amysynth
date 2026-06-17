@@ -31,26 +31,26 @@ flowchart TD
     EMIT --> AMY["AMY synth slot for arp"]
     SEQUI --> SEQCORE["sequencer_core emit_step"]
     SEQCORE --> AMY
-    STATE --> RENDER["sequencer_ui_task 20Hz"]
+    STATE --> RENDER["synth_ui_task 20Hz"]
     RENDER -->|menu| DRAWM["draw menu"]
-    RENDER -->|arp| DRAWA["priv_u8g2_arp_draw_frame"]
-    RENDER -->|seq| DRAWS["priv_u8g2_seq_draw_frame"]
+    RENDER -->|arp| DRAWA["display_arp_draw_frame"]
+    RENDER -->|seq| DRAWS["display_seq_draw_frame"]
 ```
 ```
-encoder / buttons ─▶ sequencer_ui.c ─▶ arp_core.c ─▶ sequencer_core.c ─▶ AMY engine
+encoder / buttons ─▶ synth_ui.c ─▶ arp_core.c ─▶ sequencer_core.c ─▶ AMY engine
    (main.c)          (arp screen +      (arp model +   (shared event
                       dirty/service)     scheduling)     buffer + mutex)
                            │
-                     priv_u8g2_arp.c ─u8g2─▶ SSD1306 OLED
+                     display_arp.c ─u8g2─▶ SSD1306 OLED
 ```
 
 | Layer | File | Responsibility |
 |---|---|---|
-| Arp model | `components/sequencer_ui/arp_core.c` | Owns arp state (enabled, dir, octaves, rate, gate, scale, root, patch, 8 note slots). Computes the note sequence and (re)emits it. |
-| AMY bridge | `components/sequencer_ui/sequencer_core.c` | `sequencer_core_arp_*` helpers: configure the arp synth, emit/clear arp tags through the shared event buffer + mutex. Owns the arp tag window. |
-| UI / input | `components/sequencer_ui/sequencer_ui.c` | Arp screen cursor/edit state, builds the flat `arp_view_t`, dispatches encoder/button to `arp_*` setters, coalesces refreshes (`arp_core_service`). |
-| Display | `components/priv_i2c_u8g2/priv_u8g2_arp.c` | Pure render of `arp_view_t` → U8g2. No arp logic. |
-| View type | `components/priv_i2c_u8g2/priv_u8g2_arp.h` | `arp_view_t` flat struct + cursor index defines. |
+| Arp model | `components/synth_core/arp_core.c` | Owns arp state (enabled, dir, octaves, rate, gate, scale, root, patch, 8 note slots). Computes the note sequence and (re)emits it. |
+| AMY bridge | `components/synth_core/sequencer_core.c` | `sequencer_core_arp_*` helpers: configure the arp synth, emit/clear arp tags through the shared event buffer + mutex. Owns the arp tag window. |
+| UI / input | `components/synth_core/synth_ui.c` | Arp screen cursor/edit state, builds the flat `arp_view_t`, dispatches encoder/button to `arp_*` setters, coalesces refreshes (`arp_core_service`). |
+| Display | `components/display/display_arp.c` | Pure render of `arp_view_t` → U8g2. No arp logic. |
+| View type | `components/display/display_arp.h` | `arp_view_t` flat struct + cursor index defines. |
 
 **Design rule:** the arp is independent of the sequencer's layers. It never
 reads or writes `s_layers[]`. The only thing it shares is the global tempo and
@@ -82,7 +82,7 @@ snaps to its own scale/root only at *playback* (and for display via
 output, so repeated edits don't compound drift. `slots[]` is null-terminated:
 the first `-1` ends the active set.
 
-### `arp_view_t`  (`priv_u8g2_arp.h`)
+### `arp_view_t`  (`display_arp.h`)
 
 Flat, render-only snapshot built fresh each frame by `arp_build_view()`. The
 renderer is pure — it never calls back into `arp_core`.
@@ -111,7 +111,7 @@ typedef struct {
 | `ARP_MAX_SLOTS` | 8 | `arp_core.h` | Note input slots |
 | `ARP_OCT_MAX` | 4 | `arp_core.h` | Max octave span |
 | `ARP_MAX_STEPS` | `ARP_MAX_SLOTS × ARP_OCT_MAX` = 32 | `arp_core.c` | Max distinct scheduled arp notes |
-| `ARP_VIEW_SLOTS` | 8 | `priv_u8g2_arp.h` | Slots drawn on the OLED |
+| `ARP_VIEW_SLOTS` | 8 | `display_arp.h` | Slots drawn on the OLED |
 | `ARP_RATE_COUNT` | 4 | `arp_core.h` | Rate subdivisions |
 
 ---
@@ -200,14 +200,14 @@ one full re-emit per detent, flooding the mutex.
 
 **Fix:** setters call `arp_mark_dirty()` (store value, set a flag) instead of
 re-emitting. `arp_core_service()` performs at most one re-emit per call and is
-invoked once per UI frame (20 Hz) from `sequencer_ui_task`. Fast edits collapse
+invoked once per UI frame (20 Hz) from `synth_ui_task`. Fast edits collapse
 into a single re-emit per 50 ms.
 
 ```c
 // setter (arp_core.c)
 void arp_set_octaves(uint8_t o) { ...; s_arp.octaves = o; arp_mark_dirty(); }
 
-// once per frame (sequencer_ui_task)
+// once per frame (synth_ui_task)
 arp_core_service();   // if dirty: arp_core_refresh(); else cheap no-op
 ```
 
@@ -274,13 +274,13 @@ void sequencer_core_arp_emit_note(uint32_t tag_base, uint8_t midi_note,
 void sequencer_core_arp_clear_note(uint32_t tag_base);  // clears base & base+1
 ```
 
-### `sequencer_ui.h` (arp screen)
+### `synth_ui.h` (arp screen)
 
 ```c
-bool sequencer_ui_arp_is_active(void);     // ui_mode==ARP && !menu && !graph
-void sequencer_ui_arp_handle_encoder(long delta);
-void sequencer_ui_arp_handle_button(void); // toggle field edit
-void sequencer_ui_arp_cycle_patch(int delta);
+bool synth_ui_arp_is_active(void);     // ui_mode==ARP && !menu && !graph
+void synth_ui_arp_handle_encoder(long delta);
+void synth_ui_arp_handle_button(void); // toggle field edit
+void synth_ui_arp_cycle_patch(int delta);
 ```
 
 ---
@@ -291,13 +291,13 @@ void sequencer_ui_arp_cycle_patch(int delta);
 
 `ui_mode` (`UI_MODE_SEQUENCER` | `UI_MODE_ARP`) is switched from the **menu
 overlay** ("Screen: Seq" / "Screen: Arp" action items). The render task
-precedence in `sequencer_ui_task` is:
+precedence in `synth_ui_task` is:
 
 ```
 graph editor  >  menu overlay  >  arp screen  >  sequencer
 ```
 
-`sequencer_ui_arp_is_active()` is true only when `ui_mode == UI_MODE_ARP` AND
+`synth_ui_arp_is_active()` is true only when `ui_mode == UI_MODE_ARP` AND
 neither the menu nor the graph editor is up.
 
 ### Arp screen input
@@ -311,7 +311,7 @@ neither the menu nor the graph editor is up.
 | `MY_BUTTON_3` single-click | Toggle menu overlay |
 | `MY_BUTTON_0` long-press | Global play/pause (shared with sequencer) |
 
-Cursor index space (`priv_u8g2_arp.h`): `0=ENABLE, 1=MODE, 2=OCT, 3=RATE,
+Cursor index space (`display_arp.h`): `0=ENABLE, 1=MODE, 2=OCT, 3=RATE,
 4=GATE, 5..12 = slots 0..7`.
 
 ### Seq/Arp isolation (`main.c`)
@@ -330,7 +330,7 @@ The arp's own controls and the `MY_BUTTON_1` arp-patch gesture remain live.
 
 ---
 
-## OLED Display Layout (`priv_u8g2_arp.c`)
+## OLED Display Layout (`display_arp.c`)
 
 ```
 [0,0]──────────────────────────────────[127,0]
@@ -369,7 +369,7 @@ edits and hold-banner toggles trigger a redraw.
 | octaves | `SEQ_ARP_DEFAULT_OCTAVES` | 1 |
 | patch | `SEQ_ARP_DEFAULT_PATCH` | 138 (DX7 E.Piano 1) |
 
-`arp_core_init()` is called from `sequencer_ui_init()`, after
+`arp_core_init()` is called from `synth_ui_init()`, after
 `sequencer_core_init()`. All slots start empty (`-1`); the arp produces no sound
 until enabled and at least one slot is filled.
 

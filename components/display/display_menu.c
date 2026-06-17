@@ -1,4 +1,4 @@
-#include "priv_u8g2_menu.h"
+#include "display_menu.h"
 #include <string.h>
 
 /* Layout: a title bar then up to 5 visible rows, scrolling to keep the cursor
@@ -8,7 +8,7 @@
 #define MENU_FIRST_ROW  16
 #define MENU_VIS_ROWS   4
 
-void priv_u8g2_menu_draw_frame(u8g2_t *u8g2, const menu_view_t *view)
+void display_menu_draw_frame(u8g2_t *u8g2, const menu_view_t *view)
 {
     u8g2_ClearBuffer(u8g2);
     u8g2_SetDrawColor(u8g2, 1);

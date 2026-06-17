@@ -9,24 +9,24 @@
 The sequencer is split into three cooperating layers:
 
 ```
-main.c  ──button events──▶  sequencer_ui.c  ──state changes──▶  sequencer_core.c  ──amy_add_event──▶  AMY engine
+main.c  ──button events──▶  synth_ui.c  ──state changes──▶  sequencer_core.c  ──amy_add_event──▶  AMY engine
                             (FreeRTOS task)                      (stateless helpers)
                                    │
-                             priv_u8g2_seq.c  ──u8g2──▶  SSD1306 OLED
+                             display_seq.c  ──u8g2──▶  SSD1306 OLED
 ```
 
 | Layer | File | Responsibility |
 |---|---|---|
-| UI / input | `sequencer_ui.c` | Encoder + button dispatch, cursor navigation, layer cycling, OLED refresh (20 Hz task) |
+| UI / input | `synth_ui.c` | Encoder + button dispatch, cursor navigation, layer cycling, OLED refresh (20 Hz task) |
 | Audio core | `sequencer_core.c` | Owns all AMY scheduling; edits to grid, note, BPM immediately call `amy_add_event()` |
-| Display | `priv_u8g2_seq.c` | Pure render function; reads `priv_u8g2_seq_state_t` and drives U8g2 |
-| Types / state | `priv_u8g2_seq.h` | Shared data structures (`seq_layer_t`, `priv_u8g2_seq_state_t`) |
+| Display | `display_seq.c` | Pure render function; reads `display_seq_state_t` and drives U8g2 |
+| Types / state | `display_seq.h` | Shared data structures (`seq_layer_t`, `display_seq_state_t`) |
 
 ---
 
 ## Data Model
 
-### `seq_layer_t`  (`priv_u8g2_seq.h`)
+### `seq_layer_t`  (`display_seq.h`)
 
 One instance per active sequencer layer. Holds everything about a single pattern.
 
@@ -46,9 +46,9 @@ typedef struct {
 } seq_layer_t;
 ```
 
-### `priv_u8g2_seq_state_t` (`priv_u8g2_seq.h`)
+### `display_seq_state_t` (`display_seq.h`)
 
-Single global (`seq_state` in `sequencer_ui.c`) shared between the UI task and the display renderer.
+Single global (`seq_state` in `synth_ui.c`) shared between the UI task and the display renderer.
 
 ```c
 typedef struct {
@@ -63,10 +63,10 @@ typedef struct {
     uint8_t     selected_step;
     bool        edit_mode;
     bool        drum_select_mode;    // true while MY_BUTTON_2 held
-} priv_u8g2_seq_state_t;
+} display_seq_state_t;
 ```
 
-### Compile-time limits (`priv_u8g2_seq.h`)
+### Compile-time limits (`display_seq.h`)
 
 | Define | Value | Meaning |
 |---|---|---|
@@ -124,14 +124,24 @@ When a 16-step layer and a 32-step layer run simultaneously, the 16-step layer's
 
 | Layer | Synth ID | Patch | Voices | Synth flags |
 |---|---|---|---|---|
-| Layer 0 (Drum) | 10 | 1025 (`w7f0` GM drums) | 6 | `MIDI_DRUMS \| IGNORE_NOTE_OFFS` |
-| Layer 1 (Melodic) | 12 | 128 (DX7 "E Piano 1") | 4 | 0 (note-offs enabled) |
-| Layer 2 (Melodic) | 13 | 128 | 4 | 0 |
-| Layer N (Melodic) | `10 + N + 1` (capped at 62) | 128 | 4 | 0 |
+| Layer 0 (Drum) | 6,7,8,9 (one per track) | per-track from curated Juno drum list (default 58/43/44/46) | 1 | 0 (note-offs enabled) |
+| Layer 1 (Melodic) | 11..14 | 128 (DX7 "E Piano 1") | 1 | 0 (note-offs enabled) |
+| Layer 2 (Melodic) | 15..18 | 128 | 1 | 0 |
+| Layer N (Melodic) | next free block of 4 (capped at 62) | 128 | 1 | 0 |
 
-The drum synth is always slot 10 (first `add_layer` call). Melodic layers are assigned consecutive slots. The cap of 62 keeps the slot below AMY's `max_synths` (64).
+The drum layer is now a **per-track Juno-patch layer** (no longer AMY MIDI-drum/PCM
+mode): each of its 4 tracks owns a dedicated synth slot in the fixed block **6..9**
+and loads its own patch from the curated drum list (`SEQ_DRUM_PATCH_LIST` in
+`sequencer_core.c`). Note-offs are honored (flags = 0) so each patch's own release
+envelope shapes the tail; the **drum gate** (`SEQ_GATE_DRUM`, Kconfig
+`SEQ_DRUM_GATE_NUMERATOR/DENOMINATOR`, default 1/2 step) controls choke vs. ring.
+Melodic layers claim consecutive blocks of 4 from base 11; the cap of 62 keeps the
+slot below AMY's `max_synths` (64), with 63 reserved for the arp.
 
-Default melodic base notes: **C4 / E4 / G4 / B4** (Cmaj7 voicing). Change via hold MY_BUTTON_2 + encoder.
+Default melodic base notes: **C4 / E4 / G4 / B4** (Cmaj7 voicing). Default drum
+pitches: **C2 / C3 / G3 / C4** (36/48/55/60). Both editable via hold MY_BUTTON_2 +
+encoder. Drum **patch** selection is the patch-hold gesture (MY_BUTTON_1 + encoder),
+cycling the selected drum track through the curated list.
 
 ---
 
@@ -159,26 +169,26 @@ void    sequencer_core_set_track_midi_note(uint8_t layer_idx, uint8_t track,
 uint8_t sequencer_core_get_track_midi_note(uint8_t layer_idx, uint8_t track);
 ```
 
-### `sequencer_ui.h`
+### `synth_ui.h`
 
 ```c
 /* Init (call after amy_start) */
-void    sequencer_ui_init(u8g2_t *u8g2);
+void    synth_ui_init(u8g2_t *u8g2);
 
 /* Layer management */
-uint8_t sequencer_ui_add_layer(seq_layer_type_t type, uint8_t num_steps);
-void    sequencer_ui_cycle_active_layer(void);
+uint8_t synth_ui_add_layer(seq_layer_type_t type, uint8_t num_steps);
+void    synth_ui_cycle_active_layer(void);
 
 /* Input dispatch */
-void sequencer_ui_handle_encoder(long delta);
-void sequencer_ui_handle_button(void);
-void sequencer_ui_toggle_playing(void);
-void sequencer_ui_set_bpm(uint16_t bpm);
-void sequencer_ui_adjust_track_note(int delta);
-void sequencer_ui_set_drum_select_mode(bool held);
+void synth_ui_handle_encoder(long delta);
+void synth_ui_handle_button(void);
+void synth_ui_toggle_playing(void);
+void synth_ui_set_bpm(uint16_t bpm);
+void synth_ui_adjust_track_note(int delta);
+void synth_ui_set_drum_select_mode(bool held);
 
 /* Global state — bpm is read directly by encoder_task */
-extern sequencer_ui_state_t seq_state;
+extern synth_ui_state_t seq_state;
 ```
 
 ---
@@ -210,7 +220,7 @@ CBl  □□□□ □□□□ □□□□ □□□□           y=50
 ```
 
 - Header: `BPM NNN` | `LN TYP` (layer index + DRM/MEL) | ▶/▮▮ | `P1`/`P2` (32-step only)
-- Track labels: 3-char GM drum name (drum layer) or note name e.g. "C4", "C#4" (melodic layer)
+- Track labels: per-track patch number (drum layer) or note name e.g. "C4", "C#4" (melodic layer)
 - Label inverts (white-on-black) while MY_BUTTON_2 is held for the selected track
 - Step cells: 5×5 px filled = active, outline = inactive
 - Beat separators: vertical lines every 4 steps
@@ -231,7 +241,7 @@ For 32-step layers the 16-cell window shown is `page × 16 .. (page+1) × 16 −
 | `button_task` | 5 | any | 8 KB | Blocks on queue |
 | `encoder_init_task` | 5 | any | 2 KB | One-shot (1 s delay, self-deletes) |
 
-The `seq_ui` task owns one call path: read playhead from `sequencer_core_get_current_step()` → copy into `seq_state` → call `priv_u8g2_seq_draw_frame()`. No AMY state is read or written here.
+The `seq_ui` task owns one call path: read playhead from `sequencer_core_get_current_step()` → copy into `seq_state` → call `display_seq_draw_frame()`. No AMY state is read or written here.
 
 ---
 
@@ -242,15 +252,15 @@ app_main
   ├── i2c_u8g2_init()
   ├── amy_start()              ← multicore=0, multithread=0, AMY_AUDIO_IS_NONE
   ├── usb_audio_init()
-  ├── sequencer_ui_init()
+  ├── synth_ui_init()
   │     ├── sequencer_core_init()
-  │     ├── sequencer_ui_add_layer(SEQ_LAYER_DRUM, 16)
+  │     ├── synth_ui_add_layer(SEQ_LAYER_DRUM, 16)
   │     │     └── sequencer_core_add_layer() → configures AMY synth slot 10
   │     ├── default pattern written to layers[0].grid
   │     ├── sync_layer_to_core(0)
   │     ├── sequencer_core_set_playing(true)
   │     └── xTaskCreate(seq_ui_task)
-  ├── sequencer_ui_add_layer(SEQ_LAYER_MELODIC, 16)
+  ├── synth_ui_add_layer(SEQ_LAYER_MELODIC, 16)
   │     └── sequencer_core_add_layer() → configures AMY synth slot 12
   ├── xTaskCreatePinnedToCore(amy_render_task, core 1)
   ├── my_buttons_init() + register_cb()
@@ -266,13 +276,13 @@ app_main
 `step_note[SEQ_TRACKS][SEQ_MAX_STEPS]` is already stored per step, initialised uniformly to `track_base_note`. The core's `sequencer_emit_step()` already reads `step_note[track][step]` for every event — **no core changes required**. What is missing:
 
 1. A UI mode (e.g. long-press encoder on a step → enter pitch-edit mode)
-2. `sequencer_ui_set_step_note(uint8_t layer, uint8_t track, uint8_t step, uint8_t note)` — calls `sequencer_core_set_step(...)` to reschedule the event
+2. `synth_ui_set_step_note(uint8_t layer, uint8_t track, uint8_t step, uint8_t note)` — calls `sequencer_core_set_step(...)` to reschedule the event
 
 Velocity would require adding a `step_velocity[SEQ_TRACKS][SEQ_MAX_STEPS]` field to `seq_layer_t` and plumbing it through `sequencer_emit_step()`.
 
 ### 32-step patterns
 
-`sequencer_ui_add_layer(type, 32)` already works. The core uses `num_steps × SEQ_TICKS_PER_STEP` as the bar period, so any `num_steps` value that is a multiple of 16 (16, 32) works without code changes. A UI function to toggle an existing layer between 16 and 32 steps would need to reschedule all its events (`sequencer_resync_layer(idx)`) after updating `layer->num_steps`.
+`synth_ui_add_layer(type, 32)` already works. The core uses `num_steps × SEQ_TICKS_PER_STEP` as the bar period, so any `num_steps` value that is a multiple of 16 (16, 32) works without code changes. A UI function to toggle an existing layer between 16 and 32 steps would need to reschedule all its events (`sequencer_resync_layer(idx)`) after updating `layer->num_steps`.
 
 ### Changing the melodic patch
 
@@ -286,7 +296,7 @@ Call `sequencer_configure_synth(layer_idx)` (currently static) after changing `s
 
 ### More than 4 layers
 
-Increase `MAX_LAYERS` in `priv_u8g2_seq.h`. The tag formula scales automatically. Memory impact: each `seq_layer_t` is approximately `4×32 + 4×32 + sizeof(misc)` ≈ 300 bytes; 8 layers ≈ 2.4 KB. The OLED layout fits 4 tracks regardless of layer count — only one layer is displayed at a time, so display code is unaffected.
+Increase `MAX_LAYERS` in `display_seq.h`. The tag formula scales automatically. Memory impact: each `seq_layer_t` is approximately `4×32 + 4×32 + sizeof(misc)` ≈ 300 bytes; 8 layers ≈ 2.4 KB. The OLED layout fits 4 tracks regardless of layer count — only one layer is displayed at a time, so display code is unaffected.
 
 AMY synth slot pressure: each melodic layer consumes one AMY synth slot (slots 12, 13, 14 … for layers 1, 2, 3). AMY defaults to `max_synths=64`, so up to ~50 melodic layers are mechanically possible.
 

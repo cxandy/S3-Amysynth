@@ -16,7 +16,7 @@ config SEQ_QUANTIZER_DEFAULT_ROOT_NOTE
 config SEQ_QUANTIZER_DEFAULT_SCALE
 	int "Quantizer default scale index"
 	range 0 8
-	default 0
+	default 3
 	help
 		Default quantizer scale index at startup.
 		0=Chromatic, 1=Major, 2=Natural Minor, 3=Dorian,
@@ -33,22 +33,22 @@ config SEQ_MELODIC_EXPRESSIVE_DEFAULTS
 
 choice SEQ_MELODIC_PATCH_PRESET
 	prompt "Melodic layer AMY patch preset"
-	default SEQ_MELODIC_PATCH_DX7_EPIANO1
+	default SEQ_MELODIC_PATCH_JUNO_EPIANO1
 	help
 		Selects which built-in AMY patch number the sequencer uses when
 		creating melodic layers.
 
-config SEQ_MELODIC_PATCH_DX7_EPIANO1
-	bool "DX7 E.PIANO 1 (patch 138)"
+config SEQ_MELODIC_PATCH_JUNO_EPIANO1
+	bool "Juno E PIANO 1 (patch 14)"
 
-config SEQ_MELODIC_PATCH_DX7_PIANO1
-	bool "DX7 PIANO 1 (patch 135)"
+config SEQ_MELODIC_PATCH_JUNO_SYNTH_BASS2
+	bool "JUNO SYNTH BASS 2 (patch 36)"
 
-config SEQ_MELODIC_PATCH_DX7_SYNLEAD1
-	bool "DX7 SYN-LEAD 1 (patch 141)"
+config SEQ_MELODIC_PATCH_JUNO_CHORUS_VIBES
+	bool "JUNO CHORUS VIBES (patch 66)"
 
-config SEQ_MELODIC_PATCH_DX7_FLUTE1
-	bool "DX7 FLUTE 1 (patch 151)"
+config SEQ_MELODIC_PATCH_JUNO_SYNTH_PAD
+	bool "JUNO SYNTH PAD (patch 47)"
 
 config SEQ_MELODIC_PATCH_JUNO_PIANO1
 	bool "Juno A18 Piano I (patch 7)"
@@ -63,10 +63,10 @@ endchoice
 
 config SEQ_MELODIC_PATCH
 	int
-	default 138 if SEQ_MELODIC_PATCH_DX7_EPIANO1
-	default 135 if SEQ_MELODIC_PATCH_DX7_PIANO1
-	default 141 if SEQ_MELODIC_PATCH_DX7_SYNLEAD1
-	default 151 if SEQ_MELODIC_PATCH_DX7_FLUTE1
+	default 14 if SEQ_MELODIC_PATCH_JUNO_EPIANO1
+	default 32 if SEQ_MELODIC_PATCH_JUNO_SYNTH_BASS2
+	default 66 if SEQ_MELODIC_PATCH_JUNO_CHORUS_VIBES
+	default 47 if SEQ_MELODIC_PATCH_JUNO_SYNTH_PAD
 	default 7 if SEQ_MELODIC_PATCH_JUNO_PIANO1
 	default 104 if SEQ_MELODIC_PATCH_JUNO_EPIANO_TREM
 	default 256 if SEQ_MELODIC_PATCH_PIANO_BUILTIN
@@ -122,6 +122,24 @@ config SEQ_MELODIC_GATE_DENOMINATOR
 	default 12
 	help
 		Denominator used to compute melodic note gate duration.
+
+config SEQ_DRUM_GATE_NUMERATOR
+	int "Drum gate ratio numerator"
+	range 1 12
+	default 1
+	help
+		Numerator for the drum note gate duration (fraction of one step the
+		note is held before its note-off). Drums are now real Juno patches with
+		note-offs honored, so this controls choke vs. ring: a short gate (e.g.
+		1/2) chokes the patch quickly for a tight percussive feel; the patch's
+		own release tail still plays after note-off.
+
+config SEQ_DRUM_GATE_DENOMINATOR
+	int "Drum gate ratio denominator"
+	range 1 12
+	default 2
+	help
+		Denominator for the drum note gate duration.
 
 config SEQ_MELODIC_ENVELOPE_ENABLED
 	bool "Apply melodic EG0 envelope defaults"
@@ -214,7 +232,7 @@ config SEQ_ARP_DEFAULT_OCTAVES
 config SEQ_ARP_DEFAULT_PATCH
 	int "Arp default patch number"
 	range 0 256
-	default 138
+	default 47
 	help
 		AMY built-in patch for the arp synth (0..127 Juno, 128..255 DX7,
 		256 built-in piano). 138 = DX7 E.Piano 1.

@@ -9,8 +9,8 @@ extern "C" {
 #endif
 
 /* ── Arp screen renderer ──────────────────────────────────────────────────
- * Like the menu, the arp logic lives in the sequencer_ui component (arp_core).
- * sequencer_ui populates this flat view each frame; the renderer just draws it.
+ * Like the menu, the arp logic lives in the synth_core component (arp_core).
+ * synth_ui populates this flat view each frame; the renderer just draws it.
  *
  * Layout (matches the user's sketch):
  *   ARP: ON  | MODE: UP   | OCT: 2     <- macro row 1
@@ -49,7 +49,7 @@ typedef struct {
     const char *patch_name;   /* human-readable name or NULL (table excluded)     */
 } arp_view_t;
 
-void priv_u8g2_arp_draw_frame(u8g2_t *u8g2, const arp_view_t *view);
+void display_arp_draw_frame(u8g2_t *u8g2, const arp_view_t *view);
 
 #ifdef __cplusplus
 }

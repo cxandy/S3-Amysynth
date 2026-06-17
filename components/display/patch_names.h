@@ -2,8 +2,8 @@
 /*
  * patch_names — optional human-readable names for the AMY built-in patch banks.
  *
- * Lives in the priv_i2c_u8g2 (display) component so both the OLED renderer
- * (priv_u8g2_seq.c) and the sequencer UI layer can use it without a dependency
+ * Lives in the display component so both the OLED renderer
+ * (display_seq.c) and the synth UI layer can use it without a dependency
  * cycle. The Kconfig option CONFIG_SEQ_PATCH_SHOW_NAMES is global, so it gates
  * this table regardless of which component defines the symbol.
  *

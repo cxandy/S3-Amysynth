@@ -1,28 +1,6 @@
-#include "priv_u8g2_seq.h"
+#include "display_seq.h"
 #include "patch_names.h"
 #include <stdio.h>
-
-/* ── GM percussion note names (index 0 = MIDI note 27, index 60 = note 87) ── */
-static const char *const s_gm_drum_names[] = {
-    /* 27 */ "HiQ",  "Slap", "ScP",  "ScL",  "Stk",  "SqCl", "MtCl", "MtBl",
-    /* 35 */ "ABD",  "BD1",  "Rim",  "Snr",  "Clap", "SN2",
-    /* 41 */ "LFT",  "CHH",  "HFT",  "PHH",  "LoT",  "OHH",
-    /* 47 */ "LMT",  "HMT",  "Cr1",  "HiT",  "Rid",  "Chi",
-    /* 53 */ "RdB",  "Tam",  "Spl",  "CBl",  "Cr2",  "Vib",
-    /* 59 */ "Rd2",  "HBo",  "LBo",  "MHC",  "OHC",  "LCo",
-    /* 65 */ "HTi",  "LTi",  "HAg",  "LAg",  "Cab",  "Mar",
-    /* 71 */ "ShW",  "LgW",  "ShG",  "LgG",  "Clv",  "HWB",
-    /* 77 */ "LWB",  "MCu",  "OCu",  "MTr",  "OTr",  "Shk",
-    /* 83 */ "JBl",  "BTr",  "Cas",  "MSr",  "OSr"
-};
-#define GM_DRUM_NOTE_MIN 27
-#define GM_DRUM_NOTE_MAX 87
-
-static const char *gm_drum_short_name(uint8_t note)
-{
-    if (note < GM_DRUM_NOTE_MIN || note > GM_DRUM_NOTE_MAX) return "???";
-    return s_gm_drum_names[note - GM_DRUM_NOTE_MIN];
-}
 
 /* Produce a 3-char null-terminated note name: "C4", "C#4", "D4" … */
 static void note_name_str(uint8_t midi_note, char buf[4])
@@ -34,7 +12,7 @@ static void note_name_str(uint8_t midi_note, char buf[4])
     snprintf(buf, 4, "%s%d", note_names[midi_note % 12], octave);
 }
 
-void priv_u8g2_seq_draw_frame(u8g2_t *u8g2, const priv_u8g2_seq_state_t *state)
+void display_seq_draw_frame(u8g2_t *u8g2, const display_seq_state_t *state)
 {
     /* Nothing to draw until at least one layer exists. */
     if (state->num_layers == 0) {
@@ -110,11 +88,11 @@ void priv_u8g2_seq_draw_frame(u8g2_t *u8g2, const priv_u8g2_seq_state_t *state)
     for (int t = 0; t < SEQ_TRACKS; t++) {
         int y = grid_top + t * row_h;
 
-        /* Track label */
-        char label[4];
+        /* Track label: drums now show the per-track patch NUMBER (each drum
+         * track is its own Juno patch); melodic shows the pitch name. */
+        char label[6];
         if (layer->type == SEQ_LAYER_DRUM) {
-            snprintf(label, sizeof(label), "%s",
-                     gm_drum_short_name(layer->track_base_note[t]));
+            snprintf(label, sizeof(label), "%u", (unsigned)layer->track_patch[t]);
         } else {
             note_name_str(layer->track_base_note[t], label);
         }

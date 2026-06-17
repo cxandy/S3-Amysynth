@@ -23,5 +23,5 @@ CONFIG_UAC_MIC_TASK_CORE=0
 #
 # TEMP DEBUG: comprehensive heap poisoning to catch heap corruption at its source
 #
-CONFIG_HEAP_POISONING_COMPREHENSIVE=no
+CONFIG_HEAP_POISONING_COMPREHENSIVE=n
 CONFIG_CU_GCC_LTO_ENABLE=y

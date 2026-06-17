@@ -9,13 +9,13 @@ extern "C" {
 #endif
 
 /* ── Generic menu overlay renderer ───────────────────────────────────────
- * The menu model (item list, current values) lives in sequencer_ui.c. To keep
+ * The menu model (item list, current values) lives in synth_ui.c. To keep
  * the display component decoupled from sequencer logic, the caller formats each
  * row into a label + value string and hands the renderer a flat array. The
  * renderer draws a scrollable highlighted list; the entered item's value is
  * framed/inverted while editing. */
 
-#define MENU_MAX_ITEMS    8
+#define MENU_MAX_ITEMS    16
 #define MENU_LABEL_LEN    18
 #define MENU_VALUE_LEN    14
 
@@ -32,7 +32,7 @@ typedef struct {
 } menu_view_t;
 
 /* Draw the full menu overlay (clears + sends the buffer). */
-void priv_u8g2_menu_draw_frame(u8g2_t *u8g2, const menu_view_t *view);
+void display_menu_draw_frame(u8g2_t *u8g2, const menu_view_t *view);
 
 #ifdef __cplusplus
 }

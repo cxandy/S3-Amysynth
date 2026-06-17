@@ -2,6 +2,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include "display_seq.h"   /* seq_env_t */
 
 #ifdef __cplusplus
 extern "C" {
@@ -26,10 +27,11 @@ typedef enum {
 /* RATE table: musical subdivision -> ticks per arp note.
  * AMY_SEQUENCER_PPQ = 48, so a 1/16 = 12 ticks (matches SEQ_TICKS_PER_STEP). */
 typedef enum {
-    ARP_RATE_1_4  = 0,   /* quarter note   */
-    ARP_RATE_1_8  = 1,   /* eighth note    */
-    ARP_RATE_1_16 = 2,   /* sixteenth note */
-    ARP_RATE_1_32 = 3,   /* thirty-second  */
+    ARP_RATE_1_1  = 0,
+    ARP_RATE_1_4  = 1,   /* quarter note   */
+    ARP_RATE_1_8  = 2,   /* eighth note    */
+    ARP_RATE_1_16 = 3,  /* sixteenth note */
+    ARP_RATE_1_32 = 4,   /* thirty-second  */
     ARP_RATE_COUNT
 } arp_rate_t;
 
@@ -57,6 +59,13 @@ void arp_set_root_note(uint8_t root_note);
 void arp_set_patch(uint16_t patch_number);
 /* Set slot value to a chromatic MIDI note, or -1 to clear the slot. */
 void arp_set_slot(uint8_t idx, int16_t chromatic_note);
+
+/* ── Runtime-editable ADSR envelope (shared graph editor) ──
+ * The arp owns one envelope applied to its synth's voices. get always returns
+ * the stored env; set stores + pushes it to the arp synth. Re-applied after a
+ * patch change so the custom envelope survives patch reconfig. */
+void arp_get_envelope(seq_env_t *out);
+void arp_set_envelope(const seq_env_t *env);
 
 /* ── Getters (for UI display) ── */
 bool      arp_get_enabled(void);

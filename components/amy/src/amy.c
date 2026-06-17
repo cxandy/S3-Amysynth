@@ -1518,7 +1518,11 @@ SAMPLE render_osc_wave(uint16_t osc, uint8_t core, SAMPLE* buf) {
         if(AMY_IS_SET(synth[osc]->chained_osc)) {
             // Stack oscillators - render next osc into same buffer.
             uint16_t chained_osc = synth[osc]->chained_osc;
-            if (synth[chained_osc]->status == SYNTH_AUDIBLE) {  // We have to recheck this since we're bypassing the skip in amy_render.
+            // LOCAL EDIT (S3-Amysynth, 2026-06-17): added `synth[chained_osc] != NULL`
+            // guard. Upstream AMY dereferences synth[chained_osc]->status with no NULL
+            // check; a chained_osc can reference a slot that was freed/never allocated
+            // during a patch toggle, faulting here. See AMY-EDITS.md 2026-06-17.
+            if (synth[chained_osc] != NULL && synth[chained_osc]->status == SYNTH_AUDIBLE) {  // We have to recheck this since we're bypassing the skip in amy_render.
                 SAMPLE new_max_val = render_osc_wave(chained_osc, core, buf);
                 if (new_max_val > max_val)  max_val = new_max_val;
             }
@@ -1555,6 +1559,16 @@ SAMPLE render_osc_wave(uint16_t osc, uint8_t core, SAMPLE* buf) {
 
 void amy_render(uint16_t start, uint16_t end, uint8_t core) {
     AMY_PROFILE_START(AMY_RENDER)
+    // LOCAL EDIT (S3-Amysynth, 2026-06-17): hold amy_queue_lock across the whole
+    // render so structural mutations to synth[]/msynth[] (free_osc/alloc_osc via
+    // ensure_osc_allocd, reset_osc, patch loads) cannot run on another core while
+    // this render walks those pointers. Without it, a patch toggle on Core 0 could
+    // free synth[osc] between the NULL check below and the deref in hold_and_modify,
+    // producing a LoadProhibited (EXCVADDR=0x8). See AMY-EDITS.md 2026-06-17.
+    // Safe vs. the non-recursive mutex: nothing in the render path calls
+    // add_delta_to_queue()/amy_grab_lock(), and in this build multicore=0 so there
+    // is no cross-core notify-while-holding-lock path.
+    amy_grab_lock();
     for(uint16_t i=0;i<AMY_BLOCK_SIZE*AMY_NCHANS;i++) { fbl[core][i] = 0; }
     SAMPLE max_max = 0;
     for(uint16_t osc=start; osc<end; osc++) {
@@ -1598,6 +1612,10 @@ void amy_render(uint16_t start, uint16_t end, uint8_t core) {
         SAMPLE smax = scan_max(fbl[core], AMY_BLOCK_SIZE);
         fprintf(stderr, "time %" PRIu32 " core %d max_max=%.3f post-eq max=%.3f\n", amy_global.total_blocks*AMY_BLOCK_SIZE, core, S2F(max_max), S2F(smax));
     }
+
+    // LOCAL EDIT (S3-Amysynth, 2026-06-17): release the render lock taken at the
+    // top of amy_render. See AMY-EDITS.md 2026-06-17.
+    amy_release_lock();
 
     AMY_PROFILE_STOP(AMY_RENDER)
 

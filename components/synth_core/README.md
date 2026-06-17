@@ -1,11 +1,11 @@
-# Sequencer UI Component
+# synth_core Component
 
 This component provides a minimal, non-blocking 16-step sequencer UI for the AMY synth project on an ESP32-S3 with a 128x64 OLED display.
 
 ## Features
 
 - **4-Track x 16-Step Grid**: Displays 4 tracks (BD, SD, CH, OH) with 16 steps each.
-- **Non-blocking UI**: Uses a dedicated FreeRTOS task (`sequencer_ui_task`) running at 20Hz to refresh the display without blocking audio processing.
+- **Non-blocking UI**: Uses a dedicated FreeRTOS task (`synth_ui_task`) running at 20Hz to refresh the display without blocking audio processing.
 - **Sequencer Timer**: A separate high-priority FreeRTOS task (`sequencer_timer_task`) handles BPM timing and schedules `amy_event`s for active steps.
 - **Encoder Integration**: 
   - Rotating the encoder navigates the grid (in edit mode) or changes the BPM (in play mode).
@@ -14,17 +14,17 @@ This component provides a minimal, non-blocking 16-step sequencer UI for the AMY
 
 ## Architecture
 
-- `sequencer_ui.c`: Contains the state machine, FreeRTOS tasks, and input handlers.
-- `include/sequencer_ui.h`: Exposes the initialization and input handling functions.
-- Relies on `priv_i2c_u8g2` for low-level display drawing helpers (`priv_u8g2_seq_draw_frame`).
+- `synth_ui.c`: Contains the state machine, FreeRTOS tasks, and input handlers.
+- `include/synth_ui.h`: Exposes the initialization and input handling functions.
+- Relies on `display` for low-level display drawing helpers (`display_seq_draw_frame`).
 - Relies on `amy` for audio synthesis and event scheduling.
 
 ## Usage
 
 1. Initialize the display using `i2c_u8g2_init()`.
-2. Call `sequencer_ui_init(u8g2)` with the initialized `u8g2_t` pointer.
-3. In your encoder task, call `sequencer_ui_handle_encoder(delta)` when the encoder rotates.
-4. In your button task/interrupt, call `sequencer_ui_handle_button()` when the encoder button is pressed.
+2. Call `synth_ui_init(u8g2)` with the initialized `u8g2_t` pointer.
+3. In your encoder task, call `synth_ui_handle_encoder(delta)` when the encoder rotates.
+4. In your button task/interrupt, call `synth_ui_handle_button()` when the encoder button is pressed.
 
 
 ## Melodic Envelope System
@@ -108,12 +108,12 @@ overwrites with new committed values).
 The seed values are *not* stale once the editor exists — the editor writes the
 exact same struct. Change them only if you want a different starting shape.
 
-### Graph editor (`graph_popup_amy.c`, `sequencer_ui.c`)
+### Graph editor (`graph_popup_amy.c`, `synth_ui.c`)
 
 - `graph_popup_amy.c` is the AMY↔widget adapter. It converts between AMY
   breakpoint arrays (times in ms, values 0..1) and the widget's normalised
   point model, prepending an implicit `(0,0)` origin.
-- `sequencer_ui_graph_open_envelope()` seeds the 3-point editor (A/D/R, plus
+- `synth_ui_graph_open_envelope()` seeds the 3-point editor (A/D/R, plus
   origin) from the **selected row's** stored envelope via `graph_seed_from_env()`.
 - `graph_commit_to_env()` reads the points back, converts X→ms under the active
   range mapping, and calls `sequencer_core_set_melodic_envelope()`. Edits reach
@@ -129,7 +129,7 @@ exact same struct. Change them only if you want a different starting shape.
   nudges are ignored); the host recomputes S.x in `graph_recompute_decay()` after
   seeding and after every encoder edit. This removes the hidden decay-time control
   and the A/S marker overlap. The rule (`graph_decay_ms()`, all constants in
-  `sequencer_ui.c`):
+  `synth_ui.c`):
 
   ```
   decay_ms = clamp(DECAY_BASE_MS + attack_ms*DECAY_ATTACK_K

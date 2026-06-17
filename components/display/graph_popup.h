@@ -14,7 +14,7 @@
  *   - The host decides WHEN to open it, seeds the points, routes input to it,
  *     and reads the (possibly edited) points back. Mapping domain values
  *     (ms, levels, log-freq) to/from the normalised 0..1 space lives in
- *     adapters outside this file (e.g. graph_popup_amy.c in sequencer_ui).
+ *     adapters outside this file (e.g. graph_popup_amy.c in synth_core).
  *
  * Rendering contract:
  *   graph_popup_draw() draws ONLY the pop-up box (background, frame, axes,
@@ -155,7 +155,7 @@ bool graph_popup_toggle_axis(gpopup_t *p);
 bool graph_popup_axis_is_y(const gpopup_t *p);
 
 /* ───────────────────────────────────────────────────────────────────────────
- * Optional AMY adapter (implemented in components/sequencer_ui/graph_popup_amy.c).
+ * Optional AMY adapter (implemented in components/synth_core/graph_popup_amy.c).
  * Declared here for convenience; the core widget above has NO AMY dependency.
  * These helpers convert between AMY envelope arrays (times in ms, values 0..1)
  * and the normalised point model used by the widget.

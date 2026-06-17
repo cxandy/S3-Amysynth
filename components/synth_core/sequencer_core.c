@@ -63,6 +63,12 @@
 #ifndef CONFIG_SEQ_MELODIC_PATCH
 #define CONFIG_SEQ_MELODIC_PATCH 138
 #endif
+#ifndef CONFIG_SEQ_DRUM_GATE_NUMERATOR
+#define CONFIG_SEQ_DRUM_GATE_NUMERATOR 1
+#endif
+#ifndef CONFIG_SEQ_DRUM_GATE_DENOMINATOR
+#define CONFIG_SEQ_DRUM_GATE_DENOMINATOR 2
+#endif
 #ifndef CONFIG_SEQ_ENV_DEBUG_DUMP
 #define CONFIG_SEQ_ENV_DEBUG_DUMP 0
 #endif
@@ -73,7 +79,11 @@ extern uint32_t sequencer_ticks(void);
 
 /* ── Timing ──────────────────────────────────────────────────────────── */
 #define SEQ_TICKS_PER_STEP    (AMY_SEQUENCER_PPQ / 4)
-#define SEQ_GATE_DRUM         (SEQ_TICKS_PER_STEP / 3)
+/* Drum gate: fraction of a step the note is held before its note-off. Now that
+ * drums are real Juno patches (note-offs honored), this controls choke vs. ring;
+ * the patch's own release tail still plays out after note-off. Tunable via
+ * Kconfig (default 1/2 step). */
+#define SEQ_GATE_DRUM         ((SEQ_TICKS_PER_STEP * CONFIG_SEQ_DRUM_GATE_NUMERATOR) / CONFIG_SEQ_DRUM_GATE_DENOMINATOR)
 #if CONFIG_SEQ_MELODIC_EXPRESSIVE_DEFAULTS
 #define SEQ_GATE_MELODIC      ((SEQ_TICKS_PER_STEP * CONFIG_SEQ_MELODIC_GATE_NUMERATOR) / CONFIG_SEQ_MELODIC_GATE_DENOMINATOR)
 #else
@@ -81,13 +91,35 @@ extern uint32_t sequencer_ticks(void);
 #endif
 #define SEQ_MIN_BPM           40
 #define SEQ_MAX_BPM           300
+#define SEQ_DEFAULT_BPM       108
+/* ── Drum synth slots ────────────────────────────────────────────────────
+ * Drums are now a per-track Juno-patch layer: each of the 4 tracks loads its
+ * own AMY patch and gets its own synth slot, exactly like melodic rows. We
+ * reserve a fixed block 6..9 (below the melodic base of 11) so the melodic
+ * running allocator (11..62) and the arp slot (63) are untouched. */
+#define SEQ_DRUM_SYNTH_BASE   6
+#define SEQ_DRUM_VOICES       1  /* one voice per row; a row sounds one pitch at
+                                  * a time (matches melodic). */
+/* Drum tracks now play real pitches into a tonal patch, so clamp to the same
+ * musical range as melodic rows rather than the old GM-drum note span. */
+#define SEQ_MIDI_NOTE_MIN     24    /* C1 */
+#define SEQ_MIDI_NOTE_MAX     96    /* C7 */
 
-/* ── Drum synth slot ─────────────────────────────────────────────────── */
-#define SEQ_DRUM_SYNTH        10
-#define SEQ_DRUM_PATCH        1025
-#define SEQ_DRUM_VOICES       16 /*these voice defines control how many notes can ring at once before AMY steals/reuses a voice. More voices usually means fewer chopped notes, at the cost of more CPU.*/
-#define SEQ_MIDI_NOTE_MIN     27
-#define SEQ_MIDI_NOTE_MAX     87
+/* Curated drum-patch cycle list (Juno only). The per-track patch-select control
+ * steps through this list (wraps); it is NOT the full 0..256 range. */
+static const uint16_t SEQ_DRUM_PATCH_LIST[] = {
+    58,   /* Juno Drum Booms   */
+    43,   /* Juno Snare Drum   */
+    44,   /* Juno Tom Toms     */
+    46,   /* Juno Shaker       */
+    61,   /* Juno Hand Claps   */
+    70,   /* Juno Perc. Pluck  */
+    113,  /* Juno Melodic Taps */
+    17,   /* Juno Steel Drums  */
+    18,   /* Juno Xylophone    */
+    56,   /* Juno Gong         */
+};
+#define SEQ_DRUM_PATCH_COUNT ((int)(sizeof(SEQ_DRUM_PATCH_LIST) / sizeof(SEQ_DRUM_PATCH_LIST[0])))
 
 /* ── Melodic synth defaults ──────────────────────────────────────────── */
 #define SEQ_MEL_PATCH         CONFIG_SEQ_MELODIC_PATCH
@@ -135,9 +167,10 @@ static inline uint32_t seq_preview_off_tag(uint8_t layer, uint8_t track);
 static float sequencer_step_velocity(const seq_layer_t *layer,
                                      uint8_t track, uint8_t step)
 {
-    if (layer->type == SEQ_LAYER_DRUM) {
-        return 1.0f;
-    }
+    /* Drums now share the melodic accent+jitter curve for a less "machine-gun"
+     * groove (the old fixed 1.0 made every hit identical). Falls through to the
+     * same expressive path as melodic below. */
+    (void)layer;
 
 #if !CONFIG_SEQ_MELODIC_EXPRESSIVE_DEFAULTS
     (void)track;
@@ -401,13 +434,16 @@ static void sequencer_configure_synth(uint8_t layer_idx)
     seq_layer_t *layer = &s_layers[layer_idx];
 
     if (layer->type == SEQ_LAYER_DRUM) {
-        seq_ev_begin();
-        s_ev.patch_number = layer->patch;
-        patches_store_patch(&s_ev, "w7f0");
-        s_ev.num_voices  = layer->num_voices;
-        s_ev.synth       = layer->synth_id[0];
-        s_ev.synth_flags = layer->synth_flags;
-        seq_ev_send();
+        /* Per-track: each drum row loads its OWN patch onto its OWN synth slot,
+         * note-offs honored (flags = 0). Mirrors the melodic loop below. */
+        for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
+            seq_ev_begin();
+            s_ev.patch_number = layer->track_patch[t];
+            s_ev.num_voices   = layer->num_voices;
+            s_ev.synth        = layer->synth_id[t];
+            s_ev.synth_flags  = layer->synth_flags;   /* 0 */
+            seq_ev_send();
+        }
         return;
     }
 
@@ -458,9 +494,8 @@ static void sequencer_emit_step(uint8_t layer_idx, uint8_t track, uint8_t step)
         return;
     }
 
-    /* Drums share one synth (synth_id[0]); melodic rows each have their own. */
-    uint8_t synth = (layer->type == SEQ_LAYER_DRUM)
-                    ? layer->synth_id[0] : layer->synth_id[track];
+    /* Both drum and melodic layers now have one synth slot per track. */
+    uint8_t synth = layer->synth_id[track];
 
     seq_ev_begin();
     s_ev.synth                     = synth;
@@ -532,7 +567,7 @@ void sequencer_core_init(void)
     memset(s_cached_step, 0, sizeof(s_cached_step));
     memset(s_track_source_note, 0, sizeof(s_track_source_note));
     s_playing = true;
-    s_bpm     = 120;
+    s_bpm     = SEQ_DEFAULT_BPM;
     s_melodic_patch = SEQ_MEL_PATCH;
     s_quantizer.enabled = CONFIG_SEQ_QUANTIZER_DEFAULT_ENABLED;
     s_quantizer.root_note = CONFIG_SEQ_QUANTIZER_DEFAULT_ROOT_NOTE;
@@ -562,16 +597,21 @@ uint8_t sequencer_core_add_layer(seq_layer_type_t type, uint8_t num_steps)
     layer->step_page  = 0;
 
     if (type == SEQ_LAYER_DRUM) {
-        /* Drums use a single synth for all tracks (MIDI-drum pitch separation
-         * keeps voices distinct); mirror it into every synth_id[] slot. */
+        /* Drums are now a per-track Juno-patch layer: each track gets its own
+         * fixed synth slot (block 6..9) and its own patch from the curated list,
+         * with note-offs honored (synth_flags = 0) so the patch's own release
+         * envelope shapes the tail. */
         for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
-            layer->synth_id[t] = SEQ_DRUM_SYNTH;
+            layer->synth_id[t]   = (uint8_t)(SEQ_DRUM_SYNTH_BASE + t);
+            /* Default per-track patch = first SEQ_TRACKS entries of the list. */
+            layer->track_patch[t] = SEQ_DRUM_PATCH_LIST[t % SEQ_DRUM_PATCH_COUNT];
         }
-        layer->patch       = SEQ_DRUM_PATCH;
-        layer->synth_flags = (uint32_t)(_SYNTH_FLAGS_MIDI_DRUMS
-                                        | _SYNTH_FLAGS_IGNORE_NOTE_OFFS);
+        layer->patch       = layer->track_patch[0];  /* display fallback */
+        layer->synth_flags = 0;
         layer->num_voices  = SEQ_DRUM_VOICES;
-        static const uint8_t drum_notes[SEQ_TRACKS] = {42, 35, 38, 56};
+        /* Sensible playable pitches per track (low->high) so the tonal drum
+         * patches sound distinct; pitch stays user-editable. */
+        static const uint8_t drum_notes[SEQ_TRACKS] = {36, 48, 55, 60};
         for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
             s_track_source_note[idx][t] = drum_notes[t];
             layer->track_base_note[t] = drum_notes[t];
@@ -651,6 +691,66 @@ uint16_t sequencer_core_get_melodic_patch(void)
     return s_melodic_patch;
 }
 
+/* ── Drum per-track patch (curated Juno list) ────────────────────────────── */
+
+/* Find the index of `patch` within the curated drum list, or 0 if not present. */
+static int sequencer_drum_patch_index_for(uint16_t patch)
+{
+    for (int i = 0; i < SEQ_DRUM_PATCH_COUNT; i++) {
+        if (SEQ_DRUM_PATCH_LIST[i] == patch) return i;
+    }
+    return 0;
+}
+
+/* Set one drum track's patch directly (clamped to the curated list membership;
+ * a value not in the list snaps to the nearest list entry by index 0). Reloads
+ * just that track's synth slot. */
+void sequencer_core_set_drum_patch(uint8_t layer_idx, uint8_t track,
+                                   uint16_t patch_number)
+{
+    if (layer_idx >= s_num_layers || track >= SEQ_TRACKS) return;
+    seq_layer_t *layer = &s_layers[layer_idx];
+    if (layer->type != SEQ_LAYER_DRUM) return;
+    if (layer->track_patch[track] == patch_number) return;
+
+    layer->track_patch[track] = patch_number;
+    if (track == 0) layer->patch = patch_number;  /* keep display fallback live */
+
+    /* Reload only this track's synth slot with the new patch. */
+    seq_ev_begin();
+    s_ev.patch_number = patch_number;
+    s_ev.num_voices   = layer->num_voices;
+    s_ev.synth        = layer->synth_id[track];
+    s_ev.synth_flags  = layer->synth_flags;  /* 0 */
+    seq_ev_send();
+
+    ESP_LOGI(TAG, "drum L%u track %u patch -> %u",
+             layer_idx, track, (unsigned)patch_number);
+}
+
+uint16_t sequencer_core_get_drum_patch(uint8_t layer_idx, uint8_t track)
+{
+    if (layer_idx >= s_num_layers || track >= SEQ_TRACKS) return 0;
+    return s_layers[layer_idx].track_patch[track];
+}
+
+/* Step one drum track's patch `dir` (+/-1) entries through the curated list,
+ * wrapping at the ends. Returns the newly-applied patch number. */
+uint16_t sequencer_core_cycle_drum_patch(uint8_t layer_idx, uint8_t track,
+                                         int dir)
+{
+    if (layer_idx >= s_num_layers || track >= SEQ_TRACKS) return 0;
+    seq_layer_t *layer = &s_layers[layer_idx];
+    if (layer->type != SEQ_LAYER_DRUM) return 0;
+
+    dir = (dir > 0) ? 1 : -1;
+    int idx = sequencer_drum_patch_index_for(layer->track_patch[track]);
+    int ni  = (idx + dir + SEQ_DRUM_PATCH_COUNT) % SEQ_DRUM_PATCH_COUNT;
+    uint16_t next = SEQ_DRUM_PATCH_LIST[ni];
+    sequencer_core_set_drum_patch(layer_idx, track, next);
+    return next;
+}
+
 /* ── Arpeggiator support ─────────────────────────────────────────────────
  * Arp tags sit just above the sequencer's tag space. The sequencer uses:
  *   step on/off : 0 .. MAX_LAYERS*SEQ_TRACKS*SEQ_MAX_STEPS*2 - 1   (0..1023)
@@ -673,6 +773,24 @@ uint32_t sequencer_core_arp_tag_base(void) { return SEQ_ARP_TAG_BASE; }
 uint8_t sequencer_core_clamp_melodic_note(int32_t midi_note)
 {
     return SEQ_CLAMP_U8(midi_note, SEQ_MEL_NOTE_MIN, SEQ_MEL_NOTE_MAX);
+}
+
+void sequencer_core_push_envelope(uint8_t synth, const seq_env_t *env)
+{
+    if (env == NULL) return;
+    float sustain = (float)env->sustain_pct / 100.0f;
+
+    seq_ev_begin();
+    s_ev.synth         = synth;
+    s_ev.bp_is_set[0]  = 1;
+    s_ev.eg_type[0]    = env->eg_type;
+    s_ev.eg0_times[0]  = env->attack_ms;
+    s_ev.eg0_values[0] = 1.0f;
+    s_ev.eg0_times[1]  = env->decay_ms;
+    s_ev.eg0_values[1] = sustain;
+    s_ev.eg0_times[2]  = env->release_ms;
+    s_ev.eg0_values[2] = 0.0f;
+    seq_ev_send();
 }
 
 void sequencer_core_arp_configure(uint16_t patch_number, uint8_t num_voices)

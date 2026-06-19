@@ -187,6 +187,21 @@ static bool adsr_x_editable(const gpopup_t *p, uint8_t idx)
     return true;
 }
 
+/* In ADSR style each point moves on exactly one axis (A/R = time/X, S = level/Y
+ * with S.x host-owned), so there is nothing to toggle: the editor auto-selects
+ * the axis the selected point can actually move on. Returns true if the encoder
+ * should adjust Y for this point, false for X. Y-editable wins when both happen
+ * to be free (e.g. lock_sx off); falls back to the manual axis flag for the
+ * generic (non-ADSR) curve editor. */
+static bool adsr_effective_axis_is_y(const gpopup_t *p, uint8_t idx)
+{
+    if (p->style != GPOPUP_STYLE_ADSR) return p->adjust_axis_y;
+    if (adsr_y_editable(p, idx) && !adsr_x_editable(p, idx)) return true;
+    if (adsr_x_editable(p, idx) && !adsr_y_editable(p, idx)) return false;
+    /* Both free (unlocked sustain) or neither (origin): prefer Y. */
+    return true;
+}
+
 void graph_popup_close(gpopup_t *p)
 {
     if (!p) return;
@@ -396,10 +411,12 @@ gpopup_result_t graph_popup_handle_encoder(gpopup_t *p, long delta)
         if (idx > (long)p->num_points - 1) idx = (long)p->num_points - 1;
         p->cursor = (uint8_t)idx;
     } else {
-        /* Adjusting: change the selected point along the active axis. */
+        /* Adjusting: change the selected point along its editable axis. In ADSR
+         * mode the axis is auto-selected per point (no X/Y toggle needed); the
+         * generic curve editor still honours the manual adjust_axis_y flag. */
         gpopup_point_t *pt = &p->points[p->cursor];
         float step = (float)delta * GPOPUP_ADJUST_STEP;
-        if (p->adjust_axis_y) {
+        if (adsr_effective_axis_is_y(p, p->cursor)) {
             /* Role-fixed levels (A peak, R end) ignore Y nudges in ADSR mode. */
             if (adsr_y_editable(p, p->cursor)) {
                 pt->y = clampf01(pt->y + step);
@@ -435,16 +452,3 @@ gpopup_result_t graph_popup_handle_button_long(gpopup_t *p)
     return GPOPUP_RESULT_CANCELLED;
 }
 
-bool graph_popup_toggle_axis(gpopup_t *p)
-{
-    if (!p || !p->active || p->mode != GPOPUP_MODE_EDIT) return false;
-    p->adjust_axis_y = !p->adjust_axis_y;
-    return true;
-}
-
-bool graph_popup_axis_is_y(const gpopup_t *p)
-{
-    /* Default to Y when not editable so callers reading state are sane. */
-    if (!p) return true;
-    return p->adjust_axis_y;
-}

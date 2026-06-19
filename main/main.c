@@ -394,15 +394,14 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
         return;
     }
 
-    // MY_BUTTON_3 (GPIO42): inside the graph editor it is the vertical<->horizontal
-    // axis toggle. Outside the graph editor it is the menu toggle (single-click),
-    // replacing the removed shoulder button (GPIO1).
+    // MY_BUTTON_3 (GPIO42): the graph editor used to need this as a
+    // vertical<->horizontal axis toggle, but each ADSR point now auto-selects the
+    // only axis it can move on, so the toggle is gone. Inside the editor the
+    // press is swallowed (so it never leaks to the menu); outside it is the menu
+    // toggle (single-click), replacing the removed shoulder button (GPIO1).
     if (button_id == MY_BUTTON_3) {
         if (synth_ui_graph_is_active()) {
-            if (event == BUTTON_PRESS_DOWN) {
-                synth_ui_graph_toggle_axis();
-            }
-            return;
+            return;   // editor open: consume, no-op (axis toggle removed)
         }
         if (event == BUTTON_SINGLE_CLICK) {
             synth_ui_menu_toggle();

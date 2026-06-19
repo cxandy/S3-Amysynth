@@ -146,14 +146,6 @@ gpopup_result_t graph_popup_handle_encoder(gpopup_t *p, long delta);
 gpopup_result_t graph_popup_handle_button(gpopup_t *p);       /* short press   */
 gpopup_result_t graph_popup_handle_button_long(gpopup_t *p);  /* long = cancel */
 
-/* Toggle which axis the encoder edits while adjusting a point: Y (vertical /
- * level) <-> X (horizontal / time). No-op unless the pop-up is open in EDIT
- * mode. Returns true when the pop-up consumed the event. */
-bool graph_popup_toggle_axis(gpopup_t *p);
-
-/* True while the active adjust axis is Y (vertical). False = X (horizontal). */
-bool graph_popup_axis_is_y(const gpopup_t *p);
-
 /* ───────────────────────────────────────────────────────────────────────────
  * Optional AMY adapter (implemented in components/synth_core/graph_popup_amy.c).
  * Declared here for convenience; the core widget above has NO AMY dependency.

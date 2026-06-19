@@ -409,21 +409,6 @@ bool synth_ui_graph_close_commit(void)
     return true;
 }
 
-/* Flip the active adjust axis (vertical level <-> horizontal time). Only does
- * anything while the editor is open; returns true when it consumed the event so
- * the host knows the press belonged to the graph and not a background action. */
-bool synth_ui_graph_toggle_axis(void)
-{
-    if (!graph_popup_is_active(&s_graph_popup)) return false;
-    bool toggled = graph_popup_toggle_axis(&s_graph_popup);
-    if (toggled) {
-        ESP_LOGI(TAG, "graph popup axis -> %s",
-                 graph_popup_axis_is_y(&s_graph_popup) ? "vertical" : "horizontal");
-    }
-    /* Consume the event whenever the graph is open, even if the toggle was a
-     * no-op (e.g. VIEW mode), so the button never leaks to layer switching. */
-    return true;
-}
 /* ── graph pop-up: end ──────────────────────────────────────────────────── */
 
 #if !CONFIG_SEQ_PATCH_BROWSE_FULL_RANGE

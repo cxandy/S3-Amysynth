@@ -99,10 +99,6 @@ bool synth_ui_graph_handle_button(bool is_long);
  * synth_ui_graph_handle_button(true), which discards on cancel. */
 bool synth_ui_graph_close_commit(void);
 
-/* Toggle the encoder adjust axis (vertical level <-> horizontal time) while the
- * graph editor is open. Returns true if the event was consumed (graph open). */
-bool synth_ui_graph_toggle_axis(void);
-
 /* Toggle the graph time range SHORT(2s linear) <-> LONG(15s, log-squashed tail)
  * while the editor is open. Re-seeds the curve. Returns true if consumed. */
 bool synth_ui_graph_toggle_range(void);

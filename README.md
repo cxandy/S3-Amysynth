@@ -84,6 +84,63 @@ A few design decisions worth calling out:
   custom envelope only overrides it once committed in the graph editor, so
   changing presets doesn't permanently shadow it.
 
+## Optimization & performance
+
+Real-time audio on a dual-core MCU leaves little timing margin: the render task
+already uses roughly 85–90% of one core's per-block budget, so most of the work
+below is about removing jitter, stalls, and wasted cycles rather than chasing raw
+throughput.
+
+**Render pacing — hardware clock, not tick delays.** The render task is paced by a
+GPTimer firing one alarm per audio block (5333 µs at 48 kHz / 256), whose ISR (in
+IRAM, registered on core 1) wakes the task via a direct task notification. The loop
+is strict 1:1 (exactly one block rendered per wake, never a catch-up backlog), so
+AMY's sample clock stays locked to real time and the sequencer tempo cannot drift.
+See `main/render_clock.{c,h}`.
+
+**Core affinity.** AMY is built with multicore/multithread disabled (required to
+avoid a FABT deadlock), so all DSP runs synchronously inside the render task. That
+task is pinned to **core 1**; USB (TinyUSB UAC), the sequencer tick, UI, and input
+are pinned to **core 0**. Heavy synthesis and the USB/timer path no longer compete
+for the same core.
+
+**Hot DSP in IRAM.** AMY's per-block hot functions (`amy_render`, `render_osc_wave`,
+`amy_fill_buffer`, `hold_and_modify`, the filter/oscillator/envelope inner loops)
+are annotated `IRAM_ATTR` so they execute from internal instruction RAM instead of
+flash/PSRAM-cached XIP, removing cache-miss stalls from the audio inner loop. The
+per-function attribute is used (rather than `.lf` "noflash" linker fragments) because
+it is honoured under GCC LTO, which renames `.text.*` sections. LTO is on across
+`main`, `synth_core`, `display`, `u8g2`, and `amy` for cross-module inlining of the
+DSP loop.
+
+**Memory placement.** Internal DRAM is the scarce resource on this part
+(flash `.text`/`.rodata` is already served via the PSRAM XIP cache), so allocations
+are placed by access pattern. The 64 KB USB ring buffer lives in PSRAM — it is touched
+only at block/frame granularity, so the latency is irrelevant there — while the
+per-output-sample clipping lookup table sits in internal DRAM where it is hot. The
+build uses 32 KB I-cache and QIO flash.
+
+**Lock-free USB audio path.** The render task (producer, core 1) and the USB mic
+task (consumer, core 0) share the ring buffer through a **single-producer/single-consumer
+lock-free ring**: atomic writer-owned and reader-owned indices with release/acquire
+ordering and no mutex, so the high-priority render task never blocks on a lock held by
+the lower-priority consumer. Writes are all-or-nothing (a full buffer drops a whole
+block cleanly rather than splicing a half-block), and the real-time path drops instead
+of stalling, with a `usb_drops` diagnostic counter. See
+`components/usb_audio/usb_audio.c`.
+
+**O(active events) sequencer tick.** The 500 µs sequencer tick scans a dense
+active-tag list (O(active events), with O(1) add/remove) rather than walking the full
+tag space, keeping the per-tick cost on core 0 proportional to what is actually playing
+so it doesn't starve the audio/USB path. Arp re-emits are coalesced to at most one per
+UI frame instead of one per parameter change.
+
+**Branch hinting.** The render loop and USB write path mark their rare/diagnostic
+branches `unlikely()` (overrun count, USB-full drop, underrun) so the compiler lays
+out the steady-state success path straight-line.
+
+Profiling and instrumentation are covered in [Diagnostics](#diagnostics) below.
+
 The component layout:
 
 | Component | Role |
@@ -94,6 +151,103 @@ The component layout:
 | `components/usb_audio/` | USB audio ring buffer / UAC glue |
 | `components/rotary_encoder/`, `components/my_buttons/` | input drivers |
 | `components/amy/` | vendored AMY engine (see [AMY-EDITS.md](AMY-EDITS.md) for local patches) |
+
+## Diagnostics
+
+All diagnostics print over the normal serial log (`idf.py monitor`) at the default
+115200 baud. There is one always-on line plus three opt-in hooks gated behind Kconfig
+so release builds carry no overhead.
+
+### Always on — render heartbeat
+
+The `app_main` idle loop prints one line every 5 s with no build flags required:
+
+```
+Main loop idle... seq_tick=N tick_hook_calls=N render_blocks=N render_overruns=N usb_drops=N render_sysclock_ms=N
+```
+
+- **`render_blocks` vs `render_sysclock_ms`** — the realtime sanity check. `render_blocks`
+  counts blocks rendered; `render_sysclock_ms` is AMY's own sample clock in ms. Over any
+  interval `render_blocks × (256 / 48000)` should equal the `render_sysclock_ms` delta. If
+  blocks fall behind wall time, render is not keeping up.
+- **`render_overruns`** — number of GPTimer ticks that fired while the previous block was
+  still rendering (i.e. a block took longer than its 5333 µs budget). A climbing value means
+  the per-block DSP cost is at the edge; it is diagnostic only (the strict 1:1 loop never
+  renders a backlog, so tempo can't drift).
+- **`usb_drops`** — whole blocks dropped because the USB ring buffer was full (host not
+  draining). Occasional drops under host stalls are expected on the real-time path; a steadily
+  climbing count means the consumer can't keep up.
+- **`seq_tick` / `tick_hook_calls`** — the sequencer's tick counter and how many times the
+  tick hook has fired, for confirming the musical clock is advancing.
+
+These are **free-running totals, not rates** — read the *delta between two lines*, not the
+absolute value.
+
+### `CONFIG_USB_AUDIO_DIAGNOSTICS` — ring-buffer detail
+
+Adds an `audio diag:` line to the same idle loop:
+
+```
+audio diag: init=1 fill=U peak_fill=U writes=N drops=N underruns=N peak_abs=N
+```
+
+- **`fill`** is the *instantaneous* sample count in the ring at the moment of the dump (a
+  spot reading, not an average); **`peak_fill`** is the high-water mark since boot.
+- **`underruns`** counts UAC reads that found less than a full frame (consumer starved);
+  **`drops`** counts producer-side full-buffer drops. Healthy steady state: both deltas ~0
+  with `fill` sitting comfortably between empty and the 32768-sample capacity.
+- **`peak_abs`** is the largest absolute sample written — useful for spotting clipping
+  headroom. The counters are written by single-owner tasks and read lock-free, so a snapshot
+  can be off by one update; treat them as advisory.
+
+### `CONFIG_AMYSYNTH_RTOS_STATS` — task & core profiling
+
+Enables a periodic dump (interval `CONFIG_AMYSYNTH_RTOS_STATS_PERIOD_MS`, default 5000):
+a per-task table (core, priority, stack high-water mark, cumulative CPU%), a per-core
+busy/idle %, and a heap snapshot (internal vs PSRAM free + largest block).
+
+Peculiarities when reading it:
+
+- **Per-task `cpu%` is cumulative since boot**, computed from each task's lifetime run-time
+  counter over the total. It is *not* the load over the last interval — a task that was busy
+  early then idled still shows a high number. For "what's hot right now," use the **per-core
+  busy%**, which *is* interval-based (it diffs the IDLE-task counters against `esp_timer` wall
+  time between dumps). The first dump only prints "baseline captured" since it has no prior
+  sample to diff.
+- **`core` for unpinned tasks** shows as a large number (`tskNO_AFFINITY`), not 0/1.
+- **`stack_hwm`** is the minimum free stack words ever seen for that task — a small value
+  (approaching 0) means that task is close to overflowing.
+- Relies on `FREERTOS_USE_TRACE_FACILITY`, `GENERATE_RUN_TIME_STATS`,
+  `VTASKLIST_INCLUDE_COREID`, and `RUN_TIME_STATS_USING_ESP_TIMER` (all set in `sdkconfig`),
+  which is why the counters are in microseconds on the `esp_timer` base.
+
+### `CONFIG_AMYSYNTH_HEAP_CHECK` — heap-corruption bisection
+
+Compiles in `HEAP_CHECK()` / `SEQ_HEAP_CHECK()` / `CORE_HEAP_CHECK()` / `ARP_HEAP_CHECK()`
+checkpoints that run `heap_caps_check_integrity_all()` at key init steps and log
+`HEAP OK` / `HEAP CORRUPT` with a label, to pin corruption to its source. Disabled, every
+checkpoint compiles to nothing.
+
+> **Watchdog caveat:** with `CONFIG_HEAP_POISONING_COMPREHENSIVE` the integrity scan is very
+> slow; running many checkpoints back-to-back inside `app_main` can starve the idle task and
+> trip the task watchdog. Use only while actively chasing a corruption bug.
+
+### Performance implications of leaving diagnostics on
+
+- **Always-on heartbeat:** negligible. A handful of counter reads plus one log line every 5 s.
+- **`USB_AUDIO_DIAGNOSTICS`:** low but non-zero. The producer/consumer track a few extra
+  counters and a peak-sample scan on the audio path; fine for tuning, but it is gated off by
+  default so the steady-state hot loop carries nothing in release builds.
+- **`AMYSYNTH_RTOS_STATS`:** the dump itself `malloc`s a `TaskStatus_t[]` and walks every task,
+  which is a brief spike on the **core 0** idle loop (where it runs), not on the core 1 audio
+  path — so it does not directly cost render budget, but a short period (e.g. 1000 ms) adds
+  steady core-0 churn. More importantly, the underlying run-time-stats facility imposes a small
+  always-on scheduler cost whenever it is compiled in. Leave it **off for release**; turn it on
+  to profile.
+- **`AMYSYNTH_HEAP_CHECK`:** potentially large and bursty (see the watchdog caveat). Debug only.
+
+General rule: the default (release) configuration has every opt-in hook disabled and only the
+cheap heartbeat active, so shipping firmware pays effectively nothing.
 
 ## Documentation
 

@@ -7,7 +7,11 @@ wired for later standalone use), driven by an OLED + encoder UI for live editing
 
 ## Prototype Video
 
-https://github.com/user-attachments/assets/c1125515-0647-46e4-b6fc-ae1bccc93855
+
+
+https://github.com/user-attachments/assets/fbd55197-f2a4-4644-a034-3f4aed3d5cd4
+
+
 
 <video src="https://rt-rtos.github.io/assets/amybox.mp4" poster="assets/1.jpg" controls muted loop playsinline width="640">
   <a href="https://rt-rtos.github.io/assets/amybox.mp4"><img src="assets/1.jpg" alt="S3-Amysynth prototype demo" width="640"></a>

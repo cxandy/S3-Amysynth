@@ -227,6 +227,9 @@ static void drone_configure_patch_synth(uint8_t synth, uint8_t voices)
     s_ev.patch_number = s_d.patch;
     d_ev_send();
 
+    /* Patch strings carry global EQ/chorus commands; keep them per-synth. */
+    synth_ui_fx_reassert_global();
+
     /* Apply filter sweep + resonance on osc0 of the patch (best-effort). */
     d_ev_begin();
     s_ev.synth                  = synth;

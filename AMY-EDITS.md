@@ -2,6 +2,146 @@
 
 Track local, project-specific changes made against the upstream AMY component here.
 
+## 2026-06-19
+
+- **Performance: pin the per-sample clipping LUT to internal DRAM (`AMY_DRAM_ATTR`).**
+  - **What:** `clipping_lookup_table` (`components/amy/src/clipping_lookup_table.h`,
+    `const uint16_t[NONLIN_RANGE]` = 4914 entries ≈ 9.6 KB) is read for **every output
+    sample** in `amy_fill_buffer` (`amy.c` soft-clip stage, ~line 1813). In flash
+    `.rodata` it is served via the PSRAM XIP cache (`CONFIG_SPIRAM_RODATA=y`), so the
+    inner output loop can take cache-miss stalls. Moved it to fast internal DRAM.
+  - **How:** New `AMY_DRAM_ATTR` macro in `amy.h` (mirrors the existing `AMY_IRAM_ATTR`):
+    `= DRAM_ATTR` on `ESP_PLATFORM` (after the already-present `#include <esp_attr.h>`),
+    no-op elsewhere. Applied to the table declaration as
+    `const uint16_t clipping_lookup_table[NONLIN_RANGE] AMY_DRAM_ATTR PROGMEM = {`.
+    `DRAM_ATTR` (data section), **not** `IRAM_ATTR` — IRAM is instruction memory and a
+    `uint16_t` table needs word-safe data placement. `PROGMEM` is empty on ESP, kept for
+    upstream portability. Edit sites marked inline `// LOCAL EDIT (... 2026-06-19) ...`.
+  - **Verified:** `.dram0.data` grew ~+9.8 KB (16,954 → 26,778 B); the table left flash
+    rodata. Affordable only because the ring-buffer move below freed ~64 KB internal first.
+  - **Risk:** Low. Pure placement change; the table is `const`, never written. Costs ~9.6 KB
+    internal DRAM (covered by the freed ring-buffer space).
+  - **Rollback:** Remove `AMY_DRAM_ATTR` from the table declaration; optionally remove the
+    `AMY_DRAM_ATTR` macro block in `amy.h`.
+
+- **Non-AMY-source change (in `components/usb_audio/usb_audio.c`):** `s_ring_buffer`
+  (`int16_t[RING_BUFFER_SIZE]` = 32768 = **64 KB**) was a static array in internal DRAM
+  `.bss`, consuming a large share of the scarce internal SRAM. Converted to a pointer
+  allocated from PSRAM via `heap_caps_malloc(..., MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)` in
+  `usb_audio_init()` (with NULL-check + mutex cleanup on failure). The buffer is accessed at
+  USB-frame / render-block granularity (memcpy chunks + mutex-guarded per-sample writes), not
+  in the per-sample DSP inner loop, so PSRAM latency is irrelevant. Verified: `.dram0.bss`
+  dropped 81,072 → 15,536 B (−64 KB). Net internal SRAM change for both edits: ≈ −55 KB used.
+
+- **Bug fix (crash): reverb delay-line OOM caused NULL-deref panic (`LoadProhibited`).**
+  - **Symptom:** Raising **Reverb** from 0 in the menu crashed with
+    `Guru Meditation Error: Core 1 panic'ed (LoadProhibited)`, `EXCVADDR=0x00000000`,
+    in `stereo_reverb` (via `amy_fill_buffer` / `amy_render_audio` / `amy_update` /
+    `amy_usb_render_task`), preceded by `unable to alloc delay line of 4096 samples`.
+  - **Root cause:** `init_stereo_reverb()` allocates ~10 delay lines via
+    `new_delay_line(..., ram_caps_delay)`. When those allocations fail, the
+    `delay_1..ref_6` pointers stay NULL, but `config_reverb()` still committed a
+    nonzero `reverb.level`, and the render guard in `amy_fill_buffer` checked **only**
+    `reverb.level > 0` — so `stereo_reverb()` ran and dereferenced NULL via
+    `DEL_IN(ref_1, ...)`. Echo never crashed because its render guard already checks
+    `echo_delay_lines[0] != NULL`; reverb had no equivalent guard. This is a strict
+    upstream robustness bug: a failed allocation should disable the effect, not crash.
+    (The underlying OOM trigger — `ram_caps_delay` pinned to internal SRAM — is fixed
+    separately in `main/main.c`; see the non-AMY note below.)
+  - **Fix (AMY source):**
+    - `delay.c` / `delay.h`: `init_stereo_reverb()` return type `void` → `bool`. On any
+      `new_delay_line()` failure it logs, frees every partial allocation
+      (`free_stereo_reverb()`), leaves all pointers NULL, and returns false. New
+      `stereo_reverb_ready()` returns `delay_1 != NULL` (init guarantees all-or-nothing).
+    - `amy.c` `config_reverb()`: only enables reverb (commits nonzero level + calls
+      `config_stereo_reverb`) when `init_stereo_reverb()` succeeds; on failure it forces
+      `reverb.level = 0` and sets the new `reverb.alloc_failed` flag.
+    - `amy.c` `amy_fill_buffer()`: reverb render guard now
+      `reverb.level > 0 && stereo_reverb_ready()` (mirrors the echo guard).
+    - `amy.h` `reverb_state_t`: new `bool alloc_failed` field.
+    - `api.c`: new `bool amy_reverb_alloc_failed(void)` getter exposing the flag so the
+      UI can show a no-serial diagnostics indicator.
+  - All edit sites are marked inline with `// LOCAL EDIT (2026-06-19): ...`.
+  - **Risk:** Low. Behaviour is unchanged when allocation succeeds (normal case). On
+    failure, reverb is simply skipped instead of crashing. The added render-path check is
+    one pointer comparison per block.
+  - **Rollback:** Revert `init_stereo_reverb()` to `void` (drop `free_stereo_reverb()`,
+    the rollback branch, and `stereo_reverb_ready()`); restore the original
+    `config_reverb()` body; restore the `reverb.level > 0`-only render guard; remove the
+    `reverb_state_t.alloc_failed` field and `amy_reverb_alloc_failed()`.
+
+- **Non-AMY-source change for this fix (in `main/main.c`):** the actual OOM. The
+  2026-06-18 perf pass pinned `amy_cfg.ram_caps_delay = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT`,
+  but the FX delay lines don't fit internally (reverb ~108 KB across 10 lines; echo a single
+  65536-sample = 256 KB line) while the internal heap's largest free block is ~32 KB.
+  Live heap confirmed PSRAM was nearly empty (psram free ≈ 7.7 MB, largest ≈ 7.6 MB), so
+  `ram_caps_delay` was moved to `MALLOC_CAP_SPIRAM`. The hot per-block synth allocations
+  (`ram_caps_events`/`synth`/`block`/`fbl`) stay internal. The OLED `OOM!` indicator for the
+  Reverb menu lives in first-party `components/synth_core/synth_ui.c` (reads
+  `amy_reverb_alloc_failed()`), not in AMY source.
+
+## 2026-06-18
+
+- **Performance pass: place the audio render hot path in internal IRAM/SRAM.** Goal was
+  lower per-block render time / more CPU headroom (heap use is not a concern). No functional
+  behavior change intended. See `.embedder/plans/1781754140057-shiny-moon.md` for the full
+  analysis and rejected options.
+
+  - **`AMY_IRAM_ATTR` macro (`components/amy/src/amy.h`):** new macro = `IRAM_ATTR` on
+    `ESP_PLATFORM` (after `#include <esp_attr.h>`), no-op elsewhere. Used instead of an `.lf`
+    linker fragment because this build uses GCC LTO, which renames/merges per-function
+    `.text.*` sections in the ltrans phase — object/symbol-granularity `noflash` fragment
+    rules silently miss and the code stays in flash (verified: symbols stayed at 0x4200…).
+    `IRAM_ATTR` rides the symbol's `.iram1` section and survives LTO (verified at 0x4037…).
+  - **Functions annotated `AMY_IRAM_ATTR`:**
+    - `amy.c`: `combine_controls`, `combine_controls_mult`, `hold_and_modify`, `mix_with_pan`,
+      `render_osc_wave`, `amy_render`, `amy_fill_buffer`.
+    - `oscillators.c`: `render_lut`, `render_lut_cub`, `render_lut_fm`, `render_lut_fb`,
+      `render_lut_fm_fb`, `render_lpf_lut`.
+    - `filters.c`: `filter_process`, `dsps_biquad_f32_ansi`, `dsps_biquad_f32_ansi_split_fb`,
+      `dsps_biquad_f32_ansi_split_fb_once`, `dsps_biquad_f32_ansi_split_fb_twice`, `scan_max`,
+      `parametric_eq_process_top16block`.
+    - `delay.c`: `apply_variable_delay`, `apply_fixed_delay`, `stereo_reverb`.
+    - `envelope.c`: `compute_mod_value`, `compute_mod_scale`, `compute_breakpoint_scale`.
+    - `log2_exp2.c`: `log2_lut`, `exp2_lut`.
+    - Several of these (e.g. `filter_process`, `combine_controls*`, `mix_with_pan`, the biquad
+      processors, delay walkers) get LTO-inlined into their IRAM callers, so they end up in
+      IRAM regardless. `.iram0.text` grew ~57KB → ~71KB; DIRAM ~49.9% used, ~171KB free.
+  - **Risk:** Low. IRAM_ATTR only relocates code; semantics unchanged. These functions call
+    flash-resident helpers, which is fine while the instruction cache is enabled (normal
+    operation — not a cache-disabled / flash-erase context). String literals in the gated
+    debug `fprintf` branches stay in flash rodata (only reachable via never-taken `osc==999`
+    / debug_flag paths). Coexists with the 2026-06-17 render-lock fix (lock calls are in the
+    now-IRAM `amy_render`, calling the flash-resident lock helpers — fine with cache on).
+  - **Rollback:** Remove the `AMY_IRAM_ATTR` prefixes from the listed functions and the macro
+    + `#include <esp_attr.h>` in `amy.h`.
+
+- **Performance pass: drop `assert()` from pure-DSP hot files (`components/amy/CMakeLists.txt`).**
+  The build enables assertions globally (`CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_ENABLE`),
+  which emits runtime checks inside per-sample loops (e.g. `filters.c`
+  `assert(FILTER_SCALEUP_BITS == 0)` in the biquad split functions). Appended `-DNDEBUG` via
+  `set_property(... APPEND_STRING PROPERTY COMPILE_FLAGS " -DNDEBUG")` to **only**
+  `filters.c`, `oscillators.c`, `envelope.c`, `delay.c`, `log2_exp2.c` — files with no
+  structural/cross-core state. `amy.c` and the rest of the project keep their asserts
+  (osc alloc/free, delta queue, render lock invariants).
+  - **Risk:** Low. Only removes always-true asserts from leaf DSP files. Structural safety
+    asserts elsewhere are untouched.
+  - **Rollback:** Remove the `AMY_DSP_HOT_FILES` block in `components/amy/CMakeLists.txt`.
+
+- **Considered but NOT changed (recorded so we don't re-investigate):**
+  - LUT wavetable data placement in DRAM — `PROGMEM` (the tag) is shared with the 102KB
+    `pcm` table + piano data, so a blanket redefine is unsafe; per-table `DRAM_ATTR` is
+    broad/fragile; and with flash QIO + 32KB I/D-cache the ≤4KB LUTs cache well. Skipped.
+  - Active-oscillator index in `amy_render` — would require mutating an active set from the
+    zero-amp reaper *inside* the render loop (amy.c:1544), the same mid-iteration mutation
+    behind the 2026-06-17 LoadProhibited race. After the IRAM + internal-SRAM moves each
+    scan check is only a few cycles, so high risk / low gain. Rejected.
+  - `-ffast-math` — AMY uses NaN sentinels (`nanf` / `AMY_IS_SET`); fast-math assumes no
+    NaNs and would break those checks. Rejected.
+
+  (Non-AMY-source changes for this pass live in `main/main.c` (ram_caps → internal SRAM) and
+  `sdkconfig.defaults` (I-cache 16→32KB, flash QOUT→QIO).)
+
 ## 2026-06-17
 
 - **Bug fix (SMP crash): unlocked render path races patch-toggle frees in `components/amy/src/amy.c`**

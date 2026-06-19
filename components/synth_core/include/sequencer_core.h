@@ -32,6 +32,22 @@ uint16_t sequencer_core_get_drum_patch(uint8_t layer_idx, uint8_t track);
 uint16_t sequencer_core_cycle_drum_patch(uint8_t layer_idx, uint8_t track,
                                          int dir);
 
+/* ── Drum sound source (whole-layer Synth vs PCM) ──
+ * SEQ_DRUM_SYNTH = tonal AMY patches (Juno/DX7) per track, shaped by the
+ * accent/jitter velocity + per-track pitch + EG0 path. SEQ_DRUM_PCM = the
+ * built-in Roland-808 samples per track, routed through the SAME velocity +
+ * pitch path (render_pcm tunes the sample by midi_note), so PCM hits are
+ * humanized rather than the old fixed-velocity "machine-gun" feel. The toggle
+ * applies to the entire drum layer; set re-configures the drum synth slots in
+ * place (safe while playing). */
+typedef enum {
+    SEQ_DRUM_SYNTH = 0,
+    SEQ_DRUM_PCM   = 1,
+} seq_drum_engine_t;
+
+void              sequencer_core_set_drum_engine(seq_drum_engine_t engine);
+seq_drum_engine_t sequencer_core_get_drum_engine(void);
+
 /* ── Per-row melodic ADSR envelope (runtime-editable) ──
  * Scoped per row (per track); each row has its own AMY synth, so its envelope
  * is fully independent. See seq_env_t in display_seq.h for the extension path

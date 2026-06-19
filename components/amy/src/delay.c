@@ -185,11 +185,11 @@ void delay_line_in_out_fixed_delay(SAMPLE *in, SAMPLE *out, int n_samples, int d
 }
 
 
-void apply_variable_delay(SAMPLE *block, delay_line_t *delay_line, SAMPLE *delay_mod, SAMPLE delay_scale, SAMPLE mix_level, SAMPLE feedback_level) {
+AMY_IRAM_ATTR void apply_variable_delay(SAMPLE *block, delay_line_t *delay_line, SAMPLE *delay_mod, SAMPLE delay_scale, SAMPLE mix_level, SAMPLE feedback_level) {
     delay_line_in_out(block, block, AMY_BLOCK_SIZE, delay_mod, delay_scale, delay_line, mix_level, feedback_level);
 }
 
-void apply_fixed_delay(SAMPLE *block, delay_line_t *delay_line, uint32_t delay_samples, SAMPLE mix_level, SAMPLE feedback, SAMPLE filter_coef) {
+AMY_IRAM_ATTR void apply_fixed_delay(SAMPLE *block, delay_line_t *delay_line, uint32_t delay_samples, SAMPLE mix_level, SAMPLE feedback, SAMPLE filter_coef) {
     delay_line_in_out_fixed_delay(block, block, AMY_BLOCK_SIZE, delay_samples, delay_line, mix_level, feedback, filter_coef);
 }
 
@@ -241,25 +241,61 @@ void config_stereo_reverb(float a_liveness, float crossover_hz, float damping) {
 #define REF6SAMPS 602   // 13.645 ms
 
 
-void init_stereo_reverb(void) {
-    if (delay_1 == NULL) {
-        delay_1 = new_delay_line(DELAY_POW2, DELAY1SAMPS, amy_global.config.ram_caps_delay);
-        delay_2 = new_delay_line(DELAY_POW2, DELAY2SAMPS, amy_global.config.ram_caps_delay);
-        delay_3 = new_delay_line(DELAY_POW2, DELAY3SAMPS, amy_global.config.ram_caps_delay);
-        delay_4 = new_delay_line(DELAY_POW2, DELAY4SAMPS, amy_global.config.ram_caps_delay);
-
-        ref_1 = new_delay_line(4096, REF1SAMPS, amy_global.config.ram_caps_delay);
-        ref_2 = new_delay_line(2048, REF2SAMPS, amy_global.config.ram_caps_delay);
-        ref_3 = new_delay_line(2048, REF3SAMPS, amy_global.config.ram_caps_delay);
-        ref_4 = new_delay_line(1024, REF4SAMPS, amy_global.config.ram_caps_delay);
-        ref_5 = new_delay_line(1024, REF5SAMPS, amy_global.config.ram_caps_delay);
-        ref_6 = new_delay_line(1024, REF6SAMPS, amy_global.config.ram_caps_delay);
-        
-        config_stereo_reverb(INITIAL_LIVENESS, INITIAL_XOVER_HZ, INITIAL_DAMPING);
+// LOCAL EDIT (2026-06-19): reverb OOM crash-safety. See AMY-EDITS.md.
+static void free_stereo_reverb(void) {
+    // Free any partially-allocated delay lines and reset every pointer to NULL
+    // so the render path (which guards on delay_1 != NULL) stays safe.
+    delay_line_t **lines[] = {
+        &delay_1, &delay_2, &delay_3, &delay_4,
+        &ref_1, &ref_2, &ref_3, &ref_4, &ref_5, &ref_6,
+    };
+    for (unsigned i = 0; i < sizeof(lines) / sizeof(lines[0]); ++i) {
+        if (*lines[i] != NULL) {
+            free_delay_line(*lines[i]);
+            *lines[i] = NULL;
+        }
     }
 }
 
-void stereo_reverb(SAMPLE *r_in, SAMPLE *l_in, SAMPLE *r_out, SAMPLE *l_out, int n_samples, SAMPLE level) {
+// Returns true if all reverb delay lines are allocated and ready.
+// On allocation failure it rolls back every partial allocation and returns
+// false, leaving all pointers NULL so stereo_reverb() is never run on them.
+bool init_stereo_reverb(void) {
+    if (delay_1 != NULL)
+        return true;  // already initialised.
+
+    delay_1 = new_delay_line(DELAY_POW2, DELAY1SAMPS, amy_global.config.ram_caps_delay);
+    delay_2 = new_delay_line(DELAY_POW2, DELAY2SAMPS, amy_global.config.ram_caps_delay);
+    delay_3 = new_delay_line(DELAY_POW2, DELAY3SAMPS, amy_global.config.ram_caps_delay);
+    delay_4 = new_delay_line(DELAY_POW2, DELAY4SAMPS, amy_global.config.ram_caps_delay);
+
+    ref_1 = new_delay_line(4096, REF1SAMPS, amy_global.config.ram_caps_delay);
+    ref_2 = new_delay_line(2048, REF2SAMPS, amy_global.config.ram_caps_delay);
+    ref_3 = new_delay_line(2048, REF3SAMPS, amy_global.config.ram_caps_delay);
+    ref_4 = new_delay_line(1024, REF4SAMPS, amy_global.config.ram_caps_delay);
+    ref_5 = new_delay_line(1024, REF5SAMPS, amy_global.config.ram_caps_delay);
+    ref_6 = new_delay_line(1024, REF6SAMPS, amy_global.config.ram_caps_delay);
+
+    if (delay_1 == NULL || delay_2 == NULL || delay_3 == NULL || delay_4 == NULL ||
+        ref_1 == NULL || ref_2 == NULL || ref_3 == NULL ||
+        ref_4 == NULL || ref_5 == NULL || ref_6 == NULL) {
+        fprintf(stderr, "init_stereo_reverb: allocation failed, reverb disabled\n");
+        free_stereo_reverb();
+        return false;
+    }
+
+    config_stereo_reverb(INITIAL_LIVENESS, INITIAL_XOVER_HZ, INITIAL_DAMPING);
+    return true;
+}
+
+bool stereo_reverb_ready(void) {
+    // delay_1 is the first line allocated and the last freed; init_stereo_reverb()
+    // guarantees either all lines are allocated or all are NULL, so this single
+    // check is sufficient for the render-path guard.
+    return delay_1 != NULL;
+}
+
+AMY_IRAM_ATTR void stereo_reverb(SAMPLE *r_in, SAMPLE *l_in, SAMPLE *r_out, SAMPLE *l_out, int n_samples, SAMPLE level) {
     // Stereo reverb.  *{r,l}_in each point to n_samples input samples.
     // n_samples are written to {r,l}_out.
     // Recreate

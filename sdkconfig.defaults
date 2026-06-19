@@ -25,3 +25,20 @@ CONFIG_UAC_MIC_TASK_CORE=0
 #
 CONFIG_HEAP_POISONING_COMPREHENSIVE=n
 CONFIG_CU_GCC_LTO_ENABLE=y
+#
+# PERF (2026-06): double the ESP32-S3 instruction cache from 16KB to 32KB.
+# Most AMY DSP code still executes from flash through this cache (only the
+# hottest functions are pinned to IRAM via components/amy/amy_iram.lf), so a
+# larger I-cache reduces miss-stalls on the render path. Costs 16KB of internal
+# SRAM, which we have to spare. Keep the 8-way / 32B line settings.
+#
+CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB=y
+CONFIG_ESP32S3_INSTRUCTION_CACHE_8WAYS=y
+CONFIG_ESP32S3_INSTRUCTION_CACHE_LINE_32B=y
+#
+# PERF (2026-06): flash QIO @ 80MHz. Was QOUT (quad-out, 2x slower address
+# phase). The S3-WROOM-1 in-package quad flash supports QIO; FLASH_MODE_AUTO_DETECT
+# is on, so if the chip ever rejects QIO the bootloader falls back loudly. Faster
+# instruction fetch for all flash-resident (non-IRAM) code.
+#
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y

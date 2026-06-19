@@ -241,6 +241,11 @@ void amy_add_event(amy_event *e) {
     }
 }
 
+// LOCAL EDIT (2026-06-19): reverb OOM diagnostics getter. See AMY-EDITS.md.
+bool amy_reverb_alloc_failed(void) {
+    return amy_global.reverb.alloc_failed;
+}
+
 // defined in midi_mappings.c
 extern void juno_filter_midi_handler(uint8_t * bytes, uint16_t len, uint8_t is_sysex);
 extern void midi_cc_handler(uint8_t * bytes, uint16_t len, uint8_t is_sysex);

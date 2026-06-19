@@ -12,7 +12,7 @@ static inline SAMPLE lut_val(SAMPLE frac, const LUTSAMPLE *table, const int log2
 }
 
 
-SAMPLE log2_lut(SAMPLE x) {
+AMY_IRAM_ATTR SAMPLE log2_lut(SAMPLE x) {
     // assert(x > 0);
     int scale = 0;
     while (x < F2S(1.0f)) {
@@ -28,7 +28,7 @@ SAMPLE log2_lut(SAMPLE x) {
 }
 
 
-SAMPLE exp2_lut(SAMPLE x) {
+AMY_IRAM_ATTR SAMPLE exp2_lut(SAMPLE x) {
     int offset = INT_OF_S(x, 0);
     SAMPLE x_frac = S_FRAC_OF_S(x, 0);
     // lut_val is negated because table is stored as negative (to reach 1.0).

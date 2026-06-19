@@ -10,6 +10,12 @@
 #include <string.h>
 #include "freertos/semphr.h"
 
+/* Defined in synth_ui.c (same component). Re-imposes the user's cached global
+ * FX after a patch load so a preset's trailing global EQ/chorus commands don't
+ * leak across synths. Forward-declared here to avoid pulling the u8g2/display
+ * headers (synth_ui.h) into the audio core. */
+void synth_ui_fx_reassert_global(void);
+
 /* DEBUG: bisect heap corruption inside core init. Gated by
  * CONFIG_AMYSYNTH_HEAP_CHECK; compiles to nothing when off (default). */
 #if CONFIG_AMYSYNTH_HEAP_CHECK
@@ -105,21 +111,54 @@ extern uint32_t sequencer_ticks(void);
 #define SEQ_MIDI_NOTE_MIN     24    /* C1 */
 #define SEQ_MIDI_NOTE_MAX     96    /* C7 */
 
-/* Curated drum-patch cycle list (Juno only). The per-track patch-select control
- * steps through this list (wraps); it is NOT the full 0..256 range. */
+/* Curated drum-patch cycle list for SYNTH (tonal-patch) drum mode. The per-track
+ * patch-select control steps through this list (wraps); it is NOT the full
+ * 0..256 range. Now spans both banks: the DX7 idiophones (BLOCK/LOG DRUM/COW
+ * BELL/MARIMBA/etc.) have far sharper attack + shorter decay than the Juno
+ * "drum" patches, so they read as real percussion. Pitch still drives timbre
+ * (low = body/kick, high = hat/shaker) — see role-based defaults below. */
 static const uint16_t SEQ_DRUM_PATCH_LIST[] = {
-    58,   /* Juno Drum Booms   */
-    43,   /* Juno Snare Drum   */
-    44,   /* Juno Tom Toms     */
-    46,   /* Juno Shaker       */
-    61,   /* Juno Hand Claps   */
-    70,   /* Juno Perc. Pluck  */
-    113,  /* Juno Melodic Taps */
-    17,   /* Juno Steel Drums  */
-    18,   /* Juno Xylophone    */
-    56,   /* Juno Gong         */
+    245,  /* DX7 B.DRM-SNAR  — dedicated bass-drum/snare, closest to a kit voice */
+    221,  /* DX7 BLOCK       — woodblock, tight click (hat/rim)                  */
+    223,  /* DX7 LOG DRUM    — tuned tom/perc, musical                          */
+    220,  /* DX7 COW BELL    — metallic accent                                  */
+    149,  /* DX7 MARIMBA     — clean mallet (melodic perc / blips)              */
+    215,  /* DX7 XYLOPHONE   — bright mallet (hat-ish at high pitch)            */
+    148,  /* DX7 VIBE 1      — soft mallet (ghost notes)                        */
+    219,  /* DX7 BELLS       — bell accent                                      */
+    58,   /* Juno Drum Booms — boomy low (kick body at low pitch)               */
+    61,   /* Juno Hand Claps — clap                                             */
+    46,   /* Juno Shaker     — shaker/hat texture                               */
+    70,   /* Juno Perc Pluck — plucky perc                                      */
 };
 #define SEQ_DRUM_PATCH_COUNT ((int)(sizeof(SEQ_DRUM_PATCH_LIST) / sizeof(SEQ_DRUM_PATCH_LIST[0])))
+
+/* Default per-track SYNTH patches by role: kick, snare/clap, hat, perc. Indices
+ * into nothing — these are raw patch numbers chosen for a 4-on-floor kit. */
+static const uint16_t SEQ_DRUM_DEFAULT_PATCH[SEQ_TRACKS] = {
+    58,   /* track 0: kick  — Juno Drum Booms at a low pitch = thumpy body */
+    245,  /* track 1: snare — DX7 B.DRM-SNAR                              */
+    221,  /* track 2: hat   — DX7 BLOCK at high pitch = tight tick        */
+    220,  /* track 3: perc  — DX7 COW BELL accent                        */
+};
+
+/* Role-based default pitches: pitch IS timbre for these tuned patches.
+ * Low kick body, mid snare, high hat tick, mid-high perc. */
+static const uint8_t SEQ_DRUM_DEFAULT_NOTE[SEQ_TRACKS] = {
+    31,   /* track 0: kick  — low G1, gives body/thump        */
+    45,   /* track 1: snare — A2, mid crack                    */
+    72,   /* track 2: hat   — C5, bright tick                  */
+    60,   /* track 3: perc  — C4, present accent               */
+};
+
+/* Built-in 808 PCM sample indices (from amy/src/pcm_tiny.h pcm_map[]) used by
+ * PCM drum mode, one per track: kick, snare, closed-hat, clap. */
+static const int16_t SEQ_DRUM_PCM_PRESET[SEQ_TRACKS] = {
+    1,    /* track 0: [1] 808-KIK 4-D    */
+    2,    /* track 1: [2] 808-SNR 4-D    */
+    6,    /* track 2: [6] 808-C-HAT1-D   */
+    9,    /* track 3: [9] 808-DRYCLP-D   */
+};
 
 /* ── Melodic synth defaults ──────────────────────────────────────────── */
 #define SEQ_MEL_PATCH         CONFIG_SEQ_MELODIC_PATCH
@@ -147,6 +186,10 @@ static uint8_t     s_num_layers   = 0;
 static uint8_t     s_cached_step[MAX_LAYERS];
 static bool        s_playing      = true;
 static uint16_t    s_bpm          = 120;
+/* Drum sound source for the whole drum layer. SYNTH = tonal AMY patches (Juno/
+ * DX7) per track; PCM = built-in 808 samples per track. Switchable at runtime;
+ * changing it re-configures the drum layer's synth slots in place. */
+static seq_drum_engine_t s_drum_engine = SEQ_DRUM_SYNTH;
 static uint16_t    s_melodic_patch = SEQ_MEL_PATCH;
 /* Running allocator for per-row melodic synth slots. Each melodic layer claims
  * a contiguous block of SEQ_TRACKS slots starting here; reset in core_init. */
@@ -434,8 +477,37 @@ static void sequencer_configure_synth(uint8_t layer_idx)
     seq_layer_t *layer = &s_layers[layer_idx];
 
     if (layer->type == SEQ_LAYER_DRUM) {
-        /* Per-track: each drum row loads its OWN patch onto its OWN synth slot,
-         * note-offs honored (flags = 0). Mirrors the melodic loop below. */
+        if (s_drum_engine == SEQ_DRUM_PCM) {
+            /* PCM mode: each track's synth slot becomes a 1-osc PCM player loaded
+             * with a built-in 808 sample. We allocate the voice with
+             * oscs_per_voice=1 (no patch string), then set wave=PCM + preset on
+             * osc 0. Note-on/off + velocity + pitch flow through the SAME emit
+             * path as synth mode, so hits get accent/jitter dynamics and the
+             * sample is tuned by midi_note (render_pcm) — not the old clinical
+             * fixed-velocity drumkit path. PCM carries no global EQ/chorus, so no
+             * reassert needed here. */
+            for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
+                /* Allocate/realloc the slot as a 1-osc voice (clears old patch). */
+                seq_ev_begin();
+                s_ev.num_voices    = layer->num_voices;
+                s_ev.oscs_per_voice = 1;
+                s_ev.synth         = layer->synth_id[t];
+                s_ev.synth_flags   = layer->synth_flags;  /* 0 */
+                seq_ev_send();
+
+                /* Configure osc 0 of this synth as the chosen 808 PCM sample. */
+                seq_ev_begin();
+                s_ev.synth  = layer->synth_id[t];
+                s_ev.osc    = 0;
+                s_ev.wave   = PCM;
+                s_ev.preset = SEQ_DRUM_PCM_PRESET[t];
+                seq_ev_send();
+            }
+            return;
+        }
+
+        /* SYNTH mode — per-track: each drum row loads its OWN patch onto its OWN
+         * synth slot, note-offs honored (flags = 0). Mirrors the melodic loop. */
         for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
             seq_ev_begin();
             s_ev.patch_number = layer->track_patch[t];
@@ -444,6 +516,8 @@ static void sequencer_configure_synth(uint8_t layer_idx)
             s_ev.synth_flags  = layer->synth_flags;   /* 0 */
             seq_ev_send();
         }
+        /* Patch strings carry global EQ/chorus commands; keep them per-synth. */
+        synth_ui_fx_reassert_global();
         return;
     }
 
@@ -456,6 +530,8 @@ static void sequencer_configure_synth(uint8_t layer_idx)
         s_ev.synth_flags  = layer->synth_flags;
         seq_ev_send();
     }
+    /* Patch strings carry global EQ/chorus commands; keep them per-synth. */
+    synth_ui_fx_reassert_global();
     sequencer_configure_melodic_envelope(layer_idx);
 }
 
@@ -603,20 +679,20 @@ uint8_t sequencer_core_add_layer(seq_layer_type_t type, uint8_t num_steps)
          * envelope shapes the tail. */
         for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
             layer->synth_id[t]   = (uint8_t)(SEQ_DRUM_SYNTH_BASE + t);
-            /* Default per-track patch = first SEQ_TRACKS entries of the list. */
-            layer->track_patch[t] = SEQ_DRUM_PATCH_LIST[t % SEQ_DRUM_PATCH_COUNT];
+            /* Role-based default patch per track (kick/snare/hat/perc). */
+            layer->track_patch[t] = SEQ_DRUM_DEFAULT_PATCH[t];
         }
         layer->patch       = layer->track_patch[0];  /* display fallback */
         layer->synth_flags = 0;
         layer->num_voices  = SEQ_DRUM_VOICES;
-        /* Sensible playable pitches per track (low->high) so the tonal drum
-         * patches sound distinct; pitch stays user-editable. */
-        static const uint8_t drum_notes[SEQ_TRACKS] = {36, 48, 55, 60};
+        /* Role-based pitches: pitch IS timbre for these tuned patches AND tunes
+         * the 808 samples in PCM mode (render_pcm shifts by midi_note). Low kick
+         * body, mid snare, high hat tick, mid-high perc; stays user-editable. */
         for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
-            s_track_source_note[idx][t] = drum_notes[t];
-            layer->track_base_note[t] = drum_notes[t];
+            s_track_source_note[idx][t] = SEQ_DRUM_DEFAULT_NOTE[t];
+            layer->track_base_note[t] = SEQ_DRUM_DEFAULT_NOTE[t];
             for (uint8_t s = 0; s < SEQ_MAX_STEPS; s++) {
-                layer->step_note[t][s] = drum_notes[t];
+                layer->step_note[t][s] = SEQ_DRUM_DEFAULT_NOTE[t];
             }
         }
     } else {
@@ -716,6 +792,15 @@ void sequencer_core_set_drum_patch(uint8_t layer_idx, uint8_t track,
     layer->track_patch[track] = patch_number;
     if (track == 0) layer->patch = patch_number;  /* keep display fallback live */
 
+    /* In PCM mode the slot is a PCM player, not a patch — store the selection for
+     * when we switch back to SYNTH mode, but don't push a patch load now (it
+     * would clobber the PCM osc). */
+    if (s_drum_engine == SEQ_DRUM_PCM) {
+        ESP_LOGI(TAG, "drum L%u track %u patch -> %u (stored; PCM active)",
+                 layer_idx, track, (unsigned)patch_number);
+        return;
+    }
+
     /* Reload only this track's synth slot with the new patch. */
     seq_ev_begin();
     s_ev.patch_number = patch_number;
@@ -723,6 +808,9 @@ void sequencer_core_set_drum_patch(uint8_t layer_idx, uint8_t track,
     s_ev.synth        = layer->synth_id[track];
     s_ev.synth_flags  = layer->synth_flags;  /* 0 */
     seq_ev_send();
+
+    /* Patch strings carry global EQ/chorus commands; keep them per-synth. */
+    synth_ui_fx_reassert_global();
 
     ESP_LOGI(TAG, "drum L%u track %u patch -> %u",
              layer_idx, track, (unsigned)patch_number);
@@ -749,6 +837,31 @@ uint16_t sequencer_core_cycle_drum_patch(uint8_t layer_idx, uint8_t track,
     uint16_t next = SEQ_DRUM_PATCH_LIST[ni];
     sequencer_core_set_drum_patch(layer_idx, track, next);
     return next;
+}
+
+/* ── Drum sound source (Synth vs PCM) ───────────────────────────────────── */
+
+void sequencer_core_set_drum_engine(seq_drum_engine_t engine)
+{
+    if (engine != SEQ_DRUM_SYNTH && engine != SEQ_DRUM_PCM) return;
+    if (s_drum_engine == engine) return;
+    s_drum_engine = engine;
+
+    /* Re-configure every drum layer's synth slots in place for the new source.
+     * The grid/velocity/pitch and scheduled note events are untouched, so the
+     * pattern keeps playing — only the per-track sound source swaps. */
+    for (uint8_t i = 0; i < s_num_layers; i++) {
+        if (s_layers[i].type == SEQ_LAYER_DRUM) {
+            sequencer_configure_synth(i);
+        }
+    }
+    ESP_LOGI(TAG, "drum engine -> %s",
+             engine == SEQ_DRUM_PCM ? "PCM" : "SYNTH");
+}
+
+seq_drum_engine_t sequencer_core_get_drum_engine(void)
+{
+    return s_drum_engine;
 }
 
 /* ── Arpeggiator support ─────────────────────────────────────────────────
@@ -802,6 +915,8 @@ void sequencer_core_arp_configure(uint16_t patch_number, uint8_t num_voices)
     s_ev.synth        = SEQ_ARP_SYNTH;
     s_ev.synth_flags  = 0;
     seq_ev_send();
+    /* Patch strings carry global EQ/chorus commands; keep them per-synth. */
+    synth_ui_fx_reassert_global();
     ESP_LOGI(TAG, "arp synth %u patch -> %u (%u voices)",
              (unsigned)SEQ_ARP_SYNTH, (unsigned)patch_number, (unsigned)num_voices);
 }

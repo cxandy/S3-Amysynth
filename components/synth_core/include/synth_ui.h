@@ -66,6 +66,14 @@ void synth_ui_drone_handle_button(void);
 /* Cycle the drone's PATCH-mode preset (hold+turn gesture on the drone screen). */
 void synth_ui_drone_cycle_patch(int delta);
 
+/* Re-impose the cached global FX (EQ/echo/chorus/reverb) after a synth patch
+ * load. Every AMY built-in Juno patch ends with global EQ/chorus commands, so
+ * loading a preset onto any synth would otherwise re-skin the whole mix's FX.
+ * The sequencer/arp/drone patch-load paths call this immediately after loading;
+ * it is a no-op while the user has enabled the "Preset FX" menu toggle (i.e.
+ * deliberately letting presets drive the global FX). */
+void synth_ui_fx_reassert_global(void);
+
 /* Global state (bpm is read directly by encoder_task in main.c) */
 extern synth_ui_state_t seq_state;
 

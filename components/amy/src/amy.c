@@ -314,9 +314,19 @@ void config_reverb(float level, float liveness, float damping, float xover_hz) {
     if (level > 0) {
         //printf("config_reverb: level %f liveness %f xover %f damping %f\n",
         //      level, liveness, xover_hz, damping);
-        if (amy_global.reverb.level == 0) { 
-            init_stereo_reverb();  // In case it's the first time
+        // LOCAL EDIT (2026-06-19): reverb OOM crash-safety. See AMY-EDITS.md.
+        // Ensure the delay lines exist before enabling reverb. init_stereo_reverb()
+        // returns false on OOM (and leaves every delay line NULL); in that case we
+        // must NOT commit a nonzero level or the render path would dereference NULL.
+        if (!init_stereo_reverb()) {
+            amy_global.reverb.alloc_failed = true;
+            amy_global.reverb.level = 0;
+            amy_global.reverb.liveness = liveness;
+            amy_global.reverb.damping = damping;
+            amy_global.reverb.xover_hz = xover_hz;
+            return;
         }
+        amy_global.reverb.alloc_failed = false;
         config_stereo_reverb(liveness, xover_hz, damping);
     }
     amy_global.reverb.level = F2S(level);
@@ -1329,14 +1339,14 @@ void play_delta(struct delta *d) {
     AMY_PROFILE_STOP(PLAY_DELTA)
 }
 
-float combine_controls(float *controls, float *coefs) {
+AMY_IRAM_ATTR float combine_controls(float *controls, float *coefs) {
     float result = 0;
     for (int i = 0; i < NUM_COMBO_COEFS; ++i)
         result += coefs[i] * controls[i];
     return result;
 }
 
-float combine_controls_mult(float *controls, float *coefs) {
+AMY_IRAM_ATTR float combine_controls_mult(float *controls, float *coefs) {
     float result = 1.0;
     for (int i = 0; i < NUM_COMBO_COEFS; ++i)
         if (coefs[i] != 0)
@@ -1353,7 +1363,7 @@ float combine_controls_mult(float *controls, float *coefs) {
 extern float amy_web_cv_1;
 extern float amy_web_cv_2;
 #endif
-void hold_and_modify(uint16_t osc) {
+AMY_IRAM_ATTR void hold_and_modify(uint16_t osc) {
     AMY_PROFILE_START(HOLD_AND_MODIFY)
     float ctrl_inputs[NUM_COMBO_COEFS];
     ctrl_inputs[COEF_CONST] = 1.0f;
@@ -1449,7 +1459,7 @@ static inline float rgain_of_pan(float pan) {
 }
 
 
-void mix_with_pan(SAMPLE *stereo_dest, SAMPLE *mono_src, float pan_start, float pan_end) {
+AMY_IRAM_ATTR void mix_with_pan(SAMPLE *stereo_dest, SAMPLE *mono_src, float pan_start, float pan_end) {
     AMY_PROFILE_START(MIX_WITH_PAN)
     /* copy a block_size of mono samples into an interleaved stereo buffer, applying pan */
     if(AMY_NCHANS==1) {
@@ -1472,7 +1482,7 @@ void mix_with_pan(SAMPLE *stereo_dest, SAMPLE *mono_src, float pan_start, float 
 }
 
 
-SAMPLE render_osc_wave(uint16_t osc, uint8_t core, SAMPLE* buf) {
+AMY_IRAM_ATTR SAMPLE render_osc_wave(uint16_t osc, uint8_t core, SAMPLE* buf) {
     AMY_PROFILE_START(RENDER_OSC_WAVE)
     // Returns abs max of what it wrote.
     //fprintf(stderr, "+render_osc_wave: t=%ld core=%d buf=0x%lx (%f, %f, %f, %f...) osc=%d osc_t=%ld\n",
@@ -1557,7 +1567,7 @@ SAMPLE render_osc_wave(uint16_t osc, uint8_t core, SAMPLE* buf) {
     return max_val;
 }
 
-void amy_render(uint16_t start, uint16_t end, uint8_t core) {
+AMY_IRAM_ATTR void amy_render(uint16_t start, uint16_t end, uint8_t core) {
     AMY_PROFILE_START(AMY_RENDER)
     // LOCAL EDIT (S3-Amysynth, 2026-06-17): hold amy_queue_lock across the whole
     // render so structural mutations to synth[]/msynth[] (free_osc/alloc_osc via
@@ -1707,7 +1717,7 @@ void amy_process_event(amy_event *e) {
     }
 }
 
-int16_t * amy_fill_buffer() {
+AMY_IRAM_ATTR int16_t * amy_fill_buffer() {
     AMY_PROFILE_START(AMY_FILL_BUFFER)
     #ifdef __EMSCRIPTEN__
     // post a message to the main thread of the audioworklet (amy main, in this case) that a block has been finished
@@ -1757,8 +1767,11 @@ int16_t * amy_fill_buffer() {
         }
     }
     if(AMY_HAS_REVERB) {
-        // apply reverb.
-        if(amy_global.reverb.level > 0) {
+        // LOCAL EDIT (2026-06-19): added && stereo_reverb_ready() guard. See AMY-EDITS.md.
+        // apply reverb. The stereo_reverb_ready() guard mirrors the echo guard
+        // above: if the delay lines failed to allocate, reverb.level is forced to
+        // 0 by config_reverb(), but this is a final defence against NULL deref.
+        if(amy_global.reverb.level > 0 && stereo_reverb_ready()) {
             if(AMY_NCHANS == 1) {
                 stereo_reverb(fbl[0], NULL, fbl[0], NULL, AMY_BLOCK_SIZE, amy_global.reverb.level);
             } else {

@@ -117,7 +117,7 @@ const LUT *choose_from_lutset(float period, const LUT *lutset) {
 #define NOTHING ;
 
 
-PHASOR render_lut_fm_fb(SAMPLE* buf,
+AMY_IRAM_ATTR PHASOR render_lut_fm_fb(SAMPLE* buf,
                         PHASOR phase, 
                         PHASOR step,
                         SAMPLE incoming_amp, SAMPLE ending_amp,
@@ -142,7 +142,7 @@ PHASOR render_lut_fm_fb(SAMPLE* buf,
     return phase;
 }
 
-PHASOR render_lut_fb(SAMPLE* buf,
+AMY_IRAM_ATTR PHASOR render_lut_fb(SAMPLE* buf,
                      PHASOR phase,
                      PHASOR step,
                      SAMPLE incoming_amp, SAMPLE ending_amp,
@@ -167,7 +167,7 @@ PHASOR render_lut_fb(SAMPLE* buf,
     return phase;
 }
 
-PHASOR render_lut_fm(SAMPLE* buf,
+AMY_IRAM_ATTR PHASOR render_lut_fm(SAMPLE* buf,
                      PHASOR phase,
                      PHASOR step,
                      SAMPLE incoming_amp, SAMPLE ending_amp,
@@ -188,7 +188,7 @@ PHASOR render_lut_fm(SAMPLE* buf,
     return phase;
 }
 
-PHASOR render_lut(SAMPLE* buf,
+AMY_IRAM_ATTR PHASOR render_lut(SAMPLE* buf,
                   PHASOR phase,
                   PHASOR step,
                   SAMPLE incoming_amp, SAMPLE ending_amp,
@@ -208,7 +208,7 @@ PHASOR render_lut(SAMPLE* buf,
     return phase;
 }
 
-PHASOR render_lut_cub(SAMPLE* buf,
+AMY_IRAM_ATTR PHASOR render_lut_cub(SAMPLE* buf,
                       PHASOR phase,
                       PHASOR step,
                       SAMPLE incoming_amp, SAMPLE ending_amp,
@@ -264,7 +264,7 @@ void pulse_note_on(uint16_t osc, float freq) {
     synth[osc]->lut = choose_from_lutset(period_samples, saw_fxpt_lutset);
 }
 
-SAMPLE render_lpf_lut(SAMPLE* buf, uint16_t osc, int8_t is_square, int8_t direction, SAMPLE dc_offset) {
+AMY_IRAM_ATTR SAMPLE render_lpf_lut(SAMPLE* buf, uint16_t osc, int8_t is_square, int8_t direction, SAMPLE dc_offset) {
     AMY_PROFILE_START(RENDER_LPF_LUT)
     // Common function for pulse and saw.
     float freq = freq_of_logfreq(msynth[osc]->logfreq);

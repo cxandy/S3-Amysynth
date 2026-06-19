@@ -26,7 +26,8 @@
 #include "esp_timer.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
-#include "esp_task_wdt.h"
+#include "render_clock.h"
+#include "esp_compiler.h"
 
 static const char *TAG = "main"; // For ESP_LOG and related logs in this file
 
@@ -75,7 +76,15 @@ static volatile long count = 0; // For encoder count
 static volatile uint32_t s_last_seq_tick = 0;
 static volatile uint32_t s_seq_tick_hook_count = 0;
 static volatile uint32_t s_render_block_count = 0;
-static volatile uint32_t s_last_render_sysclock_ms = 0;
+// Counts render ticks that arrived while the previous block was still rendering
+// (i.e. amy_update() took >1 block period). Pure diagnostic — strict 1:1 pacing
+// never renders the backlog. A climbing value means render is falling behind
+// realtime (reduce per-block cost), mirroring the reference's "i2s underrun".
+static volatile uint32_t s_render_overruns = 0;
+// Counts render blocks dropped because the USB ring buffer was full (host slow /
+// not draining). Pure diagnostic. In the real-time drop path a full buffer means
+// the whole block is discarded (all-or-nothing) to keep AMY phase aligned.
+static volatile uint32_t s_usb_drops = 0;
 // Set true while the patch-select button (MY_BUTTON_1) is held; encoder turns
 // then cycle the patch (melodic layer's patch on the sequencer screen, or the
 // arp's own patch on the arp screen) instead of moving the selection. This is
@@ -220,45 +229,55 @@ static void log_rtos_stats(void)
 
 
 static void amy_usb_render_task(void *arg) {
-    //esp_task_wdt_delete(NULL);
     (void)arg;
-    const uint64_t block_us = ((uint64_t)AMY_BLOCK_SIZE * 1000000ULL) / (uint64_t)AMY_SAMPLE_RATE;
-    uint64_t next_deadline_us = (uint64_t)esp_timer_get_time();
+
+    // Master clock: a GPTimer fires every block period (5333 us @ 48 kHz / 256),
+    // its ISR pinned to THIS core, waking us via a task notification. This is
+    // tick-rate-independent (the old vTaskDelay(pdMS_TO_TICKS(5)) floored to 0
+    // ticks at FREERTOS_HZ=100 and busy-spun the core). Started from inside the
+    // task so the GPTimer ISR registers on the render core.
+    const uint32_t block_us = (uint32_t)(((uint64_t)AMY_BLOCK_SIZE * 1000000ULL)
+                                         / (uint64_t)AMY_SAMPLE_RATE);
+    if (render_clock_start(block_us) != ESP_OK) {
+        ESP_LOGE(TAG, "render_clock_start failed; render task aborting");
+        vTaskDelete(NULL);
+        return;
+    }
+
     while (1) {
-        uint64_t now_us = (uint64_t)esp_timer_get_time();
-        if (now_us < next_deadline_us) {
-            uint64_t wait_us = next_deadline_us - now_us;
-            TickType_t wait_ticks = pdMS_TO_TICKS((uint32_t)(wait_us / 1000ULL));
-            if (wait_ticks > 0) {
-                vTaskDelay(wait_ticks);
-            } else {
-                taskYIELD();
-            }
-            continue;
+        // Block until the next tick. Returns the accumulated tick count; >1 means
+        // the previous block overran its period. STRICT 1:1: we render exactly
+        // ONE block regardless, so AMY's total_blocks stays locked to realtime
+        // (sequencer tempo, derived from amy_sysclock(), cannot drift). The
+        // 170 ms USB ring buffer absorbs transient jitter, not a catch-up queue.
+        uint32_t ticks = render_clock_wait();
+        if (unlikely(ticks > 1)) {
+            s_render_overruns += (ticks - 1);  // diagnostic only
         }
 
         int16_t *block = amy_update();           // synthesizes everything / advances AMY sample clock
-        if (block) {
+        if (likely(block != NULL)) {
             s_render_block_count++;
-            s_last_render_sysclock_ms = amy_sysclock();
 
 #if CONFIG_USB_AUDIO_BLOCKING_WRITE
-            // Resilient path: retry until the host consumes the data.
-            // This prevents spectral corruption at the cost of slight timing jitter.
+            // Resilient path: retry until the host consumes the data, slaving the
+            // synth to the PC's consumption rate. NOTE: vTaskDelay(1) waits one
+            // whole tick (>=1, never floors to 0 like pdMS_TO_TICKS(1) does at
+            // FREERTOS_HZ=100) so this cannot degrade into a busy-spin.
             while (usb_audio_write_stereo(block, AMY_BLOCK_SIZE) == ESP_ERR_NO_MEM) {
-                vTaskDelay(pdMS_TO_TICKS(1));
+                vTaskDelay(1);
             }
 #else
-            // Real-time path: drop if the host is slow.
-            // Maintains AMY phase alignment but causes 'honky' truncation if drops are frequent.
-            esp_err_t write_err = usb_audio_write_stereo(block, AMY_BLOCK_SIZE);
-            if (write_err == ESP_ERR_NO_MEM) {
-                // USB ring buffer is full; briefly back off and try again.
-                vTaskDelay(pdMS_TO_TICKS(1));
+            // Real-time path: the write is all-or-nothing. If the ring buffer is
+            // full the whole block is dropped to keep AMY's clock phase-aligned;
+            // we do NOT delay here (the strict-1:1 GPTimer already paces us, and
+            // the previous pdMS_TO_TICKS(1) backoff floored to 0 ticks and did
+            // nothing anyway). Just count the drop for diagnostics.
+            if (unlikely(usb_audio_write_stereo(block, AMY_BLOCK_SIZE) == ESP_ERR_NO_MEM)) {
+                s_usb_drops++;
             }
 #endif
         }
-        next_deadline_us += block_us;
     }
 }
 // Button event callback: routes my_buttons events to sequencer UI actions
@@ -647,6 +666,28 @@ extern struct state amy_global;
     amy_cfg.platform.multicore = 0;
     amy_cfg.platform.multithread = 0;
     amy_cfg.amy_external_sequencer_hook = main_sequencer_tick_hook;
+    /* PERF (2026-06): force the render-hot AMY allocations into internal SRAM.
+     * amy_default_config() leaves these at MALLOC_CAP_DEFAULT (0), which only
+     * lands internal for blocks < CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL (16 KB);
+     * larger blocks (the ~40 KB delta pool, FX delay lines, reverb buffers) fall
+     * back to Octal PSRAM. synth[]/msynth[] structs (ram_caps_events) and the
+     * delta pool (ram_caps_synth) are dereferenced for every audible oscillator
+     * every 256-sample block on Core 1; the echo/reverb/chorus delay lines
+     * (ram_caps_delay) are walked sample-by-sample in the FX stage. Pinning them
+     * to internal SRAM removes PSRAM access latency from the audio hot path. We
+     * have ample internal RAM headroom (heap checks below confirm). */
+    amy_cfg.ram_caps_events = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+    amy_cfg.ram_caps_synth  = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+    amy_cfg.ram_caps_block  = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+    amy_cfg.ram_caps_fbl    = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+    /* FX delay lines are too large for internal SRAM: the reverb needs ~108 KB
+     * across 10 lines and echo a single 256 KB (65536-sample) line, while the
+     * internal heap's largest free block is ~32 KB. Pinning them internal made
+     * reverb/echo allocation fail (and previously crashed on the resulting NULL
+     * deref). Route them to the 8 MB Octal PSRAM, which sits almost entirely
+     * free. The per-sample PSRAM latency in the FX stage is acceptable; the
+     * lines simply do not fit internally. */
+    amy_cfg.ram_caps_delay  = MALLOC_CAP_SPIRAM;
     /* Default is 256, which only covers layer 0 (drum).  Each additional
      * layer needs SEQ_TRACKS * SEQ_MAX_STEPS * 2 extra tags.  With
      * MAX_LAYERS=4, SEQ_TRACKS=4, SEQ_MAX_STEPS=32 the sequencer's highest tag
@@ -758,16 +799,20 @@ extern struct state amy_global;
 
 
     ESP_LOGI(TAG, "Main loop started.");
+   
     // Idle loop; pot_reader_task handles all pot->synth updates.
 #if CONFIG_AMYSYNTH_RTOS_STATS
     const uint32_t idle_loop_ms = CONFIG_AMYSYNTH_RTOS_STATS_PERIOD_MS;
+      void heap_caps_get_info( multi_heap_info_t *info, uint32_t caps );
+     void heap_caps_print_heap_info( uint32_t caps );
 #else
     const uint32_t idle_loop_ms = 5000;
 #endif
     while (1) {
         ESP_LOGI(TAG,
-                 "Main loop idle... seq_tick=%" PRIu32 " tick_hook_calls=%" PRIu32 " render_blocks=%" PRIu32 " render_sysclock_ms=%" PRIu32,
-                 s_last_seq_tick, s_seq_tick_hook_count, s_render_block_count, s_last_render_sysclock_ms);
+                 "Main loop idle... seq_tick=%" PRIu32 " tick_hook_calls=%" PRIu32 " render_blocks=%" PRIu32 " render_overruns=%" PRIu32 " usb_drops=%" PRIu32 " render_sysclock_ms=%" PRIu32,
+                 s_last_seq_tick, s_seq_tick_hook_count, s_render_block_count, s_render_overruns, s_usb_drops,
+                 /* computed on demand here, not per render block */ amy_sysclock());
 #if CONFIG_USB_AUDIO_DIAGNOSTICS
         main_log_audio_diagnostics();
 #endif

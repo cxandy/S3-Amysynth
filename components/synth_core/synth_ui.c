@@ -746,11 +746,20 @@ void synth_ui_init(u8g2_t *u8g2)
     synth_ui_add_layer(SEQ_LAYER_DRUM, SEQ_STEPS);
     SEQ_HEAP_CHECK("ui_init: after add_layer(drum)");
 
-    /* Default pattern: 4-on-the-floor hi-hat + backbeat kick. */
+    /* Default pattern: full 4-on-the-floor house groove across all 4 tracks so
+     * the boot loop is immediately musical (was kick+snare only, leaving the hat
+     * and perc tracks silent). Velocity accent/jitter engine adds the groove.
+     *   track 0 kick : every quarter (the "floor")
+     *   track 1 snare: backbeat (beats 2 & 4)
+     *   track 2 hat  : off-beat 8ths ("tss" between the kicks)
+     *   track 3 perc : light syncopation for movement */
     seq_layer_t *drum = &seq_state.layers[0];
-    drum->grid[0][0] = drum->grid[0][4] =
-    drum->grid[0][8] = drum->grid[0][12] = true;
-    drum->grid[1][4] = drum->grid[1][12]  = true;
+    drum->grid[0][0]  = drum->grid[0][4]  =
+    drum->grid[0][8]  = drum->grid[0][12] = true;   /* kick  */
+    drum->grid[1][4]  = drum->grid[1][12] = true;   /* snare */
+    drum->grid[2][2]  = drum->grid[2][6]  =
+    drum->grid[2][10] = drum->grid[2][14] = true;   /* hats  */
+    drum->grid[3][7]  = drum->grid[3][15] = true;   /* perc  */
 
     sync_layer_to_core(0);
     SEQ_HEAP_CHECK("ui_init: after sync_layer_to_core(0)");
@@ -786,14 +795,16 @@ uint8_t synth_ui_add_layer(seq_layer_type_t type, uint8_t num_steps)
             }
         }
     } else {
-        /* Drums are now per-track Juno patches. Mirror the core's defaults into
-         * the UI copy so labels (patch number) and pitch display are correct. */
-        static const uint8_t drum_notes[SEQ_TRACKS] = {36, 48, 55, 60};
+        /* Drums are per-track patches with role-based default pitches. Pull the
+         * actual per-track patch + source note from the core (single source of
+         * truth) so labels and pitch display stay correct as those defaults
+         * evolve — no hardcoded mirror to drift out of sync. */
         for (int t = 0; t < SEQ_TRACKS; t++) {
-            layer->track_base_note[t] = drum_notes[t];
+            uint8_t note = sequencer_core_get_track_source_note(li, t);
+            layer->track_base_note[t] = note;
             layer->track_patch[t] = sequencer_core_get_drum_patch(li, t);
             for (int s = 0; s < SEQ_MAX_STEPS; s++) {
-                layer->step_note[t][s] = drum_notes[t];
+                layer->step_note[t][s] = note;
             }
         }
         layer->patch = layer->track_patch[0];
@@ -1045,11 +1056,22 @@ typedef struct {
     uint8_t echo_level;    /* 0..100 -> 0..1 */
     uint8_t chorus_level;  /* 0..100 -> 0..1 */
     uint8_t reverb_level;  /* 0..100 -> 0..1 */
+    /* When false, loading a synth patch must NOT change the global FX: every
+     * AMY built-in Juno patch string ends with `x<eq>k<chorus>` commands that
+     * write the single global EQ/chorus (amy_global.*), so without this guard a
+     * preset change on any one synth (sequencer row, arp, drone) re-skins the
+     * whole mix's FX. The patch-load sites call synth_ui_fx_reassert_global()
+     * which, when this is false, re-imposes these cached user values right after
+     * the patch's FX deltas, making presets effectively per-synth (timbre only).
+     * When true, the most-recently-loaded preset's FX is allowed to apply
+     * globally (the original behaviour). */
+    bool    presets_alter_global;
 } fx_state_t;
 
 static fx_state_t s_fx = {
     .eq_low_db = 0, .eq_mid_db = 0, .eq_high_db = 0,
     .echo_level = 0, .chorus_level = 0, .reverb_level = 0,
+    .presets_alter_global = false,
 };
 
 static amy_event         s_fx_ev;
@@ -1102,6 +1124,24 @@ static void fx_push_reverb(void)
     xSemaphoreGive(s_fx_ev_mutex);
 }
 
+/* Re-impose the cached global FX after a patch load so a synth's preset cannot
+ * hijack the shared EQ/chorus/echo/reverb. No-op when the user has opted into
+ * letting presets drive global FX. Safe to call from the sequencer/arp/drone
+ * task contexts: each fx_push_* takes s_fx_ev_mutex internally.
+ *
+ * Cost is four queued events per patch change (a rare, user-driven action) and
+ * zero in the render loop. The reassert events are queued AFTER the patch's own
+ * FX deltas, so they win; both drain in the same render quantum on Core 1, so
+ * there is no audible blip. */
+void synth_ui_fx_reassert_global(void)
+{
+    if (s_fx.presets_alter_global) return;
+    fx_push_eq();
+    fx_push_chorus();
+    fx_push_echo();
+    fx_push_reverb();
+}
+
 /* ════════════════════════════════════════════════════════════════════════
  *  MENU OVERLAY
  * ════════════════════════════════════════════════════════════════════════
@@ -1120,12 +1160,14 @@ typedef enum {
     MI_QUANT_ROOT,
     MI_ARP_ENABLED,
     MI_DRONE_ENABLED,
+    MI_DRUM_ENGINE,
     MI_EQ_LOW,
     MI_EQ_MID,
     MI_EQ_HIGH,
     MI_ECHO_LEVEL,
     MI_CHORUS_LEVEL,
     MI_REVERB_LEVEL,
+    MI_PRESET_GLOBAL_FX,
     MI_COUNT
 } menu_item_id_t;
 
@@ -1173,6 +1215,10 @@ static void menu_build_view(menu_view_t *out)
     snprintf(s_menu_items[MI_DRONE_ENABLED].value, MENU_VALUE_LEN, "%s",
              drone_get_enabled() ? "ON" : "OFF");
 
+    snprintf(s_menu_items[MI_DRUM_ENGINE].label, MENU_LABEL_LEN, "Drum Mode");
+    snprintf(s_menu_items[MI_DRUM_ENGINE].value, MENU_VALUE_LEN, "%s",
+             sequencer_core_get_drum_engine() == SEQ_DRUM_PCM ? "PCM" : "Synth");
+
     /* Global FX (cached values; AMY has no getters). */
     snprintf(s_menu_items[MI_EQ_LOW].label, MENU_LABEL_LEN, "EQ Low");
     snprintf(s_menu_items[MI_EQ_LOW].value, MENU_VALUE_LEN, "%+ddB",
@@ -1190,8 +1236,19 @@ static void menu_build_view(menu_view_t *out)
     snprintf(s_menu_items[MI_CHORUS_LEVEL].value, MENU_VALUE_LEN, "%u%%",
              (unsigned)s_fx.chorus_level);
     snprintf(s_menu_items[MI_REVERB_LEVEL].label, MENU_LABEL_LEN, "Reverb");
-    snprintf(s_menu_items[MI_REVERB_LEVEL].value, MENU_VALUE_LEN, "%u%%",
-             (unsigned)s_fx.reverb_level);
+    /* If AMY could not allocate the reverb delay lines (OOM), it forces reverb
+     * off and flags it here. Surface "OOM!" instead of a percentage so the
+     * failure is visible on the OLED without a serial monitor. */
+    if (amy_reverb_alloc_failed())
+        snprintf(s_menu_items[MI_REVERB_LEVEL].value, MENU_VALUE_LEN, "OOM!");
+    else
+        snprintf(s_menu_items[MI_REVERB_LEVEL].value, MENU_VALUE_LEN, "%u%%",
+                 (unsigned)s_fx.reverb_level);
+
+    /* "Presets alter global FX? y/n" — OFF makes Juno presets per-synth. */
+    snprintf(s_menu_items[MI_PRESET_GLOBAL_FX].label, MENU_LABEL_LEN, "Preset FX");
+    snprintf(s_menu_items[MI_PRESET_GLOBAL_FX].value, MENU_VALUE_LEN, "%s",
+             s_fx.presets_alter_global ? "ON" : "OFF");
 
     out->items   = s_menu_items;
     out->count   = MI_COUNT;
@@ -1209,12 +1266,14 @@ static bool menu_item_is_value(menu_item_id_t id)
         case MI_QUANT_ROOT:
         case MI_ARP_ENABLED:
         case MI_DRONE_ENABLED:
+        case MI_DRUM_ENGINE:
         case MI_EQ_LOW:
         case MI_EQ_MID:
         case MI_EQ_HIGH:
         case MI_ECHO_LEVEL:
         case MI_CHORUS_LEVEL:
         case MI_REVERB_LEVEL:
+        case MI_PRESET_GLOBAL_FX:
             return true;
         default:
             return false;
@@ -1253,6 +1312,13 @@ static void menu_edit_value(menu_item_id_t id, int delta)
         case MI_DRONE_ENABLED:
             if (dir != 0) drone_set_enabled(!drone_get_enabled());
             break;
+        case MI_DRUM_ENGINE:
+            if (dir != 0) {
+                sequencer_core_set_drum_engine(
+                    sequencer_core_get_drum_engine() == SEQ_DRUM_PCM
+                        ? SEQ_DRUM_SYNTH : SEQ_DRUM_PCM);
+            }
+            break;
         case MI_EQ_LOW: {
             int v = SEQ_CLAMP_INT((int)s_fx.eq_low_db + dir, -15, 15);
             s_fx.eq_low_db = (int8_t)v; fx_push_eq();
@@ -1283,6 +1349,14 @@ static void menu_edit_value(menu_item_id_t id, int delta)
             s_fx.reverb_level = (uint8_t)v; fx_push_reverb();
             break;
         }
+        case MI_PRESET_GLOBAL_FX:
+            if (dir != 0) {
+                s_fx.presets_alter_global = !s_fx.presets_alter_global;
+                /* Turning the guard back ON re-imposes the user's cached FX
+                 * immediately, undoing whatever the last preset left behind. */
+                if (!s_fx.presets_alter_global) synth_ui_fx_reassert_global();
+            }
+            break;
         default:
             break;
     }

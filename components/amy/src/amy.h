@@ -124,10 +124,37 @@ extern const uint32_t pcm_wavetable_len;
 
 #ifdef ESP_PLATFORM
 #include <esp_heap_caps.h>
+#include <esp_attr.h>
 #endif
 
 #ifndef MALLOC_CAP_DEFAULT
 #define MALLOC_CAP_DEFAULT 0
+#endif
+
+// LOCAL EDIT (S3-Amysynth, PERF 2026-06): place the render hot path in internal
+// IRAM. We use IRAM_ATTR (per-symbol section attribute) rather than an .lf
+// linker fragment because this build uses GCC LTO: the per-function .text.*
+// sections are renamed/merged in the ltrans phase, so object/symbol-granularity
+// `noflash` fragment rules silently miss and the code stays in flash. IRAM_ATTR
+// rides on the symbol itself (.iram1.* section) and survives LTO, landing in
+// iram0_text via the default scheme. On non-ESP targets this is a no-op.
+#ifdef ESP_PLATFORM
+#define AMY_IRAM_ATTR IRAM_ATTR
+#else
+#define AMY_IRAM_ATTR
+#endif
+
+// LOCAL EDIT (S3-Amysynth, PERF 2026-06-19): pin a hot const DATA table to
+// internal DRAM. The clipping_lookup_table (uint16_t[4914], ~9.6 KB) is read
+// for every output sample in amy_fill_buffer; in flash .rodata it is served via
+// the PSRAM XIP cache and can incur cache-miss stalls in that inner loop.
+// DRAM_ATTR places it in fast internal SRAM (the data-safe section — NOT IRAM,
+// which is instruction memory and unsafe for halfword data access). No-op off
+// ESP. See AMY-EDITS.md.
+#ifdef ESP_PLATFORM
+#define AMY_DRAM_ATTR DRAM_ATTR
+#else
+#define AMY_DRAM_ATTR
 #endif
 
 
@@ -718,6 +745,11 @@ typedef struct reverb_state {
     float liveness;
     float damping;
     float xover_hz;
+    // LOCAL EDIT (2026-06-19): reverb OOM crash-safety flag. See AMY-EDITS.md.
+    // Set true when the reverb delay lines could not be allocated (OOM), so the
+    // requested level was refused and reverb is forced off. Lets the UI surface
+    // a diagnostics indicator without a serial monitor.
+    bool alloc_failed;
 } reverb_state_t;
 
 typedef struct chorus_config {
@@ -845,6 +877,11 @@ uint32_t ms_to_samples(uint32_t ms) ;
 // API
 void amy_add_message(char *message);
 void amy_add_event(amy_event *e);
+// LOCAL EDIT (2026-06-19): reverb OOM diagnostics getter. See AMY-EDITS.md.
+// True if the most recent attempt to enable reverb failed to allocate its delay
+// lines (OOM). Reverb is forced off in that case. Lets the UI show a diagnostics
+// indicator without a serial monitor.
+bool amy_reverb_alloc_failed(void);
 int amy_parse_message(char * message, int length, amy_event *e);
 void amy_start(amy_config_t);
 void amy_stop();

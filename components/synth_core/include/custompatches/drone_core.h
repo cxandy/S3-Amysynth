@@ -59,6 +59,18 @@ typedef enum {
     DRONE_CHORD_COUNT
 } drone_chord_t;
 
+/* Stutter step patterns. Each is an 8-step per-bar on/off mask consulted by the
+ * filter-blip service path: steps whose bit is 0 are skipped (filter closed) so
+ * the even stutter grid becomes a rhythm. FULL (all steps on) = legacy behavior. */
+typedef enum {
+    DRONE_PAT_FULL   = 0,   /* 1 1 1 1 1 1 1 1  — every subdivision fires */
+    DRONE_PAT_FOUR   = 1,   /* 1 0 1 0 1 0 1 0  — four-on-floor / downbeats */
+    DRONE_PAT_OFFBEAT= 2,   /* 0 1 0 1 0 1 0 1  — offbeat skip             */
+    DRONE_PAT_GALLOP = 3,   /* 1 1 0 1 1 0 1 0  — galloping push           */
+    DRONE_PAT_DUB    = 4,   /* 1 0 0 0 1 0 1 0  — sparse dub stab          */
+    DRONE_PAT_COUNT
+} drone_pattern_t;
+
 /* ── Lifecycle ── */
 void drone_core_init(void);
 
@@ -85,6 +97,10 @@ void drone_set_sub_interval(int8_t st);   /* sub interval, semitones (e.g. -12) 
 void drone_set_sweep_lo(float hz);        /* filter sweep low cutoff              */
 void drone_set_sweep_hi(float hz);        /* filter sweep high cutoff             */
 void drone_set_sweep_bars(uint8_t bars);  /* sweep period in bars (tempo-locked)  */
+void drone_set_gate_len(float frac);      /* 0.05..0.95 chop length (osc1 duty)   */
+void drone_set_swing(uint8_t pct);        /* 0..66 swing on the stutter grid      */
+void drone_set_blip(float depth);         /* 0..1 per-step filter-zap depth       */
+void drone_set_pattern(drone_pattern_t p);/* per-bar step on/off mask             */
 
 /* ── Runtime-editable ADSR envelope (shared graph editor) ── */
 void drone_get_envelope(seq_env_t *out);
@@ -105,11 +121,16 @@ int8_t         drone_get_sub_interval(void);
 float          drone_get_sweep_lo(void);
 float          drone_get_sweep_hi(void);
 uint8_t        drone_get_sweep_bars(void);
+float          drone_get_gate_len(void);
+uint8_t        drone_get_swing(void);
+float          drone_get_blip(void);
+drone_pattern_t drone_get_pattern(void);
 
 /* Human-readable names for the enum values (for display). */
 const char *drone_rate_name(drone_rate_t rate);
 const char *drone_wave_name(uint16_t amy_wave);
 const char *drone_chord_name(drone_chord_t chord);
+const char *drone_pattern_name(drone_pattern_t p);
 
 #ifdef __cplusplus
 }

@@ -1559,6 +1559,10 @@ typedef enum {
     DROW_CONST,       /* WAVE only */
     DROW_MOD,         /* WAVE only */
     DROW_RATE,        /* WAVE only */
+    DROW_GATE_LEN,    /* WAVE only */
+    DROW_SWING,
+    DROW_PATTERN,
+    DROW_BLIP,
     DROW_SWEEP_LO,
     DROW_SWEEP_HI,
     DROW_SWEEP_BARS,
@@ -1580,7 +1584,7 @@ static uint8_t drone_visible_rows(drone_logical_row_t out[DROW_ALL_COUNT])
     for (drone_logical_row_t r = 0; r < DROW_ALL_COUNT; r++) {
         if (wave && r == DROW_PATCH) continue;
         if (!wave && (r == DROW_WAVE || r == DROW_CONST || r == DROW_MOD
-                      || r == DROW_RATE)) continue;
+                      || r == DROW_RATE || r == DROW_GATE_LEN)) continue;
         out[n++] = r;
     }
     return n;
@@ -1623,6 +1627,22 @@ static void drone_row_label_value(drone_logical_row_t r,
         case DROW_RATE:
             snprintf(label, DRONE_LABEL_LEN, "STUTTER");
             snprintf(value, DRONE_VALUE_LEN, "%s", drone_rate_name(drone_get_rate()));
+            break;
+        case DROW_GATE_LEN:
+            snprintf(label, DRONE_LABEL_LEN, "GATE");
+            snprintf(value, DRONE_VALUE_LEN, "%.2f", (double)drone_get_gate_len());
+            break;
+        case DROW_SWING:
+            snprintf(label, DRONE_LABEL_LEN, "SWING");
+            snprintf(value, DRONE_VALUE_LEN, "%u%%", (unsigned)drone_get_swing());
+            break;
+        case DROW_PATTERN:
+            snprintf(label, DRONE_LABEL_LEN, "PATTERN");
+            snprintf(value, DRONE_VALUE_LEN, "%s", drone_pattern_name(drone_get_pattern()));
+            break;
+        case DROW_BLIP:
+            snprintf(label, DRONE_LABEL_LEN, "BLIP");
+            snprintf(value, DRONE_VALUE_LEN, "%.2f", (double)drone_get_blip());
             break;
         case DROW_SWEEP_LO:
             snprintf(label, DRONE_LABEL_LEN, "SWEEP LO");
@@ -1699,9 +1719,15 @@ static void drone_edit_row(drone_logical_row_t r, int delta)
             drone_set_chord((drone_chord_t)c);
             break;
         }
-        case DROW_RES:
-            drone_set_resonance(drone_get_resonance() + (float)dir * 0.05f);
+        case DROW_RES: {
+            /* Geometric step: Q is perceptually multiplicative, and the range is
+             * now 0.1..8, so a fixed linear step would be too coarse low and too
+             * fine high. ~15% per detent feels even across the whole span. */
+            float r = drone_get_resonance();
+            r *= (dir > 0) ? 1.15f : (1.0f / 1.15f);
+            drone_set_resonance(r);
             break;
+        }
         case DROW_CONST:
             drone_set_amp_const(drone_get_amp_const() + (float)dir * 0.1f);
             break;
@@ -1713,6 +1739,21 @@ static void drone_edit_row(drone_logical_row_t r, int delta)
             drone_set_rate((drone_rate_t)v);
             break;
         }
+        case DROW_GATE_LEN:
+            drone_set_gate_len(drone_get_gate_len() + (float)dir * 0.05f);
+            break;
+        case DROW_SWING:
+            drone_set_swing((uint8_t)SEQ_CLAMP_INT(
+                (int)drone_get_swing() + dir * 2, 0, 66));
+            break;
+        case DROW_PATTERN: {
+            int v = SEQ_CLAMP_INT((int)drone_get_pattern() + dir, 0, DRONE_PAT_COUNT - 1);
+            drone_set_pattern((drone_pattern_t)v);
+            break;
+        }
+        case DROW_BLIP:
+            drone_set_blip(drone_get_blip() + (float)dir * 0.05f);
+            break;
         case DROW_SWEEP_LO:
             drone_set_sweep_lo(drone_get_sweep_lo() + (float)dir * 25.0f);
             break;

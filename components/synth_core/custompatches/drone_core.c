@@ -52,13 +52,20 @@ extern uint32_t sequencer_ticks(void);
 
 /* Limits */
 #define DRONE_RES_MIN      0.1f
-#define DRONE_RES_MAX      2.0f
+#define DRONE_RES_MAX      8.0f    /* AMY itself imposes no upper Q cap (floor 0.51);
+                                    * 8 gives a strong acid peak with headroom before
+                                    * self-oscillation transients spike the clip LUT. */
 #define DRONE_SWEEP_MIN    100.0f
 #define DRONE_SWEEP_MAX    8000.0f
 #define DRONE_BARS_MIN     1
 #define DRONE_BARS_MAX     16
 #define DRONE_PATCH_MIN    0
 #define DRONE_PATCH_MAX    256
+#define DRONE_GATE_MIN     0.05f   /* osc1 PULSE duty: tighter chop as it shrinks */
+#define DRONE_GATE_MAX     0.95f
+#define DRONE_SWING_MAX    66      /* percent of one subdivision, applied to odd steps */
+#define DRONE_BLIP_MAX     1.0f    /* per-step downward filter-zap depth (0 = off)     */
+#define DRONE_PAT_STEPS    8       /* steps per bar in a pattern mask                  */
 
 /* ── Chord matrix (MIDI notes, fixed width, -1 = unused) ──
  * Voiced in a comfortable mid register so the LPF24 + sweep keep them present.
@@ -95,6 +102,24 @@ static const char *s_rate_names[DRONE_RATE_COUNT] = {
     [DRONE_RATE_1_32] = "1/32",
 };
 
+/* ── Step patterns ── 8-bit per-bar masks (bit0 = step0, LSB-first). A 0 bit
+ * means that stutter subdivision is skipped (filter closed). FULL = legacy. */
+static const uint8_t s_pattern_mask[DRONE_PAT_COUNT] = {
+    [DRONE_PAT_FULL]    = 0xFF,   /* 1 1 1 1 1 1 1 1 */
+    [DRONE_PAT_FOUR]    = 0x55,   /* 1 0 1 0 1 0 1 0 */
+    [DRONE_PAT_OFFBEAT] = 0xAA,   /* 0 1 0 1 0 1 0 1 */
+    [DRONE_PAT_GALLOP]  = 0x5B,   /* 1 1 0 1 1 0 1 0 */
+    [DRONE_PAT_DUB]     = 0x51,   /* 1 0 0 0 1 0 1 0 */
+};
+
+static const char *s_pattern_names[DRONE_PAT_COUNT] = {
+    [DRONE_PAT_FULL]    = "FULL",
+    [DRONE_PAT_FOUR]    = "FOUR",
+    [DRONE_PAT_OFFBEAT] = "OFFBT",
+    [DRONE_PAT_GALLOP]  = "GALOP",
+    [DRONE_PAT_DUB]     = "DUB",
+};
+
 /* ── State ── */
 typedef struct {
     bool           enabled;
@@ -111,6 +136,12 @@ typedef struct {
     float          sweep_lo;
     float          sweep_hi;
     uint8_t        sweep_bars;
+    /* stutter-house controls */
+    float          gate_len;    /* osc1 PULSE duty: 0.05..0.95 (chop length)  */
+    uint8_t        swing_pct;   /* 0..66 swing on the filter/pattern grid     */
+    float          blip_depth;  /* 0..1 per-step downward filter-zap depth    */
+    drone_pattern_t pattern;    /* per-bar step on/off mask                   */
+    float          last_blip_cutoff; /* to avoid redundant cutoff re-sends    */
     /* sweep phase, advanced each service tick (0..2pi) */
     float          last_lfo_hz; /* to avoid redundant LFO re-sends   */
     seq_env_t      env;         /* runtime-editable ADSR (graph editor) */
@@ -184,12 +215,14 @@ static void drone_configure_wave_synth(uint8_t synth, uint8_t voices)
     s_ev.oscs_per_voice = DRONE_OSCS_PER_VC;
     d_ev_send();
 
-    /* osc1 = PULSE LFO. Absolute Hz (note-follow off), full const amp. */
+    /* osc1 = PULSE LFO. Absolute Hz (note-follow off), full const amp.
+     * The PULSE duty IS the gate length: 0.5 = 50/50 square (legacy), lower =
+     * a shorter "on" fraction per subdivision = a tighter percussive chop. */
     d_ev_begin();
     s_ev.synth                 = synth;
     s_ev.osc                   = 1;
     s_ev.wave                  = PULSE;
-    s_ev.duty_coefs[COEF_CONST]= 0.5f;
+    s_ev.duty_coefs[COEF_CONST]= s_d.gate_len;
     s_ev.freq_coefs[COEF_CONST]= lfo_hz;
     s_ev.freq_coefs[COEF_NOTE] = 0.0f;     /* absolute Hz, ignore note */
     s_ev.amp_coefs[COEF_CONST] = 1.0f;
@@ -334,6 +367,11 @@ void drone_core_init(void)
     s_d.sweep_lo     = 600.0f;
     s_d.sweep_hi     = 2000.0f;
     s_d.sweep_bars   = 4;
+    s_d.gate_len     = 0.5f;     /* 50/50 square = legacy gate            */
+    s_d.swing_pct    = 0;        /* straight grid                        */
+    s_d.blip_depth   = 0.0f;     /* filter-zap off by default            */
+    s_d.pattern      = DRONE_PAT_FULL;
+    s_d.last_blip_cutoff = -1.0f;
     /* Default ADSR: slow swell suited to a drone. Not authored until the user
      * commits in the graph editor (the raw wave plays at full sustain otherwise,
      * since an unauthored env is not pushed and EG0 holds at 1.0 on a held note). */
@@ -374,24 +412,70 @@ void drone_core_service(void)
         s_d.last_lfo_hz = lfo_hz;
     }
 
-    /* Filter sweep phase is a pure function of the global musical clock, NOT of
-     * how often this service runs. At 48 PPQ one bar (4 beats) = 192 ticks, so
-     * the sweep period is sweep_bars*192 ticks. Phase = 2pi * (tick % period) /
-     * period. This is frame-rate-independent (UI jitter / skipped frames cannot
-     * drift it) and beat-locked: it advances with tempo automatically and stays
-     * coherent with the sequencer/arp bar grid across BPM changes. */
-    uint32_t period_ticks = (uint32_t)s_d.sweep_bars * (uint32_t)(AMY_SEQUENCER_PPQ * 4);
-    if (period_ticks < 1) period_ticks = 1;
-    uint32_t pos = sequencer_ticks() % period_ticks;
-    float phase = (2.0f * (float)M_PI) * ((float)pos / (float)period_ticks);
+    /* Everything below is a pure function of the global musical clock, NOT of how
+     * often this service runs. At 48 PPQ one bar (4 beats) = 192 ticks. This keeps
+     * the sweep, the stutter subdivision grid, swing, the step pattern and the
+     * per-step filter blip all frame-rate-independent and beat-locked: they
+     * advance with tempo automatically and stay coherent with the sequencer/arp
+     * bar grid across BPM changes. */
+    const uint32_t bar_ticks = (uint32_t)(AMY_SEQUENCER_PPQ * 4);   /* 192 */
+    uint32_t now = sequencer_ticks();
 
+    /* (a) Slow bar-length sweep = the BASE cutoff. */
+    uint32_t period_ticks = (uint32_t)s_d.sweep_bars * bar_ticks;
+    if (period_ticks < 1) period_ticks = 1;
+    uint32_t pos = now % period_ticks;
+    float phase = (2.0f * (float)M_PI) * ((float)pos / (float)period_ticks);
     float mid  = 0.5f * (s_d.sweep_lo + s_d.sweep_hi);
     float half = 0.5f * (s_d.sweep_hi - s_d.sweep_lo);
-    float cutoff = mid + half * sinf(phase);
+    float base = mid + half * sinf(phase);
 
-    drone_push_cutoff(DRONE_SYNTH_MAIN, cutoff);
-    if (s_d.sub_enabled) {
-        drone_push_cutoff(DRONE_SYNTH_SUB, cutoff * 0.5f);  /* sub sits lower */
+    /* (b) Stutter subdivision grid. ticks_per_sub = 192 / (4 * rate_mult), e.g.
+     * 1/16 -> rate_mult 4 -> 12 ticks/sub. Guard against 0. The pattern mask is
+     * an 8-step per-bar grid, so the step index wraps mod DRONE_PAT_STEPS. */
+    float subs_per_bar = 4.0f * s_rate_mult[s_d.rate];
+    uint32_t ticks_per_sub = (uint32_t)((float)bar_ticks / subs_per_bar + 0.5f);
+    if (ticks_per_sub < 1) ticks_per_sub = 1;
+
+    /* (c) Swing: push ODD subdivisions later by swing_pct% of one subdivision.
+     * Applied by offsetting the clock used for the sub-phase calc. */
+    uint32_t pos_in_bar = now % bar_ticks;
+    uint32_t sub_index_raw = pos_in_bar / ticks_per_sub;
+    uint32_t swing_off = 0;
+    if ((sub_index_raw & 1u) && s_d.swing_pct > 0) {
+        swing_off = (uint32_t)((float)ticks_per_sub * (float)s_d.swing_pct / 100.0f);
+    }
+    /* effective position within the current subdivision (0..1), swing-shifted */
+    uint32_t swung = (now + bar_ticks - swing_off) % bar_ticks; /* avoid underflow */
+    uint32_t sub_index = (swung / ticks_per_sub) % DRONE_PAT_STEPS;
+    float frac_in_sub = (float)(swung % ticks_per_sub) / (float)ticks_per_sub;
+
+    /* (d) Pattern mask: a 0 bit closes the filter for that step (skips it). */
+    bool step_on = (s_pattern_mask[s_d.pattern] >> sub_index) & 1u;
+
+    /* (e) Per-step filter blip: a downward zap at the start of each open step,
+     * decaying as we move through the subdivision. cutoff = base * (1 - depth *
+     * env), env = exp(-k * frac). AMY's logfreq downward slew-limit smooths the
+     * attack edge into something musical. */
+    float cutoff;
+    if (!step_on) {
+        cutoff = DRONE_SWEEP_MIN;            /* closed: skip this subdivision */
+    } else if (s_d.blip_depth > 0.0001f) {
+        float env = expf(-4.0f * frac_in_sub);          /* 1 -> ~0 across the step */
+        cutoff = base * (1.0f - s_d.blip_depth * env);
+        if (cutoff < DRONE_SWEEP_MIN) cutoff = DRONE_SWEEP_MIN;
+    } else {
+        cutoff = base;                       /* blip off = plain sweep (legacy) */
+    }
+
+    /* Skip redundant pushes (cutoff barely changed) to keep the event queue light
+     * when the drone is idling on a sustained step. */
+    if (fabsf(cutoff - s_d.last_blip_cutoff) > 1.0f) {
+        drone_push_cutoff(DRONE_SYNTH_MAIN, cutoff);
+        if (s_d.sub_enabled) {
+            drone_push_cutoff(DRONE_SYNTH_SUB, cutoff * 0.5f);  /* sub sits lower */
+        }
+        s_d.last_blip_cutoff = cutoff;
     }
 }
 
@@ -551,6 +635,49 @@ void drone_set_sweep_bars(uint8_t bars)
     s_d.sweep_bars = SEQ_CLAMP_U8((int)bars, DRONE_BARS_MIN, DRONE_BARS_MAX);
 }
 
+void drone_set_gate_len(float frac)
+{
+    frac = SEQ_CLAMP_F32(frac, DRONE_GATE_MIN, DRONE_GATE_MAX);
+    if (fabsf(s_d.gate_len - frac) < 0.001f) return;
+    s_d.gate_len = frac;
+    /* Gate length is osc1's PULSE duty; push it without a full rebuild. WAVE
+     * mode only (PATCH carriers have no osc1 LFO). */
+    if (s_d.source != DRONE_SRC_WAVE) return;
+    d_ev_begin();
+    s_ev.synth                  = DRONE_SYNTH_MAIN;
+    s_ev.osc                    = 1;
+    s_ev.duty_coefs[COEF_CONST] = frac;
+    d_ev_send();
+    if (s_d.sub_enabled) {
+        d_ev_begin();
+        s_ev.synth                  = DRONE_SYNTH_SUB;
+        s_ev.osc                    = 1;
+        s_ev.duty_coefs[COEF_CONST] = frac;
+        d_ev_send();
+    }
+}
+
+void drone_set_swing(uint8_t pct)
+{
+    s_d.swing_pct = SEQ_CLAMP_U8((int)pct, 0, DRONE_SWING_MAX);
+    /* Consumed by service(); force a cutoff re-push next frame. */
+    s_d.last_blip_cutoff = -1.0f;
+}
+
+void drone_set_blip(float depth)
+{
+    depth = SEQ_CLAMP_F32(depth, 0.0f, DRONE_BLIP_MAX);
+    s_d.blip_depth = depth;
+    s_d.last_blip_cutoff = -1.0f;
+}
+
+void drone_set_pattern(drone_pattern_t p)
+{
+    if (p >= DRONE_PAT_COUNT) return;
+    s_d.pattern = p;
+    s_d.last_blip_cutoff = -1.0f;
+}
+
 void drone_get_envelope(seq_env_t *out)
 {
     if (out) *out = s_d.env;
@@ -585,6 +712,10 @@ int8_t         drone_get_sub_interval(void) { return s_d.sub_interval; }
 float          drone_get_sweep_lo(void)     { return s_d.sweep_lo; }
 float          drone_get_sweep_hi(void)     { return s_d.sweep_hi; }
 uint8_t        drone_get_sweep_bars(void)   { return s_d.sweep_bars; }
+float          drone_get_gate_len(void)     { return s_d.gate_len; }
+uint8_t        drone_get_swing(void)        { return s_d.swing_pct; }
+float          drone_get_blip(void)         { return s_d.blip_depth; }
+drone_pattern_t drone_get_pattern(void)     { return s_d.pattern; }
 
 const char *drone_rate_name(drone_rate_t rate)
 {
@@ -608,4 +739,10 @@ const char *drone_chord_name(drone_chord_t chord)
 {
     if (chord >= DRONE_CHORD_COUNT) return "?";
     return s_chord_names[chord];
+}
+
+const char *drone_pattern_name(drone_pattern_t p)
+{
+    if (p >= DRONE_PAT_COUNT) return "?";
+    return s_pattern_names[p];
 }

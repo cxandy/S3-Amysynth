@@ -9,11 +9,11 @@ wired for later standalone use), driven by an OLED + encoder UI for live editing
 
 https://github.com/user-attachments/assets/c1125515-0647-46e4-b6fc-ae1bccc93855
 
-<video src="https://rt-rtos.github.io/assets/amybox%20(2).mp4" poster="assets/1.jpg" controls muted loop playsinline width="640">
-  <a href="https://rt-rtos.github.io/assets/amybox%20(2).mp4"><img src="assets/1.jpg" alt="S3-Amysynth prototype demo" width="640"></a>
+<video src="https://rt-rtos.github.io/assets/amybox.mp4" poster="assets/1.jpg" controls muted loop playsinline width="640">
+  <a href="https://rt-rtos.github.io/assets/amybox.mp4"><img src="assets/1.jpg" alt="S3-Amysynth prototype demo" width="640"></a>
 </video>
 
-> Video not playing? [Watch the prototype demo](https://rt-rtos.github.io/assets/amybox%20(2).mp4)
+> Video not playing? [Watch the prototype demo](https://rt-rtos.github.io/assets/amybox.mp4)
 
 ## What it does
 

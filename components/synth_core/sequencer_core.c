@@ -189,7 +189,7 @@ static uint16_t    s_bpm          = 120;
 /* Drum sound source for the whole drum layer. SYNTH = tonal AMY patches (Juno/
  * DX7) per track; PCM = built-in 808 samples per track. Switchable at runtime;
  * changing it re-configures the drum layer's synth slots in place. */
-static seq_drum_engine_t s_drum_engine = SEQ_DRUM_SYNTH;
+static seq_drum_engine_t s_drum_engine = SEQ_DRUM_PCM;
 static uint16_t    s_melodic_patch = SEQ_MEL_PATCH;
 /* Running allocator for per-row melodic synth slots. Each melodic layer claims
  * a contiguous block of SEQ_TRACKS slots starting here; reset in core_init. */

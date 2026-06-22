@@ -92,3 +92,13 @@ static inline float seq_clamp_f32(float value, float min_value, float max_value)
 #define SEQ_CLAMP_F32(value, min_value, max_value) \
     seq_clamp_f32((value), (min_value), (max_value))
 #endif
+
+#ifndef SEQ_CLAMP
+#define SEQ_CLAMP(value, min_val, max_val) _Generic((value), \
+    uint8_t:  seq_clamp_u8,  \
+    uint16_t: seq_clamp_u16, \
+    uint32_t: seq_clamp_u32, \
+    float:    seq_clamp_f32, \
+    default:  seq_clamp_int  \
+)((value), (min_val), (max_val))
+#endif

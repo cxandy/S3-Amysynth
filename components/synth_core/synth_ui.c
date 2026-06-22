@@ -135,7 +135,7 @@ static float graph_ms_to_x(uint32_t ms)
  * (Y-only) in the widget and recomputed here from attack time + sustain level.
  * Lower sustain -> longer, more audible fall; decay also scales gently with
  * attack. Tunable constants; promote to Kconfig later if desired. */
-#define DECAY_BASE_MS          40u
+#define DECAY_BASE_MS          120u //note 06-20 testing some params moving up from 40
 #define DECAY_ATTACK_K         0.5f
 #define DECAY_SUSTAIN_SPAN_MS  400.0f
 #define DECAY_MIN_MS           20u
@@ -492,7 +492,7 @@ static void synth_ui_sync_melodic_patch_cache(void)
 #define FNV1A_OFFSET 2166136261u
 #define FNV1A_PRIME  16777619u
 
-static inline uint32_t fnv1a_bytes(uint32_t h, const void *data, size_t len)
+[[gnu::const]] static inline uint32_t fnv1a_bytes(uint32_t h, const void *data, size_t len)
 {
     const uint8_t *b = (const uint8_t *)data;
     for (size_t i = 0; i < len; ++i) {
@@ -503,7 +503,7 @@ static inline uint32_t fnv1a_bytes(uint32_t h, const void *data, size_t len)
 }
 
 /* Signature of the sequencer view (everything display_seq_draw_frame reads). */
-static uint32_t seq_view_signature(void)
+ static uint32_t seq_view_signature(void)
 {
     uint32_t h = FNV1A_OFFSET;
     h = fnv1a_bytes(h, &seq_state.active_layer_idx, sizeof(seq_state.active_layer_idx));
@@ -535,7 +535,7 @@ static void drone_build_view(drone_view_t *out);
 static uint32_t drone_view_signature(void);
 
 /* Signature of the menu overlay. */
-static uint32_t menu_view_signature(void)
+[[gnu::pure]] static uint32_t menu_view_signature(void)
 {
     uint32_t h = FNV1A_OFFSET;
     menu_view_t v;
@@ -550,7 +550,7 @@ static uint32_t menu_view_signature(void)
 }
 
 /* Signature of the arp screen. */
-static uint32_t arp_view_signature(void)
+[[gnu::pure]] static uint32_t arp_view_signature(void)
 {
     uint32_t h = FNV1A_OFFSET;
     arp_view_t v;
@@ -572,7 +572,7 @@ static uint32_t arp_view_signature(void)
 }
 
 /* Signature of the graph editor (everything graph_popup_draw + the top bar read). */
-static uint32_t graph_view_signature(void)
+[[gnu::pure]] static uint32_t graph_view_signature(void)
 {
     uint32_t h = FNV1A_OFFSET;
     h = fnv1a_bytes(h, &s_graph_popup.cursor, sizeof(s_graph_popup.cursor));
@@ -1720,7 +1720,7 @@ static void drone_edit_row(drone_logical_row_t r, int delta)
             drone_set_amp_mod(drone_get_amp_mod() + (float)dir * 0.1f);
             break;
         case DROW_RATE: {
-            int v = SEQ_CLAMP_INT((int)drone_get_rate() + dir, 0, DRONE_RATE_COUNT - 1);
+            int v = SEQ_CLAMP((int)drone_get_rate() + dir, 0, DRONE_RATE_COUNT - 1);
             drone_set_rate((drone_rate_t)v);
             break;
         }
@@ -1728,11 +1728,11 @@ static void drone_edit_row(drone_logical_row_t r, int delta)
             drone_set_gate_len(drone_get_gate_len() + (float)dir * 0.05f);
             break;
         case DROW_SWING:
-            drone_set_swing((uint8_t)SEQ_CLAMP_INT(
+            drone_set_swing((uint8_t)SEQ_CLAMP(
                 (int)drone_get_swing() + dir * 2, 0, 66));
             break;
         case DROW_PATTERN: {
-            int v = SEQ_CLAMP_INT((int)drone_get_pattern() + dir, 0, DRONE_PAT_COUNT - 1);
+            int v = SEQ_CLAMP((int)drone_get_pattern() + dir, 0, DRONE_PAT_COUNT - 1);
             drone_set_pattern((drone_pattern_t)v);
             break;
         }
@@ -1746,14 +1746,14 @@ static void drone_edit_row(drone_logical_row_t r, int delta)
             drone_set_sweep_hi(drone_get_sweep_hi() + (float)dir * 25.0f);
             break;
         case DROW_SWEEP_BARS:
-            drone_set_sweep_bars((uint8_t)SEQ_CLAMP_INT(
+            drone_set_sweep_bars((uint8_t)SEQ_CLAMP(
                 (int)drone_get_sweep_bars() + dir, 1, 16));
             break;
         case DROW_SUB:
             if (dir != 0) drone_set_sub_enabled(!drone_get_sub_enabled());
             break;
         case DROW_SUB_INTVL:
-            drone_set_sub_interval((int8_t)SEQ_CLAMP_INT(
+            drone_set_sub_interval((int8_t)SEQ_CLAMP(
                 (int)drone_get_sub_interval() + dir, -36, 0));
             break;
         case DROW_PATCH:

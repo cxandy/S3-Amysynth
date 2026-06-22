@@ -4,7 +4,7 @@
  */
 
 #include "graph_popup.h"
-
+#include "seq_clamp.h"
 #include <string.h>
 #include <stdio.h>
 

@@ -31,7 +31,11 @@ typedef enum {
     ARP_RATE_1_4  = 1,   /* quarter note   */
     ARP_RATE_1_8  = 2,   /* eighth note    */
     ARP_RATE_1_16 = 3,  /* sixteenth note */
-    ARP_RATE_1_32 = 4,   /* thirty-second  */
+    ARP_RATE_1_32 = 4, /* thirty-second  */
+    ARP_RATE_1_4T = 5,
+    ARP_RATE_1_8T = 6,
+    ARP_RATE_1_16T = 7,
+    ARP_RATE_1_32T = 8,  
     ARP_RATE_COUNT
 } arp_rate_t;
 

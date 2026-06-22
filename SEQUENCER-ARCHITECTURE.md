@@ -233,13 +233,21 @@ For 32-step layers the 16-cell window shown is `page × 16 .. (page+1) × 16 −
 
 ## FreeRTOS Task Summary
 
-| Task | Priority | Core | Stack | Rate |
-|---|---|---|---|---|
-| `amy_render` | 7 | Core 1 | 8 KB | Deadline-driven (~5.33 ms/block at 48 kHz) |
-| `seq_ui` | 5 | any | 4 KB | 20 Hz (`vTaskDelayUntil`, 50 ms) |
-| `encoder_task` | 5 | any | 8 KB | 50 Hz poll |
-| `button_task` | 5 | any | 8 KB | Blocks on queue |
-| `encoder_init_task` | 5 | any | 2 KB | One-shot (1 s delay, self-deletes) |
+
+| Task | Priority | Core | Stack (HWM bytes) | Rate |
+|---|---:|---:|---:|---|
+| `amy_render` | 22 | Core 1 | 6104 (≈6.1 KB HWM) | Deadline-driven (~5.33 ms/block at 48 kHz) |
+| `main` | 1 | 0 | 11276 (≈11.3 KB HWM) | Application entry / init loop |
+| `IDLE0` | 0 | 0 | 3292 (≈3.3 KB HWM) | Idle |
+| `IDLE1` | 0 | 1 | 3452 (≈3.5 KB HWM) | Idle |
+| `encoder_task` | 5 | 0 | 7360 (≈7.4 KB HWM) | 50 Hz poll |
+| `seq_ui` | 5 | 0 | 2280 (≈2.3 KB HWM) | 20 Hz (`vTaskDelayUntil`, 50 ms) |
+| `ipc0` | 24 | 0 | 1872 (≈1.9 KB HWM) | IPC / cross-core comms |
+| `ipc1` | 24 | 1 | 1872 (≈1.9 KB HWM) | IPC / cross-core comms |
+| `TinyUSB (UAC)` | 13 | 0 | 3308 (≈3.3 KB HWM) | USB host/device handling (event-driven) |
+| `esp_timer` | 22 | 0 | 3160 (≈3.2 KB HWM) | Timer callbacks / sequencer tick support |
+| `usb_mic_task` | 12 | 0 | 3420 (≈3.4 KB HWM) | USB microphone streaming / ring-buffer I/O |
+| `button_task` | 5 | 0 | 7484 (≈7.5 KB HWM) | Blocks on queue |
 
 The `seq_ui` task owns one call path: read playhead from `sequencer_core_get_current_step()` → copy into `seq_state` → call `display_seq_draw_frame()`. No AMY state is read or written here.
 
@@ -271,26 +279,10 @@ app_main
 
 ## Future Development Considerations
 
-### Per-step pitch / velocity editing
-
-`step_note[SEQ_TRACKS][SEQ_MAX_STEPS]` is already stored per step, initialised uniformly to `track_base_note`. The core's `sequencer_emit_step()` already reads `step_note[track][step]` for every event — **no core changes required**. What is missing:
-
-1. A UI mode (e.g. long-press encoder on a step → enter pitch-edit mode)
-2. `synth_ui_set_step_note(uint8_t layer, uint8_t track, uint8_t step, uint8_t note)` — calls `sequencer_core_set_step(...)` to reschedule the event
-
-Velocity would require adding a `step_velocity[SEQ_TRACKS][SEQ_MAX_STEPS]` field to `seq_layer_t` and plumbing it through `sequencer_emit_step()`.
 
 ### 32-step patterns
 
 `synth_ui_add_layer(type, 32)` already works. The core uses `num_steps × SEQ_TICKS_PER_STEP` as the bar period, so any `num_steps` value that is a multiple of 16 (16, 32) works without code changes. A UI function to toggle an existing layer between 16 and 32 steps would need to reschedule all its events (`sequencer_resync_layer(idx)`) after updating `layer->num_steps`.
-
-### Changing the melodic patch
-
-Replace `SEQ_MEL_PATCH` (default 128 = DX7 "E Piano 1") with any value:
-- 0–127: Juno-106 analog emulation
-- 128–255: Yamaha DX7 FM
-- 256: Piano
-- 1024–1055: User patches
 
 Call `sequencer_configure_synth(layer_idx)` (currently static) after changing `s_layers[layer_idx].patch`. You would need to expose it or add a `sequencer_core_set_patch(uint8_t layer_idx, uint16_t patch)` API function.
 

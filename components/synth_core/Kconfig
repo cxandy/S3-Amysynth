@@ -126,7 +126,7 @@ config SEQ_MELODIC_GATE_DENOMINATOR
 config SEQ_DRUM_GATE_NUMERATOR
 	int "Drum gate ratio numerator"
 	range 1 12
-	default 1
+	default 3
 	help
 		Numerator for the drum note gate duration (fraction of one step the
 		note is held before its note-off). Drums are now real Juno patches with
@@ -137,7 +137,7 @@ config SEQ_DRUM_GATE_NUMERATOR
 config SEQ_DRUM_GATE_DENOMINATOR
 	int "Drum gate ratio denominator"
 	range 1 12
-	default 2
+	default 4
 	help
 		Denominator for the drum note gate duration.
 
@@ -162,22 +162,22 @@ config SEQ_MELODIC_ENV_EG0_TYPE
 config SEQ_MELODIC_ENV_ATTACK_MS
 	int "Melodic envelope attack (ms)"
 	range 0 5000
-	default 10
+	default 4
 
 config SEQ_MELODIC_ENV_DECAY_MS
 	int "Melodic envelope decay (ms)"
 	range 0 10000
-	default 200
+	default 250
 
 config SEQ_MELODIC_ENV_SUSTAIN_PCT
 	int "Melodic envelope sustain level (%)"
 	range 0 100
-	default 60
+	default 30
 
 config SEQ_MELODIC_ENV_RELEASE_MS
 	int "Melodic envelope release (ms)"
 	range 0 10000
-	default 320
+	default 200
 
 config SEQ_ENV_DEBUG_DUMP
 	bool "Log envelope events sent to AMY on commit"
@@ -211,7 +211,7 @@ config SEQ_ARP_DEFAULT_SCALE
 config SEQ_ARP_DEFAULT_ROOT_NOTE
 	int "Arp default root MIDI note"
 	range 0 127
-	default 60
+	default 40
 	help
 		The arp's own quantizer root note (60 = C4).
 
@@ -232,7 +232,7 @@ config SEQ_ARP_DEFAULT_OCTAVES
 config SEQ_ARP_DEFAULT_PATCH
 	int "Arp default patch number"
 	range 0 256
-	default 47
+	default 138
 	help
 		AMY built-in patch for the arp synth (0..127 Juno, 128..255 DX7,
 		256 built-in piano). 138 = DX7 E.Piano 1.

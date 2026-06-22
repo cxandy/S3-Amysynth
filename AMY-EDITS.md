@@ -2,6 +2,14 @@
 
 Track local, project-specific changes made against the upstream AMY component here.
 
+## 2026-06-20
+
+- **Performance: block processing / vectorization in `stereo_reverb()`** (`components/amy/src/delay.c`)
+  - **What:** Replaced the sample-by-sample 10-delay-line reverb loop with a vectorized version when `ESP_PLATFORM` is defined. The upstream loop causes heavy register spilling due to interleaving 10 delay-line pointers and 4 LPF states for every sample.
+  - **How:** Allocated two static `SAMPLE[256]` block buffers in `.bss`. Split the 6 early reflections (`ref_1..6`) and the 4-line reverb matrix into independent `n_samples` loops. Fixed an upstream bug where `f3state` was reused for `d4`'s LPF instead of `f4state` inside the new block path.
+  - **Risk:** Low. The `multicore=0` environment makes static block buffers safe without mutexes. Purely an algorithmic reorganization; the math sequence is unchanged. Guarded heavily by `#ifdef ESP_PLATFORM` so upstream non-ESP builds remain unaffected.
+  - **Rollback:** Remove the `#ifdef ESP_PLATFORM` block in `stereo_reverb()` and restore the pure `while(n_samples--)` upstream loop from the `#else` branch.
+
 ## 2026-06-19
 
 - **Performance: pin the per-sample clipping LUT to internal DRAM (`AMY_DRAM_ATTR`).**

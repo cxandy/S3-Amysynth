@@ -49,6 +49,10 @@ static const uint32_t s_rate_ticks[ARP_RATE_COUNT] = {
     [ARP_RATE_1_8]  = 24,
     [ARP_RATE_1_16] = 12,
     [ARP_RATE_1_32] = 6,
+    [ARP_RATE_1_4T]   = 32,
+    [ARP_RATE_1_8T]   = 16,
+    [ARP_RATE_1_16T]  = 8,
+    [ARP_RATE_1_32T]  = 4,
 };
 
 static const char *s_rate_names[ARP_RATE_COUNT] = {
@@ -57,6 +61,10 @@ static const char *s_rate_names[ARP_RATE_COUNT] = {
     [ARP_RATE_1_8]  = "1/8",
     [ARP_RATE_1_16] = "1/16",
     [ARP_RATE_1_32] = "1/32",
+    [ARP_RATE_1_4T]   = "1/4T",
+    [ARP_RATE_1_8T]   = "1/8T",
+    [ARP_RATE_1_16T]  = "1/16T",
+    [ARP_RATE_1_32T]  = "1/32T",
 };
 
 typedef struct {
@@ -101,7 +109,7 @@ static uint8_t arp_collect_sorted(uint8_t out[ARP_MAX_SLOTS])
         if (s_arp.slots[i] < 0) break;   /* null-termination sentinel */
         out[n++] = (uint8_t)s_arp.slots[i];
     }
-    /* Bubble sort ascending (n <= 8, trivial cost, matches user's request). */
+   
     for (uint8_t i = 0; i + 1 < n; i++) {
         for (uint8_t j = 0; j + 1 < n - i; j++) {
             if (out[j] > out[j + 1]) {
@@ -146,10 +154,10 @@ void arp_core_init(void)
     s_arp.patch       = CONFIG_SEQ_ARP_DEFAULT_PATCH;
     /* Default ADSR mirrors the melodic compile-time defaults; not authored until
      * the user commits in the graph editor (patch's own env wins until then). */
-    s_arp.env.attack_ms   = 12;
-    s_arp.env.decay_ms    = 220;
-    s_arp.env.sustain_pct = 58;
-    s_arp.env.release_ms  = 280;
+s_arp.env.attack_ms   = 4;    // Tiny curve to prevent an aggressive digital click
+s_arp.env.decay_ms    = 250;  // Medium-short decay allows the note body to breathe
+s_arp.env.sustain_pct = 30;   // Low sustain keeps the sequence energetic but audible if held
+s_arp.env.release_ms  = 200;  // Controlled tail that fills space without causing a muddy low-end
     s_arp.env.eg_type     = 0;   /* ENVELOPE_NORMAL */
     s_arp.env_authored    = false;
     if (s_arp.octaves < 1) s_arp.octaves = 1;

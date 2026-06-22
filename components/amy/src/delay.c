@@ -302,6 +302,83 @@ AMY_IRAM_ATTR void stereo_reverb(SAMPLE *r_in, SAMPLE *l_in, SAMPLE *r_out, SAMP
     // https://github.com/duvtedudug/Pure-Data/blob/master/extra/rev2%7E.pd
     // an instance of the Stautner-Puckette multichannel reverberator from
     // https://www.ee.columbia.edu/~dpwe/e4896/papers/StautP82-reverb.pdf
+#ifdef ESP_PLATFORM
+    // LOCAL EDIT (2026-06-20): Block-processed ESP32-S3 optimization
+    static SAMPLE r_acc_block[AMY_BLOCK_SIZE];
+    static SAMPLE l_acc_block[AMY_BLOCK_SIZE];
+
+    SAMPLE init_scale = F2S(0.0625f);
+    
+    // Scale initial inputs into accumulators
+    for (int i = 0; i < n_samples; ++i) {
+        r_acc_block[i] = MUL0_SS(init_scale, r_in[i]);
+        l_acc_block[i] = MUL0_SS(init_scale, l_in ? l_in[i] : r_in[i]);
+    }
+
+    // Early reflections 1-6 (vectorized passes)
+    for (int i = 0; i < n_samples; ++i) {
+        DEL_IN(ref_1, l_acc_block[i]);
+        SAMPLE d_out = DEL_OUT(ref_1, 0);
+        l_acc_block[i] = r_acc_block[i] - d_out;
+        r_acc_block[i] += d_out;
+    }
+    for (int i = 0; i < n_samples; ++i) {
+        DEL_IN(ref_2, l_acc_block[i]);
+        SAMPLE d_out = DEL_OUT(ref_2, 0);
+        l_acc_block[i] = r_acc_block[i] - d_out;
+        r_acc_block[i] += d_out;
+    }
+    for (int i = 0; i < n_samples; ++i) {
+        DEL_IN(ref_3, l_acc_block[i]);
+        SAMPLE d_out = DEL_OUT(ref_3, 0);
+        l_acc_block[i] = r_acc_block[i] - d_out;
+        r_acc_block[i] += d_out;
+    }
+    for (int i = 0; i < n_samples; ++i) {
+        DEL_IN(ref_4, l_acc_block[i]);
+        SAMPLE d_out = DEL_OUT(ref_4, 0);
+        l_acc_block[i] = r_acc_block[i] - d_out;
+        r_acc_block[i] += d_out;
+    }
+    for (int i = 0; i < n_samples; ++i) {
+        DEL_IN(ref_5, l_acc_block[i]);
+        SAMPLE d_out = DEL_OUT(ref_5, 0);
+        l_acc_block[i] = r_acc_block[i] - d_out;
+        r_acc_block[i] += d_out;
+    }
+    for (int i = 0; i < n_samples; ++i) {
+        DEL_IN(ref_6, l_acc_block[i]);
+        l_acc_block[i] = DEL_OUT(ref_6, 0);
+    }
+
+    // Reverb delays, matrix, and output mixing
+    for (int i = 0; i < n_samples; ++i) {
+        SAMPLE r_acc = r_acc_block[i];
+        SAMPLE l_acc = l_acc_block[i];
+
+        SAMPLE d1 = DEL_OUT(delay_1, 0);
+        d1 = LPF(d1, f1state, lpfcoef, lpfgain, liveness);
+        d1 += r_acc;
+        r_out[i] = r_in[i] + MUL8_SS(level, d1);
+
+        SAMPLE d2 = DEL_OUT(delay_2, 0);
+        d2 = LPF(d2, f2state, lpfcoef, lpfgain, liveness);
+        d2 += l_acc;
+        if (l_out != NULL) l_out[i] = (l_in ? l_in[i] : r_in[i]) + MUL8_SS(level, d2);
+
+        SAMPLE d3 = DEL_OUT(delay_3, 0);
+        d3 = LPF(d3, f3state, lpfcoef, lpfgain, liveness);
+
+        SAMPLE d4 = DEL_OUT(delay_4, 0);
+        d4 = LPF(d4, f4state, lpfcoef, lpfgain, liveness); // fixed upstream f3state bug
+
+        // Mixing and feedback
+        DEL_IN(delay_1, d1 + d2 + d3 + d4);
+        DEL_IN(delay_2, d1 - d2 + d3 - d4);
+        DEL_IN(delay_3, d1 + d2 - d3 - d4);
+        DEL_IN(delay_4, d1 - d2 - d3 + d4);
+    }
+#else
     while(n_samples--) {
         // Early echo reflections.
         SAMPLE in_r = *r_in++;
@@ -356,7 +433,7 @@ AMY_IRAM_ATTR void stereo_reverb(SAMPLE *r_in, SAMPLE *l_in, SAMPLE *r_out, SAMP
         d3 = LPF(d3, f3state, lpfcoef, lpfgain, liveness);
 
         SAMPLE d4 = DEL_OUT(delay_4, 0);
-        d4 = LPF(d4, f3state, lpfcoef, lpfgain, liveness);
+        d4 = LPF(d4, f4state, lpfcoef, lpfgain, liveness);
 
         // Mixing and feedback.
         DEL_IN(delay_1, d1 + d2 + d3 + d4);
@@ -364,4 +441,5 @@ AMY_IRAM_ATTR void stereo_reverb(SAMPLE *r_in, SAMPLE *l_in, SAMPLE *r_out, SAMP
         DEL_IN(delay_3, d1 + d2 - d3 - d4);
         DEL_IN(delay_4, d1 - d2 - d3 + d4);
     }
+#endif
 }

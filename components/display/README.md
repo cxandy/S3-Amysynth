@@ -33,6 +33,7 @@ only draws the flat view structs it is handed)
 | `display_drone.{c,h}` | drone parameter-list renderer + its flat view struct |
 | `display_menu.{c,h}` | menu overlay renderer (scrollable label:value list) |
 | `graph_popup.{c,h}` | reusable graph/curve editor widget (ADSR) |
+| `filter_graph.{c,h}` | per-synth filter frequency-response renderer |
 | `patch_names.{c,h}` | AMY patch number → name tables for the browser |
 | `Kconfig` | display menuconfig options |
 
@@ -48,6 +49,110 @@ of reaching into engine state directly.
 The shared sequencer UI state struct (`display_seq_state_t` in
 `display_seq.h`) is the one exception: it is large enough that it doubles as
 the canonical UI state, included by both this layer and `synth_core`.
+
+## Filter editor (`filter_graph`)
+
+### UI overview
+
+The filter editor is a full-screen overlay opened by long-pressing the encoder
+button (the same gesture that opens the ADSR envelope editor). MY\_BUTTON\_3
+single-click swaps between the two editors while either is open; long-pressing
+MY\_BUTTON\_0 cancels; a second long-press on the encoder commits.
+
+The screen is split into two zones:
+
+```
+┌──────────────────────────────────────────┐  row 0
+│  L1 T2        LPF          1.2kHz        │  top bar (rows 0-15)
+├──────────────────────────────────────────┤  row 15
+│                                          │
+│  ▓▓▓▓▓▓▓▓▓▓▓▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒  │  frequency
+│  ▓▓▓▓▓▓▓▓▓▓▓▒▒╎▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒  │  response
+│  ▓▓▓▓▓▓▓▓▓▓▓▓▓▒╎▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒  │  plot
+│  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓╎▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒  │  (rows 16-63)
+│  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒  │
+└──────────────────────────────────────────┘  row 63
+   65 Hz                              8 kHz
+```
+
+**Top bar** — three fields:
+- **Left** (`font_6x10_tf`): target label — `"L<layer> T<track>"` for melodic
+  tracks, `"ARP"` for the arpeggiator, `"DRONE"` for the drone synth.
+- **Centre** (`font_5x7_tr`): filter type name (`NONE` / `LPF` / `BPF` / `HPF`
+  / `LPF24`). Framed when cursor is on the type field; inverted when being edited.
+- **Right** (`font_5x7_tr`): current parameter value — `NNNHz` / `N.NkHz` when
+  the cursor is on cutoff, `Q:N.N` when on resonance. Framed while editing.
+
+**Plot** — X axis is log-frequency (65 Hz left → 8 kHz right). Y axis is
+amplitude (top = louder). The filled area under the curve is drawn with vertical
+lines to the baseline. An XOR cursor column marks the cutoff frequency.
+
+### Cursor cycle and controls
+
+| Cursor | Parameter | Encoder step |
+|--------|-----------|-------------|
+| 0 | Cutoff frequency (log-scaled) | ±1.5 % of full range per detent |
+| 1 | Resonance Q | ±2 % of full range per detent |
+| 2 | Filter type (melodic/arp only) | ±1 step through LPF/BPF/HPF/LPF24 |
+
+Short-press encoder cycles the cursor (0 → 1 → 2 → 0) and enters editing mode.
+While editing, encoder turns adjust the highlighted parameter. Another short-press
+exits editing without advancing the cursor.
+
+Drone target: the filter type is always LPF24 (fixed by the drone architecture),
+so cursor 2 is skipped. Committing moves the filter sweep midpoint to the chosen
+cutoff while preserving the sweep width; resonance maps directly to the drone
+resonance parameter.
+
+### `filter_graph_t` — data struct
+
+```c
+typedef struct {
+    uint8_t filter_type;     /* FGRAPH_FILTER_{NONE,LPF,BPF,HPF,LPF24} */
+    float   cutoff_norm;     /* 0..1, log-mapped: 0 = 65 Hz, 1 = 8000 Hz */
+    float   resonance_norm;  /* 0..1 linear: 0 = 0.51 (min Q), 1 = 8.0 */
+    uint8_t cursor;          /* 0=cutoff, 1=resonance, 2=type */
+    bool    editing;         /* true while encoder is adjusting this field */
+    bool    enabled;         /* false → draw flat line + "OFF" overlay */
+    char    label[16];       /* top-bar left field */
+} filter_graph_t;
+```
+
+`synth_ui.c` owns the `filter_graph_t` scratch copy (`s_fgraph`) and populates
+it from the live synth state on editor open. The display component has no AMY or
+`synth_core` dependency; all Hz ↔ norm conversions happen in `synth_ui`.
+
+### Response model
+
+The curve is computed from the standard second-order biquad magnitude formula,
+evaluated at `FG_NPTS = 24` log-spaced frequency samples:
+
+| Type | Formula | Notes |
+|------|---------|-------|
+| LPF (-12 dB/oct) | `1 / √((1-r²)² + (r/Q)²)` | r = f/fc |
+| HPF (-12 dB/oct) | `r² / √((1-r²)² + (r/Q)²)` | |
+| BPF | `(r/Q) / √((1-r²)² + (r/Q)²)` | |
+| LPF24 (-24 dB/oct) | LPF magnitude squared | two cascaded biquads |
+
+Passband is normalised to 75 % of plot height (`FG_PASSBAND_NORM = 0.75`),
+leaving 25 % headroom for the resonance spike. Q values above ~1.33 push the
+spike to the top of the plot; the exact Q is always shown numerically in the top
+bar regardless.
+
+The response is purely for display. It does not derive from AMY's actual biquad
+coefficients — it is a standard textbook approximation with the same topology.
+This keeps the renderer free of any runtime AMY dependency.
+
+### Constants
+
+| Symbol | Value | Meaning |
+|--------|-------|---------|
+| `FGRAPH_CUTOFF_HZ_MIN` | 65 Hz | Left edge of X axis / minimum cutoff |
+| `FGRAPH_CUTOFF_HZ_MAX` | 8000 Hz | Right edge of X axis / maximum cutoff |
+| `FGRAPH_RES_MIN` | 0.51 | Minimum Q (AMY biquad hard floor) |
+| `FGRAPH_RES_MAX` | 8.0 | Maximum Q (project cap) |
+| `FG_PASSBAND_NORM` | 0.75 | Passband fraction of plot height |
+| `FG_NPTS` | 24 | Frequency sample count for the curve |
 
 ## HAL quick usage
 

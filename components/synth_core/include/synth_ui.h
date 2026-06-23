@@ -103,6 +103,22 @@ bool synth_ui_graph_close_commit(void);
  * while the editor is open. Re-seeds the curve. Returns true if consumed. */
 bool synth_ui_graph_toggle_range(void);
 
+/* ── Filter editor (per-synth LPF/HPF/BPF/LPF24 curve editor) ───────────────
+ * Opened by long-press encoder (same as ADSR); toggled with MY_BUTTON_3 while
+ * either editor is open. Controls: encoder adjusts the selected parameter
+ * (cutoff/resonance/type), short press cycles the cursor, long-press commits. */
+bool synth_ui_filter_is_active(void);
+void synth_ui_filter_open(void);
+bool synth_ui_filter_handle_encoder(long delta);
+bool synth_ui_filter_handle_button(bool is_long);
+bool synth_ui_filter_close_commit(void);
+
+/* Toggle the filter on/off (MY_BUTTON_1 while editor is open). No-op when closed. */
+void synth_ui_filter_toggle_enabled(void);
+
+/* Swap between ADSR and Filter editors while either is open (MY_BUTTON_3). */
+void synth_ui_toggle_adsr_filter(void);
+
 #ifdef __cplusplus
 }
 #endif

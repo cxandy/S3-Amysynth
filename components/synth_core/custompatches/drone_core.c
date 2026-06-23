@@ -47,12 +47,13 @@ extern uint32_t sequencer_ticks(void);
 
 #define DRONE_GATE_VEL     1.0f
 
-/* Sub drone gate note (root). Its pitch follows the chord root via COEF_NOTE. */
-#define DRONE_SUB_NOTE     33    /* A1-ish base; sub_interval applied on top   */
+#define DRONE_ROOT_MIN     24    /* C1 — lowest selectable drone root */
+#define DRONE_ROOT_MAX     72    /* C5 — highest selectable drone root */
+#define DRONE_ROOT_DEFAULT 45    /* A2 — matches the former Am7 voicing */
 
 /* Limits */
 #define DRONE_RES_MIN      0.1f
-#define DRONE_RES_MAX      8.0f    /* AMY itself imposes no upper Q cap (floor 0.51);
+#define DRONE_RES_MAX      3.0f    /* AMY itself imposes no upper Q cap (floor 0.51);
                                     * 8 gives a strong acid peak with headroom before
                                     * self-oscillation transients spike the clip LUT. */
 #define DRONE_SWEEP_MIN    100.0f
@@ -67,23 +68,22 @@ extern uint32_t sequencer_ticks(void);
 #define DRONE_BLIP_MAX     1.0f    /* per-step downward filter-zap depth (0 = off)     */
 #define DRONE_PAT_STEPS    8       /* steps per bar in a pattern mask                  */
 
-/* ── Chord matrix (MIDI notes, fixed width, -1 = unused) ──
- * Voiced in a comfortable mid register so the LPF24 + sweep keep them present.
- * The sub plays each chord's ROOT (notes[0]) an octave-ish below. */
-static const int8_t s_chord_notes[DRONE_CHORD_COUNT][DRONE_CHORD_MAX_NOTES] = {
-    /* Am7  : A2 C3 E3 G3        */ [DRONE_CHORD_AM7]   = { 45, 48, 52, 55, -1 },
-    /* Fmaj7: F2 A2 C3 E3        */ [DRONE_CHORD_FMAJ7] = { 41, 45, 48, 52, -1 },
-    /* Dm9  : D2 F2 A2 C3 E3     */ [DRONE_CHORD_DM9]   = { 38, 41, 45, 48, 52 },
-    /* Cmaj9: C3 E3 G3 B3 D4     */ [DRONE_CHORD_CMAJ9] = { 48, 52, 55, 59, 62 },
-    /* Gsus4: G2 C3 D3 G3        */ [DRONE_CHORD_GSUS4] = { 43, 48, 50, 55, -1 },
+/* ── Chord formulas (semitone intervals from root, -1 = unused) ──
+ * Root-relative so the same shape plays in any key via drone_set_root_note(). */
+static const int8_t s_chord_formulas[DRONE_CHORD_COUNT][DRONE_CHORD_MAX_NOTES] = {
+    /* Minor 7th */ [DRONE_CHORD_MIN7] = {  0,  3,  7, 10, -1 },
+    /* Major 7th */ [DRONE_CHORD_MAJ7] = {  0,  4,  7, 11, -1 },
+    /* Minor 9th */ [DRONE_CHORD_MIN9] = {  0,  3,  7, 10, 14 },
+    /* Major 9th */ [DRONE_CHORD_MAJ9] = {  0,  4,  7, 11, 14 },
+    /* Sus4      */ [DRONE_CHORD_SUS4] = {  0,  5,  7, 12, -1 },
 };
 
 static const char *s_chord_names[DRONE_CHORD_COUNT] = {
-    [DRONE_CHORD_AM7]   = "Am7",
-    [DRONE_CHORD_FMAJ7] = "Fmaj7",
-    [DRONE_CHORD_DM9]   = "Dm9",
-    [DRONE_CHORD_CMAJ9] = "Cmaj9",
-    [DRONE_CHORD_GSUS4] = "Gsus4",
+    [DRONE_CHORD_MIN7] = "Min7",
+    [DRONE_CHORD_MAJ7] = "Maj7",
+    [DRONE_CHORD_MIN9] = "Min9",
+    [DRONE_CHORD_MAJ9] = "Maj9",
+    [DRONE_CHORD_SUS4] = "Sus4",
 };
 
 /* Stutter rate -> multiplier on the beat rate (beats/sec * mult = LFO Hz).
@@ -126,6 +126,7 @@ typedef struct {
     drone_source_t source;
     uint16_t       wave;        /* AMY wave constant for the carrier */
     drone_chord_t  chord;       /* chord preset the carrier plays    */
+    uint8_t        root_note;   /* drone-local root (DRONE_ROOT_MIN..MAX) */
     float          resonance;
     float          amp_const;   /* 0..1 always-on carrier level      */
     float          amp_mod;     /* 0..1 stutter depth (LFO modulation)*/
@@ -182,13 +183,13 @@ static inline float drone_lfo_hz(void)
     return drone_bps() * s_rate_mult[s_d.rate];
 }
 
-/* Count the notes in a chord preset (up to the first -1 sentinel). */
+/* Count the notes in a chord formula (up to the first -1 sentinel). */
 static uint8_t drone_chord_note_count(drone_chord_t chord)
 {
     if (chord >= DRONE_CHORD_COUNT) return 0;
     uint8_t n = 0;
     for (uint8_t i = 0; i < DRONE_CHORD_MAX_NOTES; i++) {
-        if (s_chord_notes[chord][i] < 0) break;
+        if (s_chord_formulas[chord][i] < 0) break;
         n++;
     }
     return n;
@@ -318,18 +319,18 @@ static void drone_note(uint8_t synth, bool on, float midi_note)
  * release fades them out. */
 static void drone_apply_enabled(void)
 {
-    const int8_t *notes = s_chord_notes[s_d.chord];
+    const int8_t *formula = s_chord_formulas[s_d.chord];
     uint8_t chord_n = drone_chord_note_count(s_d.chord);
     if (chord_n < 1) chord_n = 1;
 
     for (uint8_t i = 0; i < chord_n; i++) {
-        if (notes[i] < 0) break;
-        drone_note(DRONE_SYNTH_MAIN, s_d.enabled, (float)notes[i]);
+        if (formula[i] < 0) break;
+        int midi = SEQ_CLAMP_INT((int)s_d.root_note + (int)formula[i], 0, 127);
+        drone_note(DRONE_SYNTH_MAIN, s_d.enabled, (float)midi);
     }
 
     if (s_d.sub_enabled) {
-        int root = (notes[0] >= 0) ? notes[0] : DRONE_SUB_NOTE;
-        int sub  = SEQ_CLAMP_INT(root + (int)s_d.sub_interval, 12, 108);
+        int sub = SEQ_CLAMP_INT((int)s_d.root_note + (int)s_d.sub_interval, 12, 108);
         drone_note(DRONE_SYNTH_SUB, s_d.enabled, (float)sub);
     }
 }
@@ -356,7 +357,8 @@ void drone_core_init(void)
     s_d.enabled      = false;
     s_d.source       = DRONE_SRC_WAVE;
     s_d.wave         = SAW_DOWN;
-    s_d.chord        = DRONE_CHORD_AM7;
+    s_d.chord        = DRONE_CHORD_MIN7;
+    s_d.root_note    = DRONE_ROOT_DEFAULT;
     s_d.resonance    = 1.5f;
     s_d.amp_const    = 0.5f;     /* always-on level                  */
     s_d.amp_mod      = 0.5f;     /* moderate stutter depth (LFO mod) */
@@ -531,6 +533,23 @@ void drone_set_chord(drone_chord_t chord)
     }
 }
 
+void drone_set_root_note(uint8_t note)
+{
+    uint8_t clamped = (uint8_t)SEQ_CLAMP_INT((int)note, DRONE_ROOT_MIN, DRONE_ROOT_MAX);
+    if (s_d.root_note == clamped) return;
+    bool was_enabled = s_d.enabled;
+    if (was_enabled) {
+        s_d.enabled = false;
+        drone_apply_enabled();   /* note-off current notes (old root) */
+    }
+    s_d.root_note = clamped;
+    if (was_enabled) {
+        s_d.enabled = true;
+        drone_apply_enabled();   /* note-on with new root */
+    }
+    ESP_LOGI(TAG, "drone root -> %u", (unsigned)clamped);
+}
+
 void drone_set_resonance(float r)
 {
     r = SEQ_CLAMP_F32(r, DRONE_RES_MIN, DRONE_RES_MAX);
@@ -564,7 +583,7 @@ void drone_set_amp_const(float c)
 
 void drone_set_amp_mod(float m)
 {
-    m = SEQ_CLAMP_F32(m, 0.0f, 1.0f);
+    m = SEQ_CLAMP_F32(m, 0.0f, 0.95f); /* cap at 0.95: mod=1 silences floor completely */
     if (fabsf(s_d.amp_mod - m) < 0.001f) return;
     s_d.amp_mod = m;
     if (s_d.source == DRONE_SRC_WAVE) {
@@ -601,7 +620,8 @@ void drone_set_sub_enabled(bool on)
         drone_rebuild();
         if (s_d.enabled) drone_apply_enabled();
     } else {
-        drone_note(DRONE_SYNTH_SUB, false, (float)DRONE_SUB_NOTE);
+        int sub_midi = SEQ_CLAMP_INT((int)s_d.root_note + (int)s_d.sub_interval, 12, 108);
+        drone_note(DRONE_SYNTH_SUB, false, (float)sub_midi);
     }
 }
 
@@ -702,6 +722,7 @@ bool           drone_get_enabled(void)      { return s_d.enabled; }
 drone_source_t drone_get_source(void)       { return s_d.source; }
 uint16_t       drone_get_wave(void)         { return s_d.wave; }
 drone_chord_t  drone_get_chord(void)        { return s_d.chord; }
+uint8_t        drone_get_root_note(void)    { return s_d.root_note; }
 float          drone_get_resonance(void)    { return s_d.resonance; }
 float          drone_get_amp_const(void)    { return s_d.amp_const; }
 float          drone_get_amp_mod(void)      { return s_d.amp_mod; }

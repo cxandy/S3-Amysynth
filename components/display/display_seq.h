@@ -27,6 +27,24 @@ typedef enum {
     UI_MODE_DRONE     = 2,
 } ui_mode_t;
 
+/* ── Filter type constants (mirror AMY's FILTER_* values) ── */
+#define SEQ_FILTER_NONE  0
+#define SEQ_FILTER_LPF   1
+#define SEQ_FILTER_BPF   2
+#define SEQ_FILTER_HPF   3
+#define SEQ_FILTER_LPF24 4
+
+/* ── Per-voice filter state (stored alongside the ADSR envelope) ──
+ * enabled=false means FILTER_NONE is sent (bypass); enabled=true uses filter_type.
+ * cutoff_hz is in Hz (the same unit as AMY amy_event.filter_freq_coefs — the driver
+ * converts to log-freq internally). */
+typedef struct {
+    uint8_t filter_type;   /* SEQ_FILTER_* — typically SEQ_FILTER_NONE */
+    float   cutoff_hz;     /* 65..8000 Hz */
+    float   resonance;     /* 0.51..8.0 (Q factor) */
+    bool    enabled;       /* false = bypass (FILTER_NONE sent) */
+} seq_filter_t;
+
 /* ── ADSR envelope (one AMY EG0 breakpoint set) ──
  * Stored as concrete ms/percent so it survives patch changes and can be edited
  * at runtime by the graph UI. Currently scoped PER ROW (per track); the storage
@@ -49,11 +67,14 @@ typedef struct {
     bool     grid[SEQ_TRACKS][SEQ_MAX_STEPS];        /* step on/off state      */
     uint8_t  step_note[SEQ_TRACKS][SEQ_MAX_STEPS];   /* per-step MIDI pitch    */
     uint8_t  track_base_note[SEQ_TRACKS];            /* current base note      */
-    seq_env_t env[SEQ_TRACKS];                       /* per-row ADSR envelope  */
-    bool     env_authored[SEQ_TRACKS]; /* row's env overrides the patch only
-                                          after the user commits in the graph
-                                          editor; until then the patch's own
-                                          envelope wins (deferred authority)  */
+    seq_env_t    env[SEQ_TRACKS];                    /* per-row ADSR envelope  */
+    bool         env_authored[SEQ_TRACKS]; /* row's env overrides the patch only
+                                              after the user commits in the graph
+                                              editor; until then the patch's own
+                                              envelope wins (deferred authority)  */
+    seq_filter_t filter[SEQ_TRACKS];          /* per-row filter (bypass by default) */
+    bool         filter_authored[SEQ_TRACKS]; /* filter overrides patch only after
+                                                 the user commits in the filter editor */
     uint8_t  synth_id[SEQ_TRACKS];   /* one AMY synth per row (both melodic and
                                         drum layers: each track has its own slot */
     uint16_t patch;                  /* shared timbre across the layer's rows

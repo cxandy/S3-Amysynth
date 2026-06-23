@@ -58,6 +58,18 @@ bool sequencer_core_get_melodic_envelope(uint8_t layer_idx, uint8_t track,
 void sequencer_core_set_melodic_envelope(uint8_t layer_idx, uint8_t track,
                                          const seq_env_t *env);
 
+/* ── Per-row melodic filter (runtime-editable) ──
+ * Parallel to the envelope system. Default: enabled=false (bypass).
+ * set stores + pushes to that row's synth immediately.
+ * get returns false for non-melodic/out-of-range layers. */
+bool sequencer_core_get_melodic_filter(uint8_t layer_idx, uint8_t track,
+                                       seq_filter_t *out);
+void sequencer_core_set_melodic_filter(uint8_t layer_idx, uint8_t track,
+                                       const seq_filter_t *f);
+
+/* Push a filter directly to an arbitrary AMY synth slot (shared by arp/drone). */
+void sequencer_core_push_filter(uint8_t synth, const seq_filter_t *f);
+
 /* Returns the current playhead step for the given layer (0..num_steps-1).
  * When paused the last computed step is returned (display freezes). */
 uint8_t sequencer_core_get_current_step(uint8_t layer_idx);

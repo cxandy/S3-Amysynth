@@ -469,6 +469,8 @@ static void sequencer_emit_clear_tag(uint32_t tag)
     seq_ev_send();
 }
 
+static void sequencer_configure_melodic_filter(uint8_t layer_idx);  /* forward */
+
 /* (Re)configure the AMY synth(s) for layer_idx.
  * Drums use a single synth (synth_id[0]); melodic layers configure one synth
  * per row, all sharing the same patch/flags/voice-count but on distinct slots. */
@@ -533,6 +535,7 @@ static void sequencer_configure_synth(uint8_t layer_idx)
     /* Patch strings carry global EQ/chorus commands; keep them per-synth. */
     synth_ui_fx_reassert_global();
     sequencer_configure_melodic_envelope(layer_idx);
+    sequencer_configure_melodic_filter(layer_idx);
 }
 
 /* Schedule (or cancel) one grid step as a pair of repeating AMY events: a
@@ -1006,6 +1009,81 @@ void sequencer_core_set_melodic_envelope(uint8_t layer_idx, uint8_t track,
              (unsigned)dst->decay_ms, (double)dst->sustain_pct / 100.0,
              (unsigned)dst->release_ms);
 #endif
+}
+
+/* ── Per-row melodic filter (runtime-editable) ─────────────────────────── */
+
+/* Push one row's stored filter to its own AMY synth. */
+static void sequencer_configure_melodic_filter_track(uint8_t layer_idx, uint8_t track)
+{
+    const seq_layer_t   *layer = &s_layers[layer_idx];
+    const seq_filter_t  *f     = &layer->filter[track];
+    seq_ev_begin();
+    s_ev.synth       = layer->synth_id[track];
+    if (f->enabled) {
+        s_ev.filter_type = f->filter_type;
+        s_ev.filter_freq_coefs[COEF_CONST] = f->cutoff_hz;
+        s_ev.resonance = f->resonance;
+    } else {
+        s_ev.filter_type = FILTER_NONE;
+    }
+    seq_ev_send();
+}
+
+/* Push the filter for every authored row in a layer (called after patch reload). */
+static void sequencer_configure_melodic_filter(uint8_t layer_idx)
+{
+    const seq_layer_t *layer = &s_layers[layer_idx];
+    for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
+        if (layer->filter_authored[t]) {
+            sequencer_configure_melodic_filter_track(layer_idx, t);
+        }
+    }
+}
+
+bool sequencer_core_get_melodic_filter(uint8_t layer_idx, uint8_t track,
+                                       seq_filter_t *out)
+{
+    if (!out || layer_idx >= s_num_layers || track >= SEQ_TRACKS) return false;
+    if (s_layers[layer_idx].type != SEQ_LAYER_MELODIC) return false;
+    *out = s_layers[layer_idx].filter[track];
+    return true;
+}
+
+void sequencer_core_set_melodic_filter(uint8_t layer_idx, uint8_t track,
+                                       const seq_filter_t *f)
+{
+    if (!f || layer_idx >= s_num_layers || track >= SEQ_TRACKS) return;
+    seq_layer_t *layer = &s_layers[layer_idx];
+    if (layer->type != SEQ_LAYER_MELODIC) return;
+
+    seq_filter_t *dst = &layer->filter[track];
+    dst->filter_type = (f->filter_type < 5) ? f->filter_type : FILTER_NONE;
+    dst->cutoff_hz   = SEQ_CLAMP_F32(f->cutoff_hz,  65.0f, 8000.0f);
+    dst->resonance   = SEQ_CLAMP_F32(f->resonance,  0.51f, 8.0f);
+    dst->enabled     = f->enabled;
+
+    layer->filter_authored[track] = true;
+    sequencer_configure_melodic_filter_track(layer_idx, track);
+    ESP_LOGI(TAG, "filter L%u row%u -> type%u %.0fHz Q%.2f (authored)",
+             layer_idx, track, dst->filter_type,
+             (double)dst->cutoff_hz, (double)dst->resonance);
+}
+
+/* Generic filter push: shared by arp, drone (via synth_ui). */
+void sequencer_core_push_filter(uint8_t synth, const seq_filter_t *f)
+{
+    if (!f) return;
+    seq_ev_begin();
+    s_ev.synth = synth;
+    if (f->enabled) {
+        s_ev.filter_type = f->filter_type;
+        s_ev.filter_freq_coefs[COEF_CONST] = f->cutoff_hz;
+        s_ev.resonance = f->resonance;
+    } else {
+        s_ev.filter_type = FILTER_NONE;
+    }
+    seq_ev_send();
 }
 
 uint8_t sequencer_core_get_num_layers(void)

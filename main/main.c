@@ -309,10 +309,15 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
 {
     (void)user_data;
 
-    // MY_BUTTON_1 is the patch-select hold button. Plain hold+turn: while held,
-    // the encoder cycles the patch (no timer/latch). On press we enter
-    // patch-select display mode; on release we leave it.
+    // MY_BUTTON_1 is the patch-select hold button. While the filter editor is
+    // open it is repurposed as the enabled on/off toggle (single press).
     if (button_id == MY_BUTTON_1) {
+        if (synth_ui_filter_is_active()) {
+            if (event == BUTTON_PRESS_DOWN) {
+                synth_ui_filter_toggle_enabled();
+            }
+            return;
+        }
         if (event == BUTTON_PRESS_DOWN) {
             s_patch_held = true;
             synth_ui_set_patch_select_mode(true);
@@ -378,6 +383,10 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
     // (gated) as the SHORT<->LONG time-range toggle so it never touches that
     // state in that context.
     if (button_id == MY_BUTTON_2) {
+        if (synth_ui_filter_is_active()) {
+            /* Suppress drum-select hold so the latch never gets stuck. */
+            return;
+        }
         if (synth_ui_graph_is_active()) {
             if (event == BUTTON_PRESS_DOWN) {
                 synth_ui_graph_toggle_range();
@@ -394,14 +403,14 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
         return;
     }
 
-    // MY_BUTTON_3 (GPIO42): the graph editor used to need this as a
-    // vertical<->horizontal axis toggle, but each ADSR point now auto-selects the
-    // only axis it can move on, so the toggle is gone. Inside the editor the
-    // press is swallowed (so it never leaks to the menu); outside it is the menu
-    // toggle (single-click), replacing the removed shoulder button (GPIO1).
+    // MY_BUTTON_3 (GPIO42): while ADSR or filter editor is open, single-click
+    // swaps between them. Outside editors it is the menu toggle.
     if (button_id == MY_BUTTON_3) {
-        if (synth_ui_graph_is_active()) {
-            return;   // editor open: consume, no-op (axis toggle removed)
+        if (synth_ui_graph_is_active() || synth_ui_filter_is_active()) {
+            if (event == BUTTON_SINGLE_CLICK) {
+                synth_ui_toggle_adsr_filter();
+            }
+            return;
         }
         if (event == BUTTON_SINGLE_CLICK) {
             synth_ui_menu_toggle();
@@ -414,6 +423,15 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
      * - short press (editor open)  toggles select<->adjust, or confirms in VIEW
      * Remove this block to revert the integration. */
     if (button_id == MY_BUTTON_ENC) {
+        if (synth_ui_filter_is_active()) {
+            /* Long-press commits + closes; short-press cycles cursor. */
+            if (event == BUTTON_LONG_PRESS_START) {
+                synth_ui_filter_close_commit();
+            } else if (event == BUTTON_PRESS_DOWN) {
+                synth_ui_filter_handle_button(false);
+            }
+            return;
+        }
         if (synth_ui_graph_is_active()) {
             /* Long-press closes the editor and COMMITS, symmetric with the
              * long-press that opens it. Short-press toggles select<->adjust.
@@ -460,10 +478,14 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
         /* else fall through to the normal PRESS_DOWN queueing below */
     }
 
-    /* graph pop-up: MY_BUTTON_0 long press cancels the editor while it is open. */
-    if (button_id == MY_BUTTON_0 && synth_ui_graph_is_active()) {
+    /* MY_BUTTON_0 long press cancels whichever overlay editor is open. */
+    if (button_id == MY_BUTTON_0 &&
+        (synth_ui_graph_is_active() || synth_ui_filter_is_active())) {
         if (event == BUTTON_LONG_PRESS_START) {
-            synth_ui_graph_handle_button(true); /* long = cancel */
+            if (synth_ui_filter_is_active())
+                synth_ui_filter_handle_button(true); /* long = cancel */
+            else
+                synth_ui_graph_handle_button(true);
         }
         return;
     }
@@ -521,6 +543,11 @@ static void encoder_task(void *pvParameters)
             long steps = enc_accum / 2; // require 2 raw ticks per action
             enc_accum %= 2;
             if (steps == 0) goto next_poll;
+
+            /* filter editor: highest priority encoder consumer. */
+            if (synth_ui_filter_handle_encoder(steps)) {
+                goto next_poll;
+            }
 
             /* graph pop-up: when open, the encoder drives the curve editor and
              * normal sequencer routing is skipped. Remove this branch to revert. */

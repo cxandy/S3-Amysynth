@@ -36,9 +36,12 @@ typedef struct {
     uint8_t     octaves;
     const char *rate_str;     /* "1/16" etc           */
     uint8_t     gate_pct;
-    /* Per-slot display: note name (snapped) or empty for "--". */
+    /* Per-slot display: note name (snapped), "--" (empty), or " R " (rest).
+     * slot_active: true = note present. slot_rest: true = ARP_REST sentinel.
+     * Check slot_rest before slot_active to disambiguate the inactive case. */
     char        slot_name[ARP_VIEW_SLOTS][4];
     bool        slot_active[ARP_VIEW_SLOTS];
+    bool        slot_rest[ARP_VIEW_SLOTS];
     uint8_t     cursor;       /* 0..ARP_CUR_COUNT-1   */
     bool        editing;      /* value being adjusted */
     /* Patch indicator (mirrors the sequencer view). The number is always shown

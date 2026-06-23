@@ -1,33 +1,32 @@
 
 #include <stdint.h>
-#include <stdio.h>
 #include <string.h>
 #include <inttypes.h>
-#include "freertos/idf_additions.h"
 #include "iot_button.h"
 #include "priv_i2c_u8g2.h"
 #include "u8g2.h"
 #include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "esp_chip_info.h"
-#include "esp_flash.h"
-#include "esp_system.h"
 #include "esp_task.h"
 #include "amy.h"
 #include "freertos/queue.h"
-#include "freertos/event_groups.h"
 #include "esp_err.h"
 #include "rotary_encoder.h"
 #include "synth_ui.h"
 #include "sequencer_core.h"
-#include "seq_clamp.h"
 #include "usb_audio.h"
 #include "esp_timer.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "render_clock.h"
 #include "esp_compiler.h"
+#include "soc/gpio_num.h"
+#include "my_buttons.h"
+
+#ifndef CONFIG_AMYSYNTH_INPUT_DIAGNOSTICS
+#define CONFIG_AMYSYNTH_INPUT_DIAGNOSTICS 0
+#endif
 
 static const char *TAG = "main"; // For ESP_LOG and related logs in this file
 
@@ -47,32 +46,11 @@ static const char *TAG = "main"; // For ESP_LOG and related logs in this file
 #define HEAP_CHECK(where) do { (void)(where); } while (0)
 #endif
 
-#include "driver/i2s_std.h"
-#include "soc/gpio_num.h"
-#include "my_buttons.h"
-/*----------------------------------------------GPIO/MACROS-----------------------------------------------------------*/
-//i2s pins
-#define CONFIG_I2S_BCLK 11 // 25
-#define CONFIG_I2S_LRCLK 9
-#define CONFIG_I2S_DIN 10
-// This can be 32 bit, int32_t -- helpful for digital output to a i2s->USB teensy3 board
-
-
 // Rotary encoder pins
 #define ENCODER_PIN_A GPIO_NUM_40
 #define ENCODER_PIN_B GPIO_NUM_41
-#define ENCODER_PIN_BTN GPIO_NUM_16
-
-#define u8g2_task_stack_size (8 * 1024) // 8KB stack for the u8g2 task
-
-typedef int16_t i2s_sample_type;
-
-
-
 static i2c_u8g2_handle_t s_display;
 static u8g2_t *s_u8g2 = NULL;
-static volatile long last_count = 0; // For encoder count
-static volatile long count = 0; // For encoder count
 static volatile uint32_t s_last_seq_tick = 0;
 static volatile uint32_t s_seq_tick_hook_count = 0;
 static volatile uint32_t s_render_block_count = 0;
@@ -537,18 +515,18 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
 static void encoder_task(void *pvParameters)
 {
     rotary_encoder_handle_t enc = (rotary_encoder_handle_t)pvParameters;
-    long prev = last_count;
+    long prev = rotary_encoder_get_count(enc);
     static long enc_accum = 0; // sub-step accumulator (2 raw ticks = 1 action)
     for (;;) {
         long cur = rotary_encoder_get_count(enc);
         
         if (cur != prev) {
             long delta = cur - prev;
+#if CONFIG_AMYSYNTH_INPUT_DIAGNOSTICS
             ESP_LOGI(TAG,
-                 "encoder count=%ld (delta=%ld)",
-                  (long)cur, (long)(delta));
-            last_count = prev;  // Store the previous count for display
-            count = cur;        // Update current count
+                     "encoder count=%ld (delta=%ld)",
+                     (long)cur, (long)(delta));
+#endif
             prev = cur;
 
             enc_accum += delta;
@@ -589,7 +567,7 @@ static void encoder_task(void *pvParameters)
                     synth_ui_drone_cycle_patch((int)steps);
                 } else if (synth_ui_arp_is_active()) {
                     synth_ui_arp_cycle_patch((int)steps);
-                } else if (sequencer_core_get_layer_type(seq_state.active_layer_idx)
+                } else if (sequencer_core_get_layer_type(seq_get_active_layer_idx())
                            == SEQ_LAYER_DRUM) {
                     synth_ui_cycle_drum_patch((int)steps);
                 } else {
@@ -646,10 +624,7 @@ static void encoder_init_task(void *pvParameters)
     vTaskDelete(NULL);
 }
 
-// AMY synth states
-extern struct state amy_global;
-
-    void app_main(void)
+void app_main(void)
 {
    
     ESP_LOGI(TAG, "Hello world!");

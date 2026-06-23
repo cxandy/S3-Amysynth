@@ -74,8 +74,11 @@ void synth_ui_drone_cycle_patch(int delta);
  * deliberately letting presets drive the global FX). */
 void synth_ui_fx_reassert_global(void);
 
-/* Global state (bpm is read directly by encoder_task in main.c) */
-extern synth_ui_state_t seq_state;
+/* Accessors for the (module-private) UI state. seq_state itself is static in
+ * synth_ui.c — other modules read what they need through these getters rather
+ * than reaching into the UI struct. */
+uint16_t seq_get_bpm(void);
+uint8_t  seq_get_active_layer_idx(void);
 
 /* ── Graph pop-up integration (isolated, easily removable) ───────────────────
  * Demo hooks for the reusable graph_popup widget. main.c calls these; the

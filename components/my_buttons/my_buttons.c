@@ -9,6 +9,10 @@
 #include "button_gpio.h"
 #include "esp_log.h"
 
+#ifndef CONFIG_AMYSYNTH_INPUT_DIAGNOSTICS
+#define CONFIG_AMYSYNTH_INPUT_DIAGNOSTICS 0
+#endif
+
 static const char *TAG = "my_buttons";
 
 // Button GPIO assignments (active low with internal pull-up)
@@ -35,7 +39,9 @@ static void button_event_cb(void *button_handle, void *usr_data)
     my_button_id_t btn_id = (my_button_id_t)(uintptr_t)usr_data;
     button_event_t event = iot_button_get_event(button_handle);
 
+#if CONFIG_AMYSYNTH_INPUT_DIAGNOSTICS
     ESP_LOGI(TAG, "Button %d: %s", btn_id, iot_button_get_event_str(event));
+#endif
     s_user_cb(btn_id, event, s_user_data);
 }
 

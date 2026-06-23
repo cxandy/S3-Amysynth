@@ -1,9 +1,11 @@
 #include "sequencer_core.h"
 #include "arp_core.h"
 #include "amy.h"
+#include "amy_helpers.h"
 #include "sequencer.h"
 #include "quantizer.h"
 #include "seq_clamp.h"
+#include "seq_defaults.h"
 #include "sdkconfig.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
@@ -51,21 +53,6 @@ void synth_ui_fx_reassert_global(void);
 #endif
 #ifndef CONFIG_SEQ_MELODIC_ENVELOPE_ENABLED
 #define CONFIG_SEQ_MELODIC_ENVELOPE_ENABLED 1
-#endif
-#ifndef CONFIG_SEQ_MELODIC_ENV_EG0_TYPE
-#define CONFIG_SEQ_MELODIC_ENV_EG0_TYPE 0
-#endif
-#ifndef CONFIG_SEQ_MELODIC_ENV_ATTACK_MS
-#define CONFIG_SEQ_MELODIC_ENV_ATTACK_MS 12
-#endif
-#ifndef CONFIG_SEQ_MELODIC_ENV_DECAY_MS
-#define CONFIG_SEQ_MELODIC_ENV_DECAY_MS 220
-#endif
-#ifndef CONFIG_SEQ_MELODIC_ENV_SUSTAIN_PCT
-#define CONFIG_SEQ_MELODIC_ENV_SUSTAIN_PCT 58
-#endif
-#ifndef CONFIG_SEQ_MELODIC_ENV_RELEASE_MS
-#define CONFIG_SEQ_MELODIC_ENV_RELEASE_MS 280
 #endif
 #ifndef CONFIG_SEQ_MELODIC_PATCH
 #define CONFIG_SEQ_MELODIC_PATCH 138
@@ -254,27 +241,9 @@ static float sequencer_step_velocity(const seq_layer_t *layer,
 #endif
 }
 
-/* ── Scratch AMY event (module-level, never on any task stack) ───────── */
-/*
- * amy_event is ~800 bytes. Placing even one instance on the stack of
- * app_main (default 3584 bytes) causes a stack overflow during init.
- * All emit helpers share this single static buffer; concurrent callers
- * are serialised by s_ev_mutex (all callers are FreeRTOS tasks, never ISRs).
- */
-static amy_event         s_ev;
-static SemaphoreHandle_t s_ev_mutex = NULL;
-
-static inline void seq_ev_begin(void)
-{
-    xSemaphoreTake(s_ev_mutex, portMAX_DELAY);
-    s_ev = amy_default_event();
-}
-
-static inline void seq_ev_send(void)
-{
-    amy_add_event(&s_ev);
-    xSemaphoreGive(s_ev_mutex);
-}
+/* AMY events are emitted through the shared amy_helpers scratch buffer (see
+ * amy_helpers.{c,h}) — one module-level event + mutex for all first-party
+ * callers, all of which are FreeRTOS tasks (never ISRs). */
 
 /* The melodic envelope is stored PER ROW (per track). Each row now owns its own
  * AMY synth slot (synth_id[track]), so every row holds its own independent live
@@ -297,17 +266,17 @@ static void sequencer_configure_melodic_envelope_track(uint8_t layer_idx, uint8_
     const seq_env_t   *env   = seq_layer_env(layer_idx, track);
     float sustain = (float)env->sustain_pct / 100.0f;
 
-    seq_ev_begin();
-    s_ev.synth = layer->synth_id[track];
-    s_ev.bp_is_set[0] = 1;
-    s_ev.eg_type[0] = env->eg_type;
-    s_ev.eg0_times[0] = env->attack_ms;
-    s_ev.eg0_values[0] = 1.0f;
-    s_ev.eg0_times[1] = env->decay_ms;
-    s_ev.eg0_values[1] = sustain;
-    s_ev.eg0_times[2] = env->release_ms;
-    s_ev.eg0_values[2] = 0.0f;
-    seq_ev_send();
+    amy_event *e = amy_helpers_event_begin();
+    e->synth = layer->synth_id[track];
+    e->bp_is_set[0] = 1;
+    e->eg_type[0] = env->eg_type;
+    e->eg0_times[0] = env->attack_ms;
+    e->eg0_values[0] = 1.0f;
+    e->eg0_times[1] = env->decay_ms;
+    e->eg0_values[1] = sustain;
+    e->eg0_times[2] = env->release_ms;
+    e->eg0_values[2] = 0.0f;
+    amy_helpers_event_send(e);
 #else
     (void)layer_idx; (void)track;
 #endif
@@ -402,23 +371,11 @@ static void sequencer_refresh_track_note(uint8_t layer_idx, uint8_t track,
     /* One-shot preview: fires a few ticks from now using the same tag slot.
      * Rapid scrolling overwrites the slot so only the last change is heard. */
     uint32_t fire_tick = sequencer_ticks() + SEQ_PREVIEW_DELAY_TICKS;
-    seq_ev_begin();
-    s_ev.synth                     = layer->synth_id[track];
-    s_ev.midi_note                 = resolved_note;
-    s_ev.velocity                  = 1.0f;
-    s_ev.sequence[SEQUENCE_TAG]    = seq_preview_tag(layer_idx, track);
-    s_ev.sequence[SEQUENCE_TICK]   = fire_tick;
-    s_ev.sequence[SEQUENCE_PERIOD] = 0; /* one-shot */
-    seq_ev_send();
-
-    seq_ev_begin();
-    s_ev.synth                     = layer->synth_id[track];
-    s_ev.midi_note                 = resolved_note;
-    s_ev.velocity                  = 0.0f;
-    s_ev.sequence[SEQUENCE_TAG]    = seq_preview_off_tag(layer_idx, track);
-    s_ev.sequence[SEQUENCE_TICK]   = fire_tick + SEQ_GATE_MELODIC;
-    s_ev.sequence[SEQUENCE_PERIOD] = 0; /* one-shot */
-    seq_ev_send();
+    amy_send_note_sched(layer->synth_id[track], resolved_note, 1.0f,
+                        seq_preview_tag(layer_idx, track), fire_tick, 0);
+    amy_send_note_sched(layer->synth_id[track], resolved_note, 0.0f,
+                        seq_preview_off_tag(layer_idx, track),
+                        fire_tick + SEQ_GATE_MELODIC, 0);
 
     ESP_LOGI(TAG, "layer %d track %d note -> %d (preview @ tick %lu)",
              layer_idx, track, resolved_note, (unsigned long)fire_tick);
@@ -469,11 +426,11 @@ static inline uint32_t seq_preview_off_tag(uint8_t layer, uint8_t track)
 
 static void sequencer_emit_clear_tag(uint32_t tag)
 {
-    seq_ev_begin();
-    s_ev.sequence[SEQUENCE_TAG]    = tag;
-    s_ev.sequence[SEQUENCE_TICK]   = 0;
-    s_ev.sequence[SEQUENCE_PERIOD] = 0;
-    seq_ev_send();
+    amy_event *e = amy_helpers_event_begin();
+    e->sequence[SEQUENCE_TAG]    = tag;
+    e->sequence[SEQUENCE_TICK]   = 0;
+    e->sequence[SEQUENCE_PERIOD] = 0;
+    amy_helpers_event_send(e);
 }
 
 static void sequencer_configure_melodic_filter(uint8_t layer_idx);  /* forward */
@@ -497,20 +454,20 @@ static void sequencer_configure_synth(uint8_t layer_idx)
              * reassert needed here. */
             for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
                 /* Allocate/realloc the slot as a 1-osc voice (clears old patch). */
-                seq_ev_begin();
-                s_ev.num_voices    = layer->num_voices;
-                s_ev.oscs_per_voice = 1;
-                s_ev.synth         = layer->synth_id[t];
-                s_ev.synth_flags   = layer->synth_flags;  /* 0 */
-                seq_ev_send();
+                amy_event *e = amy_helpers_event_begin();
+                e->num_voices    = layer->num_voices;
+                e->oscs_per_voice = 1;
+                e->synth         = layer->synth_id[t];
+                e->synth_flags   = layer->synth_flags;  /* 0 */
+                amy_helpers_event_send(e);
 
                 /* Configure osc 0 of this synth as the chosen 808 PCM sample. */
-                seq_ev_begin();
-                s_ev.synth  = layer->synth_id[t];
-                s_ev.osc    = 0;
-                s_ev.wave   = PCM;
-                s_ev.preset = SEQ_DRUM_PCM_PRESET[t];
-                seq_ev_send();
+                e = amy_helpers_event_begin();
+                e->synth  = layer->synth_id[t];
+                e->osc    = 0;
+                e->wave   = PCM;
+                e->preset = SEQ_DRUM_PCM_PRESET[t];
+                amy_helpers_event_send(e);
             }
             return;
         }
@@ -518,12 +475,8 @@ static void sequencer_configure_synth(uint8_t layer_idx)
         /* SYNTH mode — per-track: each drum row loads its OWN patch onto its OWN
          * synth slot, note-offs honored (flags = 0). Mirrors the melodic loop. */
         for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
-            seq_ev_begin();
-            s_ev.patch_number = layer->track_patch[t];
-            s_ev.num_voices   = layer->num_voices;
-            s_ev.synth        = layer->synth_id[t];
-            s_ev.synth_flags  = layer->synth_flags;   /* 0 */
-            seq_ev_send();
+            amy_send_patch(layer->synth_id[t], layer->track_patch[t],
+                           layer->num_voices, layer->synth_flags);
         }
         /* Patch strings carry global EQ/chorus commands; keep them per-synth. */
         synth_ui_fx_reassert_global();
@@ -532,12 +485,8 @@ static void sequencer_configure_synth(uint8_t layer_idx)
 
     /* Melodic: push the shared patch/flags/voices to each row's own synth. */
     for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
-        seq_ev_begin();
-        s_ev.patch_number = layer->patch;
-        s_ev.num_voices   = layer->num_voices;
-        s_ev.synth        = layer->synth_id[t];
-        s_ev.synth_flags  = layer->synth_flags;
-        seq_ev_send();
+        amy_send_patch(layer->synth_id[t], layer->patch,
+                       layer->num_voices, layer->synth_flags);
     }
     /* Patch strings carry global EQ/chorus commands; keep them per-synth. */
     synth_ui_fx_reassert_global();
@@ -583,23 +532,10 @@ static void sequencer_emit_step(uint8_t layer_idx, uint8_t track, uint8_t step)
     /* Both drum and melodic layers now have one synth slot per track. */
     uint8_t synth = layer->synth_id[track];
 
-    seq_ev_begin();
-    s_ev.synth                     = synth;
-    s_ev.midi_note                 = layer->step_note[track][step];
-    s_ev.velocity                  = note_velocity;
-    s_ev.sequence[SEQUENCE_TAG]    = tag_on;
-    s_ev.sequence[SEQUENCE_TICK]   = tick_on;
-    s_ev.sequence[SEQUENCE_PERIOD] = bar_ticks;
-    seq_ev_send();
-
-    seq_ev_begin();
-    s_ev.synth                     = synth;
-    s_ev.midi_note                 = layer->step_note[track][step];
-    s_ev.velocity                  = 0.0f;
-    s_ev.sequence[SEQUENCE_TAG]    = tag_off;
-    s_ev.sequence[SEQUENCE_TICK]   = tick_off;
-    s_ev.sequence[SEQUENCE_PERIOD] = bar_ticks;
-    seq_ev_send();
+    amy_send_note_sched(synth, layer->step_note[track][step], note_velocity,
+                        tag_on, tick_on, bar_ticks);
+    amy_send_note_sched(synth, layer->step_note[track][step], 0.0f,
+                        tag_off, tick_off, bar_ticks);
 }
 
 /* Re-emit all steps for a layer (used on play-resume). */
@@ -634,9 +570,9 @@ static uint16_t sequencer_clamp_bpm(uint16_t b)
 
 static void sequencer_push_tempo(uint16_t b)
 {
-    seq_ev_begin();
-    s_ev.tempo = b;
-    seq_ev_send();
+    amy_event *e = amy_helpers_event_begin();
+    e->tempo = b;
+    amy_helpers_event_send(e);
 }
 
 /* ── LFO helpers ─────────────────────────────────────────────────────── */
@@ -665,26 +601,23 @@ static float lfo_next_rand(void)
 
 static void lfo_push_target_neutral(uint8_t synth_id, lfo_target_t target)
 {
-    seq_ev_begin();
-    s_ev.synth = synth_id;
+    amy_event *e = amy_helpers_event_begin();
+    e->synth = synth_id;
     switch (target) {
-        case LFO_TARGET_FILTER: s_ev.filter_freq_coefs[COEF_CONST] = 8000.0f; break;
-        case LFO_TARGET_AMP:    s_ev.amp_coefs[COEF_CONST]  = 1.0f;           break;
-        case LFO_TARGET_PITCH:  s_ev.freq_coefs[COEF_CONST] = 1.0f;           break;
-        case LFO_TARGET_PAN:    s_ev.pan_coefs[COEF_CONST]  = 0.5f;           break;
+        case LFO_TARGET_FILTER: e->filter_freq_coefs[COEF_CONST] = 8000.0f; break;
+        case LFO_TARGET_AMP:    e->amp_coefs[COEF_CONST]  = 1.0f;           break;
+        case LFO_TARGET_PITCH:  e->freq_coefs[COEF_CONST] = 1.0f;           break;
+        case LFO_TARGET_PAN:    e->pan_coefs[COEF_CONST]  = 0.5f;           break;
         default: break;
     }
-    seq_ev_send();
+    amy_helpers_event_send(e);
 }
 
 /* ── Public API ──────────────────────────────────────────────────────── */
 
 void sequencer_core_init(void)
 {
-    if (s_ev_mutex == NULL) {
-        s_ev_mutex = xSemaphoreCreateMutex();
-        configASSERT(s_ev_mutex != NULL);
-    }
+    amy_helpers_init();
     s_num_layers = 0;
     s_next_melodic_synth = SEQ_MEL_SYNTH_BASE;
     memset(s_layers, 0, sizeof(s_layers));
@@ -774,12 +707,7 @@ uint8_t sequencer_core_add_layer(seq_layer_type_t type, uint8_t num_steps)
             for (uint8_t s = 0; s < SEQ_MAX_STEPS; s++) {
                 layer->step_note[t][s] = mel_notes[t];
             }
-            /* Seed each row's envelope from the compile-time defaults. */
-            layer->env[t].attack_ms   = CONFIG_SEQ_MELODIC_ENV_ATTACK_MS;
-            layer->env[t].decay_ms    = CONFIG_SEQ_MELODIC_ENV_DECAY_MS;
-            layer->env[t].sustain_pct = CONFIG_SEQ_MELODIC_ENV_SUSTAIN_PCT;
-            layer->env[t].release_ms  = CONFIG_SEQ_MELODIC_ENV_RELEASE_MS;
-            layer->env[t].eg_type     = CONFIG_SEQ_MELODIC_ENV_EG0_TYPE;
+            layer->env[t] = seq_default_melodic_env();
         }
     }
 
@@ -853,12 +781,8 @@ void sequencer_core_set_drum_patch(uint8_t layer_idx, uint8_t track,
     }
 
     /* Reload only this track's synth slot with the new patch. */
-    seq_ev_begin();
-    s_ev.patch_number = patch_number;
-    s_ev.num_voices   = layer->num_voices;
-    s_ev.synth        = layer->synth_id[track];
-    s_ev.synth_flags  = layer->synth_flags;  /* 0 */
-    seq_ev_send();
+    amy_send_patch(layer->synth_id[track], patch_number,
+                   layer->num_voices, layer->synth_flags);
 
     /* Patch strings carry global EQ/chorus commands; keep them per-synth. */
     synth_ui_fx_reassert_global();
@@ -944,28 +868,23 @@ void sequencer_core_push_envelope(uint8_t synth, const seq_env_t *env)
     if (env == NULL) return;
     float sustain = (float)env->sustain_pct / 100.0f;
 
-    seq_ev_begin();
-    s_ev.synth         = synth;
-    s_ev.bp_is_set[0]  = 1;
-    s_ev.eg_type[0]    = env->eg_type;
-    s_ev.eg0_times[0]  = env->attack_ms;
-    s_ev.eg0_values[0] = 1.0f;
-    s_ev.eg0_times[1]  = env->decay_ms;
-    s_ev.eg0_values[1] = sustain;
-    s_ev.eg0_times[2]  = env->release_ms;
-    s_ev.eg0_values[2] = 0.0f;
-    seq_ev_send();
+    amy_event *e = amy_helpers_event_begin();
+    e->synth         = synth;
+    e->bp_is_set[0]  = 1;
+    e->eg_type[0]    = env->eg_type;
+    e->eg0_times[0]  = env->attack_ms;
+    e->eg0_values[0] = 1.0f;
+    e->eg0_times[1]  = env->decay_ms;
+    e->eg0_values[1] = sustain;
+    e->eg0_times[2]  = env->release_ms;
+    e->eg0_values[2] = 0.0f;
+    amy_helpers_event_send(e);
 }
 
 void sequencer_core_arp_configure(uint16_t patch_number, uint8_t num_voices)
 {
     patch_number = SEQ_CLAMP_U16(patch_number, 0, 256);
-    seq_ev_begin();
-    s_ev.patch_number = patch_number;
-    s_ev.num_voices   = num_voices;
-    s_ev.synth        = SEQ_ARP_SYNTH;
-    s_ev.synth_flags  = 0;
-    seq_ev_send();
+    amy_send_patch(SEQ_ARP_SYNTH, patch_number, num_voices, 0);
     /* Patch strings carry global EQ/chorus commands; keep them per-synth. */
     synth_ui_fx_reassert_global();
     ESP_LOGI(TAG, "arp synth %u patch -> %u (%u voices)",
@@ -990,23 +909,10 @@ void sequencer_core_arp_emit_note(uint32_t tag_base, uint8_t midi_note,
     if (tick_off == 0) tick_off = 1; /* tick 0 is reserved (clear) */
     if (tick_on  == 0) tick_on  = 1;
 
-    seq_ev_begin();
-    s_ev.synth                     = SEQ_ARP_SYNTH;
-    s_ev.midi_note                 = midi_note;
-    s_ev.velocity                  = velocity;
-    s_ev.sequence[SEQUENCE_TAG]    = tag_base;
-    s_ev.sequence[SEQUENCE_TICK]   = tick_on;
-    s_ev.sequence[SEQUENCE_PERIOD] = period;
-    seq_ev_send();
-
-    seq_ev_begin();
-    s_ev.synth                     = SEQ_ARP_SYNTH;
-    s_ev.midi_note                 = midi_note;
-    s_ev.velocity                  = 0.0f;
-    s_ev.sequence[SEQUENCE_TAG]    = tag_base + 1;
-    s_ev.sequence[SEQUENCE_TICK]   = tick_off;
-    s_ev.sequence[SEQUENCE_PERIOD] = period;
-    seq_ev_send();
+    amy_send_note_sched(SEQ_ARP_SYNTH, midi_note, velocity,
+                        tag_base, tick_on, period);
+    amy_send_note_sched(SEQ_ARP_SYNTH, midi_note, 0.0f,
+                        tag_base + 1, tick_off, period);
 }
 
 void sequencer_core_arp_clear_note(uint32_t tag_base)
@@ -1066,16 +972,16 @@ static void sequencer_configure_melodic_filter_track(uint8_t layer_idx, uint8_t 
 {
     const seq_layer_t   *layer = &s_layers[layer_idx];
     const seq_filter_t  *f     = &layer->filter[track];
-    seq_ev_begin();
-    s_ev.synth       = layer->synth_id[track];
+    amy_event *e = amy_helpers_event_begin();
+    e->synth       = layer->synth_id[track];
     if (f->enabled) {
-        s_ev.filter_type = f->filter_type;
-        s_ev.filter_freq_coefs[COEF_CONST] = f->cutoff_hz;
-        s_ev.resonance = f->resonance;
+        e->filter_type = f->filter_type;
+        e->filter_freq_coefs[COEF_CONST] = f->cutoff_hz;
+        e->resonance = f->resonance;
     } else {
-        s_ev.filter_type = FILTER_NONE;
+        e->filter_type = FILTER_NONE;
     }
-    seq_ev_send();
+    amy_helpers_event_send(e);
 }
 
 /* Push the filter for every authored row in a layer (called after patch reload). */
@@ -1122,16 +1028,16 @@ void sequencer_core_set_melodic_filter(uint8_t layer_idx, uint8_t track,
 void sequencer_core_push_filter(uint8_t synth, const seq_filter_t *f)
 {
     if (!f) return;
-    seq_ev_begin();
-    s_ev.synth = synth;
+    amy_event *e = amy_helpers_event_begin();
+    e->synth = synth;
     if (f->enabled) {
-        s_ev.filter_type = f->filter_type;
-        s_ev.filter_freq_coefs[COEF_CONST] = f->cutoff_hz;
-        s_ev.resonance = f->resonance;
+        e->filter_type = f->filter_type;
+        e->filter_freq_coefs[COEF_CONST] = f->cutoff_hz;
+        e->resonance = f->resonance;
     } else {
-        s_ev.filter_type = FILTER_NONE;
+        e->filter_type = FILTER_NONE;
     }
-    seq_ev_send();
+    amy_helpers_event_send(e);
 }
 
 void sequencer_core_set_melodic_lfo(uint8_t layer_idx, uint8_t track,
@@ -1209,29 +1115,29 @@ void sequencer_core_lfo_service(void)
             float d   = (float)lfo->depth / 100.0f;
             uint8_t syn = s_layers[li].synth_id[tr];
 
-            seq_ev_begin();
-            s_ev.synth = syn;
+            amy_event *e = amy_helpers_event_begin();
+            e->synth = syn;
             switch (lfo->target) {
                 case LFO_TARGET_FILTER: {
                     float base = (s_layers[li].filter[tr].enabled &&
                                   s_layers[li].filter[tr].cutoff_hz > 0.0f)
                                  ? s_layers[li].filter[tr].cutoff_hz : 1000.0f;
-                    s_ev.filter_freq_coefs[COEF_CONST] =
+                    e->filter_freq_coefs[COEF_CONST] =
                         base * powf(2.0f, d * 3.0f * val);
                     break;
                 }
                 case LFO_TARGET_AMP:
-                    s_ev.amp_coefs[COEF_CONST] = 1.0f - d*(0.5f - 0.5f*val);
+                    e->amp_coefs[COEF_CONST] = 1.0f - d*(0.5f - 0.5f*val);
                     break;
                 case LFO_TARGET_PITCH:
-                    s_ev.freq_coefs[COEF_CONST] = powf(2.0f, d * val);
+                    e->freq_coefs[COEF_CONST] = powf(2.0f, d * val);
                     break;
                 case LFO_TARGET_PAN:
-                    s_ev.pan_coefs[COEF_CONST] = 0.5f + d*0.5f*val;
+                    e->pan_coefs[COEF_CONST] = 0.5f + d*0.5f*val;
                     break;
                 default: break;
             }
-            seq_ev_send();
+            amy_helpers_event_send(e);
         }
     }
 }
@@ -1367,4 +1273,3 @@ uint8_t sequencer_core_get_quantizer_scale(void)
 {
     return s_quantizer.scale_index;
 }
-

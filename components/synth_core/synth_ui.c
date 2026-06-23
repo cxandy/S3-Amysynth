@@ -6,6 +6,7 @@
 #include "filter_graph.h"
 #include "display_lfo.h"
 #include "seq_clamp.h"
+#include "seq_defaults.h"
 #include "sequencer_core.h"
 #include "arp_core.h"
 #include "custompatches/drone_core.h"
@@ -13,6 +14,7 @@
 #include "graph_popup.h"
 #include "patch_names.h"
 #include "amy.h"
+#include "amy_helpers.h"
 #include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -23,6 +25,10 @@
 #include <math.h>
 
 static const char *TAG = "synth_ui";
+
+/* Module-private UI state. Forward (tentative) declaration so helpers above the
+ * initialized definition can see it; other modules use seq_get_* accessors. */
+static synth_ui_state_t seq_state;
 
 /* DEBUG: bisect heap corruption inside the init chain. Gated by
  * CONFIG_AMYSYNTH_HEAP_CHECK (menuconfig: Heap Diagnostics); off by default, in
@@ -46,21 +52,8 @@ static const char *TAG = "synth_ui";
  * the single gated branch in synth_ui_task() and the three public
  * synth_ui_graph_* entry points fully restores the original behaviour.
  *
- * The melodic envelope is defined by compile-time CONFIG_SEQ_MELODIC_ENV_*
- * values (see sequencer_core.c). We mirror those defaults here to seed the
- * editor, then map them to/from the widget via the AMY adapter. */
-#ifndef CONFIG_SEQ_MELODIC_ENV_ATTACK_MS
-#define CONFIG_SEQ_MELODIC_ENV_ATTACK_MS 12
-#endif
-#ifndef CONFIG_SEQ_MELODIC_ENV_DECAY_MS
-#define CONFIG_SEQ_MELODIC_ENV_DECAY_MS 220
-#endif
-#ifndef CONFIG_SEQ_MELODIC_ENV_SUSTAIN_PCT
-#define CONFIG_SEQ_MELODIC_ENV_SUSTAIN_PCT 58
-#endif
-#ifndef CONFIG_SEQ_MELODIC_ENV_RELEASE_MS
-#define CONFIG_SEQ_MELODIC_ENV_RELEASE_MS 280
-#endif
+ * The melodic envelope defaults come from seq_defaults.h, then map to/from the
+ * widget via the AMY adapter. */
 
 static gpopup_t s_graph_popup;
 static bool     s_graph_popup_inited = false;
@@ -273,11 +266,7 @@ void synth_ui_graph_open_envelope(void)
 
     seq_env_t env;
     if (!graph_read_target_env(&env)) {
-        env.attack_ms   = CONFIG_SEQ_MELODIC_ENV_ATTACK_MS;
-        env.decay_ms    = CONFIG_SEQ_MELODIC_ENV_DECAY_MS;
-        env.sustain_pct = CONFIG_SEQ_MELODIC_ENV_SUSTAIN_PCT;
-        env.release_ms  = CONFIG_SEQ_MELODIC_ENV_RELEASE_MS;
-        env.eg_type     = CONFIG_SEQ_MELODIC_ENV_EG0_TYPE;
+        env = seq_default_melodic_env();
     }
 
     graph_seed_from_env(&env);
@@ -762,7 +751,7 @@ static const uint16_t s_melodic_patch_cycle[] = {
  * built-in piano 256 (matches the sequencer_core clamp upper bound). */
 #define SEQ_PATCH_FULL_MAX 256
 
-synth_ui_state_t seq_state = {
+static synth_ui_state_t seq_state = {
     /* layers[] is zero-initialized by C99 partial-init rules */
     .num_layers       = 0,
     .active_layer_idx = 0,
@@ -1114,6 +1103,7 @@ void synth_ui_init(u8g2_t *u8g2)
     seq_state.menu_editing = false;
 
     SEQ_HEAP_CHECK("ui_init: entry");
+    amy_helpers_init();
     sequencer_core_init();
     SEQ_HEAP_CHECK("ui_init: after sequencer_core_init");
     arp_core_init();
@@ -1273,6 +1263,16 @@ void synth_ui_set_bpm(uint16_t bpm)
     bpm = SEQ_CLAMP_U16(bpm, 40, 300);
     seq_state.bpm = bpm;
     sequencer_core_set_bpm(bpm);
+}
+
+uint16_t seq_get_bpm(void)
+{
+    return seq_state.bpm;
+}
+
+uint8_t seq_get_active_layer_idx(void)
+{
+    return seq_state.active_layer_idx;
 }
 
 /* Transposes the selected track's note by `delta` semitones. We read/write the
@@ -1455,60 +1455,40 @@ static fx_state_t s_fx = {
     .presets_alter_global = false,
 };
 
-static amy_event         s_fx_ev;
-static SemaphoreHandle_t s_fx_ev_mutex = NULL;
-
-static void fx_ensure_mutex(void)
-{
-    if (s_fx_ev_mutex == NULL) s_fx_ev_mutex = xSemaphoreCreateMutex();
-}
-
 static void fx_push_eq(void)
 {
-    fx_ensure_mutex();
-    xSemaphoreTake(s_fx_ev_mutex, portMAX_DELAY);
-    s_fx_ev = amy_default_event();
-    s_fx_ev.eq_l = (float)s_fx.eq_low_db;   /* AMY interprets these as dB */
-    s_fx_ev.eq_m = (float)s_fx.eq_mid_db;
-    s_fx_ev.eq_h = (float)s_fx.eq_high_db;
-    amy_add_event(&s_fx_ev);
-    xSemaphoreGive(s_fx_ev_mutex);
+    amy_event *e = amy_helpers_event_begin();
+    e->eq_l = (float)s_fx.eq_low_db;   /* AMY interprets these as dB */
+    e->eq_m = (float)s_fx.eq_mid_db;
+    e->eq_h = (float)s_fx.eq_high_db;
+    amy_helpers_event_send(e);
 }
 
 static void fx_push_echo(void)
 {
-    fx_ensure_mutex();
-    xSemaphoreTake(s_fx_ev_mutex, portMAX_DELAY);
-    s_fx_ev = amy_default_event();
-    s_fx_ev.echo_level = (float)s_fx.echo_level / 100.0f;
-    amy_add_event(&s_fx_ev);
-    xSemaphoreGive(s_fx_ev_mutex);
+    amy_event *e = amy_helpers_event_begin();
+    e->echo_level = (float)s_fx.echo_level / 100.0f;
+    amy_helpers_event_send(e);
 }
 
 static void fx_push_chorus(void)
 {
-    fx_ensure_mutex();
-    xSemaphoreTake(s_fx_ev_mutex, portMAX_DELAY);
-    s_fx_ev = amy_default_event();
-    s_fx_ev.chorus_level = (float)s_fx.chorus_level / 100.0f;
-    amy_add_event(&s_fx_ev);
-    xSemaphoreGive(s_fx_ev_mutex);
+    amy_event *e = amy_helpers_event_begin();
+    e->chorus_level = (float)s_fx.chorus_level / 100.0f;
+    amy_helpers_event_send(e);
 }
 
 static void fx_push_reverb(void)
 {
-    fx_ensure_mutex();
-    xSemaphoreTake(s_fx_ev_mutex, portMAX_DELAY);
-    s_fx_ev = amy_default_event();
-    s_fx_ev.reverb_level = (float)s_fx.reverb_level / 100.0f;
-    amy_add_event(&s_fx_ev);
-    xSemaphoreGive(s_fx_ev_mutex);
+    amy_event *e = amy_helpers_event_begin();
+    e->reverb_level = (float)s_fx.reverb_level / 100.0f;
+    amy_helpers_event_send(e);
 }
 
 /* Re-impose the cached global FX after a patch load so a synth's preset cannot
  * hijack the shared EQ/chorus/echo/reverb. No-op when the user has opted into
  * letting presets drive global FX. Safe to call from the sequencer/arp/drone
- * task contexts: each fx_push_* takes s_fx_ev_mutex internally.
+ * task contexts: each fx_push_* serialises through the shared amy_helpers mutex.
  *
  * Cost is four queued events per patch change (a rare, user-driven action) and
  * zero in the render loop. The reassert events are queued AFTER the patch's own
@@ -2252,4 +2232,3 @@ static uint32_t drone_view_signature(void)
     }
     return h;
 }
-

@@ -70,6 +70,15 @@ void sequencer_core_set_melodic_filter(uint8_t layer_idx, uint8_t track,
 /* Push a filter directly to an arbitrary AMY synth slot (shared by arp/drone). */
 void sequencer_core_push_filter(uint8_t synth, const seq_filter_t *f);
 
+/* ── Per-track melodic LFO (tempo-synced software modulator) ─────────────
+ * Modulates filter cutoff, amp, pitch, or pan at a rate derived from BPM.
+ * sequencer_core_lfo_service() must be called periodically (~20 Hz). */
+void sequencer_core_set_melodic_lfo(uint8_t layer_idx, uint8_t track,
+                                    const seq_lfo_t *lfo);
+bool sequencer_core_get_melodic_lfo(uint8_t layer_idx, uint8_t track,
+                                    seq_lfo_t *out);
+void sequencer_core_lfo_service(void);
+
 /* Returns the current playhead step for the given layer (0..num_steps-1).
  * When paused the last computed step is returned (display freezes). */
 uint8_t sequencer_core_get_current_step(uint8_t layer_idx);

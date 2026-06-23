@@ -8,6 +8,7 @@
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include <string.h>
+#include <math.h>
 #include "freertos/semphr.h"
 
 /* Defined in synth_ui.c (same component). Re-imposes the user's cached global
@@ -200,6 +201,12 @@ static quantizer_state_t s_quantizer = {
     .scale_index = CONFIG_SEQ_QUANTIZER_DEFAULT_SCALE,
     .enabled    = CONFIG_SEQ_QUANTIZER_DEFAULT_ENABLED,
 };
+
+/* ── Software LFO state (phase accumulator, per-layer/track) ── */
+static float    s_lfo_phase[MAX_LAYERS][SEQ_TRACKS]; /* 0..1 normalized */
+static float    s_lfo_hz[MAX_LAYERS][SEQ_TRACKS];    /* Hz from rate+BPM */
+static float    s_lfo_rnd[MAX_LAYERS][SEQ_TRACKS];   /* S&H held value   */
+static uint32_t s_lfo_rng_state = 0xDEADBEEFu;
 
 static void sequencer_refresh_track_note(uint8_t layer_idx, uint8_t track,
                                         bool preview);
@@ -632,6 +639,44 @@ static void sequencer_push_tempo(uint16_t b)
     seq_ev_send();
 }
 
+/* ── LFO helpers ─────────────────────────────────────────────────────── */
+
+static float lfo_rate_to_hz(lfo_rate_t rate, uint16_t bpm)
+{
+    float b = (float)bpm;
+    switch (rate) {
+        case LFO_RATE_1_8:  return b / 30.0f;    /* 1/8 note */
+        case LFO_RATE_1_4:  return b / 60.0f;    /* 1/4 note */
+        case LFO_RATE_1_2:  return b / 120.0f;   /* 1/2 note */
+        case LFO_RATE_1BAR: return b / 240.0f;   /* 1 bar (4/4) */
+        case LFO_RATE_2BAR: return b / 480.0f;
+        case LFO_RATE_4BAR: return b / 960.0f;
+        default:            return b / 240.0f;
+    }
+}
+
+static float lfo_next_rand(void)
+{
+    s_lfo_rng_state ^= s_lfo_rng_state << 13;
+    s_lfo_rng_state ^= s_lfo_rng_state >> 17;
+    s_lfo_rng_state ^= s_lfo_rng_state << 5;
+    return (float)(s_lfo_rng_state >> 17) / 32767.0f * 2.0f - 1.0f;
+}
+
+static void lfo_push_target_neutral(uint8_t synth_id, lfo_target_t target)
+{
+    seq_ev_begin();
+    s_ev.synth = synth_id;
+    switch (target) {
+        case LFO_TARGET_FILTER: s_ev.filter_freq_coefs[COEF_CONST] = 8000.0f; break;
+        case LFO_TARGET_AMP:    s_ev.amp_coefs[COEF_CONST]  = 1.0f;           break;
+        case LFO_TARGET_PITCH:  s_ev.freq_coefs[COEF_CONST] = 1.0f;           break;
+        case LFO_TARGET_PAN:    s_ev.pan_coefs[COEF_CONST]  = 0.5f;           break;
+        default: break;
+    }
+    seq_ev_send();
+}
+
 /* ── Public API ──────────────────────────────────────────────────────── */
 
 void sequencer_core_init(void)
@@ -654,6 +699,9 @@ void sequencer_core_init(void)
     if (s_quantizer.scale_index >= quantizer_scale_count()) {
         s_quantizer.scale_index = 0;
     }
+    memset(s_lfo_phase, 0, sizeof(s_lfo_phase));
+    memset(s_lfo_hz,    0, sizeof(s_lfo_hz));
+    memset(s_lfo_rnd,   0, sizeof(s_lfo_rnd));
     CORE_HEAP_CHECK("core_init: before push_tempo");
     sequencer_push_tempo(s_bpm);
     CORE_HEAP_CHECK("core_init: after push_tempo");
@@ -1086,6 +1134,108 @@ void sequencer_core_push_filter(uint8_t synth, const seq_filter_t *f)
     seq_ev_send();
 }
 
+void sequencer_core_set_melodic_lfo(uint8_t layer_idx, uint8_t track,
+                                    const seq_lfo_t *lfo)
+{
+    if (!lfo || layer_idx >= s_num_layers || track >= SEQ_TRACKS) return;
+    seq_layer_t *layer = &s_layers[layer_idx];
+    if (layer->type != SEQ_LAYER_MELODIC) return;
+
+    layer->lfo[track] = *lfo;
+    if (layer->lfo[track].depth > 100) layer->lfo[track].depth = 100;
+    layer->lfo_authored[track] = true;
+
+    if (!lfo->enabled) {
+        /* Restore target to its stored static value rather than a hardcoded
+         * constant — FILTER in particular has a user-set cutoff that must
+         * survive enable/disable round-trips. */
+        if (lfo->target == LFO_TARGET_FILTER) {
+            sequencer_core_push_filter(layer->synth_id[track], &layer->filter[track]);
+        } else {
+            lfo_push_target_neutral(layer->synth_id[track], lfo->target);
+        }
+        s_lfo_hz[layer_idx][track] = 0.0f;
+    } else {
+        s_lfo_hz[layer_idx][track] = lfo_rate_to_hz(lfo->rate, s_bpm);
+    }
+    ESP_LOGI(TAG, "LFO L%u T%u %s %.2f Hz d=%u tgt=%u",
+             layer_idx, track, lfo->enabled ? "ON" : "OFF",
+             (double)s_lfo_hz[layer_idx][track], lfo->depth, lfo->target);
+}
+
+bool sequencer_core_get_melodic_lfo(uint8_t layer_idx, uint8_t track,
+                                    seq_lfo_t *out)
+{
+    if (!out || layer_idx >= s_num_layers || track >= SEQ_TRACKS) return false;
+    if (s_layers[layer_idx].type != SEQ_LAYER_MELODIC) return false;
+    *out = s_layers[layer_idx].lfo[track];
+    return true;
+}
+
+void sequencer_core_lfo_service(void)
+{
+    const float DT = 0.05f; /* 20 Hz */
+    for (int li = 0; li < s_num_layers; li++) {
+        if (s_layers[li].type != SEQ_LAYER_MELODIC) continue;
+        for (int tr = 0; tr < SEQ_TRACKS; tr++) {
+            if (!s_layers[li].lfo_authored[tr]) continue;
+            const seq_lfo_t *lfo = &s_layers[li].lfo[tr];
+            if (!lfo->enabled) continue;
+            float hz = s_lfo_hz[li][tr];
+            if (hz <= 0.0f) continue;
+
+            float ph = s_lfo_phase[li][tr] + hz * DT;
+            if (ph >= 1.0f) {
+                ph -= 1.0f;
+                if (lfo->wave == LFO_WAVE_RANDOM)
+                    s_lfo_rnd[li][tr] = lfo_next_rand();
+            }
+            s_lfo_phase[li][tr] = ph;
+
+            float val;
+            switch (lfo->wave) {
+                case LFO_WAVE_SINE:
+                    val = sinf(2.0f * 3.14159265f * ph);          break;
+                case LFO_WAVE_TRIANGLE:
+                    val = (ph < 0.5f) ? (4.0f*ph - 1.0f)
+                                      : (3.0f - 4.0f*ph);         break;
+                case LFO_WAVE_SAW_UP:   val =  2.0f*ph - 1.0f;   break;
+                case LFO_WAVE_SAW_DOWN: val =  1.0f - 2.0f*ph;   break;
+                case LFO_WAVE_SQUARE:   val = (ph < 0.5f) ? 1.0f : -1.0f; break;
+                case LFO_WAVE_RANDOM:   val = s_lfo_rnd[li][tr];  break;
+                default:                val = 0.0f;                break;
+            }
+
+            float d   = (float)lfo->depth / 100.0f;
+            uint8_t syn = s_layers[li].synth_id[tr];
+
+            seq_ev_begin();
+            s_ev.synth = syn;
+            switch (lfo->target) {
+                case LFO_TARGET_FILTER: {
+                    float base = (s_layers[li].filter[tr].enabled &&
+                                  s_layers[li].filter[tr].cutoff_hz > 0.0f)
+                                 ? s_layers[li].filter[tr].cutoff_hz : 1000.0f;
+                    s_ev.filter_freq_coefs[COEF_CONST] =
+                        base * powf(2.0f, d * 3.0f * val);
+                    break;
+                }
+                case LFO_TARGET_AMP:
+                    s_ev.amp_coefs[COEF_CONST] = 1.0f - d*(0.5f - 0.5f*val);
+                    break;
+                case LFO_TARGET_PITCH:
+                    s_ev.freq_coefs[COEF_CONST] = powf(2.0f, d * val);
+                    break;
+                case LFO_TARGET_PAN:
+                    s_ev.pan_coefs[COEF_CONST] = 0.5f + d*0.5f*val;
+                    break;
+                default: break;
+            }
+            seq_ev_send();
+        }
+    }
+}
+
 uint8_t sequencer_core_get_num_layers(void)
 {
     return s_num_layers;
@@ -1112,6 +1262,12 @@ void sequencer_core_set_bpm(uint16_t new_bpm)
 {
     s_bpm = sequencer_clamp_bpm(new_bpm);
     sequencer_push_tempo(s_bpm);
+    for (int li = 0; li < s_num_layers; li++) {
+        for (int tr = 0; tr < SEQ_TRACKS; tr++) {
+            if (s_layers[li].lfo_authored[tr] && s_layers[li].lfo[tr].enabled)
+                s_lfo_hz[li][tr] = lfo_rate_to_hz(s_layers[li].lfo[tr].rate, s_bpm);
+        }
+    }
 }
 
 /* Derive the currently-playing step from AMY's free-running tick counter:

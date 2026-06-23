@@ -4,6 +4,7 @@
 #include "display_arp.h"
 #include "display_drone.h"
 #include "filter_graph.h"
+#include "display_lfo.h"
 #include "seq_clamp.h"
 #include "sequencer_core.h"
 #include "arp_core.h"
@@ -418,6 +419,10 @@ static bool         s_filter_active = false;
 static filter_graph_t s_fgraph;
 static seq_filter_t s_filter_edit;   /* scratch copy while editing */
 
+/* ── LFO editor state ── */
+static bool       s_lfo_active = false;
+static lfo_view_t s_lfo_view;
+
 /* Normalisation helpers shared between open and commit. */
 static float filter_hz_to_norm(float hz)
 {
@@ -618,19 +623,124 @@ bool synth_ui_filter_close_commit(void)
     return true;
 }
 
-/* Swap between ADSR and filter editors while either is open. */
-void synth_ui_toggle_adsr_filter(void)
+/* ── Filter editor: end ──────────────────────────────────────────────────── */
+
+/* ── LFO editor ──────────────────────────────────────────────────────────── */
+
+static uint32_t lfo_view_signature(void)
+{
+    const seq_lfo_t *l = &s_lfo_view.lfo;
+    return (uint32_t)l->enabled
+         | ((uint32_t)l->wave   <<  4)
+         | ((uint32_t)l->target <<  8)
+         | ((uint32_t)l->depth  << 12)
+         | ((uint32_t)l->rate   << 20)
+         | ((uint32_t)s_lfo_view.cursor  << 24)
+         | ((uint32_t)s_lfo_view.editing << 28);
+}
+
+bool synth_ui_lfo_is_active(void) { return s_lfo_active; }
+
+void synth_ui_lfo_open(void)
+{
+    uint8_t li = seq_state.active_layer_idx;
+    uint8_t tr = seq_state.selected_track;
+    seq_lfo_t existing = {
+        .enabled = false,
+        .mode    = LFO_MODE_FREE,
+        .wave    = LFO_WAVE_SINE,
+        .rate    = LFO_RATE_1BAR,
+        .depth   = 50,
+        .target  = LFO_TARGET_FILTER,
+    };
+    sequencer_core_get_melodic_lfo(li, tr, &existing);
+    s_lfo_view.lfo       = existing;
+    s_lfo_view.cursor    = 0;
+    s_lfo_view.editing   = false;
+    s_lfo_view.layer_idx = li;
+    s_lfo_view.track_idx = tr;
+    s_lfo_active   = true;
+    s_force_redraw = true;
+    ESP_LOGI(TAG, "LFO editor open L%u T%u", li, tr);
+}
+
+bool synth_ui_lfo_handle_encoder(long delta)
+{
+    if (!s_lfo_active) return false;
+    /* 5 fields: TGT, WAV, RTE, DEP, EN  (MODE removed — RETRIG not yet impl.) */
+    const uint8_t N = 5;
+    if (!s_lfo_view.editing) {
+        if (delta > 0)      s_lfo_view.cursor = (s_lfo_view.cursor + 1) % N;
+        else if (delta < 0) s_lfo_view.cursor = (s_lfo_view.cursor + N - 1) % N;
+        s_force_redraw = true;
+        return true;
+    }
+    seq_lfo_t *l = &s_lfo_view.lfo;
+    int d = (delta > 0) ? 1 : -1;
+    switch (s_lfo_view.cursor) {
+        case 0: /* target */
+            l->target = (lfo_target_t)((l->target + LFO_TARGET_COUNT + d) % LFO_TARGET_COUNT);
+            break;
+        case 1: /* wave */
+            l->wave = (lfo_wave_t)((l->wave + LFO_WAVE_COUNT + d) % LFO_WAVE_COUNT);
+            break;
+        case 2: /* rate */
+            l->rate = (lfo_rate_t)((l->rate + LFO_RATE_COUNT + d) % LFO_RATE_COUNT);
+            break;
+        case 3: /* depth: ±5%, clamped 0..100 */
+            if (d > 0) l->depth = (l->depth < 95) ? l->depth + 5 : 100;
+            else       l->depth = (l->depth >  5) ? l->depth - 5 : 0;
+            break;
+        case 4: /* enabled */
+            l->enabled = !l->enabled;
+            break;
+    }
+    s_force_redraw = true;
+    return true;
+}
+
+bool synth_ui_lfo_handle_button(bool is_long)
+{
+    if (!s_lfo_active) return false;
+    if (is_long) {
+        s_lfo_active   = false;
+        s_force_redraw = true;
+        ESP_LOGI(TAG, "LFO editor cancelled");
+        return true;
+    }
+    s_lfo_view.editing = !s_lfo_view.editing;
+    s_force_redraw = true;
+    return true;
+}
+
+bool synth_ui_lfo_close_commit(void)
+{
+    if (!s_lfo_active) return false;
+    sequencer_core_set_melodic_lfo(s_lfo_view.layer_idx,
+                                   s_lfo_view.track_idx,
+                                   &s_lfo_view.lfo);
+    s_lfo_active   = false;
+    s_force_redraw = true;
+    ESP_LOGI(TAG, "LFO editor committed");
+    return true;
+}
+
+/* Cycle ADSR → Filter → LFO → ADSR (MY_BUTTON_3 while any editor is open). */
+void synth_ui_cycle_editor(void)
 {
     if (graph_popup_is_active(&s_graph_popup)) {
         synth_ui_graph_close_commit();
         synth_ui_filter_open();
     } else if (s_filter_active) {
         synth_ui_filter_close_commit();
+        synth_ui_lfo_open();
+    } else if (s_lfo_active) {
+        synth_ui_lfo_close_commit();
         synth_ui_graph_open_envelope();
     }
 }
 
-/* ── Filter editor: end ──────────────────────────────────────────────────── */
+/* ── LFO editor: end ─────────────────────────────────────────────────────── */
 
 #if !CONFIG_SEQ_PATCH_BROWSE_FULL_RANGE
 /* Runtime patch cycling shortlist: intentionally small and musical.
@@ -872,7 +982,7 @@ static void synth_ui_task(void *pvParameters)
     const TickType_t delay = pdMS_TO_TICKS(50); /* 20 Hz */
     uint32_t last_sig = 0;
     /* Which top-level view was rendered last frame; a change forces a redraw. */
-    enum { V_SEQ, V_ARP, V_MENU, V_GRAPH, V_FILTER, V_DRONE, V_DRONE_VIS } last_view = V_SEQ;
+    enum { V_SEQ, V_ARP, V_MENU, V_GRAPH, V_FILTER, V_LFO, V_DRONE, V_DRONE_VIS } last_view = V_SEQ;
     for (;;) {
         /* Coalesced arp re-emit: setters mark the arp dirty; we perform at most
          * one full re-emit per frame here, collapsing fast encoder edits. */
@@ -880,6 +990,7 @@ static void synth_ui_task(void *pvParameters)
         /* Drone: advance the tempo-locked filter sweep + keep the LFO in sync.
          * Cheap no-op while the drone is disabled. */
         drone_core_service();
+        sequencer_core_lfo_service();
 
         seq_state.current_step =
             sequencer_core_get_current_step(seq_state.active_layer_idx);
@@ -890,6 +1001,8 @@ static void synth_ui_task(void *pvParameters)
             uint32_t sig;
             if (s_filter_active) {
                 view = V_FILTER; sig = filter_view_signature();
+            } else if (s_lfo_active) {
+                view = V_LFO;    sig = lfo_view_signature();
             } else if (graph) {
                 view = V_GRAPH; sig = graph_view_signature();
             } else if (seq_state.menu_open) {
@@ -911,6 +1024,12 @@ static void synth_ui_task(void *pvParameters)
                         u8g2_ClearBuffer(s_u8g2);
                         u8g2_SetDrawColor(s_u8g2, 1);
                         filter_graph_draw(s_u8g2, &s_fgraph);
+                        u8g2_SendBuffer(s_u8g2);
+                        break;
+                    case V_LFO:
+                        u8g2_ClearBuffer(s_u8g2);
+                        u8g2_SetDrawColor(s_u8g2, 1);
+                        lfo_view_draw(s_u8g2, &s_lfo_view);
                         u8g2_SendBuffer(s_u8g2);
                         break;
                     case V_GRAPH:

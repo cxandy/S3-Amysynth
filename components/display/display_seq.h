@@ -45,6 +45,33 @@ typedef struct {
     bool    enabled;       /* false = bypass (FILTER_NONE sent) */
 } seq_filter_t;
 
+/* ── LFO (per-track tempo-synced software modulator) ── */
+typedef enum { LFO_MODE_FREE = 0, LFO_MODE_RETRIG = 1 } lfo_mode_t;
+typedef enum {
+    LFO_WAVE_SINE = 0, LFO_WAVE_TRIANGLE,
+    LFO_WAVE_SAW_UP,   LFO_WAVE_SAW_DOWN,
+    LFO_WAVE_SQUARE,   LFO_WAVE_RANDOM,
+    LFO_WAVE_COUNT,
+} lfo_wave_t;
+typedef enum {
+    LFO_TARGET_FILTER = 0, LFO_TARGET_AMP,
+    LFO_TARGET_PITCH,      LFO_TARGET_PAN,
+    LFO_TARGET_COUNT,
+} lfo_target_t;
+typedef enum {
+    LFO_RATE_1_8 = 0, LFO_RATE_1_4,  LFO_RATE_1_2,
+    LFO_RATE_1BAR,    LFO_RATE_2BAR, LFO_RATE_4BAR,
+    LFO_RATE_COUNT,
+} lfo_rate_t;
+typedef struct {
+    bool         enabled;
+    lfo_mode_t   mode;
+    lfo_wave_t   wave;
+    lfo_rate_t   rate;
+    uint8_t      depth;    /* 0..100 % */
+    lfo_target_t target;
+} seq_lfo_t;
+
 /* ── ADSR envelope (one AMY EG0 breakpoint set) ──
  * Stored as concrete ms/percent so it survives patch changes and can be edited
  * at runtime by the graph UI. Currently scoped PER ROW (per track); the storage
@@ -75,6 +102,8 @@ typedef struct {
     seq_filter_t filter[SEQ_TRACKS];          /* per-row filter (bypass by default) */
     bool         filter_authored[SEQ_TRACKS]; /* filter overrides patch only after
                                                  the user commits in the filter editor */
+    seq_lfo_t lfo[SEQ_TRACKS];
+    bool      lfo_authored[SEQ_TRACKS];
     uint8_t  synth_id[SEQ_TRACKS];   /* one AMY synth per row (both melodic and
                                         drum layers: each track has its own slot */
     uint16_t patch;                  /* shared timbre across the layer's rows

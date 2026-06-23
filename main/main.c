@@ -403,12 +403,13 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
         return;
     }
 
-    // MY_BUTTON_3 (GPIO42): while ADSR or filter editor is open, single-click
-    // swaps between them. Outside editors it is the menu toggle.
+    // MY_BUTTON_3: while any editor (ADSR/filter/LFO) is open, single-click
+    // cycles to the next editor. Outside editors it is the menu toggle.
     if (button_id == MY_BUTTON_3) {
-        if (synth_ui_graph_is_active() || synth_ui_filter_is_active()) {
+        if (synth_ui_graph_is_active() || synth_ui_filter_is_active()
+                                       || synth_ui_lfo_is_active()) {
             if (event == BUTTON_SINGLE_CLICK) {
-                synth_ui_toggle_adsr_filter();
+                synth_ui_cycle_editor();
             }
             return;
         }
@@ -429,6 +430,14 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
                 synth_ui_filter_close_commit();
             } else if (event == BUTTON_PRESS_DOWN) {
                 synth_ui_filter_handle_button(false);
+            }
+            return;
+        }
+        if (synth_ui_lfo_is_active()) {
+            if (event == BUTTON_LONG_PRESS_START) {
+                synth_ui_lfo_close_commit();
+            } else if (event == BUTTON_PRESS_DOWN) {
+                synth_ui_lfo_handle_button(false);
             }
             return;
         }
@@ -480,10 +489,13 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
 
     /* MY_BUTTON_0 long press cancels whichever overlay editor is open. */
     if (button_id == MY_BUTTON_0 &&
-        (synth_ui_graph_is_active() || synth_ui_filter_is_active())) {
+        (synth_ui_graph_is_active() || synth_ui_filter_is_active()
+                                    || synth_ui_lfo_is_active())) {
         if (event == BUTTON_LONG_PRESS_START) {
             if (synth_ui_filter_is_active())
                 synth_ui_filter_handle_button(true); /* long = cancel */
+            else if (synth_ui_lfo_is_active())
+                synth_ui_lfo_handle_button(true);
             else
                 synth_ui_graph_handle_button(true);
         }
@@ -546,6 +558,11 @@ static void encoder_task(void *pvParameters)
 
             /* filter editor: highest priority encoder consumer. */
             if (synth_ui_filter_handle_encoder(steps)) {
+                goto next_poll;
+            }
+
+            /* LFO editor: scrolls cursor or adjusts selected field. */
+            if (synth_ui_lfo_handle_encoder(steps)) {
                 goto next_poll;
             }
 

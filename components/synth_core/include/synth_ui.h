@@ -116,8 +116,20 @@ bool synth_ui_filter_close_commit(void);
 /* Toggle the filter on/off (MY_BUTTON_1 while editor is open). No-op when closed. */
 void synth_ui_filter_toggle_enabled(void);
 
-/* Swap between ADSR and Filter editors while either is open (MY_BUTTON_3). */
-void synth_ui_toggle_adsr_filter(void);
+/* ── LFO editor (per-track tempo-synced modulator) ─────────────────────────
+ * Opened as the third tab in the ADSR→Filter→LFO cycle (MY_BUTTON_3).
+ * Controls: encoder scrolls cursor / adjusts field (short press to toggle);
+ * encoder long-press commits; MY_BUTTON_0 long-press cancels. */
+bool synth_ui_lfo_is_active(void);
+void synth_ui_lfo_open(void);
+bool synth_ui_lfo_handle_encoder(long delta);
+bool synth_ui_lfo_handle_button(bool is_long);
+bool synth_ui_lfo_close_commit(void);
+
+/* Cycle between ADSR, Filter, and LFO editors (MY_BUTTON_3 while any is open).
+ * Commits the departing editor and opens the next one.  Replaces the old
+ * synth_ui_toggle_adsr_filter() two-way swap. */
+void synth_ui_cycle_editor(void);
 
 #ifdef __cplusplus
 }

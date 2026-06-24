@@ -189,12 +189,14 @@ static uint8_t drone_chord_note_count(drone_chord_t chord)
 static void drone_configure_wave_synth(uint8_t synth, uint8_t voices)
 {
     float lfo_hz = drone_lfo_hz();
-    /* Carrier amplitude follows AMY's combine_controls_mult exactly:
-     *   amp = const * (1 + mod * LFO),  LFO bipolar (-1..+1) from the PULSE osc.
-     * const = always-on level, mod = stutter depth (mod=1 gates to silence on
-     * the LFO-low half). Set directly (0..1), matching amp={'const':x,'mod':y}. */
+    /* AMY 1.2.12 (#720) amp combine is dB/log-domain: MOD is applied LINEARLY in
+     * the log domain, so amp = const_sent * 10^(3*m*LFO). A bipolar LFO would BOOST
+     * the on-beat (rail) and cut the off-beat. Remap to a unipolar duck: send a
+     * pre-ducked const so the on-beat lands exactly at amp_const, and scale MOD so
+     * amp_mod=1 ducks the off-beat ~40 dB. ON(LFO=+1)=amp_const, OFF(LFO=-1)=const*10^(-2*amp_mod). */
     float amp_const = s_d.amp_const;
-    float amp_mod   = s_d.amp_mod;
+    float m         = (1.0f / 3.0f) * s_d.amp_mod;             /* internal MOD coef */
+    float const_sent = amp_const * powf(10.0f, -3.0f * m);     /* = amp_const * 10^(-amp_mod) */
 
     /* Build-your-own synth: N voices, 2 oscs/voice, no patch. */
     amy_event *e = amy_helpers_event_begin();
@@ -225,8 +227,8 @@ static void drone_configure_wave_synth(uint8_t synth, uint8_t voices)
     e->osc                    = 0;
     e->wave                   = s_d.wave;
     e->freq_coefs[COEF_NOTE]  = 1.0f;    /* follow the voice's note pitch */
-    e->amp_coefs[COEF_CONST]  = amp_const;
-    e->amp_coefs[COEF_MOD]    = amp_mod;
+    e->amp_coefs[COEF_CONST]  = const_sent;
+    e->amp_coefs[COEF_MOD]    = m;
     e->amp_coefs[COEF_VEL]    = 0.0f;    /* velocity does not scale amp      */
     /* EG0 multiplies the whole amp (combine_controls_mult), so the ADSR
      * envelope shapes the drone swell/fade *around* the LFO stutter. */

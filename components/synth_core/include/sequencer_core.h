@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "display_seq.h"   /* seq_layer_type_t, seq_layer_t, SEQ_* defines */
+#include "chord_types.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -88,6 +89,11 @@ uint8_t sequencer_core_get_current_step(uint8_t layer_idx);
 /* Add a new layer. Returns the new layer index (0..MAX_LAYERS-1), or
  * 0xFF if the layer table is full. Configures the AMY synth immediately. */
 uint8_t          sequencer_core_add_layer(seq_layer_type_t type, uint8_t num_steps);
+/* Delete a melodic layer by index. Returns false if the layer is the drum
+ * layer (idx 0), the only remaining layer, or out of range. Cancels all
+ * scheduled tags for all layers, frees the deleted layer's AMY oscillator
+ * slots, compacts the layer array, and resyncs surviving layers if playing. */
+bool             sequencer_core_delete_layer(uint8_t layer_idx);
 uint8_t          sequencer_core_get_num_layers(void);
 seq_layer_type_t sequencer_core_get_layer_type(uint8_t layer_idx);
 
@@ -140,6 +146,44 @@ void sequencer_core_arp_clear_note(uint32_t tag_base);
 
 /* Base tag for arp events — well above the sequencer's tag space. */
 uint32_t sequencer_core_arp_tag_base(void);
+
+/* ── Per-track repeat rate ────────────────────────────────────────────────
+ * A track with repeat_rate=N fires every N bars instead of every bar.
+ * Re-emits all steps immediately so AMY picks up the new period. */
+void              sequencer_core_set_track_repeat_rate(uint8_t layer_idx,
+                                                       uint8_t track,
+                                                       seq_repeat_rate_t rate);
+seq_repeat_rate_t sequencer_core_get_track_repeat_rate(uint8_t layer_idx,
+                                                       uint8_t track);
+
+/* ── Global chord progression ─────────────────────────────────────────────
+ * A list of (root, chord_type, duration_bars) entries that auto-advances.
+ * When enabled, all melodic layer quantizers and the arp follow the active
+ * chord. progression_service() must be called at ~20 Hz from the UI task. */
+void    sequencer_core_progression_set_enabled(bool en);
+bool    sequencer_core_progression_get_enabled(void);
+void    sequencer_core_progression_set_entry(uint8_t idx, uint8_t root,
+                                             chord_type_t chord_type,
+                                             uint8_t duration_bars);
+void    sequencer_core_progression_get_entry(uint8_t idx, uint8_t *root,
+                                             chord_type_t *chord_type,
+                                             uint8_t *duration_bars);
+void    sequencer_core_progression_set_count(uint8_t count);
+uint8_t sequencer_core_progression_get_count(void);
+uint8_t sequencer_core_progression_get_current(void);
+uint8_t sequencer_core_progression_get_max(void);
+uint8_t sequencer_core_progression_bars_in_current(void);
+bool    sequencer_core_progression_add_entry(void);
+void    sequencer_core_progression_delete_entry(uint8_t idx);
+void    sequencer_core_progression_service(void);
+
+/* Manual per-layer chord override (used when global progression is off). */
+void sequencer_core_progression_set_layer_chord(uint8_t layer_idx,
+                                                uint8_t root,
+                                                chord_type_t chord_type);
+void sequencer_core_progression_clear_layer_chord(uint8_t layer_idx);
+void sequencer_core_get_layer_chord(uint8_t layer_idx, bool *chord_mode,
+                                    uint8_t *root, chord_type_t *chord_type);
 
 #ifdef __cplusplus
 }

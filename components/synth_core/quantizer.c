@@ -1,4 +1,5 @@
 #include "quantizer.h"
+#include <stddef.h>
 
 static const musical_scale_t s_scales[] = {
     { .name = "Chromatic",        .intervals = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}, .size = 12 },
@@ -111,5 +112,47 @@ uint8_t quantizer_snap_midi_note(uint8_t midi_note, uint8_t root_note,
         }
     }
 
+    return (uint8_t)best_note;
+}
+
+/* Semitone intervals (from root) for each chord type.
+ * Terminated by -1. Max 5 notes per chord. */
+static const int8_t s_chord_intervals[CHORD_TYPE_COUNT][6] = {
+    /* MAJ  */ {  0,  4,  7, -1, -1, -1 },
+    /* MIN  */ {  0,  3,  7, -1, -1, -1 },
+    /* MAJ7 */ {  0,  4,  7, 11, -1, -1 },
+    /* MIN7 */ {  0,  3,  7, 10, -1, -1 },
+    /* DOM7 */ {  0,  4,  7, 10, -1, -1 },
+    /* SUS2 */ {  0,  2,  7, -1, -1, -1 },
+    /* SUS4 */ {  0,  5,  7, -1, -1, -1 },
+    /* DIM  */ {  0,  3,  6, -1, -1, -1 },
+    /* AUG  */ {  0,  4,  8, -1, -1, -1 },
+};
+
+uint8_t quantizer_snap_to_chord(uint8_t midi_note, uint8_t root,
+                                chord_type_t chord_type)
+{
+    if ((unsigned)chord_type >= CHORD_TYPE_COUNT) return midi_note;
+    const int8_t *intervals = s_chord_intervals[chord_type];
+    uint8_t root_pc = root % 12;
+
+    int32_t best_note     = (int32_t)midi_note;
+    int32_t best_distance = 9999;
+
+    /* Search chord tones across all reachable MIDI octaves. */
+    for (int32_t oct = -1; oct <= 10; oct++) {
+        for (int i = 0; i < 6; i++) {
+            if (intervals[i] < 0) break;
+            int32_t candidate = oct * 12 + (int32_t)root_pc + intervals[i];
+            if (candidate < 0 || candidate > 127) continue;
+            int32_t dist = candidate - (int32_t)midi_note;
+            if (dist < 0) dist = -dist;
+            if (dist < best_distance ||
+                (dist == best_distance && candidate < best_note)) {
+                best_distance = dist;
+                best_note     = candidate;
+            }
+        }
+    }
     return (uint8_t)best_note;
 }

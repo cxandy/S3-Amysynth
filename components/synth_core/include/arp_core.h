@@ -66,6 +66,7 @@ void arp_set_rate(arp_rate_t rate);
 void arp_set_gate_pct(uint8_t gate_pct);      /* clamped 10..100        */
 void arp_set_scale(uint8_t scale_index);
 void arp_set_root_note(uint8_t root_note);
+void arp_set_chord(uint8_t root_midi, uint8_t scale_index);
 void arp_set_patch(uint16_t patch_number);
 /* Set slot value to a chromatic MIDI note, -1 to clear, or ARP_REST for a
  * deliberate silent step (meaningful in ARP_SLOT mode only). */

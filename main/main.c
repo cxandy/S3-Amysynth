@@ -296,6 +296,14 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
             }
             return;
         }
+        /* PROG screen: MY_BUTTON_1 deletes the entry at the cursor (the patch-hold
+         * gesture has no meaning here). */
+        if (synth_ui_prog_is_active()) {
+            if (event == BUTTON_PRESS_DOWN) {
+                synth_ui_prog_delete_entry();
+            }
+            return;
+        }
         if (event == BUTTON_PRESS_DOWN) {
             s_patch_held = true;
             synth_ui_set_patch_select_mode(true);
@@ -325,6 +333,59 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
             case MY_BUTTON_0:
                 /* Layer cycle (single-click) is sequencer-only; suppress it.
                  * Keep global play/pause on long-press. */
+                if (event == BUTTON_LONG_PRESS_START) {
+                    synth_ui_toggle_playing();
+                }
+                return;
+            default:
+                break;
+        }
+    }
+
+    /* Prog screen isolation: suppress sequencer-only gestures (MY_BUTTON_2
+     * drum-select hold, MY_BUTTON_0 layer-cycle) while the PROG screen is up.
+     * MY_BUTTON_2 is repurposed as "+entry"; MY_BUTTON_1 as "del" (handled above). */
+    if (synth_ui_prog_is_active()) {
+        switch (button_id) {
+            case MY_BUTTON_2:
+                s_drum_select_held = false;
+                synth_ui_set_drum_select_mode(false);
+                if (event == BUTTON_PRESS_DOWN) {
+                    synth_ui_prog_add_entry();
+                }
+                return;
+            case MY_BUTTON_0:
+                if (event == BUTTON_LONG_PRESS_START) {
+                    synth_ui_toggle_playing();
+                }
+                return;
+            default:
+                break;
+        }
+    }
+
+    /* Track Options screen isolation: suppress sequencer-only gestures and
+     * repurpose spare buttons for layer management.
+     *   MY_BUTTON_1 click  → add a melodic layer (if below MAX_LAYERS)
+     *   MY_BUTTON_2 click  → delete the layer currently shown (s_to_layer);
+     *                        no-op if it is the drum layer or the last layer
+     *   MY_BUTTON_0 long   → play / pause (keep live)
+     * MY_BUTTON_1 normally drives patch-hold; suppress that in this context. */
+    if (synth_ui_trackopts_is_active()) {
+        switch (button_id) {
+            case MY_BUTTON_1:
+                if (event == BUTTON_SINGLE_CLICK) {
+                    synth_ui_request_add_layer();
+                }
+                return;
+            case MY_BUTTON_2:
+                s_drum_select_held = false;
+                synth_ui_set_drum_select_mode(false);
+                if (event == BUTTON_SINGLE_CLICK) {
+                    synth_ui_request_delete_to_layer();
+                }
+                return;
+            case MY_BUTTON_0:
                 if (event == BUTTON_LONG_PRESS_START) {
                     synth_ui_toggle_playing();
                 }
@@ -458,6 +519,20 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
             }
             return;
         }
+        /* Prog screen: encoder-click navigates cursor / confirms edits. */
+        if (synth_ui_prog_is_active()) {
+            if (event == BUTTON_PRESS_DOWN) {
+                synth_ui_prog_handle_button();
+            }
+            return;
+        }
+        /* Track Options screen: encoder-click toggles edit on the focused row. */
+        if (synth_ui_trackopts_is_active()) {
+            if (event == BUTTON_PRESS_DOWN) {
+                synth_ui_trackopts_handle_button();
+            }
+            return;
+        }
         if (event == BUTTON_LONG_PRESS_START) {
             synth_ui_graph_open_envelope();
             return;
@@ -583,6 +658,12 @@ static void encoder_task(void *pvParameters)
             } else if (synth_ui_arp_is_active()) {
                 // Arp screen: encoder moves the cursor / edits the focused field.
                 synth_ui_arp_handle_encoder(steps);
+            } else if (synth_ui_prog_is_active()) {
+                // Prog screen: encoder scrolls cursor / edits the focused entry field.
+                synth_ui_prog_handle_encoder((int)steps);
+            } else if (synth_ui_trackopts_is_active()) {
+                // Track Options screen: encoder scrolls rows / edits focused value.
+                synth_ui_trackopts_handle_encoder((int)steps);
             } else {
                 synth_ui_handle_encoder(steps);
             }

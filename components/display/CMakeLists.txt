@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "display_lfo.c" "patch_names.c" "priv_i2c_u8g2.c" "display_seq.c" "graph_popup.c"
+    SRCS "display_trackopts.c" "display_prog.c" "display_lfo.c" "patch_names.c" "priv_i2c_u8g2.c" "display_seq.c" "graph_popup.c"
          "display_menu.c" "display_arp.c" "display_drone.c" "filter_graph.c"
     INCLUDE_DIRS "."
     REQUIRES esp_driver_i2c esp_driver_gpio u8g2

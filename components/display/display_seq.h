@@ -1,6 +1,7 @@
 #pragma once
 
 #include "u8g2.h"
+#include "chord_types.h"
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -25,7 +26,17 @@ typedef enum {
     UI_MODE_SEQUENCER = 0,
     UI_MODE_ARP       = 1,
     UI_MODE_DRONE     = 2,
+    UI_MODE_PROG      = 3,
+    UI_MODE_TRACKOPTS = 4,
 } ui_mode_t;
+
+/* ── Per-track repeat rate (fires every N bars instead of every bar) ── */
+typedef enum {
+    SEQ_REPEAT_1  = 1,
+    SEQ_REPEAT_2  = 2,
+    SEQ_REPEAT_4  = 4,
+    SEQ_REPEAT_8  = 8,
+} seq_repeat_rate_t;
 
 /* ── Filter type constants (mirror AMY's FILTER_* values) ── */
 #define SEQ_FILTER_NONE  0
@@ -104,6 +115,10 @@ typedef struct {
                                                  the user commits in the filter editor */
     seq_lfo_t lfo[SEQ_TRACKS];
     bool      lfo_authored[SEQ_TRACKS];
+    uint8_t   repeat_rate[SEQ_TRACKS];   /* SEQ_REPEAT_* — fires every N bars */
+    bool      chord_mode;                /* false = scale quantizer (default) */
+    uint8_t   chord_root;                /* chromatic 0-11 (C=0)              */
+    chord_type_t chord_type;
     uint8_t  synth_id[SEQ_TRACKS];   /* one AMY synth per row (both melodic and
                                         drum layers: each track has its own slot */
     uint16_t patch;                  /* shared timbre across the layer's rows

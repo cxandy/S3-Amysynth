@@ -18,6 +18,8 @@ void synth_ui_init(u8g2_t *u8g2);
 /* Add a new sequencer layer (drum or melodic). Returns the layer index
  * or 0xFF if the layer table is full. Safe to call after init. */
 uint8_t synth_ui_add_layer(seq_layer_type_t type, uint8_t num_steps);
+void    synth_ui_request_add_layer(void);
+void    synth_ui_request_delete_to_layer(void);
 
 /* Advance the active layer displayed/edited on screen.
  * Resets the cursor to track 0, step 0, edit_mode = true. */
@@ -65,6 +67,20 @@ void synth_ui_drone_handle_encoder(long delta);
 void synth_ui_drone_handle_button(void);
 /* Cycle the drone's PATCH-mode preset (hold+turn gesture on the drone screen). */
 void synth_ui_drone_cycle_patch(int delta);
+
+/* Chord-progression screen — active when seq_state.ui_mode == UI_MODE_PROG and no
+ * overlay (menu/graph) is up.  Returns false if not active (caller should fall through). */
+bool synth_ui_prog_is_active(void);
+bool synth_ui_prog_handle_encoder(int delta);
+bool synth_ui_prog_handle_button(void);
+bool synth_ui_prog_add_entry(void);
+bool synth_ui_prog_delete_entry(void);
+
+/* Track Options screen — per-track repeat rate + per-layer manual chord mode.
+ * Active when seq_state.ui_mode == UI_MODE_TRACKOPTS and no overlay is up. */
+bool synth_ui_trackopts_is_active(void);
+bool synth_ui_trackopts_handle_encoder(int delta);
+bool synth_ui_trackopts_handle_button(void);
 
 /* Re-impose the cached global FX (EQ/echo/chorus/reverb) after a synth patch
  * load. Every AMY built-in Juno patch ends with global EQ/chorus commands, so

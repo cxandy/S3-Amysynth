@@ -322,6 +322,12 @@ void arp_set_root_note(uint8_t root_note)
     arp_mark_dirty();
 }
 
+void arp_set_chord(uint8_t root_midi, uint8_t scale_index)
+{
+    arp_set_root_note(root_midi);
+    arp_set_scale(scale_index);
+}
+
 void arp_set_patch(uint16_t patch_number)
 {
     patch_number = SEQ_CLAMP_U16(patch_number, 0, 256);

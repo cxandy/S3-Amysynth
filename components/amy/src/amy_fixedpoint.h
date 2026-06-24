@@ -94,17 +94,23 @@
 #define INT_OF_S(s, b) ((int)floorf((s) * (float)(1 << (b))))
 #define S_FRAC_OF_S(s, b) ((s) * (1 << (b)) - floorf((s) * (1 << (b))))
 
-#define MUL0_SS(a, b) ((a) * (b))
-#define MUL4_SS(a, b) ((a) * (b))
-#define MUL8_SS(a, b) ((a) * (b))
+#define MUL0_SS(a, b)  ((a) * (b))
+#define MUL4_SS(a, b)  ((a) * (b))
+#define MUL5A_SS(a, b) ((a) * (b))  // LOCAL EDIT (S3-Amysynth): float fallback missing upstream
+#define MUL6A_SS(a, b) ((a) * (b))  // LOCAL EDIT (S3-Amysynth): float fallback missing upstream
+#define MUL8_SS(a, b)  ((a) * (b))
 #define MUL8F_SS(a, b) ((a) * (b))
 #define MUL4E_SS(a, b) ((a) * (b))
 #define MUL4_SP_S(a, b) ((a) * (b))
-#define SMULR6(a, b) ((a) * (b))
-#define SMULR7(a, b) ((a) * (b))
+#define SMULR6(a, b)   ((a) * (b))
+#define SMULR7(a, b)   ((a) * (b))
 
-#define SHIFTR(s, b) ((s) * exp2f(-(b)))
-#define SHIFTL(s, b) ((s) * exp2f(b))
+// LOCAL EDIT (S3-Amysynth): use ldexpf instead of exp2f.
+// exp2f(runtime_int) is a full transcendental call; ldexpf(x, n) is O(1)
+// (hardware exponent-field manipulation). Correct for all integer shift counts.
+// For compile-time constants, GCC still folds ldexpf(x, k) to x * 2^k.
+#define SHIFTR(s, b) ldexpf((s), -(b))
+#define SHIFTL(s, b) ldexpf((s), (b))
 
 #define INT_OF_P(p, b) (((int)floorf((p) * (float)(1 << (b))) + (1 << (b))) % (1 <<(b)))
 #define I2P(i, b) ((i) / (float)(1 << (b)))

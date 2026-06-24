@@ -287,14 +287,18 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
 {
     (void)user_data;
 
-    // MY_BUTTON_1 is the patch-select hold button. While the filter editor is
-    // open it is repurposed as the enabled on/off toggle (single press).
+    // MY_BUTTON_1 is the patch-select hold button, repurposed per editor:
+    //   filter editor  → enabled on/off toggle (single press)
+    //   ADSR/LFO editor → layer-wide vs track-only commit scope toggle
     if (button_id == MY_BUTTON_1) {
         if (synth_ui_filter_is_active()) {
             if (event == BUTTON_PRESS_DOWN) {
                 synth_ui_filter_toggle_enabled();
             }
             return;
+        }
+        if (event == BUTTON_PRESS_DOWN) {
+            if (synth_ui_toggle_editor_apply_scope()) return;
         }
         /* PROG screen: MY_BUTTON_1 deletes the entry at the cursor (the patch-hold
          * gesture has no meaning here). */

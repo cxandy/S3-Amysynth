@@ -145,6 +145,11 @@ bool synth_ui_lfo_handle_encoder(long delta);
 bool synth_ui_lfo_handle_button(bool is_long);
 bool synth_ui_lfo_close_commit(void);
 
+/* Toggle whether effect-editor commits apply to only the selected track (false)
+ * or all tracks in the active layer (true).  Consumed by MY_BUTTON_1 while the
+ * ADSR graph or LFO editor is open.  Returns true when an editor was active. */
+bool synth_ui_toggle_editor_apply_scope(void);
+
 /* Cycle between ADSR, Filter, and LFO editors (MY_BUTTON_3 while any is open).
  * Commits the departing editor and opens the next one.  Replaces the old
  * synth_ui_toggle_adsr_filter() two-way swap. */

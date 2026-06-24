@@ -111,8 +111,12 @@ extern const uint32_t pcm_wavetable_len;
 // How many external CV inputs to contemplate.
 #define AMY_MAX_CV_IN 2
 
-// Always use fixed point. You can remove this if you want float
+// LOCAL EDIT (S3-Amysynth): Kconfig-gated fixed-point toggle. See AMY-EDITS.md.
+// On ESP32-S3 the hardware FPU makes float equal or faster; default is float.
+// Toggle via menuconfig: AMY Synthesizer → "Use fixed-point arithmetic".
+#ifdef CONFIG_AMY_USE_FIXEDPOINT
 #define AMY_USE_FIXEDPOINT
+#endif
 
 
 // upper bounds for static arrays.

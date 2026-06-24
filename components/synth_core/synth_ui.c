@@ -104,6 +104,12 @@ static graph_target_t s_graph_target = GRAPH_TGT_MELODIC;
 
 static bool s_graph_long_range = false;   /* false = SHORT, true = LONG */
 
+/* Layer-apply scope: when true, effect-editor commits write to all SEQ_TRACKS
+ * in the active layer instead of only the selected track.  Toggled by
+ * MY_BUTTON_1 while the ADSR graph or LFO editor is open.  The filter editor
+ * repurposes MY_BUTTON_1 for enable/disable, so scope is set there or in LFO. */
+static bool s_editor_apply_all = false;
+
 /* Normalised X (0..1) -> milliseconds, range/curve aware. */
 static uint32_t graph_x_to_ms(float x)
 {
@@ -325,7 +331,12 @@ static void graph_commit_to_env(void)
             break;
         case GRAPH_TGT_MELODIC:
         default:
-            sequencer_core_set_melodic_envelope(s_graph_layer, s_graph_track, &env);
+            if (s_editor_apply_all) {
+                for (uint8_t t = 0; t < SEQ_TRACKS; ++t)
+                    sequencer_core_set_melodic_envelope(s_graph_layer, t, &env);
+            } else {
+                sequencer_core_set_melodic_envelope(s_graph_layer, s_graph_track, &env);
+            }
             break;
     }
 }
@@ -494,8 +505,9 @@ static void filter_load_from_target(void)
             f.cutoff_hz   = 800.0f;
             f.resonance   = 1.0f;
         }
-        snprintf(s_fgraph.label, sizeof(s_fgraph.label), "L%u T%u",
-                 (unsigned)li, (unsigned)tr);
+        snprintf(s_fgraph.label, sizeof(s_fgraph.label), "L%u T%u%s",
+                 (unsigned)li, (unsigned)tr,
+                 s_editor_apply_all ? ">L" : ">T");
     }
     s_filter_edit = f;
 }
@@ -617,8 +629,13 @@ bool synth_ui_filter_close_commit(void)
                  s_filter_edit.filter_type,
                  (double)s_filter_edit.cutoff_hz, (double)s_filter_edit.resonance);
     } else {
-        sequencer_core_set_melodic_filter(seq_state.active_layer_idx,
-                                          seq_state.selected_track, &s_filter_edit);
+        uint8_t li = seq_state.active_layer_idx;
+        if (s_editor_apply_all) {
+            for (uint8_t t = 0; t < SEQ_TRACKS; ++t)
+                sequencer_core_set_melodic_filter(li, t, &s_filter_edit);
+        } else {
+            sequencer_core_set_melodic_filter(li, seq_state.selected_track, &s_filter_edit);
+        }
     }
     s_filter_active = false;
     s_force_redraw  = true;
@@ -661,6 +678,7 @@ void synth_ui_lfo_open(void)
     s_lfo_view.editing   = false;
     s_lfo_view.layer_idx = li;
     s_lfo_view.track_idx = tr;
+    s_lfo_view.apply_all = s_editor_apply_all;
     s_lfo_active   = true;
     s_force_redraw = true;
     ESP_LOGI(TAG, "LFO editor open L%u T%u", li, tr);
@@ -718,12 +736,37 @@ bool synth_ui_lfo_handle_button(bool is_long)
 bool synth_ui_lfo_close_commit(void)
 {
     if (!s_lfo_active) return false;
-    sequencer_core_set_melodic_lfo(s_lfo_view.layer_idx,
-                                   s_lfo_view.track_idx,
-                                   &s_lfo_view.lfo);
+    if (s_editor_apply_all) {
+        for (uint8_t t = 0; t < SEQ_TRACKS; ++t)
+            sequencer_core_set_melodic_lfo(s_lfo_view.layer_idx, t, &s_lfo_view.lfo);
+    } else {
+        sequencer_core_set_melodic_lfo(s_lfo_view.layer_idx,
+                                       s_lfo_view.track_idx,
+                                       &s_lfo_view.lfo);
+    }
     s_lfo_active   = false;
     s_force_redraw = true;
-    ESP_LOGI(TAG, "LFO editor committed");
+    ESP_LOGI(TAG, "LFO editor committed (apply_all=%d)", (int)s_editor_apply_all);
+    return true;
+}
+
+/* Toggle layer-wide vs single-track commit scope for the effects editors.
+ * Returns true if an appropriate editor was active and the event was consumed.
+ * Called from MY_BUTTON_1 while ADSR graph or LFO editor is open. */
+bool synth_ui_toggle_editor_apply_scope(void)
+{
+    bool graph_open = graph_popup_is_active(&s_graph_popup);
+    if (!graph_open && !s_lfo_active) return false;
+
+    s_editor_apply_all = !s_editor_apply_all;
+
+    /* Keep the LFO view in sync so lfo_view_draw() shows the correct indicator. */
+    if (s_lfo_active) {
+        s_lfo_view.apply_all = s_editor_apply_all;
+    }
+
+    s_force_redraw = true;
+    ESP_LOGI(TAG, "editor scope -> %s", s_editor_apply_all ? "LAYER" : "TRACK");
     return true;
 }
 
@@ -938,7 +981,10 @@ static void graph_draw_topbar(u8g2_t *u8g2)
 
     /* Left: which row is being edited. */
     u8g2_SetFont(u8g2, u8g2_font_6x10_tf);
-    snprintf(buf, sizeof(buf), "L%u T%u ENV", s_graph_layer, s_graph_track);
+    snprintf(buf, sizeof(buf), "L%u T%u ENV%s",
+             s_graph_layer, s_graph_track,
+             (s_graph_target == GRAPH_TGT_MELODIC)
+                 ? (s_editor_apply_all ? ">L" : ">T") : "");
     u8g2_DrawStr(u8g2, 2, 8, buf);
 
     /* Right: SHORT/LONG range flag. */

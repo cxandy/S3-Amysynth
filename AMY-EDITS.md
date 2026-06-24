@@ -16,6 +16,35 @@ signatures); the two bug fixes below were PRd upstream and are no longer here.
 
 ## Active local edits
 
+### `src/amy.h` — Kconfig-gated fixed-point toggle
+
+`#define AMY_USE_FIXEDPOINT` replaced with a `#ifdef CONFIG_AMY_USE_FIXEDPOINT`
+guard. Enabled via menuconfig: **AMY Synthesizer → Use fixed-point arithmetic**
+(default off). Requires `components/amy/Kconfig` (new file, not upstreamed).
+
+The ESP32-S3 LX7 FPU makes float equal-or-faster; fixed-point was designed for
+RP2040. The option is preserved for comparison or future portability needs.
+
+### `src/amy_fixedpoint.h` — float-mode fallbacks and `ldexpf` SHIFTL/SHIFTR
+
+Two edits to the `#ifndef AMY_USE_FIXEDPOINT` (float mode) section:
+
+1. **`MUL5A_SS` / `MUL6A_SS` float fallbacks** — upstream defines these only in
+   the fixed-point path; `oscillators.c` uses them unconditionally so the float
+   build fails without them. Added `(a) * (b)` fallbacks.
+
+2. **`SHIFTL` / `SHIFTR` use `ldexpf` instead of `exp2f`** — the original float
+   macros were `(s) * exp2f(b)`. When `b` is a runtime variable (e.g.
+   `exp2_lut()` integer part), `exp2f(runtime_int)` cannot be constant-folded
+   and emits a transcendental libcall. `ldexpf(s, b)` is the correct primitive
+   for ×2^n scaling and is never worse. **Caveat (verified by objdump):** on
+   this Xtensa LX7 toolchain GCC does *not* lower `ldexpf` (or `floorf`) to the
+   hardware `FLOOR.S`/exponent ops — both remain `call8` libcalls. So this is a
+   correctness/clarity win and a marginal speedup at most, NOT the fix for
+   float-mode CPU cost. Float mode is dominated by per-sample `floorf` libcalls
+   in `INT_OF_S` / `S_FRAC_OF_S` / `P_WRAPPED_SUM` (see note below); fixed-point
+   remains the product mode on this target.
+
 ### `src/amy.h` — IRAM_ATTR / DRAM_ATTR macros
 
 Added `AMY_IRAM_ATTR` and `AMY_DRAM_ATTR` macro definitions inside the

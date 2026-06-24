@@ -16,6 +16,7 @@ typedef struct {
     bool      editing;
     uint8_t   layer_idx;
     uint8_t   track_idx;
+    bool      apply_all; /* true = commit applies to all tracks in the layer */
 } lfo_view_t;
 
 void lfo_view_draw(u8g2_t *u8g2, const lfo_view_t *v);

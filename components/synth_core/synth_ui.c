@@ -1701,14 +1701,8 @@ static void menu_build_view(menu_view_t *out)
     snprintf(s_menu_items[MI_CHORUS_LEVEL].value, MENU_VALUE_LEN, "%u%%",
              (unsigned)s_fx.chorus_level);
     snprintf(s_menu_items[MI_REVERB_LEVEL].label, MENU_LABEL_LEN, "Reverb");
-    /* If AMY could not allocate the reverb delay lines (OOM), it forces reverb
-     * off and flags it here. Surface "OOM!" instead of a percentage so the
-     * failure is visible on the OLED without a serial monitor. */
-    if (amy_reverb_alloc_failed())
-        snprintf(s_menu_items[MI_REVERB_LEVEL].value, MENU_VALUE_LEN, "OOM!");
-    else
-        snprintf(s_menu_items[MI_REVERB_LEVEL].value, MENU_VALUE_LEN, "%u%%",
-                 (unsigned)s_fx.reverb_level);
+    snprintf(s_menu_items[MI_REVERB_LEVEL].value, MENU_VALUE_LEN, "%u%%",
+             (unsigned)s_fx.reverb_level);
 
     /* "Presets alter global FX? y/n" — OFF makes Juno presets per-synth. */
     snprintf(s_menu_items[MI_PRESET_GLOBAL_FX].label, MENU_LABEL_LEN, "Preset FX");

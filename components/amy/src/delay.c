@@ -185,39 +185,38 @@ void delay_line_in_out_fixed_delay(SAMPLE *in, SAMPLE *out, int n_samples, int d
 }
 
 
-AMY_IRAM_ATTR void apply_variable_delay(SAMPLE *block, delay_line_t *delay_line, SAMPLE *delay_mod, SAMPLE delay_scale, SAMPLE mix_level, SAMPLE feedback_level) {
+void apply_variable_delay(SAMPLE *block, delay_line_t *delay_line, SAMPLE *delay_mod, SAMPLE delay_scale, SAMPLE mix_level, SAMPLE feedback_level) {
     delay_line_in_out(block, block, AMY_BLOCK_SIZE, delay_mod, delay_scale, delay_line, mix_level, feedback_level);
 }
 
-AMY_IRAM_ATTR void apply_fixed_delay(SAMPLE *block, delay_line_t *delay_line, uint32_t delay_samples, SAMPLE mix_level, SAMPLE feedback, SAMPLE filter_coef) {
+void apply_fixed_delay(SAMPLE *block, delay_line_t *delay_line, uint32_t delay_samples, SAMPLE mix_level, SAMPLE feedback, SAMPLE filter_coef) {
     delay_line_in_out_fixed_delay(block, block, AMY_BLOCK_SIZE, delay_samples, delay_line, mix_level, feedback, filter_coef);
 }
-
-SAMPLE f1state = 0, f2state = 0, f3state = 0, f4state = 0;
-
-delay_line_t *delay_1 = NULL, *delay_2 = NULL, *delay_3 = NULL,
-    *delay_4 = NULL;
-delay_line_t *ref_1 = NULL, *ref_2 = NULL, *ref_3= NULL,
-    *ref_4 = NULL, *ref_5 = NULL, *ref_6 = NULL;
 
 #define INITIAL_XOVER_HZ 3000.0
 #define INITIAL_LIVENESS 0.85
 #define INITIAL_DAMPING 0.5
 
-SAMPLE lpfcoef;
-SAMPLE lpfgain;
-SAMPLE liveness;
+reverb_params_t *new_reverb() {
+    reverb_params_t *rev = malloc_caps(sizeof(reverb_params_t), amy_global.config.ram_caps_synth);
+    bzero(rev, sizeof(reverb_params_t));
+    return rev;
+}
 
-void config_stereo_reverb(float a_liveness, float crossover_hz, float damping) {
+void delete_reverb(reverb_params_t *rev) {
+    if(rev) free(rev);
+}
+
+void config_stereo_reverb(reverb_params_t *rev, float a_liveness, float crossover_hz, float damping) {
     //printf("config_stereo_reverb: liveness %f xover %f damping %f\n",
     //       a_liveness, crossover_hz, damping);
     // liveness (0..1) controls how much energy is preserved (larger = longer reverb).
-    liveness = F2S(a_liveness);
+    rev->liveness = F2S(a_liveness);
     // crossover_hz is 3dB point of 1-pole lowpass freq.
-    lpfcoef = F2S(6.2832f * crossover_hz / AMY_SAMPLE_RATE);
-    if (lpfcoef > F2S(1.f))  lpfcoef = F2S(1.f);
-    if (lpfcoef < 0)  lpfcoef = 0;
-    lpfgain = F2S(1.f - damping);
+    rev->lpfcoef = F2S(6.2832f * crossover_hz / AMY_SAMPLE_RATE);
+    if (rev->lpfcoef > F2S(1.f))  rev->lpfcoef = F2S(1.f);
+    if (rev->lpfcoef < 0)  rev->lpfcoef = 0;
+    rev->lpfgain = F2S(1.f - damping);
 }
 
 // Delay 1 is 58.6435 ms
@@ -241,144 +240,56 @@ void config_stereo_reverb(float a_liveness, float crossover_hz, float damping) {
 #define REF6SAMPS 602   // 13.645 ms
 
 
-// LOCAL EDIT (2026-06-19): reverb OOM crash-safety. See AMY-EDITS.md.
-static void free_stereo_reverb(void) {
-    // Free any partially-allocated delay lines and reset every pointer to NULL
-    // so the render path (which guards on delay_1 != NULL) stays safe.
-    delay_line_t **lines[] = {
-        &delay_1, &delay_2, &delay_3, &delay_4,
-        &ref_1, &ref_2, &ref_3, &ref_4, &ref_5, &ref_6,
-    };
-    for (unsigned i = 0; i < sizeof(lines) / sizeof(lines[0]); ++i) {
-        if (*lines[i] != NULL) {
-            free_delay_line(*lines[i]);
-            *lines[i] = NULL;
-        }
-    }
-}
+bool init_stereo_reverb(reverb_params_t *rev) {
+    if (rev->delay_1 != NULL)
+        return true;  // already initialised
 
-// Returns true if all reverb delay lines are allocated and ready.
-// On allocation failure it rolls back every partial allocation and returns
-// false, leaving all pointers NULL so stereo_reverb() is never run on them.
-bool init_stereo_reverb(void) {
-    if (delay_1 != NULL)
-        return true;  // already initialised.
+    rev->delay_1 = new_delay_line(DELAY_POW2, DELAY1SAMPS, amy_global.config.ram_caps_delay);
+    rev->delay_2 = new_delay_line(DELAY_POW2, DELAY2SAMPS, amy_global.config.ram_caps_delay);
+    rev->delay_3 = new_delay_line(DELAY_POW2, DELAY3SAMPS, amy_global.config.ram_caps_delay);
+    rev->delay_4 = new_delay_line(DELAY_POW2, DELAY4SAMPS, amy_global.config.ram_caps_delay);
 
-    delay_1 = new_delay_line(DELAY_POW2, DELAY1SAMPS, amy_global.config.ram_caps_delay);
-    delay_2 = new_delay_line(DELAY_POW2, DELAY2SAMPS, amy_global.config.ram_caps_delay);
-    delay_3 = new_delay_line(DELAY_POW2, DELAY3SAMPS, amy_global.config.ram_caps_delay);
-    delay_4 = new_delay_line(DELAY_POW2, DELAY4SAMPS, amy_global.config.ram_caps_delay);
+    rev->ref_1 = new_delay_line(4096, REF1SAMPS, amy_global.config.ram_caps_delay);
+    rev->ref_2 = new_delay_line(2048, REF2SAMPS, amy_global.config.ram_caps_delay);
+    rev->ref_3 = new_delay_line(2048, REF3SAMPS, amy_global.config.ram_caps_delay);
+    rev->ref_4 = new_delay_line(1024, REF4SAMPS, amy_global.config.ram_caps_delay);
+    rev->ref_5 = new_delay_line(1024, REF5SAMPS, amy_global.config.ram_caps_delay);
+    rev->ref_6 = new_delay_line(1024, REF6SAMPS, amy_global.config.ram_caps_delay);
 
-    ref_1 = new_delay_line(4096, REF1SAMPS, amy_global.config.ram_caps_delay);
-    ref_2 = new_delay_line(2048, REF2SAMPS, amy_global.config.ram_caps_delay);
-    ref_3 = new_delay_line(2048, REF3SAMPS, amy_global.config.ram_caps_delay);
-    ref_4 = new_delay_line(1024, REF4SAMPS, amy_global.config.ram_caps_delay);
-    ref_5 = new_delay_line(1024, REF5SAMPS, amy_global.config.ram_caps_delay);
-    ref_6 = new_delay_line(1024, REF6SAMPS, amy_global.config.ram_caps_delay);
-
-    if (delay_1 == NULL || delay_2 == NULL || delay_3 == NULL || delay_4 == NULL ||
-        ref_1 == NULL || ref_2 == NULL || ref_3 == NULL ||
-        ref_4 == NULL || ref_5 == NULL || ref_6 == NULL) {
+    if (rev->delay_1 == NULL || rev->delay_2 == NULL || rev->delay_3 == NULL || rev->delay_4 == NULL ||
+        rev->ref_1 == NULL || rev->ref_2 == NULL || rev->ref_3 == NULL ||
+        rev->ref_4 == NULL || rev->ref_5 == NULL || rev->ref_6 == NULL) {
         fprintf(stderr, "init_stereo_reverb: allocation failed, reverb disabled\n");
-        free_stereo_reverb();
+        deinit_stereo_reverb(rev);  // rolls back all partial allocations, NULLs all pointers
         return false;
     }
 
-    config_stereo_reverb(INITIAL_LIVENESS, INITIAL_XOVER_HZ, INITIAL_DAMPING);
+    config_stereo_reverb(rev, INITIAL_LIVENESS, INITIAL_XOVER_HZ, INITIAL_DAMPING);
     return true;
 }
 
-bool stereo_reverb_ready(void) {
-    // delay_1 is the first line allocated and the last freed; init_stereo_reverb()
-    // guarantees either all lines are allocated or all are NULL, so this single
-    // check is sufficient for the render-path guard.
-    return delay_1 != NULL;
+void deinit_stereo_reverb(reverb_params_t *rev) {
+    if (rev->delay_1 != NULL) {
+        free(rev->delay_1); rev->delay_1 = NULL;
+        free(rev->delay_2); rev->delay_2 = NULL;
+        free(rev->delay_3); rev->delay_3 = NULL;
+        free(rev->delay_4); rev->delay_4 = NULL;
+        free(rev->ref_1); rev->ref_1 = NULL;
+        free(rev->ref_2); rev->ref_2 = NULL;
+        free(rev->ref_3); rev->ref_3 = NULL;
+        free(rev->ref_4); rev->ref_4 = NULL;
+        free(rev->ref_5); rev->ref_5 = NULL;
+        free(rev->ref_6); rev->ref_6 = NULL;
+    }
 }
 
-AMY_IRAM_ATTR void stereo_reverb(SAMPLE *r_in, SAMPLE *l_in, SAMPLE *r_out, SAMPLE *l_out, int n_samples, SAMPLE level) {
+void stereo_reverb(reverb_params_t *rev, SAMPLE *r_in, SAMPLE *l_in, SAMPLE *r_out, SAMPLE *l_out, int n_samples, SAMPLE level) {
     // Stereo reverb.  *{r,l}_in each point to n_samples input samples.
     // n_samples are written to {r,l}_out.
     // Recreate
     // https://github.com/duvtedudug/Pure-Data/blob/master/extra/rev2%7E.pd
     // an instance of the Stautner-Puckette multichannel reverberator from
     // https://www.ee.columbia.edu/~dpwe/e4896/papers/StautP82-reverb.pdf
-#ifdef ESP_PLATFORM
-    // LOCAL EDIT (2026-06-20): Block-processed ESP32-S3 optimization
-    static SAMPLE r_acc_block[AMY_BLOCK_SIZE];
-    static SAMPLE l_acc_block[AMY_BLOCK_SIZE];
-
-    SAMPLE init_scale = F2S(0.0625f);
-    
-    // Scale initial inputs into accumulators
-    for (int i = 0; i < n_samples; ++i) {
-        r_acc_block[i] = MUL0_SS(init_scale, r_in[i]);
-        l_acc_block[i] = MUL0_SS(init_scale, l_in ? l_in[i] : r_in[i]);
-    }
-
-    // Early reflections 1-6 (vectorized passes)
-    for (int i = 0; i < n_samples; ++i) {
-        DEL_IN(ref_1, l_acc_block[i]);
-        SAMPLE d_out = DEL_OUT(ref_1, 0);
-        l_acc_block[i] = r_acc_block[i] - d_out;
-        r_acc_block[i] += d_out;
-    }
-    for (int i = 0; i < n_samples; ++i) {
-        DEL_IN(ref_2, l_acc_block[i]);
-        SAMPLE d_out = DEL_OUT(ref_2, 0);
-        l_acc_block[i] = r_acc_block[i] - d_out;
-        r_acc_block[i] += d_out;
-    }
-    for (int i = 0; i < n_samples; ++i) {
-        DEL_IN(ref_3, l_acc_block[i]);
-        SAMPLE d_out = DEL_OUT(ref_3, 0);
-        l_acc_block[i] = r_acc_block[i] - d_out;
-        r_acc_block[i] += d_out;
-    }
-    for (int i = 0; i < n_samples; ++i) {
-        DEL_IN(ref_4, l_acc_block[i]);
-        SAMPLE d_out = DEL_OUT(ref_4, 0);
-        l_acc_block[i] = r_acc_block[i] - d_out;
-        r_acc_block[i] += d_out;
-    }
-    for (int i = 0; i < n_samples; ++i) {
-        DEL_IN(ref_5, l_acc_block[i]);
-        SAMPLE d_out = DEL_OUT(ref_5, 0);
-        l_acc_block[i] = r_acc_block[i] - d_out;
-        r_acc_block[i] += d_out;
-    }
-    for (int i = 0; i < n_samples; ++i) {
-        DEL_IN(ref_6, l_acc_block[i]);
-        l_acc_block[i] = DEL_OUT(ref_6, 0);
-    }
-
-    // Reverb delays, matrix, and output mixing
-    for (int i = 0; i < n_samples; ++i) {
-        SAMPLE r_acc = r_acc_block[i];
-        SAMPLE l_acc = l_acc_block[i];
-
-        SAMPLE d1 = DEL_OUT(delay_1, 0);
-        d1 = LPF(d1, f1state, lpfcoef, lpfgain, liveness);
-        d1 += r_acc;
-        r_out[i] = r_in[i] + MUL8_SS(level, d1);
-
-        SAMPLE d2 = DEL_OUT(delay_2, 0);
-        d2 = LPF(d2, f2state, lpfcoef, lpfgain, liveness);
-        d2 += l_acc;
-        if (l_out != NULL) l_out[i] = (l_in ? l_in[i] : r_in[i]) + MUL8_SS(level, d2);
-
-        SAMPLE d3 = DEL_OUT(delay_3, 0);
-        d3 = LPF(d3, f3state, lpfcoef, lpfgain, liveness);
-
-        SAMPLE d4 = DEL_OUT(delay_4, 0);
-        d4 = LPF(d4, f4state, lpfcoef, lpfgain, liveness); // fixed upstream f3state bug
-
-        // Mixing and feedback
-        DEL_IN(delay_1, d1 + d2 + d3 + d4);
-        DEL_IN(delay_2, d1 - d2 + d3 - d4);
-        DEL_IN(delay_3, d1 + d2 - d3 - d4);
-        DEL_IN(delay_4, d1 - d2 - d3 + d4);
-    }
-#else
     while(n_samples--) {
         // Early echo reflections.
         SAMPLE in_r = *r_in++;
@@ -389,57 +300,56 @@ AMY_IRAM_ATTR void stereo_reverb(SAMPLE *r_in, SAMPLE *l_in, SAMPLE *r_out, SAMP
         r_acc = MUL0_SS(F2S(0.0625f), in_r);
         l_acc = MUL0_SS(F2S(0.0625f), in_l);
 
-        DEL_IN(ref_1, l_acc);
-        SAMPLE d_out = DEL_OUT(ref_1, 0);
+        DEL_IN(rev->ref_1, l_acc);
+        SAMPLE d_out = DEL_OUT(rev->ref_1, 0);
         l_acc = r_acc - d_out;
         r_acc += d_out;
 
-        DEL_IN(ref_2, l_acc);
-        d_out = DEL_OUT(ref_2, 0);
+        DEL_IN(rev->ref_2, l_acc);
+        d_out = DEL_OUT(rev->ref_2, 0);
         l_acc = r_acc - d_out;
         r_acc += d_out;
 
-        DEL_IN(ref_3, l_acc);
-        d_out = DEL_OUT(ref_3, 0);
+        DEL_IN(rev->ref_3, l_acc);
+        d_out = DEL_OUT(rev->ref_3, 0);
         l_acc = r_acc - d_out;
         r_acc += d_out;
 
-        DEL_IN(ref_4, l_acc);
-        d_out = DEL_OUT(ref_4, 0);
+        DEL_IN(rev->ref_4, l_acc);
+        d_out = DEL_OUT(rev->ref_4, 0);
         l_acc = r_acc - d_out;
         r_acc += d_out;
 
-        DEL_IN(ref_5, l_acc);
-        d_out = DEL_OUT(ref_5, 0);
+        DEL_IN(rev->ref_5, l_acc);
+        d_out = DEL_OUT(rev->ref_5, 0);
         l_acc = r_acc - d_out;
         r_acc += d_out;
 
-        DEL_IN(ref_6, l_acc);
-        l_acc = DEL_OUT(ref_6, 0);
+        DEL_IN(rev->ref_6, l_acc);
+        l_acc = DEL_OUT(rev->ref_6, 0);
         
         
         // Reverb delays & matrix.
-        SAMPLE d1 = DEL_OUT(delay_1, 0);
-        d1 = LPF(d1, f1state, lpfcoef, lpfgain, liveness);
+        SAMPLE d1 = DEL_OUT(rev->delay_1, 0);
+        d1 = LPF(d1, rev->f1state, rev->lpfcoef, rev->lpfgain, rev->liveness);
         d1 += r_acc;
         *r_out++ = in_r + MUL8_SS(level, d1);
 
-        SAMPLE d2 = DEL_OUT(delay_2, 0);
-        d2 = LPF(d2, f2state, lpfcoef, lpfgain, liveness);
+        SAMPLE d2 = DEL_OUT(rev->delay_2, 0);
+        d2 = LPF(d2, rev->f2state, rev->lpfcoef, rev->lpfgain, rev->liveness);
         d2 += l_acc;
         if (l_out != NULL)  *l_out++ = in_l + MUL8_SS(level, d2);
 
-        SAMPLE d3 = DEL_OUT(delay_3, 0);
-        d3 = LPF(d3, f3state, lpfcoef, lpfgain, liveness);
+        SAMPLE d3 = DEL_OUT(rev->delay_3, 0);
+        d3 = LPF(d3, rev->f3state, rev->lpfcoef, rev->lpfgain, rev->liveness);
 
-        SAMPLE d4 = DEL_OUT(delay_4, 0);
-        d4 = LPF(d4, f4state, lpfcoef, lpfgain, liveness);
+        SAMPLE d4 = DEL_OUT(rev->delay_4, 0);
+        d4 = LPF(d4, rev->f4state, rev->lpfcoef, rev->lpfgain, rev->liveness);
 
         // Mixing and feedback.
-        DEL_IN(delay_1, d1 + d2 + d3 + d4);
-        DEL_IN(delay_2, d1 - d2 + d3 - d4);
-        DEL_IN(delay_3, d1 + d2 - d3 - d4);
-        DEL_IN(delay_4, d1 - d2 - d3 + d4);
+        DEL_IN(rev->delay_1, d1 + d2 + d3 + d4);
+        DEL_IN(rev->delay_2, d1 - d2 + d3 - d4);
+        DEL_IN(rev->delay_3, d1 + d2 - d3 - d4);
+        DEL_IN(rev->delay_4, d1 - d2 - d3 + d4);
     }
-#endif
 }

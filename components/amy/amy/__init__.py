@@ -3,13 +3,24 @@ from .constants import *
 from . import examples
 import collections
 import time
+def _get_synth_commands_stub(synth):
+    return []
+
+_get_synth_commands = _get_synth_commands_stub
 try:
     import c_amy as _amy  # Import the C module
     live = _amy.live
-except ImportError:
-    # C module is not required, so pass
-    pass
-
+    _get_synth_commands = _amy.get_synth_commands
+    _set_cv_from_osc = _amy.set_cv_from_osc
+except (ImportError, AttributeError):
+    # C module is not required? not available?
+    # I'm guessing this might mean we're on Micropython?
+    _set_cv_from_osc = lambda c, o: None
+    try:
+        import tulip
+        _get_synth_commands = tulip.amy_get_synth_commands
+    except (ImportError, AttributeError):
+        pass  # Not available (e.g. web build); _get_synth_commands returns []
 
 
 # If set, inserts func as time for every call to send(). Will not override an explicitly set time
@@ -129,17 +140,20 @@ def str_of_int(arg):
 _KW_MAP_LIST = [   # Order matters because patch_string must come last.
     ('osc', 'vI'), ('wave', 'wI'), ('note', 'nF'), ('vel', 'lF'), ('amp', 'aC'), ('freq', 'fC'), ('duty', 'dC'), 
     ('feedback', 'bF'), ('time', 'tI'),  ('reset', 'SI'), ('phase', 'PF'), ('pan', 'QC'), ('client', 'gI'), 
-    ('volume', 'VF'), ('pitch_bend', 'sF'), ('filter_freq', 'FC'), ('resonance', 'RF'), ('bp0', 'AL'), 
-    ('bp1', 'BL'), ('eg0_type', 'TI'), ('eg1_type', 'XI'), ('debug', 'DI'), ('chained_osc', 'cI'), 
+    ('volume', 'VL'), ('pitch_bend', 'sF'), ('filter_freq', 'FC'), ('resonance', 'RF'),
+    ('bp0', 'AL'), ('bp1', 'BL'),
+    ('eg0', 'AL'), ('eg1', 'BL'),  # Aliases for bp0 and bp1
+    ('eg0_type', 'TI'), ('eg1_type', 'XI'), ('debug', 'DI'), ('chained_osc', 'cI'),
     ('mod_source', 'LI'),  ('eq', 'xL'), ('filter_type', 'GI'), ('ratio', 'IF'), ('latency_ms', 'NI'),
     ('algo_source', 'OL'), ('load_sample', 'zL'), ('transfer_file', 'zTL'), ('disk_sample', 'zFL'), 
     ('algorithm', 'oI'), ('chorus', 'kL'), ('reverb', 'hL'), ('echo', 'ML'), ('patch', 'KI'), ('voices', 'rL'),
-    ('external_channel', 'WI'), ('portamento', 'mI'), ('sequence', 'HL'), ('tempo', 'jF'),
+    ('external_channel', 'WI'), ('portamento', 'mI'), ('sequence', 'HL'), ('tempo', 'jF'), ('sequencer_run', 'zYI'),
     ('synth', 'iI'), ('pedal', 'ipI'), ('synth_flags', 'ifI'), ('num_voices', 'ivI'), ('oscs_per_voice', 'inI'),
-    ('to_synth', 'itI'), ('grab_midi_notes', 'imI'),  ('synth_delay', 'idI'),
+    ('to_synth', 'itI'), ('grab_midi_notes', 'imI'),  ('note_source', 'iMI'), ('synth_delay', 'idI'),
     ('preset', 'pI'), ('num_partials', 'pI'), # note aliasing
     ('start_sample', 'zSL'), ('stop_sample', 'zOI'),
-    ('midi_cc', 'icL'),
+    ('bus', 'yI'),
+    ('midi_cc', 'icL'), ('midi_note_cmd', 'ioL'), ('cv_trigger', 'igL'),
     ('patch_string', 'uS'),  # patch_string MUST be last because we can't identify when it ends except by end-of-message.
 ]
 _KW_PRIORITY = {k: i for i, (k, _) in enumerate(_KW_MAP_LIST)}   # Maps each key to its index within _KW_MAP_LIST.
@@ -275,9 +289,9 @@ def show(data):
 
 # Writes a WAV file of rendered data
 def write(data, filename):
-    import scipy.io.wavfile as wav
+    import soundfile as sf
     import numpy as np
-    wav.write(filename, int(AMY_SAMPLE_RATE), (32768.0 * data).astype(np.int16))
+    sf.write(filename, (32768.0 * data).astype(np.int16), int(AMY_SAMPLE_RATE), subtype='PCM_16')
 
 # Play a rendered sound out of default sounddevice
 def play(samples):
@@ -303,7 +317,13 @@ def inject_midi(a, b, c, d=None):
         _amy.inject_midi(a, b, c)
     else:
         _amy.inject_midi(a, b, c, d)
-    
+
+def inject_midi_bytes(data, usb=0):
+    # Feed a raw MIDI byte stream (list/tuple/bytes of ints) through AMY's
+    # byte-stream parser, exercising running status and real-time interleaving --
+    # unlike inject_midi(), which injects a single pre-formed message.
+    _amy.inject_midi_bytes(data, usb)
+
 def unload_sample(patch=0):
     s= "%d,%d" % (patch, 0)
     send(load_sample=s)
@@ -345,8 +365,8 @@ except ImportError:
     def b64(b):
         return ubinascii.b2a_base64(b)[:-1]
 
-def start_sample(preset=0, bus=1,  max_frames=0, midinote=60, loopstart=0, loopend=0):
-    s = "%d,%d,%d,%d,%d,%d" % (preset, bus, max_frames, midinote, loopstart, loopend)
+def start_sample(preset=0, source=SAMPLE_FROM_OUTPUT,  max_frames=0, midinote=60, loopstart=0, loopend=0):
+    s = "%d,%d,%d,%d,%d,%d" % (preset, source, max_frames, midinote, loopstart, loopend)
     send(start_sample=s)
 
 def stop_sample():
@@ -388,14 +408,22 @@ def transfer_file(source_filename, dest_filename=None):
     file_size = os.path.getsize(source_filename)
     s = "%s,%d" % (dest_filename, file_size)
     send(transfer_file=s)
-    
+
     # Now generate the base64 encoded segments, 188 bytes at a time
     # why 188? that generates 252 bytes of base64 text. amy's max message size is currently 255.
+    # Use the _from_sysex variant so the chunks are routed to
+    # parse_transfer_message via the amy_parsing_from_sysex flag. Internal
+    # amy.send() calls from other contexts (e.g. a sketch's loop() on
+    # AMYboard hardware running during a live transfer) use the regular
+    # path and won't be mis-interpreted as transfer data.
     w = open(source_filename, 'rb')
     for i in range(ceil(file_size/188)):
         file_bytes = w.read(188)
         message = b64(file_bytes)
-        send_raw(message.decode('ascii'))
+        if override_send is not None:
+            override_send(message.decode('ascii'))
+        else:
+            _amy.send_wire_from_sysex(message.decode('ascii'))
     w.close()
 
 def load_sample(wavfilename, preset=0, midinote=0, loopstart=0, loopend=0):
@@ -508,10 +536,10 @@ def echo(level=None, delay_ms=None, max_delay_ms=None, feedback=None, filter_coe
 """
     Reading back synth configuration
 """
-def get_synth_commands(synth, patch_num=None, dest_synth=None, num_voices=6, time=None):
+def get_synth_commands(synth, patch_num=None, dest_synth=None, num_voices=6, include_fx=True, time=None):
     if patch_num is not None and dest_synth is not None:
         raise ValueError("At most one of patch_num and dest_synth can be specified")
-    commands = _amy.get_synth_commands(synth)
+    commands = _get_synth_commands(synth, include_fx)
 
     def len_digit_prefix(s):
         len = 0
@@ -535,6 +563,12 @@ def get_synth_commands(synth, patch_num=None, dest_synth=None, num_voices=6, tim
         prefix += "K%d" % patch_num
     if dest_synth:
         # Prepend command to reset the synth.
-        prologue = [prefix + "i%div0Z" % dest_synth, prefix + "i%div%din%dZ" % (dest_synth, num_voices, num_oscs)]
+        prologue = [prefix + "i%div%din%dZ" % (dest_synth, num_voices, num_oscs)]
         prefix += "i%d" % dest_synth
     return "\n".join(prologue + [prefix + command for command in commands])
+
+"""
+    Simulate CV input from an osc (testing support)
+"""
+def set_cv_from_osc(cv, osc):
+    _set_cv_from_osc(cv, osc)

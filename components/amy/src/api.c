@@ -35,7 +35,7 @@ amy_config_t amy_default_config() {
     c.audio = AMY_AUDIO_IS_NONE;
     c.ks_oscs = 1;
 
-    c.max_oscs = 180;
+    c.max_oscs = 250;
     c.max_sequencer_tags = 256;
     c.max_voices = 64;
     c.max_synths = 64;
@@ -110,6 +110,7 @@ void amy_clear_event(amy_event *e) {
     e->status = EVENT_EMPTY;
     AMY_UNSET(e->time);
     AMY_UNSET(e->osc);
+    AMY_UNSET(e->bus);
     AMY_UNSET(e->preset);
     AMY_UNSET(e->wave);
     AMY_UNSET(e->patch_number);
@@ -117,7 +118,8 @@ void amy_clear_event(amy_event *e) {
     AMY_UNSET(e->feedback);
     AMY_UNSET(e->velocity);
     AMY_UNSET(e->midi_note);
-    AMY_UNSET(e->volume);
+    for (int bus = 0; bus < AMY_NUM_BUSES; ++bus)
+        AMY_UNSET(e->volume[bus]);
     AMY_UNSET(e->pitch_bend);
     AMY_UNSET(e->tempo);
     AMY_UNSET(e->latency_ms);
@@ -215,6 +217,14 @@ uint32_t amy_sysclock() {
 }
 
 
+// Flag indicating whether the current amy_add_message call is from an
+// external sysex source (in which case transfer_flag should route data
+// to parse_transfer_message) or from an internal amy.send() call (in
+// which case it should be processed as a normal wire command).
+// Without this, a sketch's amy.send(note=36) during a file transfer
+// would get base64-decoded and written to the file as garbage.
+bool amy_parsing_from_sysex = false;
+
 // given a wire message string play / schedule the event directly (WIRE API)
 void amy_add_message(char *message) {
     peek_stack("add_message");
@@ -231,9 +241,18 @@ void amy_add_message(char *message) {
     }
 }
 
+// Like amy_add_message but marks the message as coming from an external
+// sysex source so the file transfer routing in amy_parse_message applies.
+void amy_add_message_from_sysex(char *message) {
+    amy_parsing_from_sysex = true;
+    amy_add_message(message);
+    amy_parsing_from_sysex = false;
+}
+
 // given an event play / schedule the event directly (C API)
 void amy_add_event(amy_event *e) {
     peek_stack("add_event");
+    // amy_process_event snarfs scheduler events and (with bizarre specificity) patch reset events, for others it makes sure e->time is set, then marks as EVENT_SCHEDULED
     amy_process_event(e);
     // Do not "play" events that are not sent directly to the AMY synthesizer, e.g. sequencer events or stored patches
     if(e->status == EVENT_SCHEDULED) {
@@ -241,15 +260,8 @@ void amy_add_event(amy_event *e) {
     }
 }
 
-// LOCAL EDIT (2026-06-19): reverb OOM diagnostics getter. See AMY-EDITS.md.
-bool amy_reverb_alloc_failed(void) {
-    return amy_global.reverb.alloc_failed;
-}
-
 // defined in midi_mappings.c
 extern void juno_filter_midi_handler(uint8_t * bytes, uint16_t len, uint8_t is_sysex);
-extern void midi_cc_handler(uint8_t * bytes, uint16_t len, uint8_t is_sysex);
-
 #ifdef __EMSCRIPTEN__
 void amy_start_web() {
     // a shim for web AMY, as it's annoying to build structs in js
@@ -257,7 +269,6 @@ void amy_start_web() {
     amy_config.midi = AMY_MIDI_IS_WEBMIDI;
     amy_config.features.default_synths = 1;
     amy_config.features.startup_bleep = 1;
-    amy_config.amy_external_midi_input_hook = midi_cc_handler;
     amy_start(amy_config);
 }
 
@@ -266,7 +277,6 @@ void amy_start_web_no_synths() {
     amy_config_t amy_config = amy_default_config();
     amy_config.midi = AMY_MIDI_IS_WEBMIDI;
     amy_config.features.default_synths = 0;
-    amy_config.amy_external_midi_input_hook = midi_cc_handler;
     amy_start(amy_config);
 }
 #endif
@@ -277,20 +287,20 @@ void amy_default_synths() {
 
     // sine wave "bleeper" on ch 0 (not a MIDI channel)
     amy_event e = amy_default_event();
-    e.patch_number= 1024;
     // osc=0 sinewave.
-    // Sine is default, but we need to have one delta, else the number of oscs is zero = no patch.
-    patches_store_patch(&e, "v0w0");
-    e.num_voices = 1;
     e.synth = 0;
+    e.num_voices = 1;
+    e.oscs_per_voice = 1;
+    e.wave = SINE;
     amy_add_event(&e);
 
     // GM drum synth on channel 10
     e = amy_default_event();
-    e.patch_number = 1025;
-    patches_store_patch(&e, "w7f0");
-    e.num_voices = 6;
     e.synth = 10;
+    e.num_voices = 6;
+    e.oscs_per_voice = 1;
+    e.wave = PCM;
+    e.amp_coefs[COEF_CONST] = 5.0;  // MIDI drums need to be louder to match juno patches.
     // Flag to perform note -> drum PCM patch translation.
     e.synth_flags = _SYNTH_FLAGS_MIDI_DRUMS | _SYNTH_FLAGS_IGNORE_NOTE_OFFS;
     amy_add_event(&e);
@@ -376,9 +386,6 @@ void amy_start(amy_config_t c) {
     if (amy_global.config.audio == AMY_AUDIO_IS_MINIAUDIO)
         miniaudio_start();
 #endif
-    if (amy_global.config.amy_external_midi_input_hook == NULL) {
-        amy_global.config.amy_external_midi_input_hook = midi_cc_handler;
-    }
 }
 
 void amy_stop() {
@@ -389,6 +396,7 @@ void amy_stop() {
     stop_midi();
     amy_platform_deinit();
     oscs_deinit();
+    global_deinit();
 }
 
 

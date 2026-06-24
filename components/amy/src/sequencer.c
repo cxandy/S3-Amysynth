@@ -5,14 +5,13 @@
 #include <emscripten.h>
 #endif
 
-/* ── Sequence-array lock ──────────────────────────────────────────────────
+/* ── LOCAL EDIT (S3-Amysynth): Sequence-array lock ───────────────────────
  * sequences[] is written by sequencer_add_event() (called from any task)
  * and read by sequencer_process_tick() (called from the esp_timer task on
  * ESP, or the sequencer thread on POSIX).  On SMP these run concurrently.
  * Use a dedicated mutex so we don't conflict with amy_queue_lock, which
  * guards delta_queue and is re-acquired inside add_delta_to_queue() while
- * sequencer_process_tick() is still running (non-recursive mutex = deadlock
- * if we tried to reuse amy_queue_lock here).
+ * sequencer_process_tick() is still running. See AMY-EDITS.md.
  */
 #ifdef ESP_PLATFORM
 #  include "freertos/FreeRTOS.h"
@@ -45,33 +44,30 @@ int32_t highest_tag = -1;
 static volatile bool sequencer_running = true;
 static volatile bool sequencer_external_clock = false;
 
-/* ── Active-tag index ─────────────────────────────────────────────────────
+/* ── LOCAL EDIT (S3-Amysynth): Active-tag index ──────────────────────────
  * The per-tick scan used to walk 0..highest_tag, where highest_tag is a
- * high-water mark that only ever grows (e.g. the arp pushes it to ~1119 and it
- * stays there forever). That made every 500us tick O(highest tag ever used),
- * scanning thousands of mostly-NULL slots on the audio-critical Core-0 timer.
+ * high-water mark that only ever grows (e.g. the arp pushes it to ~1119).
+ * That made every 500µs tick O(highest tag ever used), scanning thousands of
+ * mostly-NULL slots on the audio-critical Core-0 timer.
  *
  * Instead we keep a compact list of only the tags that currently have deltas,
- * so the tick is O(active events) regardless of tag magnitude. s_active_tags is
- * the dense list; s_tag_slot maps tag -> its index in that list (-1 = inactive)
- * for O(1) swap-removal. Both are sized to max_sequences and guarded by the
- * same SEQ_LOCK as sequences[]. */
-static int32_t *s_active_tags = NULL;   // dense list of active tag ids
-static int32_t *s_tag_slot    = NULL;   // tag -> position in s_active_tags, or -1
+ * so the tick is O(active events) regardless of tag magnitude.
+ * s_active_tags is the dense list; s_tag_slot maps tag -> its index (-1 = inactive)
+ * for O(1) swap-removal. Both are guarded by SEQ_LOCK. See AMY-EDITS.md. */
+static int32_t *s_active_tags = NULL;
+static int32_t *s_tag_slot    = NULL;
 static int32_t  s_num_active  = 0;
 
-/* Mark `tag` active (has deltas). O(1). Caller holds SEQ_LOCK. */
 static inline void seq_active_add(int32_t tag) {
-    if (s_tag_slot == NULL || s_tag_slot[tag] >= 0) return;  // already active
+    if (s_tag_slot == NULL || s_tag_slot[tag] >= 0) return;
     s_tag_slot[tag] = s_num_active;
     s_active_tags[s_num_active++] = tag;
 }
 
-/* Mark `tag` inactive (deltas cleared). O(1) swap-remove. Caller holds SEQ_LOCK. */
 static inline void seq_active_remove(int32_t tag) {
     if (s_tag_slot == NULL) return;
     int32_t pos = s_tag_slot[tag];
-    if (pos < 0) return;  // not active
+    if (pos < 0) return;
     int32_t last = --s_num_active;
     int32_t moved = s_active_tags[last];
     s_active_tags[pos] = moved;
@@ -148,11 +144,10 @@ void sequencer_recompute() {
 
 static void sequencer_process_tick(void) {
     amy_global.sequencer_tick_count++;
-    // Scan through LL looking for matches
+    // LOCAL EDIT (S3-Amysynth): scan only the currently-active tags O(active),
+    // not 0..highest_tag O(highest_tag_ever). Walk backwards so swap-remove
+    // inside seq_active_remove never skips an entry. See AMY-EDITS.md.
     SEQ_LOCK();
-    /* Scan only the currently-active tags (O(active events)), not 0..highest_tag.
-     * Walk the dense list backwards so an absolute-tick swap-remove (which moves
-     * the last entry into the freed slot) never skips an entry. */
     for (int32_t i = s_num_active - 1; i >= 0; --i) {
         int32_t tag = s_active_tags[i];
         if (sequences[tag].deltas != NULL) {
@@ -196,23 +191,41 @@ static void sequencer_process_tick(void) {
 }
 
 void sequencer_midi_start() {
-    // MIDI "Start" begins from tick 0 and then advances from F8 clocks.
-    sequencer_external_clock = true;
+    // MIDI "Start" restarts the sequencer.
+    // If external clock was not previously enabled, keep using internal clock
+    // so the sequencer advances on its own without needing F8 ticks.
+    if (sequencer_external_clock) {
+        amy_global.sequencer_tick_count = 0;
+    }
+    // Reset the tick timer to now so sequencer_check_and_fill doesn't try to
+    // catch up all the ticks that elapsed while stopped.
+    amy_global.next_amy_tick_us = (uint64_t)amy_sysclock() * 1000L;
     sequencer_running = true;
-    amy_global.sequencer_tick_count = 0;
 }
 
 void sequencer_midi_stop() {
-    sequencer_external_clock = true;
     sequencer_running = false;
 }
 
 void sequencer_midi_clock_tick() {
     sequencer_external_clock = true;
     if (!sequencer_running) return;
-    for (uint8_t i = 0; i < AMY_SEQUENCER_PPQ/MIDI_SEQUENCER_PPQ; ++i) { 
+    for (uint8_t i = 0; i < AMY_SEQUENCER_PPQ/MIDI_SEQUENCER_PPQ; ++i) {
         sequencer_process_tick();
     }
+}
+
+void sequencer_external_clock_disable() {
+    // Leave external-clock mode and hand back to the internal timer. Without
+    // this, sequencer_external_clock latches true on the first F8 tick and is
+    // never cleared, so the internal sequencer stays dead once an external
+    // clock stops -- even after the caller turns external sync back off. Called
+    // from amy_external_midi_sync(0) so disabling sync is a real recovery path.
+    sequencer_external_clock = false;
+    sequencer_running = true;
+    // Re-anchor the tick timer to now so sequencer_check_and_fill doesn't try to
+    // replay every tick that elapsed while we were on external clock.
+    amy_global.next_amy_tick_us = (uint64_t)amy_sysclock() * 1000L;
 }
 
 uint8_t sequencer_add_event(amy_event *e) {
@@ -234,8 +247,12 @@ uint8_t sequencer_add_event(amy_event *e) {
 
     // Clearing a tag (no tick/period, or scheduled in the past) makes it
     // inactive: drop it from the active-tag index so the per-tick scan shrinks.
-    if(e->sequence[SEQUENCE_TICK] == 0 && e->sequence[SEQUENCE_PERIOD] == 0) { seq_active_remove(tag); SEQ_UNLOCK(); return 0; } // Ignore non-schedulable event.
-    if(e->sequence[SEQUENCE_TICK] != 0 && e->sequence[SEQUENCE_PERIOD] == 0 && e->sequence[SEQUENCE_TICK] <= amy_global.sequencer_tick_count) { seq_active_remove(tag); SEQ_UNLOCK(); return 0; } // don't schedule things in the past.
+    if(e->sequence[SEQUENCE_TICK] == 0 && e->sequence[SEQUENCE_PERIOD] == 0) {
+        seq_active_remove(tag); SEQ_UNLOCK(); return 0;
+    }
+    if(e->sequence[SEQUENCE_TICK] != 0 && e->sequence[SEQUENCE_PERIOD] == 0 && e->sequence[SEQUENCE_TICK] <= amy_global.sequencer_tick_count) {
+        seq_active_remove(tag); SEQ_UNLOCK(); return 0;
+    }
 
     // Save the tick & period.
     sequences[tag].tick = e->sequence[SEQUENCE_TICK];
@@ -243,7 +260,7 @@ uint8_t sequencer_add_event(amy_event *e) {
     // Copy all the deltas for this event to the sequences entry.
     amy_event_to_deltas_queue(e, 0, &sequences[tag].deltas);
 
-    seq_active_add(tag);                        // now has deltas: track it
+    seq_active_add(tag);
     if (tag > highest_tag) highest_tag = tag;  // kept for sequencer_debug() only
     SEQ_UNLOCK();
     return 1;
@@ -252,6 +269,13 @@ uint8_t sequencer_add_event(amy_event *e) {
 
 void sequencer_check_and_fill() {
     if (!sequencer_running || sequencer_external_clock) return;
+    // If we've fallen behind by more than 1 second (e.g. sequencer was stopped
+    // and restarted, or a long blocking operation occurred), skip ahead instead
+    // of processing hundreds of backed-up ticks at once.
+    uint64_t now_us = (uint64_t)amy_sysclock() * 1000L;
+    if (now_us > amy_global.next_amy_tick_us + 1000000ULL) {
+        amy_global.next_amy_tick_us = now_us;
+    }
     // The while is in case the timer fires later than a tick; (on esp this would be due to SPI or wifi ops)
     while(amy_sysclock()  >= (uint32_t)(amy_global.next_amy_tick_us / 1000L)) {
         sequencer_process_tick();

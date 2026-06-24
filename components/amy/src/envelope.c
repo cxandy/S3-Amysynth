@@ -64,6 +64,7 @@ AMY_IRAM_ATTR SAMPLE compute_breakpoint_scale(uint16_t osc, uint8_t bp_set, uint
     int eg_type = synth[osc]->eg_type[bp_set];
     uint32_t bp_end_times[MAX_BREAKPOINTS];
     uint32_t cumulated_time = 0;
+    int sign = 1;
 
     // Scan breakpoints to find which one is release (the last one)
     bp_r = -1;
@@ -77,7 +78,9 @@ AMY_IRAM_ATTR SAMPLE compute_breakpoint_scale(uint16_t osc, uint8_t bp_set, uint
     }
     if(bp_r < 0) {
         // no breakpoints, return key gate.
-        if(AMY_IS_SET(synth[osc]->note_off_clock)) scale = 0;
+        // Change: Now an empty env reads as 1.0 *all the time*.
+        // If you want a key gate, define bpX='0,1,0,1,0,0' (or maybe just '0,1,0,0').
+        //if(AMY_IS_SET(synth[osc]->note_off_clock)) scale = 0;
         synth[osc]->last_scale[bp_set] = scale;
         //return scale;
         goto return_label;
@@ -133,7 +136,6 @@ AMY_IRAM_ATTR SAMPLE compute_breakpoint_scale(uint16_t osc, uint8_t bp_set, uint
         v0 = F2S(synth[osc]->breakpoint_values[bp_set][found-1]);
     }
     scale = v0;
-    int sign = 1;
     if (v0 < 0 || v1 < 0) {
         sign = -1;
         v0 = -v0; v1 = -v1;
@@ -142,51 +144,46 @@ AMY_IRAM_ATTR SAMPLE compute_breakpoint_scale(uint16_t osc, uint8_t bp_set, uint
         // This way we return exact zero for v1 at the end of the segment, rather than BREAKPOINT_EPS
         scale = v1;
     } else {
-#define BREAKPOINT_EPS 0.0002
         // OK, we are transition from v0 to v1 , and we're at elapsed time between t0 and t1
         float time_ratio = ((float)(elapsed - t0) / (float)(t1 - t0));
         // Compute scale based on which type we have
         if(eg_type == ENVELOPE_LINEAR) {
             scale = v0 + MUL4_SS(v1 - v0, F2S(time_ratio));
-        } else if(eg_type == ENVELOPE_TRUE_EXPONENTIAL) {
+        } else if(eg_type == ENVELOPE_TRUE_EXPONENTIAL || eg_type == ENVELOPE_DX7) {
+#define BREAKPOINT_EPS 0.0002
             v0 = MAX(v0, F2S(BREAKPOINT_EPS));
             v1 = MAX(v1, F2S(BREAKPOINT_EPS));
-            SAMPLE dx7_exponential_rate = F2S(S2F(log2_lut(v1) - log2_lut(v0))
-                                              / (0.001f * (t1 - t0)));
-            scale = MUL4_SS(v0,
-                            exp2_lut(MUL4_SS(dx7_exponential_rate,
-                                             F2S(0.001f * (elapsed - t0)))));
-        } else if(eg_type == ENVELOPE_DX7) {
-            // Somewhat complicated relationship, see https://colab.research.google.com/drive/1qZmOw4r24IDijUFlel_eSoWEf3L5VSok#scrollTo=F5zkeACrOlum
-            // in SAMPLE version, DX7 levels are div 8 i.e. 0 to 12.375 instead of 0 to 99.
+            if (eg_type == ENVELOPE_DX7) {
+                // DX7 is only defined for amps up to 1.0, clip to avoid negative values (which caused a math panic when using float math).
+                v0 = MIN(F2S(1.0f), v0);
+                v1 = MIN(F2S(1.0f), v1);
+            }
+            if (eg_type == ENVELOPE_DX7 && (v1 > v0)) {
+                // Somewhat complicated relationship, see https://colab.research.google.com/drive/1qZmOw4r24IDijUFlel_eSoWEf3L5VSok#scrollTo=F5zkeACrOlum
+                // in SAMPLE version, DX7 levels are div 8 i.e. 0 to 12.375 instead of 0 to 99.
 #define LINEAR_SAMP_TO_DX7_LEVEL(samp) (S2F(log2_lut(MAX(F2S(BREAKPOINT_EPS), samp))) + 12.375)
 #define DX7_LEVEL_TO_LINEAR_SAMP(level) (exp2_lut(F2S(level - 12.375)))
 #define MIN_LEVEL_S 4.25
 #define ATTACK_RANGE_S 9.375
 #define MAP_ATTACK_LEVEL_S(level) (1 - MAX(level - MIN_LEVEL_S, 0) / ATTACK_RANGE_S)
-            // DX7 is only defined for amps up to 1.0, clip to avoid negative values (which caused a math panic when using float math).
-            v0 = MIN(F2S(1.0f), v0);
-            v1 = MIN(F2S(1.0f), v1);
-            SAMPLE mapped_current_level = F2S(MAP_ATTACK_LEVEL_S(LINEAR_SAMP_TO_DX7_LEVEL(v0)));
-            SAMPLE mapped_target_level = F2S(MAP_ATTACK_LEVEL_S(LINEAR_SAMP_TO_DX7_LEVEL(v1)));
-            float t_const = (t1 - t0) / S2F(log2_lut(mapped_current_level) - log2_lut(mapped_target_level));
-            float my_t0 = -t_const * S2F(log2_lut(mapped_current_level));
-            if (v1 > v0) {
+                SAMPLE mapped_current_level = F2S(MAP_ATTACK_LEVEL_S(LINEAR_SAMP_TO_DX7_LEVEL(v0)));
+                SAMPLE mapped_target_level = F2S(MAP_ATTACK_LEVEL_S(LINEAR_SAMP_TO_DX7_LEVEL(v1)));
+                float t_const = (t1 - t0) / S2F(log2_lut(mapped_current_level) - log2_lut(mapped_target_level));
+                float my_t0 = -t_const * S2F(log2_lut(mapped_current_level));
                 // This is the magic equation that shapes the DX7 attack envelopes.
                 scale = DX7_LEVEL_TO_LINEAR_SAMP(MIN_LEVEL_S + ATTACK_RANGE_S * S2F(F2S(1.0f) - exp2_lut(-F2S((my_t0 + elapsed)/t_const))));
             } else {
-                // Decay is regular true_exponential
+                // TRUE_EXPONENTIAL or DX7 Decay (which is also regular true_exponential)
                 v0 = MAX(v0, F2S(BREAKPOINT_EPS));
                 v1 = MAX(v1, F2S(BREAKPOINT_EPS));
                 //float dx7_exponential_rate = -logf(S2F(v1)/S2F(v0)) / (t1 - t0);
                 //scale = MUL4_SS(v0, F2S(expf(-dx7_exponential_rate * (elapsed - t0))));
-                SAMPLE dx7_exponential_rate = F2S(S2F(log2_lut(v1) - log2_lut(v0))
-                                                  / (0.001f * (t1 - t0)));
-                scale = MUL4_SS(v0,
-                                exp2_lut(MUL4_SS(dx7_exponential_rate,
-                                                 F2S(0.001f * (elapsed - t0)))));
+                // Claude's solution avoids SAMPLE overflow for times > 5.8 sec.
+                float log2_v0 = S2F(log2_lut(v0));
+                float log2_v1 = S2F(log2_lut(v1));
+                scale = exp2_lut(F2S(log2_v0 + (log2_v1 - log2_v0) * time_ratio));
             }
-        } else { // ENVELOPE_NORMAL - "false exponential"?
+        } else { // ENVELOPE_NORMAL - "false exponential"? or ENVELOPE_DB
             // After the full amount of time, the exponential decay will reach (1 - expf(-3)) = 0.95
             // so make the target gap a little bit bigger, to ensure we meet v1
             //scale = v0 + MUL4_SS(v1 - v0, F2S(exponential_rate_overshoot_factor * (1.0f - exp2f(-exponential_rate * time_ratio))));
@@ -195,19 +192,19 @@ AMY_IRAM_ATTR SAMPLE compute_breakpoint_scale(uint16_t osc, uint8_t bp_set, uint
                                          F2S(1.0f)
                                          - exp2_lut(MUL4_SS(exponential_rate,
                                                             F2S(time_ratio)))));
+            if (scale < 0)  scale = 0;  // Overshoot ramp-to-zero from limited resolution?
             //printf("false_exponential time %lld bpset %d seg %d time_ratio %f scale %f\n", amy_global.total_blocks*AMY_BLOCK_SIZE, bp_set, found, time_ratio, S2F(scale));
         }
     }
-    // If sign is negative, flip it back again.
-    if (sign < 0) {
-        scale = -scale;
-    }
-    // Keep track of the most-recently returned non-release scale.
  return_label:
     if (!release) synth[osc]->last_scale[bp_set] = scale;
+    // If sign is negative, flip it back again.
+    if (sign < 0) {
+        scale = -scale;  // does not mix well with no_amp_001
+    }
+    // Keep track of the most-recently returned non-release scale.
     //if (osc < AMY_OSCS && found != -1)
     //    fprintf(stderr, "env: time %f osc %d bpset %d seg %d type %d t0 %d t1 %d elapsed %d v0 %f v1 %f scale %f\n", amy_global.total_blocks*AMY_BLOCK_SIZE / (float)AMY_SAMPLE_RATE, osc, bp_set, found, eg_type, t0, t1, elapsed, S2F(v0), S2F(v1), S2F(scale));
     AMY_PROFILE_STOP(COMPUTE_BREAKPOINT_SCALE)
     return scale;
 }
-

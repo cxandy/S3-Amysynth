@@ -23,7 +23,28 @@ void amy_external_midi_sync(uint8_t enabled);
 #define MIDI_QUEUE_DEPTH 1024
 #define MAX_SYSEX_BYTES (16384)
 extern uint8_t *sysex_buffer;
-extern char *sysex_message_copy;
+// Every platform allocates the single sysex_buffer above. The sysex copy-slot
+// ring buffer below holds backup snapshots so a fast-arriving message isn't lost
+// while a previous one waits for the deferred MicroPython mp_sched callback.
+// Only the MicroPython-hosted boards (AMYBOARD, TULIP) create and read these
+// slots (see parse_sysex()); other platforms handle sysex synchronously from
+// sysex_buffer. Size the ring to 0 elsewhere so we don't malloc
+// SYSEX_COPY_SLOTS x MAX_SYSEX_BYTES (32 x 16KB = 512KB), which alone would
+// exhaust e.g. the rp2350's 520KB of SRAM.
+#if defined(AMYBOARD) || defined(TULIP)
+#define SYSEX_COPY_SLOTS 32
+#else
+#define SYSEX_COPY_SLOTS 0
+#endif
+// The alloc/free loops use SYSEX_COPY_SLOTS directly (0 => no slots off-board),
+// but the array dimension must be >= 1: MSVC (the Godot Windows build includes
+// this header transitively via amy.h) rejects a zero-length array with C2466,
+// unlike the GCC/Clang extension. Floor the dimension at 1; that lone slot is
+// never touched off-board because the loops iterate 0 times.
+#define SYSEX_COPY_SLOTS_DIM ((SYSEX_COPY_SLOTS) > 0 ? (SYSEX_COPY_SLOTS) : 1)
+extern char *sysex_message_copies[SYSEX_COPY_SLOTS_DIM];
+extern uint8_t sysex_copy_write_idx;
+extern uint8_t sysex_copy_read_idx;
 extern uint16_t sysex_len;
 extern void parse_sysex();
 extern uint8_t last_midi[MIDI_QUEUE_DEPTH][MAX_MIDI_BYTES_PER_MESSAGE];

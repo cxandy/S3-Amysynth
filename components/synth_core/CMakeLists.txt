@@ -8,5 +8,5 @@ set_source_files_properties("${CMAKE_CURRENT_LIST_DIR}/synth_ui.c"
     PROPERTIES COMPILE_OPTIONS "-Os"
 )
 set_source_files_properties("${CMAKE_CURRENT_LIST_DIR}/sequencer_core.c"
-    PROPERTIES COMPILE_OPTIONS "-Os"
+    PROPERTIES COMPILE_OPTIONS "-O2"
 )

@@ -15,6 +15,16 @@ idf_component_register(
     REQUIRES esp_timer esp_driver_uart esp_driver_i2s esp_driver_i2c esp_driver_gpio espressif__tinyusb
 )
 
+# Profiling mode (Kconfig: AMY_PROFILE_MODE). FULL maps to AMY's upstream
+# AMY_DEBUG (all tags). COARSE is a local addition that compiles only the outer
+# render-stage tags (see AMY-EDITS.md). OFF defines neither and the macros are
+# no-ops. PUBLIC so a consumer that includes amy.h sees consistent macros.
+if(CONFIG_AMY_PROFILE_FULL)
+    target_compile_definitions(${COMPONENT_LIB} PUBLIC AMY_DEBUG)
+elseif(CONFIG_AMY_PROFILE_COARSE)
+    target_compile_definitions(${COMPONENT_LIB} PUBLIC AMY_PROFILE_COARSE)
+endif()
+
 # Keep the same compile flag for amy.c (relax strict-aliasing warnings)
 set(AMY_CORE_C "${CMAKE_CURRENT_LIST_DIR}/src/amy.c")
 if(EXISTS ${AMY_CORE_C})

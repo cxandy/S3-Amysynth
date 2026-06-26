@@ -133,6 +133,42 @@ Two related improvements:
    O(active events) regardless of tag magnitude. `s_tag_slot[tag]` → position in
    the dense list (or -1) enables O(1) removal via swap-with-last.
 
+### `src/amy.h` + `src/amy.c` — COARSE profiler mode
+
+Upstream gates the whole profiler behind `AMY_DEBUG`, which times *every* tag —
+including per-osc/inner tags that fire dozens of times per block **inside** the
+`AMY_RENDER` window. Those nested timestamp calls inflate the `AMY_RENDER` total,
+which would overstate the parallelizable fraction in a dual-core feasibility
+measurement.
+
+Added a second, lighter profiling level, `AMY_PROFILE_COARSE` (Kconfig:
+`AMY_PROFILE_MODE`, see `components/amy/Kconfig` + `CMakeLists.txt`):
+
+- The profiler tables / timers / `amy_profiles_init/print` now compile under
+  `#if defined(AMY_DEBUG) || defined(AMY_PROFILE_COARSE)` (was `#ifdef AMY_DEBUG`).
+- In coarse mode `AMY_PROFILE_START/STOP` act only on the outer stage tags
+  (`AMY_RENDER`, `AMY_FILL_BUFFER`, `AMY_EXECUTE_DELTAS`, `AMY_ESP_FILL_BUFFER`)
+  via `AMY_TAG_IS_COARSE(tag)`. Because `tag` is a compile-time enum literal at
+  every call site, the guard folds to a constant and inner call sites compile to
+  nothing — zero overhead and no inflation of `AMY_RENDER`.
+- Macros expand to a complete statement with no trailing `;`, matching upstream
+  call sites that omit the semicolon (e.g. `AMY_PROFILE_START(AMY_RENDER)`).
+
+Full `AMY_DEBUG` behaviour is unchanged (select `AMY_PROFILE_FULL`). See
+`docs/dual-core-render-analysis.md` for why and how this is used.
+
+**Cross-core reset fix (`AMY_PROFILE_INIT`):** the dump runs on Core 0 (the
+`app_main` idle loop) while render `START/STOP` run on Core 1. The upstream reset
+zeroed `profiles[tag].start`; when that landed between a Core-1 `START` and
+`STOP`, the `STOP` computed `(now - 0)` ≈ uptime, producing one ~uptime-µs spike
+per window on whichever tag was mid-flight (see `docs/AMY-PROFILE-LOG.md` — every
+window had exactly one tag reading billions of µs). Fix: `AMY_PROFILE_INIT` no
+longer zeroes `.start` (it is only ever read by a `STOP` that follows a `START`,
+so it never needs zeroing). `us_total`/`calls` are still reset each window; the
+remaining `+=`-vs-`=0` race can at most carry one window's totals into the next
+(both `us_total` and `calls` scale together, so **`us per call` stays correct**;
+only that window's `% wall` may read high). Benefits coarse and full modes.
+
 ## Deferred / needs porting
 
 | Edit | Status |

@@ -709,6 +709,33 @@ static void encoder_init_task(void *pvParameters)
     vTaskDelete(NULL);
 }
 
+#if defined(CONFIG_AMY_PROFILE_COARSE) || defined(CONFIG_AMY_PROFILE_FULL)
+// Measure the AMY profiler's own per-timestamp cost on-target so the per-stage
+// numbers can be corrected for instrumentation overhead. AMY's profiler uses
+// amy_get_us() == esp_timer_get_time() on ESP; each START/STOP is two reads.
+// Coarse mode does ~8 reads/block; full mode does 2*(sum of tag 'calls')/block,
+// which the dump itself reports per tag.
+static void amy_profiler_overhead_selftest(void)
+{
+    const int N = 20000;
+    volatile int64_t sink = 0;
+    int64_t t0 = esp_timer_get_time();
+    for (int i = 0; i < N; ++i) sink ^= esp_timer_get_time();
+    int64_t t1 = esp_timer_get_time();
+    (void)sink;
+    // Subtract one read (t1) negligibly; report ns/read averaged over N reads.
+    double ns_per_read = ((double)(t1 - t0) * 1000.0) / (double)N;
+    double coarse_us_per_block = (ns_per_read * 8.0) / 1000.0;  // 4 START/STOP pairs
+    const uint32_t block_us = (uint32_t)(((uint64_t)AMY_BLOCK_SIZE * 1000000ULL)
+                                         / (uint64_t)AMY_SAMPLE_RATE);
+    ESP_LOGW(TAG,
+        "[amy-profile] esp_timer_get_time ~%.1f ns/read | coarse overhead ~%.2f us/block "
+        "(~%.3f%% of %u us budget) | full overhead = 2*sum(tag.calls)/block * read_cost",
+        ns_per_read, coarse_us_per_block,
+        (coarse_us_per_block / (double)block_us) * 100.0, block_us);
+}
+#endif
+
 void app_main(void)
 {
    
@@ -812,7 +839,13 @@ void app_main(void)
     HEAP_CHECK("before amy_start");
     amy_start(amy_cfg);
     HEAP_CHECK("after amy_start");
-    
+
+#if defined(CONFIG_AMY_PROFILE_COARSE) || defined(CONFIG_AMY_PROFILE_FULL)
+    // One-shot: characterize profiler timestamp cost so the dumps below can be
+    // read net of instrumentation overhead. See docs/dual-core-render-analysis.md.
+    amy_profiler_overhead_selftest();
+#endif
+
     // Our USB Audio (must be after TinyUSB init)
     ESP_ERROR_CHECK(usb_audio_init());
     HEAP_CHECK("after usb_audio_init");
@@ -908,6 +941,8 @@ void app_main(void)
     const uint32_t idle_loop_ms = CONFIG_AMYSYNTH_RTOS_STATS_PERIOD_MS;
       void heap_caps_get_info( multi_heap_info_t *info, uint32_t caps );
      void heap_caps_print_heap_info( uint32_t caps );
+#elif defined(CONFIG_AMY_PROFILE_COARSE) || defined(CONFIG_AMY_PROFILE_FULL)
+    const uint32_t idle_loop_ms = CONFIG_AMY_PROFILE_INTERVAL_MS;
 #else
     const uint32_t idle_loop_ms = 5000;
 #endif
@@ -921,6 +956,12 @@ void app_main(void)
 #endif
 #if CONFIG_AMYSYNTH_RTOS_STATS
         log_rtos_stats();
+#endif
+#if defined(CONFIG_AMY_PROFILE_COARSE) || defined(CONFIG_AMY_PROFILE_FULL)
+        // Dump and reset the AMY profile accumulated over this window. The
+        // "% render" column in COARSE mode is the parallelizable fraction:
+        // AMY_RENDER us / (AMY_RENDER + AMY_FILL_BUFFER + AMY_EXECUTE_DELTAS).
+        amy_profiles_print();
 #endif
         vTaskDelay(pdMS_TO_TICKS(idle_loop_ms));
     }

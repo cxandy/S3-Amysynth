@@ -41,7 +41,6 @@ extern pthread_mutex_t amy_queue_lock;
 #define PRIu8 "u"
 #endif
 
-
 // This is for baked in samples that come with AMY. The header file written by `amy/headers.py` writes this.
 typedef struct {
     uint32_t offset;
@@ -77,9 +76,9 @@ extern const uint32_t pcm_wavetable_len;
 #define BLOCK_SIZE_BITS 8 // log2 of BLOCK_SIZE
 #endif
 
-#ifdef AMY_DAISY
+#ifdef AMY_DAISY 
 #define AMY_SAMPLE_RATE 48000
-#elif defined __EMSCRIPTEN__
+#elif defined __EMSCRIPTEN__ || ESP_PLATFORM //LOCAL EDIT: For my USB_UAC
 #define AMY_SAMPLE_RATE 48000
 #else
 #define AMY_SAMPLE_RATE 44100 
@@ -399,8 +398,11 @@ enum params{
 ///////////////////////////////////////
 // Profiler setup
 
-#ifdef AMY_DEBUG
-      
+// LOCAL EDIT (S3-Amysynth): compile the profiler in COARSE mode too, not just
+// full AMY_DEBUG. Coarse times only the outer render-stage tags for a clean,
+// low-overhead Amdahl (parallelizable-fraction) measurement. See AMY-EDITS.md.
+#if defined(AMY_DEBUG) || defined(AMY_PROFILE_COARSE)
+
 enum itags{
     RENDER_OSC_WAVE, COMPUTE_BREAKPOINT_SCALE, HOLD_AND_MODIFY, FILTER_PROCESS, FILTER_PROCESS_STAGE0,
     FILTER_PROCESS_STAGE1, ADD_DELTA_TO_QUEUE, AMY_ADD_DELTA, PLAY_DELTA,  MIX_WITH_PAN, AMY_RENDER, 
@@ -416,18 +418,44 @@ struct profile {
 
 extern uint64_t profile_start_us;
 
+// LOCAL EDIT (S3-Amysynth): do NOT zero .start here. The dump (and thus this
+// reset) runs on Core 0 while render START/STOP run on Core 1. Zeroing .start
+// between a START and STOP made the STOP compute (now - 0) ≈ uptime, producing
+// per-window spikes of ~uptime µs on whichever tag was mid-flight. .start is
+// only ever read by a STOP that always follows a START, so it never needs
+// zeroing; leaving it makes a racing STOP yield a normal-sized sample. See
+// AMY-EDITS.md / docs/AMY-PROFILE-LOG.md.
 #define AMY_PROFILE_INIT(tag) \
-    profiles[tag].start = 0; \
     profiles[tag].calls = 0; \
     profiles[tag].us_total = 0; \
     profile_start_us = amy_get_us();
 
+// LOCAL EDIT (S3-Amysynth): in COARSE mode only the outer stage tags are timed.
+// AMY_TAG_IS_COARSE(tag) folds to a compile-time constant at each call site
+// (tag is always an enum literal), so inner/per-osc call sites compile to
+// nothing and do NOT inflate the AMY_RENDER total. The macros expand to a
+// complete statement (no trailing ';'), matching upstream call sites that omit
+// the semicolon. See AMY-EDITS.md.
+#define AMY_TAG_IS_COARSE(tag) \
+    ((tag) == AMY_RENDER || (tag) == AMY_FILL_BUFFER || \
+     (tag) == AMY_EXECUTE_DELTAS || (tag) == AMY_ESP_FILL_BUFFER)
+
+#if defined(AMY_DEBUG)
 #define AMY_PROFILE_START(tag) \
     profiles[tag].start = amy_get_us();
 
 #define AMY_PROFILE_STOP(tag) \
     profiles[tag].us_total += (amy_get_us()-profiles[tag].start); \
     profiles[tag].calls++;
+#else  // AMY_PROFILE_COARSE
+#define AMY_PROFILE_START(tag) \
+    if (AMY_TAG_IS_COARSE(tag)) profiles[tag].start = amy_get_us();
+
+#define AMY_PROFILE_STOP(tag) \
+    if (AMY_TAG_IS_COARSE(tag)) { \
+        profiles[tag].us_total += (amy_get_us() - profiles[tag].start); \
+        profiles[tag].calls++; }
+#endif
 
 #define AMY_PROFILE_PRINT(tag) \
     if(profiles[tag].calls) {\
@@ -445,7 +473,7 @@ extern int64_t amy_get_us();
 #define AMY_PROFILE_START(tag)
 #define AMY_PROFILE_STOP(tag)
 
-#endif // AMY_DEBUG
+#endif // AMY_DEBUG || AMY_PROFILE_COARSE
 
 extern void amy_profiles_init();
 extern void amy_profiles_print();

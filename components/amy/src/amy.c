@@ -4,7 +4,9 @@
 #include "amy.h"
 #include "delay.h"
 
-#ifdef AMY_DEBUG
+// LOCAL EDIT (S3-Amysynth): also build the profiler support (tables, timers,
+// init/print) in COARSE mode, not just full AMY_DEBUG. See AMY-EDITS.md.
+#if defined(AMY_DEBUG) || defined(AMY_PROFILE_COARSE)
 
 const char* profile_tag_name(enum itags tag) {
     switch (tag) {

@@ -2,7 +2,6 @@
 #include "driver/pulse_cnt.h"
 #include "esp_check.h"
 #include "esp_log.h"
-#include "hal/pcnt_ll.h"
 #include <stdlib.h>
 
 static const char *TAG = "rotary_encoder";
@@ -11,25 +10,9 @@ typedef struct rotary_encoder_s {
     pcnt_unit_handle_t pcnt_unit;
     pcnt_channel_handle_t chan_a;
     pcnt_channel_handle_t chan_b;
-    QueueHandle_t event_queue;
     bool pcnt_enabled;
     bool pcnt_started;
 } rotary_encoder_t;
-
-/* Keep defaults within hardware threshold-point capacity on ESP32-class PCNT */
-static const int32_t default_watch_points[] = {
-    -100,
-    100,
-};
-
-static bool IRAM_ATTR pcnt_on_reach(pcnt_unit_handle_t unit,
-                                    const pcnt_watch_event_data_t *edata,
-                                    void *user_ctx)
-{
-    BaseType_t high_task_wakeup = pdFALSE;
-    xQueueSendFromISR((QueueHandle_t)user_ctx, &edata->watch_point_value, &high_task_wakeup);
-    return high_task_wakeup == pdTRUE;
-}
 
 static esp_err_t rotary_encoder_create_unit(pcnt_unit_handle_t *unit, int32_t low_limit, int32_t high_limit)
 {
@@ -117,10 +100,7 @@ rotary_encoder_config_t rotary_encoder_default_config(gpio_num_t pin_a, gpio_num
         .pin_b = pin_b,
         .high_limit = ROTARY_ENCODER_DEFAULT_HIGH_LIMIT,
         .low_limit = ROTARY_ENCODER_DEFAULT_LOW_LIMIT,
-        .watch_points = default_watch_points,
-        .watch_point_count = sizeof(default_watch_points) / sizeof(default_watch_points[0]),
         .glitch_filter_ns = ROTARY_ENCODER_DEFAULT_GLITCH_NS,
-        .event_queue_size = ROTARY_ENCODER_DEFAULT_QUEUE_SIZE,
     };
     return config;
 }
@@ -166,50 +146,6 @@ esp_err_t rotary_encoder_new_with_config(const rotary_encoder_config_t *config, 
         goto err;
     }
 
-    if (config->watch_points && config->watch_point_count > 0) {
-        size_t max_watch_points = PCNT_LL_THRES_POINT_PER_UNIT;
-        size_t watch_points_to_add = config->watch_point_count;
-        if (watch_points_to_add > max_watch_points) {
-            ESP_LOGW(TAG,
-                     "watch_point_count=%u exceeds hardware capacity=%u, truncating",
-                     (unsigned)watch_points_to_add,
-                     (unsigned)max_watch_points);
-            watch_points_to_add = max_watch_points;
-        }
-
-        for (size_t i = 0; i < watch_points_to_add; i++) {
-            int32_t watch_point = config->watch_points[i];
-            if (watch_point < config->low_limit || watch_point > config->high_limit) {
-                ESP_LOGW(TAG,
-                         "skip out-of-range watch_point=%ld (range=[%ld,%ld])",
-                         (long)watch_point,
-                         (long)config->low_limit,
-                         (long)config->high_limit);
-                continue;
-            }
-
-            ret = pcnt_unit_add_watch_point(encoder->pcnt_unit, watch_point);
-            if (ret != ESP_OK) {
-                ESP_LOGE(TAG, "add_watch_point(%ld) failed: %s", (long)watch_point, esp_err_to_name(ret));
-                goto err;
-            }
-        }
-    }
-
-    size_t queue_size = config->event_queue_size ? config->event_queue_size : ROTARY_ENCODER_DEFAULT_QUEUE_SIZE;
-    encoder->event_queue = xQueueCreate(queue_size, sizeof(int32_t));
-    if (!encoder->event_queue) {
-        ESP_LOGE(TAG, "failed to create queue");
-        goto err;
-    }
-
-    pcnt_event_callbacks_t cbs = { .on_reach = pcnt_on_reach };
-    ret = pcnt_unit_register_event_callbacks(encoder->pcnt_unit, &cbs, encoder->event_queue);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "register_event_callbacks failed: %s", esp_err_to_name(ret));
-        goto err;
-    }
-
     ret = pcnt_unit_enable(encoder->pcnt_unit);
     if (ret != ESP_OK) { ESP_LOGE(TAG, "pcnt_unit_enable failed: %s", esp_err_to_name(ret)); goto err; }
     encoder->pcnt_enabled = true;
@@ -247,11 +183,6 @@ esp_err_t rotary_encoder_reset(rotary_encoder_handle_t handle)
     return pcnt_unit_clear_count(handle->pcnt_unit);
 }
 
-QueueHandle_t rotary_encoder_get_event_queue(rotary_encoder_handle_t handle)
-{
-    return handle ? handle->event_queue : NULL;
-}
-
 esp_err_t rotary_encoder_delete(rotary_encoder_handle_t handle)
 {
     if (!handle) return ESP_ERR_INVALID_ARG;
@@ -274,9 +205,6 @@ esp_err_t rotary_encoder_delete(rotary_encoder_handle_t handle)
     }
     if (handle->pcnt_unit) {
         pcnt_del_unit(handle->pcnt_unit);
-    }
-    if (handle->event_queue) {
-        vQueueDelete(handle->event_queue);
     }
     free(handle);
     return ESP_OK;

@@ -1,203 +1,176 @@
 # AMY Local Edits
 
-Track local, project-specific changes made against the upstream AMY component here.
+Edits applied on top of the upstream `shorepine/amy` submodule.
+Upstream commit: `2516477` (v1.2.12, 2026-06-24).
 
-## 2026-06-19
+All edits are marked `// LOCAL EDIT` in the source. ESP32-S3-specific edits are
+permanent (upstream has no concept of IRAM/DRAM placement or FreeRTOS task
+signatures); the two bug fixes below were PRd upstream and are no longer here.
 
-- **Performance: pin the per-sample clipping LUT to internal DRAM (`AMY_DRAM_ATTR`).**
-  - **What:** `clipping_lookup_table` (`components/amy/src/clipping_lookup_table.h`,
-    `const uint16_t[NONLIN_RANGE]` = 4914 entries ≈ 9.6 KB) is read for **every output
-    sample** in `amy_fill_buffer` (`amy.c` soft-clip stage, ~line 1813). In flash
-    `.rodata` it is served via the PSRAM XIP cache (`CONFIG_SPIRAM_RODATA=y`), so the
-    inner output loop can take cache-miss stalls. Moved it to fast internal DRAM.
-  - **How:** New `AMY_DRAM_ATTR` macro in `amy.h` (mirrors the existing `AMY_IRAM_ATTR`):
-    `= DRAM_ATTR` on `ESP_PLATFORM` (after the already-present `#include <esp_attr.h>`),
-    no-op elsewhere. Applied to the table declaration as
-    `const uint16_t clipping_lookup_table[NONLIN_RANGE] AMY_DRAM_ATTR PROGMEM = {`.
-    `DRAM_ATTR` (data section), **not** `IRAM_ATTR` — IRAM is instruction memory and a
-    `uint16_t` table needs word-safe data placement. `PROGMEM` is empty on ESP, kept for
-    upstream portability. Edit sites marked inline `// LOCAL EDIT (... 2026-06-19) ...`.
-  - **Verified:** `.dram0.data` grew ~+9.8 KB (16,954 → 26,778 B); the table left flash
-    rodata. Affordable only because the ring-buffer move below freed ~64 KB internal first.
-  - **Risk:** Low. Pure placement change; the table is `const`, never written. Costs ~9.6 KB
-    internal DRAM (covered by the freed ring-buffer space).
-  - **Rollback:** Remove `AMY_DRAM_ATTR` from the table declaration; optionally remove the
-    `AMY_DRAM_ATTR` macro block in `amy.h`.
+## Dropped (merged upstream)
 
-- **Non-AMY-source change (in `components/usb_audio/usb_audio.c`):** `s_ring_buffer`
-  (`int16_t[RING_BUFFER_SIZE]` = 32768 = **64 KB**) was a static array in internal DRAM
-  `.bss`, consuming a large share of the scarce internal SRAM. Converted to a pointer
-  allocated from PSRAM via `heap_caps_malloc(..., MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)` in
-  `usb_audio_init()` (with NULL-check + mutex cleanup on failure). The buffer is accessed at
-  USB-frame / render-block granularity (memcpy chunks + mutex-guarded per-sample writes), not
-  in the per-sample DSP inner loop, so PSRAM latency is irrelevant. Verified: `.dram0.bss`
-  dropped 81,072 → 15,536 B (−64 KB). Net internal SRAM change for both edits: ≈ −55 KB used.
+| PR | Description |
+|----|-------------|
+| [#740](https://github.com/shorepine/amy/pull/740) + [#743](https://github.com/shorepine/amy/pull/743) | `chained_osc` NULL guard in `render_osc_wave` (amy.c) |
+| [#744](https://github.com/shorepine/amy/pull/744) | `init_stereo_reverb()` → `bool` return + OOM crash safety (delay.h, delay.c, amy.h, amy.c, api.c) |
 
-- **Bug fix (crash): reverb delay-line OOM caused NULL-deref panic (`LoadProhibited`).**
-  - **Symptom:** Raising **Reverb** from 0 in the menu crashed with
-    `Guru Meditation Error: Core 1 panic'ed (LoadProhibited)`, `EXCVADDR=0x00000000`,
-    in `stereo_reverb` (via `amy_fill_buffer` / `amy_render_audio` / `amy_update` /
-    `amy_usb_render_task`), preceded by `unable to alloc delay line of 4096 samples`.
-  - **Root cause:** `init_stereo_reverb()` allocates ~10 delay lines via
-    `new_delay_line(..., ram_caps_delay)`. When those allocations fail, the
-    `delay_1..ref_6` pointers stay NULL, but `config_reverb()` still committed a
-    nonzero `reverb.level`, and the render guard in `amy_fill_buffer` checked **only**
-    `reverb.level > 0` — so `stereo_reverb()` ran and dereferenced NULL via
-    `DEL_IN(ref_1, ...)`. Echo never crashed because its render guard already checks
-    `echo_delay_lines[0] != NULL`; reverb had no equivalent guard. This is a strict
-    upstream robustness bug: a failed allocation should disable the effect, not crash.
-    (The underlying OOM trigger — `ram_caps_delay` pinned to internal SRAM — is fixed
-    separately in `main/main.c`; see the non-AMY note below.)
-  - **Fix (AMY source):**
-    - `delay.c` / `delay.h`: `init_stereo_reverb()` return type `void` → `bool`. On any
-      `new_delay_line()` failure it logs, frees every partial allocation
-      (`free_stereo_reverb()`), leaves all pointers NULL, and returns false. New
-      `stereo_reverb_ready()` returns `delay_1 != NULL` (init guarantees all-or-nothing).
-    - `amy.c` `config_reverb()`: only enables reverb (commits nonzero level + calls
-      `config_stereo_reverb`) when `init_stereo_reverb()` succeeds; on failure it forces
-      `reverb.level = 0` and sets the new `reverb.alloc_failed` flag.
-    - `amy.c` `amy_fill_buffer()`: reverb render guard now
-      `reverb.level > 0 && stereo_reverb_ready()` (mirrors the echo guard).
-    - `amy.h` `reverb_state_t`: new `bool alloc_failed` field.
-    - `api.c`: new `bool amy_reverb_alloc_failed(void)` getter exposing the flag so the
-      UI can show a no-serial diagnostics indicator.
-  - All edit sites are marked inline with `// LOCAL EDIT (2026-06-19): ...`.
-  - **Risk:** Low. Behaviour is unchanged when allocation succeeds (normal case). On
-    failure, reverb is simply skipped instead of crashing. The added render-path check is
-    one pointer comparison per block.
-  - **Rollback:** Revert `init_stereo_reverb()` to `void` (drop `free_stereo_reverb()`,
-    the rollback branch, and `stereo_reverb_ready()`); restore the original
-    `config_reverb()` body; restore the `reverb.level > 0`-only render guard; remove the
-    `reverb_state_t.alloc_failed` field and `amy_reverb_alloc_failed()`.
+## Active local edits
 
-- **Non-AMY-source change for this fix (in `main/main.c`):** the actual OOM. The
-  2026-06-18 perf pass pinned `amy_cfg.ram_caps_delay = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT`,
-  but the FX delay lines don't fit internally (reverb ~108 KB across 10 lines; echo a single
-  65536-sample = 256 KB line) while the internal heap's largest free block is ~32 KB.
-  Live heap confirmed PSRAM was nearly empty (psram free ≈ 7.7 MB, largest ≈ 7.6 MB), so
-  `ram_caps_delay` was moved to `MALLOC_CAP_SPIRAM`. The hot per-block synth allocations
-  (`ram_caps_events`/`synth`/`block`/`fbl`) stay internal. The OLED `OOM!` indicator for the
-  Reverb menu lives in first-party `components/synth_core/synth_ui.c` (reads
-  `amy_reverb_alloc_failed()`), not in AMY source.
+### `src/amy.h` — Kconfig-gated fixed-point toggle
 
-## 2026-06-18
+`#define AMY_USE_FIXEDPOINT` replaced with a `#ifdef CONFIG_AMY_USE_FIXEDPOINT`
+guard. Enabled via menuconfig: **AMY Synthesizer → Use fixed-point arithmetic**
+(default off). Requires `components/amy/Kconfig` (new file, not upstreamed).
 
-- **Performance pass: place the audio render hot path in internal IRAM/SRAM.** Goal was
-  lower per-block render time / more CPU headroom (heap use is not a concern). No functional
-  behavior change intended. See `.embedder/plans/1781754140057-shiny-moon.md` for the full
-  analysis and rejected options.
+The ESP32-S3 LX7 FPU makes float equal-or-faster; fixed-point was designed for
+RP2040. The option is preserved for comparison or future portability needs.
 
-  - **`AMY_IRAM_ATTR` macro (`components/amy/src/amy.h`):** new macro = `IRAM_ATTR` on
-    `ESP_PLATFORM` (after `#include <esp_attr.h>`), no-op elsewhere. Used instead of an `.lf`
-    linker fragment because this build uses GCC LTO, which renames/merges per-function
-    `.text.*` sections in the ltrans phase — object/symbol-granularity `noflash` fragment
-    rules silently miss and the code stays in flash (verified: symbols stayed at 0x4200…).
-    `IRAM_ATTR` rides the symbol's `.iram1` section and survives LTO (verified at 0x4037…).
-  - **Functions annotated `AMY_IRAM_ATTR`:**
-    - `amy.c`: `combine_controls`, `combine_controls_mult`, `hold_and_modify`, `mix_with_pan`,
-      `render_osc_wave`, `amy_render`, `amy_fill_buffer`.
-    - `oscillators.c`: `render_lut`, `render_lut_cub`, `render_lut_fm`, `render_lut_fb`,
-      `render_lut_fm_fb`, `render_lpf_lut`.
-    - `filters.c`: `filter_process`, `dsps_biquad_f32_ansi`, `dsps_biquad_f32_ansi_split_fb`,
-      `dsps_biquad_f32_ansi_split_fb_once`, `dsps_biquad_f32_ansi_split_fb_twice`, `scan_max`,
-      `parametric_eq_process_top16block`.
-    - `delay.c`: `apply_variable_delay`, `apply_fixed_delay`, `stereo_reverb`.
-    - `envelope.c`: `compute_mod_value`, `compute_mod_scale`, `compute_breakpoint_scale`.
-    - `log2_exp2.c`: `log2_lut`, `exp2_lut`.
-    - Several of these (e.g. `filter_process`, `combine_controls*`, `mix_with_pan`, the biquad
-      processors, delay walkers) get LTO-inlined into their IRAM callers, so they end up in
-      IRAM regardless. `.iram0.text` grew ~57KB → ~71KB; DIRAM ~49.9% used, ~171KB free.
-  - **Risk:** Low. IRAM_ATTR only relocates code; semantics unchanged. These functions call
-    flash-resident helpers, which is fine while the instruction cache is enabled (normal
-    operation — not a cache-disabled / flash-erase context). String literals in the gated
-    debug `fprintf` branches stay in flash rodata (only reachable via never-taken `osc==999`
-    / debug_flag paths). Coexists with the 2026-06-17 render-lock fix (lock calls are in the
-    now-IRAM `amy_render`, calling the flash-resident lock helpers — fine with cache on).
-  - **Rollback:** Remove the `AMY_IRAM_ATTR` prefixes from the listed functions and the macro
-    + `#include <esp_attr.h>` in `amy.h`.
+### `src/amy_fixedpoint.h` — float-mode fallbacks and `ldexpf` SHIFTL/SHIFTR
 
-- **Performance pass: drop `assert()` from pure-DSP hot files (`components/amy/CMakeLists.txt`).**
-  The build enables assertions globally (`CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_ENABLE`),
-  which emits runtime checks inside per-sample loops (e.g. `filters.c`
-  `assert(FILTER_SCALEUP_BITS == 0)` in the biquad split functions). Appended `-DNDEBUG` via
-  `set_property(... APPEND_STRING PROPERTY COMPILE_FLAGS " -DNDEBUG")` to **only**
-  `filters.c`, `oscillators.c`, `envelope.c`, `delay.c`, `log2_exp2.c` — files with no
-  structural/cross-core state. `amy.c` and the rest of the project keep their asserts
-  (osc alloc/free, delta queue, render lock invariants).
-  - **Risk:** Low. Only removes always-true asserts from leaf DSP files. Structural safety
-    asserts elsewhere are untouched.
-  - **Rollback:** Remove the `AMY_DSP_HOT_FILES` block in `components/amy/CMakeLists.txt`.
+Two edits to the `#ifndef AMY_USE_FIXEDPOINT` (float mode) section:
 
-- **Considered but NOT changed (recorded so we don't re-investigate):**
-  - LUT wavetable data placement in DRAM — `PROGMEM` (the tag) is shared with the 102KB
-    `pcm` table + piano data, so a blanket redefine is unsafe; per-table `DRAM_ATTR` is
-    broad/fragile; and with flash QIO + 32KB I/D-cache the ≤4KB LUTs cache well. Skipped.
-  - Active-oscillator index in `amy_render` — would require mutating an active set from the
-    zero-amp reaper *inside* the render loop (amy.c:1544), the same mid-iteration mutation
-    behind the 2026-06-17 LoadProhibited race. After the IRAM + internal-SRAM moves each
-    scan check is only a few cycles, so high risk / low gain. Rejected.
-  - `-ffast-math` — AMY uses NaN sentinels (`nanf` / `AMY_IS_SET`); fast-math assumes no
-    NaNs and would break those checks. Rejected.
+1. **`MUL5A_SS` / `MUL6A_SS` float fallbacks** — upstream defines these only in
+   the fixed-point path; `oscillators.c` uses them unconditionally so the float
+   build fails without them. Added `(a) * (b)` fallbacks.
 
-  (Non-AMY-source changes for this pass live in `main/main.c` (ram_caps → internal SRAM) and
-  `sdkconfig.defaults` (I-cache 16→32KB, flash QOUT→QIO).)
+2. **`SHIFTL` / `SHIFTR` use `ldexpf` instead of `exp2f`** — the original float
+   macros were `(s) * exp2f(b)`. When `b` is a runtime variable (e.g.
+   `exp2_lut()` integer part), `exp2f(runtime_int)` cannot be constant-folded
+   and emits a transcendental libcall. `ldexpf(s, b)` is the correct primitive
+   for ×2^n scaling and is never worse. **Caveat (verified by objdump):** on
+   this Xtensa LX7 toolchain GCC does *not* lower `ldexpf` (or `floorf`) to the
+   hardware `FLOOR.S`/exponent ops — both remain `call8` libcalls. So this is a
+   correctness/clarity win and a marginal speedup at most, NOT the fix for
+   float-mode CPU cost. Float mode is dominated by per-sample `floorf` libcalls
+   in `INT_OF_S` / `S_FRAC_OF_S` / `P_WRAPPED_SUM` (see note below); fixed-point
+   remains the product mode on this target.
 
-## 2026-06-17
+### `src/amy.h` — IRAM_ATTR / DRAM_ATTR macros
 
-- **Bug fix (SMP crash): unlocked render path races patch-toggle frees in `components/amy/src/amy.c`**
-  - **Symptom:** Intermittent `Guru Meditation Error: Core 1 panic'ed (LoadProhibited)` while toggling patches from the sequencer UI. Backtrace: `combine_controls_mult` (amy.c:1340) → `hold_and_modify` (amy.c:1406) → `render_osc_wave` (amy.c:1486) → `amy_render` (amy.c:1563) → `amy_render_audio` (i2s.c) → `amy_update` → `amy_usb_render_task`. `EXCVADDR=0x00000008` = NULL `synth[osc]` base plus a struct field offset.
-  - **Root cause:** `amy_render`/`render_osc_wave`/`hold_and_modify` walk `synth[]`/`msynth[]` holding **no lock**, while the delta path (`play_delta` → `ensure_osc_allocd` → `free_osc()`+`alloc_osc()`, plus reset/patch-load deltas) takes `amy_queue_lock` and `free()`s/reallocates those same structs. In this build (`multicore=0`, `multithread=0`) deltas are drained on Core 1 right before render, so the racing actor is **Core 0**: the sequencer `esp_timer` tick and UI calling `add_delta_to_queue()` and other osc alloc/free paths. The `synth[osc] != NULL` check in `amy_render` (line 1561) is a TOCTOU — `synth[osc]` can be freed between the check and the deref inside `hold_and_modify`.
-  - **Fix (option 1):** Wrap the entire `amy_render` body in `amy_grab_lock()` / `amy_release_lock()` (the existing `amy_queue_lock` semaphore), so structural mutations cannot run mid-render. Verified deadlock-safe: no code reachable from the render path calls `add_delta_to_queue()` or `amy_grab_lock()` (would deadlock the non-recursive mutex), and with `multicore=0` there is no cross-core notify-while-holding-lock path. (If multicore is ever enabled, each `amy_render` invocation takes/releases the lock around its own work; the inter-core notify/wait happens in the caller, outside the locked region.)
-  - **Risk:** Low–moderate. The lock is now held for a full render block (~hundreds of µs). The Core 0 sequencer enqueue (`add_delta_to_queue`) briefly blocks on it, but enqueue is a short list insert. No new allocation in the hot path.
-  - **Rollback:** Remove the `amy_grab_lock()` after `AMY_PROFILE_START(AMY_RENDER)` and the matching `amy_release_lock()` before `AMY_PROFILE_STOP(AMY_RENDER)` in `amy_render`.
+Added `AMY_IRAM_ATTR` and `AMY_DRAM_ATTR` macro definitions inside the
+`#ifdef ESP_PLATFORM` block. On non-ESP they expand to nothing.
 
-- **Bug fix (external AMY source change): missing `chained_osc` NULL guard in `render_osc_wave`, `components/amy/src/amy.c`**
-  - **Root cause:** Upstream AMY dereferences `synth[chained_osc]->status` (the chained-osc recursion in `render_osc_wave`, ~line 1521) with **no NULL check**. A `chained_osc` can reference a slot that was freed or never allocated during a patch toggle, faulting the same way as above. This is a strict upstream bug, independent of the locking fix.
-  - **Fix:** Added `synth[chained_osc] != NULL &&` to the existing `synth[chained_osc]->status == SYNTH_AUDIBLE` condition. Marked inline as a LOCAL EDIT.
-  - **Risk:** Negligible. Adds one pointer comparison; when the chained slot is NULL the chained osc is simply skipped (correct — it cannot be audible).
-  - **Rollback:** Remove the `synth[chained_osc] != NULL &&` clause.
+- `AMY_IRAM_ATTR` → `IRAM_ATTR` — places functions in internal IRAM. Used
+  instead of a linker fragment because GCC LTO renames `.text.*` sections in
+  ltrans, so fragment-based `noflash` rules silently miss. IRAM_ATTR on the
+  symbol itself (`.iram1.*`) survives LTO.
+- `AMY_DRAM_ATTR` → `DRAM_ATTR` — places const data tables in internal DRAM
+  (fast SRAM), not IRAM which is instruction-only and unsafe for halfword reads.
 
-## 2026-03-21
+### `src/clipping_lookup_table.h` — DRAM placement
 
-- Added ESP-IDF 6.0 compatibility comments and updated FreeRTOS task entry points in `components/amy/src/amy_midi.c` and `components/amy/src/i2s.c` so they use the required `void *` task signature.
-- This is an external dependency compatibility edit, not a first-party AMY refactor.
-- Excluded `components/amy/src/usb.c` from the ESP-IDF component build because this project provides its own USB implementation and does not need the MicroPython/Arduino USB path.
+`clipping_lookup_table[4914]` annotated with `AMY_DRAM_ATTR`. This 9.6 KB table
+is read on every output sample in `amy_fill_buffer`. Without this it lives in
+flash `.rodata` and is served via the PSRAM XIP cache, causing cache-miss stalls
+in the inner sample loop.
 
-## 2026-03-31
+### `src/amy.c` — Render lock
 
-- **Bug fix:** `AMY_SAMPLE_RATE` on `ESP_PLATFORM` defaulted to `44100` (the `#else` branch in `amy.h` lines 57–65), but `CONFIG_UAC_SAMPLE_RATE=48000` in `sdkconfig` means the TinyUSB UAC descriptor advertises 48 kHz to the Windows host. This caused AMY to render at 44.1 kHz while the host consumed samples as if they were 48 kHz — audio played ~88 cents flat and ~8% slow.
-  - Added `#elif defined ESP_PLATFORM` → `48000` between the `__EMSCRIPTEN__` and `#else` cases in `amy.h`.
-  - **Motivation:** UAC sample rate and AMY render rate must match; the minimal fix is a single added clause in the platform SR block.
-  - **Risk:** Low. 48 kHz on S3 is well within hardware capability. PCM samples are internally stored at 22050 Hz and resampled — no change needed there. No time-sensitive path is altered; block size (256) stays the same.
-  - **Rollback:** Remove the `#elif defined ESP_PLATFORM` / `48000` clause.
+`amy_render()` annotated with `AMY_IRAM_ATTR` and wrapped with
+`amy_grab_lock()` / `amy_release_lock()` spanning the entire function body.
 
-- **Config fix (not an AMY patch):** `platform.multithread` and `platform.multicore` must be set to `0` in `main.c` when using `AMY_AUDIO_IS_NONE`. With the defaults (`1`/`1`), `amy_platform_init()` spawns FABT and captures `app_main`'s task handle as `amy_update_handle`, causing a permanent deadlock between FABT and our `amy_usb_render_task` — `render_blocks` and `seq_tick` stay at 0. No change to AMY source required; fixed in `main/main.c`. See `amy-issue-fabt-deadlock.md` for full analysis.
+**Why:** `synth[]` / `msynth[]` arrays are structurally mutated by
+`free_osc` / `alloc_osc` / `reset_osc` / patch loads on Core 0, while the
+render walks the same pointers on Core 1. Without the lock a patch toggle can
+free `synth[osc]` between the NULL check and the deref in `hold_and_modify`,
+producing a `LoadProhibited` fault (EXCVADDR=0x8).
 
-## 2026-04-02
+### `src/envelope.c` — IRAM hot path
 
-- **Bug fix:** Guarded `esp_poll_midi()` in `components/amy/src/i2s.c` so the ESP-IDF update path only touches UART MIDI when `AMY_MIDI_IS_UART` is enabled.
-  - **Root cause:** `amy_default_config()` sets `c.midi = AMY_MIDI_IS_NONE` for ESP32 builds, but `amy_update_tasks()` still called `esp_poll_midi()` whenever `platform.multithread == 0`. That reached `uart_read_bytes()` on UART1 without a driver installed and produced `uart driver error` logs.
-  - **Motivation:** Prevent spurious UART errors when this project runs AMY in USB-audio-only mode.
-  - **Risk:** Low. The change is a narrow runtime guard around the existing MIDI poll path and does not affect builds that actually enable UART MIDI.
-  - **Rollback:** Remove the `AMY_MIDI_IS_UART` condition and restore the unconditional poll.
+`compute_mod_value`, `compute_mod_scale`, `compute_breakpoint_scale` annotated
+with `AMY_IRAM_ATTR`. Called per-sample from the render hot path.
 
-## 2026-04-03
+### `src/filters.c` — IRAM hot path
 
-- **Bug fix (SMP crash): `sequences[]` race in `components/amy/src/sequencer.c`**
-  - **Root cause:** On ESP32-S3 SMP, `sequencer_process_tick()` (called from AMY's `esp_timer` callback task) reads and walks `sequences[tag].deltas` without holding any lock, while `sequencer_add_event()` (called from `button_handler_task` via `amy_add_event()`) calls `delta_release_list(sequences[tag].deltas)` + rebuilds the chain, also without a lock. Concurrent execution on two cores causes a use-after-free: the timer task dereferences a delta node that the button task has already returned to the free pool and zeroed, producing `LoadProhibited` at `EXCVADDR=0x000002f0`.
-  - `amy_queue_lock` was not usable here because `add_delta_to_queue()` is called *inside* `sequencer_process_tick()` and also grabs `amy_queue_lock` — wrapping the outer function would deadlock a non-recursive mutex.
-  - **Fix:** Added `SEQ_LOCK` / `SEQ_UNLOCK` macros backed by a new `static SemaphoreHandle_t s_seq_lock` (ESP), `pthread_mutex_t` (POSIX), or no-op (bare-metal). Lock is created in `sequencer_init()` before `_sequencer_start()`. Held across the entire `sequences[tag]` mutation in `sequencer_add_event()` and across the full for-loop in `sequencer_process_tick()`. `add_delta_to_queue()` continues to independently grab `amy_queue_lock` (no nesting conflict).
-  - **Risk:** Low. The mutex is a short critical section (one tag slot per `add_event` call, <1 ms per tick loop). No new allocation in hot path. Timer callback is at 500 µs cadence; mutex contention adds negligible latency.
-  - **Rollback:** Remove the `SEQ_LOCK()`/`SEQ_UNLOCK()` calls and the lock variable block at the top of `sequencer.c`.
+`dsps_biquad_f32_ansi`, `dsps_biquad_f32_ansi_split_fb`,
+`dsps_biquad_f32_ansi_split_fb_once`, `dsps_biquad_f32_ansi_split_fb_twice`,
+`scan_max`, `parametric_eq_process`, `filter_process` annotated with
+`AMY_IRAM_ATTR`. All are in the per-block render loop.
 
-- **Bug fix (silent melodic layer): `max_sequencer_tags` too small — in `main/main.c`** *(not an AMY source patch)*
-  - **Root cause:** `amy_default_config()` sets `max_sequencer_tags = 256`. Our tag formula assigns melodic layer (index 1) tags starting at `1 × (4×32×2) = 256`. `sequencer_add_event()` checks `tag > max_sequences` (strictly greater), so tag 256 slips through and writes to `sequences[256]` — one past the end of the 256-element array (UB/memory corruption). All tags >256 are silently dropped. Result: every melodic note event is either corrupted or discarded; no audio.
-  - **Fix:** Added `amy_cfg.max_sequencer_tags = 1100` in `main.c` before `amy_start()`. Our highest tag is 1039 (preview slot for last layer/track), so 1100 gives safe headroom above the off-by-one in AMY's bound check.
-  - **Rollback:** Remove the `amy_cfg.max_sequencer_tags = 1100` line (reverts to default 256).
+### `src/log2_exp2.c` — IRAM hot path
 
-## 2026-03-22
+`log2_lut`, `exp2_lut` annotated with `AMY_IRAM_ATTR`. Used in pitch/amp
+calculations per sample.
 
-- **Bug fix:** `AMY_RENDER_TASK_PRIORITY` and `AMY_FILL_BUFFER_TASK_PRIORITY` in `components/amy/src/amy.h` changed from `ESP_TASK_PRIO_MAX` to `ESP_TASK_PRIO_MAX - 1`.
-  - `ESP_TASK_PRIO_MAX` equals `configMAX_PRIORITIES` (25). FreeRTOS asserts `uxPriority < configMAX_PRIORITIES`, so passing 25 is unconditionally invalid and causes an immediate boot crash.
-  - Filed upstream: see `amy-issue-task-priority.md`.
-  - **Rollback:** revert the `- 1` subtraction in both defines.
+### `src/oscillators.c` — IRAM hot path
+
+`render_lut_fm_fb`, `render_lut_fb`, `render_lut_fm`, `render_lut`,
+`render_lut_cub`, `render_lpf_lut` annotated with `AMY_IRAM_ATTR`. Core of the
+per-sample wavetable rendering.
+
+### `src/i2s.c` — IDF 6.0 task signature + UART MIDI guard
+
+1. `esp_fill_audio_buffer_task()` → `esp_fill_audio_buffer_task(void *pvParameters)`.
+   IDF 6.0 FreeRTOS requires `TaskFunction_t` (`void (*)(void*)`); the old
+   no-parameter form causes a type mismatch warning/error on `xTaskCreatePinnedToCore`.
+
+2. `amy_update_tasks()`: `esp_poll_midi()` is now guarded by
+   `if (amy_global.config.midi & AMY_MIDI_IS_UART)`. Without the guard, calling
+   `esp_poll_midi()` with an uninstalled UART driver emits `uart_read_bytes()`
+   errors at runtime (this project uses `AMY_MIDI_IS_NONE`).
+
+### `src/amy_midi.c` — IDF 6.0 task signature
+
+`run_midi_task()` → `run_midi_task(void *pvParameters)`. Same FreeRTOS
+`TaskFunction_t` fix as `i2s.c` above.
+
+### `src/sequencer.c` — SEQ_LOCK + active-tag O(1) scan
+
+Two related improvements:
+
+1. **SEQ_LOCK mutex** (`s_seq_lock`): `sequences[]` is written by
+   `sequencer_add_event()` (any task) and read by `sequencer_process_tick()`
+   (esp_timer ISR context on Core 0). On SMP these run concurrently. A dedicated
+   mutex prevents torn reads/writes. Cannot reuse `amy_queue_lock` because
+   `add_delta_to_queue()` re-acquires it inside the tick scan — doing so with a
+   non-recursive mutex would deadlock.
+
+2. **Active-tag dense index** (`s_active_tags`, `s_tag_slot`): The old scan
+   iterated `0..highest_tag` where `highest_tag` is a high-water mark that never
+   decreases (the arp pushes it to ~1119 and it stays there). Every 500 µs tick
+   on Core 0 was O(1119) scanning mostly-NULL slots. Replaced with a compact
+   dense list of only the tags that currently have deltas: the tick is now
+   O(active events) regardless of tag magnitude. `s_tag_slot[tag]` → position in
+   the dense list (or -1) enables O(1) removal via swap-with-last.
+
+### `src/amy.h` + `src/amy.c` — COARSE profiler mode
+
+Upstream gates the whole profiler behind `AMY_DEBUG`, which times *every* tag —
+including per-osc/inner tags that fire dozens of times per block **inside** the
+`AMY_RENDER` window. Those nested timestamp calls inflate the `AMY_RENDER` total,
+which would overstate the parallelizable fraction in a dual-core feasibility
+measurement.
+
+Added a second, lighter profiling level, `AMY_PROFILE_COARSE` (Kconfig:
+`AMY_PROFILE_MODE`, see `components/amy/Kconfig` + `CMakeLists.txt`):
+
+- The profiler tables / timers / `amy_profiles_init/print` now compile under
+  `#if defined(AMY_DEBUG) || defined(AMY_PROFILE_COARSE)` (was `#ifdef AMY_DEBUG`).
+- In coarse mode `AMY_PROFILE_START/STOP` act only on the outer stage tags
+  (`AMY_RENDER`, `AMY_FILL_BUFFER`, `AMY_EXECUTE_DELTAS`, `AMY_ESP_FILL_BUFFER`)
+  via `AMY_TAG_IS_COARSE(tag)`. Because `tag` is a compile-time enum literal at
+  every call site, the guard folds to a constant and inner call sites compile to
+  nothing — zero overhead and no inflation of `AMY_RENDER`.
+- Macros expand to a complete statement with no trailing `;`, matching upstream
+  call sites that omit the semicolon (e.g. `AMY_PROFILE_START(AMY_RENDER)`).
+
+Full `AMY_DEBUG` behaviour is unchanged (select `AMY_PROFILE_FULL`). See
+`docs/dual-core-render-analysis.md` for why and how this is used.
+
+**Cross-core reset fix (`AMY_PROFILE_INIT`):** the dump runs on Core 0 (the
+`app_main` idle loop) while render `START/STOP` run on Core 1. The upstream reset
+zeroed `profiles[tag].start`; when that landed between a Core-1 `START` and
+`STOP`, the `STOP` computed `(now - 0)` ≈ uptime, producing one ~uptime-µs spike
+per window on whichever tag was mid-flight (see `docs/AMY-PROFILE-LOG.md` — every
+window had exactly one tag reading billions of µs). Fix: `AMY_PROFILE_INIT` no
+longer zeroes `.start` (it is only ever read by a `STOP` that follows a `START`,
+so it never needs zeroing). `us_total`/`calls` are still reset each window; the
+remaining `+=`-vs-`=0` race can at most carry one window's totals into the next
+(both `us_total` and `calls` scale together, so **`us per call` stays correct**;
+only that window's `% wall` may read high). Benefits coarse and full modes.
+
+## Deferred / needs porting
+
+| Edit | Status |
+|------|--------|
+| Block-processed ESP32 stereo reverb (`delay.c`, `#ifdef ESP_PLATFORM`) | **Not applied.** Upstream changed `stereo_reverb()` to take `reverb_params_t *rev` (all delay state inside struct); the block-processed optimization needs adapting to the new API before it can be reapplied. |

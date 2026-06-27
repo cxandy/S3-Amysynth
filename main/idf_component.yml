@@ -18,3 +18,4 @@ dependencies:
   espressif/usb_device_uac: '*'
   espressif/button: =*
   espressif/cmake_utilities: '*'
+  espressif/esp-dsp: '*'

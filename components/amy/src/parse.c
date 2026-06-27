@@ -2,6 +2,7 @@
 // handle parsing wire strings
 
 #include "amy.h"
+#include "transfer.h"  // for amy_dump_state_to_sysex, amy_dump_file_to_sysex
 #include <ctype.h>  // for isalpha().
 #if defined(TULIP) || defined(AMYBOARD)
 #include "py/runtime.h"
@@ -191,7 +192,23 @@ void copy_param_list_substring(char *dest, const char *src) {
     dest[c] = '\0';
 }
 
-float int_db_to_float_lin(uint32_t db);
+float int_db_to_float_lin(uint32_t db) {
+    // in interp_partials.h, we store amplitudes as integer dB values in range 0..100.
+    float lin = 0;
+    if (AMY_IS_UNSET(db)) return AMY_UNSET_VALUE(lin);
+    lin = powf(10.0f, ((((float)db) - 100.0f) / 20.0f)) - 0.001f;
+    if (lin < 0) return 0;
+    return lin;
+}
+
+float int_db_to_60dB_01(uint32_t db) {
+    // Map 100 (db) to 1.0, 40 (db) to 0.0
+    float lin = 0;
+    if (AMY_IS_UNSET(db)) return AMY_UNSET_VALUE(lin);
+    lin = 1.0f + (((float)db - 100.0f) / (3.0f * 20.0f));
+    if (lin < 0) return 0;
+    return lin;
+}
 
 //static int16_t clamp_bp_time_ms_to_i16(uint32_t t_ms) {
 //    if (t_ms >= (uint32_t)SHRT_MAX) return (int16_t)(SHRT_MAX - 1);
@@ -235,6 +252,7 @@ static int parse_breakpoint_event_core_int_db(char* message, uint32_t *times_ms,
             }
         } else {
             values[bp_index] = int_db_to_float_lin(vals[i]);
+            //values[bp_index] = int_db_to_60dB_01(vals[i]);
         }
     }
     return num_vals;
@@ -286,14 +304,6 @@ uint32_t ms_to_samples(uint32_t ms) {
     return samps;
 }
 
-float int_db_to_float_lin(uint32_t db) {
-    float lin = 0;
-    if (AMY_IS_UNSET(db)) return AMY_UNSET_VALUE(lin);
-    lin = powf(10.0f, ((((float)db) - 100.0f) / 20.0f)) - 0.001f;
-    if (lin < 0) return 0;
-    return lin;
-}
-
 void parse_coef_message(char *message, float *coefs) {
     int num_coefs = parse_list_float(message, coefs, NUM_COMBO_COEFS,
                                              AMY_UNSET_VALUE(coefs[0]));
@@ -306,9 +316,9 @@ void parse_coef_message(char *message, float *coefs) {
 extern const mp_obj_fun_builtin_var_t tulip_pcm_load_file_obj;
 #endif
 
-int parse_midi_cc_payload(char *message, int32_t *p_cc_code, int32_t *p_is_log, float *p_min_val, float *p_max_val, float *p_offset_val) {
+int parse_midi_mapping_payload(char *message, int32_t *p_code, int32_t *p_is_log, float *p_min_val, float *p_max_val, float *p_offset_val) {
     char *m = message;
-    m += parse_val_int32_t(m, p_cc_code);
+    m += parse_val_int32_t(m, p_code);
     if (m[0] != ',') goto end; else ++m;
     m += parse_val_int32_t(m, p_is_log);
     if (m[0] != ',') goto end; else ++m;
@@ -321,6 +331,109 @@ int parse_midi_cc_payload(char *message, int32_t *p_cc_code, int32_t *p_is_log, 
     return m - message;
 }
 
+int midi_mapping_from_message(char *message, char cmd, int instr_num, int skip_chars) {
+    // MIDI CC mapping ic<C>,<L>,<N>,<X>,<O>,<CODE>, see https://github.com/shorepine/amy/issues/524
+    // ic255 clears all MIDI CC mappings for this synth (short form, no extra fields needed).
+    size_t pos = 0;
+    size_t mlen = strlen(message);
+    while (pos < mlen) {
+        // Break the mapping on ZZs (for K257).
+        size_t sub_mlen, next_pos;
+        char *end = strstr(message + pos, "ZZ");
+        if (end != NULL) {
+            sub_mlen = end - (message + pos);
+            next_pos = pos + sub_mlen + 2;  // Step over "ZZ"
+        } else {
+            sub_mlen = mlen - pos;
+            next_pos = mlen;
+        }
+        while (sub_mlen > 0 && message[pos + sub_mlen - 1] == 'Z') {
+            --sub_mlen;
+        }
+        // Parse the fragment.
+        int32_t code, is_log;
+        float min_val = 0, max_val = 0, offset_val = 0;
+        int type = (cmd == 'c') ? MIDI_MAP_TYPE_CC : MIDI_MAP_TYPE_NOTE;
+        AMY_UNSET(code);
+        AMY_UNSET(is_log);
+        skip_chars = parse_midi_mapping_payload(message + pos, &code, &is_log, &min_val, &max_val, &offset_val);
+        if (*(message + pos + skip_chars) != ',') {
+            if (AMY_IS_UNSET(code) || AMY_IS_SET(is_log)) {
+                // Either parsing bailed without even a CC code, or it got past the is_log, meaning it wasn't a bare ic<NUM> command.
+                fprintf(stderr, "synth_layer: midi mapping payload didn't parse for %s.\n", message - 1);
+                return pos + skip_chars;  // maybe the rest will parse?
+            }
+            // Else we got an incomplete message with a valid CC code - clear it
+            midi_clear_mapping(instr_num, type, code);  // (handles 255 as special case).
+            return pos + skip_chars;
+        }
+        ++skip_chars;  // step over the "," before the wire string template.
+        midi_store_mapping(instr_num, type, code, is_log, min_val, max_val, offset_val, message + pos + skip_chars, sub_mlen - skip_chars);
+        pos = next_pos;
+        if (pos < mlen && message[pos] != 'i') break;
+        cmd = message[pos + 1];
+        pos += 2;
+    }
+    return pos - 1;
+}
+
+int parse_cv_trigger_payload(char *message, int32_t *p_gate_cv, float *p_thresh_high, float *p_thresh_low, int32_t *p_pitch_cv, float *p_pitch_scale, float *p_pitch_offset) {
+    char *m = message;
+    m += parse_val_int32_t(m, p_gate_cv);
+    if (m[0] != ',') goto end; else ++m;
+    m += parse_val_float(m, p_thresh_high);
+    if (m[0] != ',') goto end; else ++m;
+    m += parse_val_float(m, p_thresh_low);
+    if (m[0] != ',') goto end; else ++m;
+    // The pitch CV args are optional
+    if (strspn(m, "0123456789.-") == 0) {
+        // Next arg is not numeric, looks like the wire code
+        // Rewind over the comma.
+        --m;
+        goto end;
+    }
+    m += parse_val_int32_t(m, p_pitch_cv);
+    if (m[0] != ',') goto end; else ++m;
+    m += parse_val_float(m, p_pitch_scale);
+    if (m[0] != ',') goto end; else ++m;
+    m += parse_val_float(m, p_pitch_offset);
+ end:
+    return m - message;
+}
+
+int cv_trigger_from_message(char *message, int instr_num, int skip_chars) {
+    // i<synth>ig<gate_cv>,<thresh_high>,<thresh_low>,<pitch_cv>,<pitch_scale>,<pitch_offset>,<wire_template>
+    int32_t gate_cv, pitch_cv;
+    uint8_t pitch_cv_uint8;
+    float thresh_high = 0, thresh_low = 0, pitch_scale = 0, pitch_offset = 0;
+    AMY_UNSET(gate_cv);
+    AMY_UNSET(pitch_cv);
+    AMY_UNSET(thresh_high);
+    skip_chars = parse_cv_trigger_payload(message, &gate_cv, &thresh_high, &thresh_low, &pitch_cv, &pitch_scale, &pitch_offset);
+    if (*(message + skip_chars) != ',') {
+        if (AMY_IS_UNSET(gate_cv) || AMY_IS_SET(thresh_high)) {
+            // Either parsing bailed without even a gate CV, or it got past the thresh, meaning it wasn't a bare ic<NUM> command.
+            fprintf(stderr, "cv_trigger: payload didn't parse for %s.\n", message - 1);
+            return skip_chars;  // maybe the rest will parse?
+        }
+        // Else we got an incomplete message with a valid gate_cv - clear all triggers for that CV.
+        cv_trigger_clear_mappings(gate_cv);
+        return skip_chars;
+    }
+    ++skip_chars;  // step over the "," before the wire string template.
+    if (AMY_IS_SET(pitch_cv))
+        pitch_cv_uint8 = pitch_cv;
+    else
+        AMY_UNSET(pitch_cv_uint8);
+    cv_trigger_new(gate_cv, thresh_high, thresh_low,
+                   pitch_cv_uint8, pitch_scale, pitch_offset, message + skip_chars);
+    // Consume rest of message but leave the trailing 'Z' for the outer parser.
+    int remainder = strlen(message);
+    if (remainder > 0 && message[remainder - 1] == 'Z') remainder--;
+    skip_chars = remainder;
+    return skip_chars;
+}
+
 // Parser for synth-layer ('i') prefix.
 int amy_parse_synth_layer_message(char *message, amy_event *e) {
     int skip_chars = 1;  // default is to skip one extra char.
@@ -331,35 +444,17 @@ int amy_parse_synth_layer_message(char *message, amy_event *e) {
     }
     char cmd = message[0];
     message++;
-    if (cmd == 'p')  e->pedal = atoi(message);
+    if (cmd == 'd')  e->synth_delay_ms = atoi(message);
     else if (cmd == 'f')  e->synth_flags = atoi(message);
-    else if (cmd == 'v')  e->num_voices = atoi(message);
-    else if (cmd == 't')  e->to_synth = atoi(message);
+    else if (cmd == 'g')  skip_chars = cv_trigger_from_message(message, e->synth, skip_chars);
     else if (cmd == 'm')  e->grab_midi_notes = atoi(message);
-    else if (cmd == 'd')  e->synth_delay_ms = atoi(message);
+    else if (cmd == 'M')  e->note_source = atoi(message);  // To mark MIDI-in notes.
     else if (cmd == 'n')  e->oscs_per_voice = atoi(message);
-    else if (cmd == 'c')  {
-        // MIDI CC mapping ic<C>,<L>,<N>,<X>,<O>,<CODE>, see https://github.com/shorepine/amy/issues/524
-        // ic255 clears all MIDI CC mappings for this synth (short form, no extra fields needed).
-        int32_t cc_code, is_log;
-        float min_val, max_val, offset_val;
-        AMY_UNSET(cc_code);
-        AMY_UNSET(is_log);
-        skip_chars = parse_midi_cc_payload(message, &cc_code, &is_log, &min_val, &max_val, &offset_val);
-        if (*(message + skip_chars) != ',') {
-            if (AMY_IS_UNSET(cc_code) || AMY_IS_SET(is_log)) {
-                // Either parsing bailed without even a CC code, or it got past the is_log, meaning it wasn't a bare ic<NUM> command.
-                fprintf(stderr, "synth_layer: midi cc payload didn't parse for %s.\n", message - 1);
-                return skip_chars;  // maybe the rest will parse?
-            }
-            // Else we got an incomplete message with a valid CC code - clear it
-            midi_clear_control_code(e->synth, cc_code);  // (handles 255 as special case).
-            return skip_chars;
-        }
-        ++skip_chars;  // step over the "," before the wire string template.
-        midi_store_control_code(e->synth, cc_code, is_log, min_val, max_val, offset_val, message + skip_chars);
-        skip_chars = strlen(message) + 1;
-    }
+    else if (cmd == 'p')  e->pedal = atoi(message);
+    else if (cmd == 't')  e->to_synth = atoi(message);
+    else if (cmd == 'v')  e->num_voices = atoi(message);
+    else if (cmd == 'y')  e->bus = atoi(message);  // 'i1iy1' is the same as 'i1y1'.
+    else if (cmd == 'c' || cmd == 'o') skip_chars = midi_mapping_from_message(message, cmd, e->synth, skip_chars);
     else fprintf(stderr, "Unrecognized synth-level command '%s'\n", message - 1);
     return skip_chars;
 }
@@ -389,6 +484,7 @@ uint16_t amy_parse_transfer_layer_message(char *message) {
         char filename[MAX_FILENAME_LEN];
         uint16_t len = parse_list_file_transfer_params(message, filename, sizeof(filename), &file_size);
         if (filename[0] != '\0') {
+            sequencer_midi_stop();  // Stop sequencer (and sketch loop) during file transfer.
             start_receiving_file_transfer(file_size, filename);
         }
         return len;
@@ -430,6 +526,100 @@ uint16_t amy_parse_transfer_layer_message(char *message) {
         stop_receiving_sample();
         return 1;
     }
+    else if (cmd == 'D') {
+        // zD: Dump data over MIDI sysex.
+        //   zD[Z]              — dump all active instrument state + global effects.
+        //   zD<filename>[Z]    — dump file contents from the filesystem.
+        // The filename/payload is "rest of message" — we consume everything
+        // to the end of the C string. A trailing 'Z' (end-of-message marker
+        // some senders append) is stripped, so interior capital-Z characters
+        // in the filename (e.g. "/ZIPFILE.py") are preserved. Limitation:
+        // filenames whose last char is 'Z' are not addressable.
+        char filename[MAX_FILENAME_LEN];
+        uint16_t len = 0;
+        while (message[len] && len < MAX_FILENAME_LEN - 1) {
+            filename[len] = message[len];
+            len++;
+        }
+        filename[len] = '\0';
+        if (len > 0 && filename[len - 1] == 'Z') {
+            filename[--len] = '\0';
+        }
+        if (filename[0] == '\0') {
+            amy_dump_state_to_sysex();
+        } else {
+            amy_dump_file_to_sysex(filename);
+        }
+        // Consume the whole rest of the message so the outer parser exits.
+        {
+            uint16_t total = 0;
+            const char *scan = message - 1;  // back to 'D'
+            while (scan[total]) total++;
+            return total;
+        }
+    }
+    else if (cmd == 'A') {
+        // zA: Update sketch.py on disk with current AMY state (calls update_file_hook).
+        // Takes optional filename; defaults to /user/current/sketch.py on AMYboard.
+        // Payload semantics match zD: the filename is "rest of message", a
+        // trailing 'Z' terminator is stripped, and interior capital-Z chars
+        // in the filename are preserved.
+        char filename[MAX_FILENAME_LEN];
+        uint16_t len = 0;
+        while (message[len] && len < MAX_FILENAME_LEN - 1) {
+            filename[len] = message[len];
+            len++;
+        }
+        filename[len] = '\0';
+        if (len > 0 && filename[len - 1] == 'Z') {
+            filename[--len] = '\0';
+        }
+        if (amy_global.config.amy_external_update_file_hook) {
+            if (filename[0]) {
+                amy_global.config.amy_external_update_file_hook(filename);
+            } else {
+                amy_global.config.amy_external_update_file_hook("/user/current/sketch.py");
+            }
+        }
+        {
+            uint16_t total = 0;
+            const char *scan = message - 1;
+            while (scan[total]) total++;
+            return total;
+        }
+    }
+    else if (cmd == 'P') {
+        // zP: Execute Python code on host (e.g. zPimport amyboard; amyboard.restart_sketch()Z).
+        // Payload semantics match zD: the code string is "rest of message",
+        // a trailing 'Z' terminator is stripped, and interior capital-Z chars
+        // in the code are preserved.
+        char code[256];
+        uint16_t len = 0;
+        while (message[len] && len < sizeof(code) - 1) {
+            code[len] = message[len];
+            len++;
+        }
+        code[len] = '\0';
+        if (len > 0 && code[len - 1] == 'Z') {
+            code[--len] = '\0';
+        }
+        if (amy_global.config.amy_external_exec_hook) {
+            amy_global.config.amy_external_exec_hook(code);
+        }
+        {
+            uint16_t total = 0;
+            const char *scan = message - 1;
+            while (scan[total]) total++;
+            return total;
+        }
+    }
+    else if (cmd == 'Y') {
+        // zY: sequencer transport. zY1 starts the sequencer, zY0 stops it. Lets a
+        // host drive playback without MIDI clock sync (see external_midi_sync).
+        if (atoi(message)) sequencer_midi_start();
+        else sequencer_midi_stop();
+        return 1;
+    }
     else fprintf(stderr, "Unrecognized transfer-level command '%s'\n", message - 1);
     return 0;
 }
@@ -454,8 +644,21 @@ int amy_parse_message(char * message, int length, amy_event *e) {
     char cmd = '\0';
     uint16_t pos = 0;
 
-    // Check if we're in a transfer block, if so, parse it and leave this loop
-    if (amy_global.transfer_flag == AMY_TRANSFER_TYPE_FILE || amy_global.transfer_flag == AMY_TRANSFER_TYPE_AUDIO) {
+    // Check if we're in a transfer block, if so, parse it and leave this loop.
+    // FILE transfers (zT, used to write files over MIDI sysex) arrive async
+    // while a sketch may also be running, so we ONLY route them to the
+    // transfer handler when the data is sysex-originated -- otherwise a
+    // sketch calling amy.send(note=36) mid-transfer would get its wire
+    // command base64-decoded as file data and corrupt the file.
+    //
+    // AUDIO transfers (amy.load_sample / load_sample_bytes) are different:
+    // Python sends every chunk synchronously in a tight loop within the same
+    // call, so no other amy.send() can interleave. They route regardless of
+    // the sysex flag (which they don't carry, since send_raw goes through
+    // the regular wire path).
+    extern bool amy_parsing_from_sysex;
+    if (amy_global.transfer_flag == AMY_TRANSFER_TYPE_AUDIO ||
+        (amy_parsing_from_sysex && amy_global.transfer_flag == AMY_TRANSFER_TYPE_FILE)) {
         parse_transfer_message(message, length);
         e->status = EVENT_TRANSFER_DATA;
         return length;
@@ -493,7 +696,7 @@ int amy_parse_message(char * message, int length, amy_event *e) {
             case 'H': parse_list_uint32_t(arg, e->sequence, 3, 0); break;
             case 'h': if (AMY_HAS_REVERB) {
                 float reverb_params[4];
-                parse_list_float(arg, reverb_params, 4, AMY_UNSET_VALUE(amy_global.reverb.liveness));
+                parse_list_float(arg, reverb_params, 4, AMY_UNSET_VALUE(e->reverb_level));
                 e->reverb_level = reverb_params[0];
                 e->reverb_liveness = reverb_params[1];
                 e->reverb_damping = reverb_params[2];
@@ -504,7 +707,7 @@ int amy_parse_message(char * message, int length, amy_event *e) {
             case 'i': pos += amy_parse_synth_layer_message(arg, e); break;  // Skip over second cmd letter, if any, or entire MIDI CC code string.
             case 'I': e->ratio = atoff(arg); break;
             case 'j': e->tempo = atof(arg); break;
-            /* j, J available */
+            /* J available */
             // chorus.level
             case 'k': if(AMY_HAS_CHORUS) {
                 float chorus_params[4];
@@ -567,7 +770,7 @@ int amy_parse_message(char * message, int length, amy_event *e) {
             case 'u': patches_store_patch(e, arg); pos = strlen(message) - 1; break;  // patches_store_patch processes the patch as all the rest of the message and maybe sets patch.
             /* U used by Alles for sync */
             case 'v': e->osc=((atoi(arg)) % (AMY_OSCS+1));  break; // allow osc wraparound
-            case 'V': e->volume = atoff(arg); break;
+            case 'V': parse_list_float(arg, e->volume, AMY_NUM_BUSES, AMY_UNSET_VALUE(e->volume[0])); break;
             case 'w': e->wave=atoi(arg); break;
             /* W used by Tulip for CV, external_channel */
             case 'X': e->eg_type[1] = atoi(arg); break;
@@ -579,11 +782,12 @@ int amy_parse_message(char * message, int length, amy_event *e) {
                   e->eq_h = eq[2];
                 }
                 break;
+            case 'y': e->bus = atoi(arg); break;
+            /* Y still available */
             case 'z': {
                 pos += amy_parse_transfer_layer_message(arg);
                 break;
             }
-            /* Y,y available */
             /* Z used for end of message */
             case 'Z':
 	      ++pos;

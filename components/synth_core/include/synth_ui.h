@@ -18,6 +18,8 @@ void synth_ui_init(u8g2_t *u8g2);
 /* Add a new sequencer layer (drum or melodic). Returns the layer index
  * or 0xFF if the layer table is full. Safe to call after init. */
 uint8_t synth_ui_add_layer(seq_layer_type_t type, uint8_t num_steps);
+void    synth_ui_request_add_layer(void);
+void    synth_ui_request_delete_to_layer(void);
 
 /* Advance the active layer displayed/edited on screen.
  * Resets the cursor to track 0, step 0, edit_mode = true. */
@@ -66,6 +68,20 @@ void synth_ui_drone_handle_button(void);
 /* Cycle the drone's PATCH-mode preset (hold+turn gesture on the drone screen). */
 void synth_ui_drone_cycle_patch(int delta);
 
+/* Chord-progression screen — active when seq_state.ui_mode == UI_MODE_PROG and no
+ * overlay (menu/graph) is up.  Returns false if not active (caller should fall through). */
+bool synth_ui_prog_is_active(void);
+bool synth_ui_prog_handle_encoder(int delta);
+bool synth_ui_prog_handle_button(void);
+bool synth_ui_prog_add_entry(void);
+bool synth_ui_prog_delete_entry(void);
+
+/* Track Options screen — per-track repeat rate + per-layer manual chord mode.
+ * Active when seq_state.ui_mode == UI_MODE_TRACKOPTS and no overlay is up. */
+bool synth_ui_trackopts_is_active(void);
+bool synth_ui_trackopts_handle_encoder(int delta);
+bool synth_ui_trackopts_handle_button(void);
+
 /* Re-impose the cached global FX (EQ/echo/chorus/reverb) after a synth patch
  * load. Every AMY built-in Juno patch ends with global EQ/chorus commands, so
  * loading a preset onto any synth would otherwise re-skin the whole mix's FX.
@@ -74,8 +90,11 @@ void synth_ui_drone_cycle_patch(int delta);
  * deliberately letting presets drive the global FX). */
 void synth_ui_fx_reassert_global(void);
 
-/* Global state (bpm is read directly by encoder_task in main.c) */
-extern synth_ui_state_t seq_state;
+/* Accessors for the (module-private) UI state. seq_state itself is static in
+ * synth_ui.c — other modules read what they need through these getters rather
+ * than reaching into the UI struct. */
+uint16_t seq_get_bpm(void);
+uint8_t  seq_get_active_layer_idx(void);
 
 /* ── Graph pop-up integration (isolated, easily removable) ───────────────────
  * Demo hooks for the reusable graph_popup widget. main.c calls these; the
@@ -102,6 +121,39 @@ bool synth_ui_graph_close_commit(void);
 /* Toggle the graph time range SHORT(2s linear) <-> LONG(15s, log-squashed tail)
  * while the editor is open. Re-seeds the curve. Returns true if consumed. */
 bool synth_ui_graph_toggle_range(void);
+
+/* ── Filter editor (per-synth LPF/HPF/BPF/LPF24 curve editor) ───────────────
+ * Opened by long-press encoder (same as ADSR); toggled with MY_BUTTON_3 while
+ * either editor is open. Controls: encoder adjusts the selected parameter
+ * (cutoff/resonance/type), short press cycles the cursor, long-press commits. */
+bool synth_ui_filter_is_active(void);
+void synth_ui_filter_open(void);
+bool synth_ui_filter_handle_encoder(long delta);
+bool synth_ui_filter_handle_button(bool is_long);
+bool synth_ui_filter_close_commit(void);
+
+/* Toggle the filter on/off (MY_BUTTON_1 while editor is open). No-op when closed. */
+void synth_ui_filter_toggle_enabled(void);
+
+/* ── LFO editor (per-track tempo-synced modulator) ─────────────────────────
+ * Opened as the third tab in the ADSR→Filter→LFO cycle (MY_BUTTON_3).
+ * Controls: encoder scrolls cursor / adjusts field (short press to toggle);
+ * encoder long-press commits; MY_BUTTON_0 long-press cancels. */
+bool synth_ui_lfo_is_active(void);
+void synth_ui_lfo_open(void);
+bool synth_ui_lfo_handle_encoder(long delta);
+bool synth_ui_lfo_handle_button(bool is_long);
+bool synth_ui_lfo_close_commit(void);
+
+/* Toggle whether effect-editor commits apply to only the selected track (false)
+ * or all tracks in the active layer (true).  Consumed by MY_BUTTON_1 while the
+ * ADSR graph or LFO editor is open.  Returns true when an editor was active. */
+bool synth_ui_toggle_editor_apply_scope(void);
+
+/* Cycle between ADSR, Filter, and LFO editors (MY_BUTTON_3 while any is open).
+ * Commits the departing editor and opens the next one.  Replaces the old
+ * synth_ui_toggle_adsr_filter() two-way swap. */
+void synth_ui_cycle_editor(void);
 
 #ifdef __cplusplus
 }

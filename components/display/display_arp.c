@@ -82,7 +82,9 @@ void display_arp_draw_frame(u8g2_t *u8g2, const arp_view_t *view)
         uint8_t cx = (uint8_t)(base_x + col * (cell_w + 1));
         uint8_t cy = (uint8_t)(base_y + rowi * (cell_h + 2));
 
-        const char *txt = view->slot_active[i] ? view->slot_name[i] : "--";
+        const char *txt = view->slot_active[i] ? view->slot_name[i]
+                        : view->slot_rest[i]   ? " R "
+                        :                        "--";
         uint8_t tw = (uint8_t)u8g2_GetStrWidth(u8g2, txt);
         uint8_t tx = (uint8_t)(cx + (cell_w - tw) / 2);
 

@@ -22,11 +22,11 @@ def piano_example(base_note=72, volume=5, send_command=amy.send, init_command=la
 
 def juno_example():
 	piano_example(base_note=74, volume=10, 
-		init_command=lambda: amy.send(time=0, voices='0,1,2', patch_number=7))
+		init_command=lambda: amy.send(time=0, voices='0,1,2', patch=7))
 
 def dx7_example():
 	piano_example(base_note=50, volume=25, 
-              init_command=lambda: amy.send(time=0, voices='0,1,2', patch_number=137))
+              init_command=lambda: amy.send(time=0, voices='0,1,2', patch=137))
 
 
 """Piano notes generated on amy/tulip."""
@@ -45,7 +45,7 @@ except ImportError:
 #   harmonics_freq - Vector of (total_num_harmonics) int16s giving freq for each harmonic in "MIDI cents" i.e. 6900 = 440 Hz.
 #   harmonics_mags - Array of (total_num_harmonics, num_sample_times) uint8s giving envelope samples for each harmonic.  In dB, between 0 and 100.
 
-from piano_params import notes_params
+from amy.piano_params import notes_params
 
 NOTES = np.array(notes_params['notes'], dtype=np.int8)
 VELOCITIES = np.array(notes_params['velocities'], dtype=np.int8)
@@ -152,8 +152,8 @@ patch_string = 'v0w10Zv%dw%dZ' % (NUM_HARMONICS[0] + 1, amy.PARTIAL)
 
 # The lowest note provides an upper-bound on the number of partials we need to allocate.
 def init_piano_voices(num_partials=NUM_HARMONICS[0]):
-    amy.send(patch_number='1024', patch=patch_string)
-    amy.send(voices='0,1,2', patch_number=1024)
+    amy.send(patch='1024', patch_string=patch_string)
+    amy.send(voices='0,1,2', patch=1024)
     init_piano_voice(num_partials, voices='0,1,2')
     # piano_note_on (below) overwrites these settings before each note,
     # but pre-configure each note to C4.mf so we can experiment.

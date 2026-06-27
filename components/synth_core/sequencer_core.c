@@ -1,13 +1,16 @@
 #include "sequencer_core.h"
 #include "arp_core.h"
 #include "amy.h"
+#include "amy_helpers.h"
 #include "sequencer.h"
 #include "quantizer.h"
 #include "seq_clamp.h"
+#include "seq_defaults.h"
 #include "sdkconfig.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include <string.h>
+#include <math.h>
 #include "freertos/semphr.h"
 
 /* Defined in synth_ui.c (same component). Re-imposes the user's cached global
@@ -51,21 +54,6 @@ void synth_ui_fx_reassert_global(void);
 #ifndef CONFIG_SEQ_MELODIC_ENVELOPE_ENABLED
 #define CONFIG_SEQ_MELODIC_ENVELOPE_ENABLED 1
 #endif
-#ifndef CONFIG_SEQ_MELODIC_ENV_EG0_TYPE
-#define CONFIG_SEQ_MELODIC_ENV_EG0_TYPE 0
-#endif
-#ifndef CONFIG_SEQ_MELODIC_ENV_ATTACK_MS
-#define CONFIG_SEQ_MELODIC_ENV_ATTACK_MS 12
-#endif
-#ifndef CONFIG_SEQ_MELODIC_ENV_DECAY_MS
-#define CONFIG_SEQ_MELODIC_ENV_DECAY_MS 220
-#endif
-#ifndef CONFIG_SEQ_MELODIC_ENV_SUSTAIN_PCT
-#define CONFIG_SEQ_MELODIC_ENV_SUSTAIN_PCT 58
-#endif
-#ifndef CONFIG_SEQ_MELODIC_ENV_RELEASE_MS
-#define CONFIG_SEQ_MELODIC_ENV_RELEASE_MS 280
-#endif
 #ifndef CONFIG_SEQ_MELODIC_PATCH
 #define CONFIG_SEQ_MELODIC_PATCH 138
 #endif
@@ -85,6 +73,9 @@ extern uint32_t sequencer_ticks(void);
 
 /* ── Timing ──────────────────────────────────────────────────────────── */
 #define SEQ_TICKS_PER_STEP    (AMY_SEQUENCER_PPQ / 4)
+/* A musical bar = 16 steps. Fixed regardless of layer length so the bar
+ * counter and repeat-rate are independent of which layers are active. */
+#define SEQ_TICKS_PER_BAR     (16u * SEQ_TICKS_PER_STEP)
 /* Drum gate: fraction of a step the note is held before its note-off. Now that
  * drums are real Juno patches (note-offs honored), this controls choke vs. ring;
  * the patch's own release tail still plays out after note-off. Tunable via
@@ -145,10 +136,10 @@ static const uint16_t SEQ_DRUM_DEFAULT_PATCH[SEQ_TRACKS] = {
 /* Role-based default pitches: pitch IS timbre for these tuned patches.
  * Low kick body, mid snare, high hat tick, mid-high perc. */
 static const uint8_t SEQ_DRUM_DEFAULT_NOTE[SEQ_TRACKS] = {
-    31,   /* track 0: kick  — low G1, gives body/thump        */
-    45,   /* track 1: snare — A2, mid crack                    */
-    72,   /* track 2: hat   — C5, bright tick                  */
-    60,   /* track 3: perc  — C4, present accent               */
+    39,   /* track 0: kick  — Eb2 = 808-KIK root (natural punch)   */
+    45,   /* track 1: snare — A2  = 808-SNR root (natural crack)    */
+    53,   /* track 2: hat   — F3  = 808-C-HAT root (natural tick)   */
+    82,   /* track 3: clap  — Bb5 = 808-DRYCLP root-12 (full snap)  */
 };
 
 /* Built-in 808 PCM sample indices (from amy/src/pcm_tiny.h pcm_map[]) used by
@@ -189,7 +180,7 @@ static uint16_t    s_bpm          = 120;
 /* Drum sound source for the whole drum layer. SYNTH = tonal AMY patches (Juno/
  * DX7) per track; PCM = built-in 808 samples per track. Switchable at runtime;
  * changing it re-configures the drum layer's synth slots in place. */
-static seq_drum_engine_t s_drum_engine = SEQ_DRUM_SYNTH;
+static seq_drum_engine_t s_drum_engine = SEQ_DRUM_PCM;
 static uint16_t    s_melodic_patch = SEQ_MEL_PATCH;
 /* Running allocator for per-row melodic synth slots. Each melodic layer claims
  * a contiguous block of SEQ_TRACKS slots starting here; reset in core_init. */
@@ -200,6 +191,59 @@ static quantizer_state_t s_quantizer = {
     .scale_index = CONFIG_SEQ_QUANTIZER_DEFAULT_SCALE,
     .enabled    = CONFIG_SEQ_QUANTIZER_DEFAULT_ENABLED,
 };
+
+/* ── Bar counter ─────────────────────────────────────────────────────────
+ * sequencer_ticks() is monotonic (never resets on play/stop in normal use).
+ * Capture a baseline at play-start; compute bars elapsed from the delta. */
+static uint32_t s_bar_baseline = 0;
+
+static inline uint32_t sequencer_bars_elapsed(void)
+{
+    uint32_t t = sequencer_ticks();
+    if (t < s_bar_baseline) return 0;
+    return (t - s_bar_baseline) / SEQ_TICKS_PER_BAR;
+}
+
+/* ── Global chord progression ────────────────────────────────────────────── */
+#define CHORD_PROG_MAX_ENTRIES 8
+
+typedef struct {
+    uint8_t      root;           /* chromatic pitch class 0-11 */
+    chord_type_t chord_type;
+    uint8_t      duration_bars;  /* 1 / 2 / 4 / 8 / 16 */
+} chord_prog_entry_t;
+
+typedef struct {
+    chord_prog_entry_t entries[CHORD_PROG_MAX_ENTRIES];
+    uint8_t            count;
+    uint8_t            current;
+    uint32_t           entry_start_bar; /* bars_elapsed when current entry began */
+    bool               enabled;
+} chord_progression_t;
+
+static chord_progression_t s_prog = {
+    .entries = {
+        { .root = 0, .chord_type = CHORD_MAJ7, .duration_bars = 4 },
+    },
+    .count   = 1,
+    .current = 0,
+    .entry_start_bar = 0,
+    .enabled = false,
+};
+
+/* Set by input-task entry points (encoder_task / button callback) that change
+ * chord state; consumed once per tick by sequencer_core_progression_service()
+ * which runs in synth_ui_task. This makes synth_ui_task the SINGLE task that
+ * calls chord_progression_apply_current() -> sequencer_refresh_melodic_layers()
+ * -> AMY emit, so progression/manual-chord edits never race the periodic
+ * advance or each other across tasks. */
+static volatile bool s_prog_apply_pending = false;
+
+/* ── Software LFO state (phase accumulator, per-layer/track) ── */
+static float    s_lfo_phase[MAX_LAYERS][SEQ_TRACKS]; /* 0..1 normalized */
+static float    s_lfo_hz[MAX_LAYERS][SEQ_TRACKS];    /* Hz from rate+BPM */
+static float    s_lfo_rnd[MAX_LAYERS][SEQ_TRACKS];   /* S&H held value   */
+static uint32_t s_lfo_rng_state = 0xDEADBEEFu;
 
 static void sequencer_refresh_track_note(uint8_t layer_idx, uint8_t track,
                                         bool preview);
@@ -247,27 +291,9 @@ static float sequencer_step_velocity(const seq_layer_t *layer,
 #endif
 }
 
-/* ── Scratch AMY event (module-level, never on any task stack) ───────── */
-/*
- * amy_event is ~800 bytes. Placing even one instance on the stack of
- * app_main (default 3584 bytes) causes a stack overflow during init.
- * All emit helpers share this single static buffer; concurrent callers
- * are serialised by s_ev_mutex (all callers are FreeRTOS tasks, never ISRs).
- */
-static amy_event         s_ev;
-static SemaphoreHandle_t s_ev_mutex = NULL;
-
-static inline void seq_ev_begin(void)
-{
-    xSemaphoreTake(s_ev_mutex, portMAX_DELAY);
-    s_ev = amy_default_event();
-}
-
-static inline void seq_ev_send(void)
-{
-    amy_add_event(&s_ev);
-    xSemaphoreGive(s_ev_mutex);
-}
+/* AMY events are emitted through the shared amy_helpers scratch buffer (see
+ * amy_helpers.{c,h}) — one module-level event + mutex for all first-party
+ * callers, all of which are FreeRTOS tasks (never ISRs). */
 
 /* The melodic envelope is stored PER ROW (per track). Each row now owns its own
  * AMY synth slot (synth_id[track]), so every row holds its own independent live
@@ -290,17 +316,17 @@ static void sequencer_configure_melodic_envelope_track(uint8_t layer_idx, uint8_
     const seq_env_t   *env   = seq_layer_env(layer_idx, track);
     float sustain = (float)env->sustain_pct / 100.0f;
 
-    seq_ev_begin();
-    s_ev.synth = layer->synth_id[track];
-    s_ev.bp_is_set[0] = 1;
-    s_ev.eg_type[0] = env->eg_type;
-    s_ev.eg0_times[0] = env->attack_ms;
-    s_ev.eg0_values[0] = 1.0f;
-    s_ev.eg0_times[1] = env->decay_ms;
-    s_ev.eg0_values[1] = sustain;
-    s_ev.eg0_times[2] = env->release_ms;
-    s_ev.eg0_values[2] = 0.0f;
-    seq_ev_send();
+    amy_event *e = amy_helpers_event_begin();
+    e->synth = layer->synth_id[track];
+    e->bp_is_set[0] = 1;
+    e->eg_type[0] = env->eg_type;
+    e->eg0_times[0] = env->attack_ms;
+    e->eg0_values[0] = 1.0f;
+    e->eg0_times[1] = env->decay_ms;
+    e->eg0_values[1] = sustain;
+    e->eg0_times[2] = env->release_ms;
+    e->eg0_values[2] = 0.0f;
+    amy_helpers_event_send(e);
 #else
     (void)layer_idx; (void)track;
 #endif
@@ -332,7 +358,19 @@ static uint8_t sequencer_clamp_layer_note(const seq_layer_t *layer, uint8_t note
 static uint8_t sequencer_resolve_track_note(const seq_layer_t *layer,
                                             uint8_t source_note)
 {
-    if (layer->type != SEQ_LAYER_MELODIC || !s_quantizer.enabled) {
+    if (layer->type != SEQ_LAYER_MELODIC) {
+        return sequencer_clamp_layer_note(layer, source_note);
+    }
+
+    /* Chord mode overrides the global scale quantizer for this layer. */
+    if (layer->chord_mode) {
+        uint8_t snapped = quantizer_snap_to_chord(source_note,
+                                                  layer->chord_root,
+                                                  layer->chord_type);
+        return sequencer_clamp_layer_note(layer, snapped);
+    }
+
+    if (!s_quantizer.enabled) {
         return sequencer_clamp_layer_note(layer, source_note);
     }
 
@@ -395,23 +433,11 @@ static void sequencer_refresh_track_note(uint8_t layer_idx, uint8_t track,
     /* One-shot preview: fires a few ticks from now using the same tag slot.
      * Rapid scrolling overwrites the slot so only the last change is heard. */
     uint32_t fire_tick = sequencer_ticks() + SEQ_PREVIEW_DELAY_TICKS;
-    seq_ev_begin();
-    s_ev.synth                     = layer->synth_id[track];
-    s_ev.midi_note                 = resolved_note;
-    s_ev.velocity                  = 1.0f;
-    s_ev.sequence[SEQUENCE_TAG]    = seq_preview_tag(layer_idx, track);
-    s_ev.sequence[SEQUENCE_TICK]   = fire_tick;
-    s_ev.sequence[SEQUENCE_PERIOD] = 0; /* one-shot */
-    seq_ev_send();
-
-    seq_ev_begin();
-    s_ev.synth                     = layer->synth_id[track];
-    s_ev.midi_note                 = resolved_note;
-    s_ev.velocity                  = 0.0f;
-    s_ev.sequence[SEQUENCE_TAG]    = seq_preview_off_tag(layer_idx, track);
-    s_ev.sequence[SEQUENCE_TICK]   = fire_tick + SEQ_GATE_MELODIC;
-    s_ev.sequence[SEQUENCE_PERIOD] = 0; /* one-shot */
-    seq_ev_send();
+    amy_send_note_sched(layer->synth_id[track], resolved_note, 1.0f,
+                        seq_preview_tag(layer_idx, track), fire_tick, 0);
+    amy_send_note_sched(layer->synth_id[track], resolved_note, 0.0f,
+                        seq_preview_off_tag(layer_idx, track),
+                        fire_tick + SEQ_GATE_MELODIC, 0);
 
     ESP_LOGI(TAG, "layer %d track %d note -> %d (preview @ tick %lu)",
              layer_idx, track, resolved_note, (unsigned long)fire_tick);
@@ -462,16 +488,51 @@ static inline uint32_t seq_preview_off_tag(uint8_t layer, uint8_t track)
 
 static void sequencer_emit_clear_tag(uint32_t tag)
 {
-    seq_ev_begin();
-    s_ev.sequence[SEQUENCE_TAG]    = tag;
-    s_ev.sequence[SEQUENCE_TICK]   = 0;
-    s_ev.sequence[SEQUENCE_PERIOD] = 0;
-    seq_ev_send();
+    amy_event *e = amy_helpers_event_begin();
+    e->sequence[SEQUENCE_TAG]    = tag;
+    e->sequence[SEQUENCE_TICK]   = 0;
+    e->sequence[SEQUENCE_PERIOD] = 0;
+    amy_helpers_event_send(e);
 }
+
+static void sequencer_configure_melodic_filter(uint8_t layer_idx);  /* forward */
 
 /* (Re)configure the AMY synth(s) for layer_idx.
  * Drums use a single synth (synth_id[0]); melodic layers configure one synth
  * per row, all sharing the same patch/flags/voice-count but on distinct slots. */
+/* EDM-tuned envelope parameters for PCM drum tracks (one-shot decay, sustain=0). */
+static const float DRUM_PCM_ATK_MS[SEQ_TRACKS] = {2.0f,  1.0f,  1.0f,  1.0f};
+static const float DRUM_PCM_DEC_MS[SEQ_TRACKS] = {600.0f, 200.0f, 100.0f, 150.0f};
+static const float DRUM_PCM_REL_MS[SEQ_TRACKS] = {50.0f,  30.0f,  15.0f,  20.0f};
+
+/* Apply per-track envelope shape and hat HPF after PCM wave/preset are set. */
+static void sequencer_configure_drum_pcm_voice_params(uint8_t layer_idx)
+{
+    const seq_layer_t *layer = &s_layers[layer_idx];
+    for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
+        amy_event *e = amy_helpers_event_begin();
+        e->synth         = layer->synth_id[t];
+        e->bp_is_set[0]  = 1;
+        e->eg_type[0]    = ENVELOPE_LINEAR;
+        e->eg0_times[0]  = DRUM_PCM_ATK_MS[t];
+        e->eg0_values[0] = 1.0f;
+        e->eg0_times[1]  = DRUM_PCM_DEC_MS[t];
+        e->eg0_values[1] = 0.0f;   /* one-shot: no sustain, sample shapes the body */
+        e->eg0_times[2]  = DRUM_PCM_REL_MS[t];
+        e->eg0_values[2] = 0.0f;
+        amy_helpers_event_send(e);
+
+        if (t == 2) {   /* hat: HPF to strip low-end rumble, add crispness */
+            e = amy_helpers_event_begin();
+            e->synth      = layer->synth_id[t];
+            e->filter_type = FILTER_HPF;
+            e->filter_freq_coefs[COEF_CONST] = 3000.0f;
+            e->resonance  = 0.5f;
+            amy_helpers_event_send(e);
+        }
+    }
+}
+
 static void sequencer_configure_synth(uint8_t layer_idx)
 {
     seq_layer_t *layer = &s_layers[layer_idx];
@@ -488,33 +549,30 @@ static void sequencer_configure_synth(uint8_t layer_idx)
              * reassert needed here. */
             for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
                 /* Allocate/realloc the slot as a 1-osc voice (clears old patch). */
-                seq_ev_begin();
-                s_ev.num_voices    = layer->num_voices;
-                s_ev.oscs_per_voice = 1;
-                s_ev.synth         = layer->synth_id[t];
-                s_ev.synth_flags   = layer->synth_flags;  /* 0 */
-                seq_ev_send();
+                amy_event *e = amy_helpers_event_begin();
+                e->num_voices    = layer->num_voices;
+                e->oscs_per_voice = 1;
+                e->synth         = layer->synth_id[t];
+                e->synth_flags   = layer->synth_flags;  /* 0 */
+                amy_helpers_event_send(e);
 
                 /* Configure osc 0 of this synth as the chosen 808 PCM sample. */
-                seq_ev_begin();
-                s_ev.synth  = layer->synth_id[t];
-                s_ev.osc    = 0;
-                s_ev.wave   = PCM;
-                s_ev.preset = SEQ_DRUM_PCM_PRESET[t];
-                seq_ev_send();
+                e = amy_helpers_event_begin();
+                e->synth  = layer->synth_id[t];
+                e->osc    = 0;
+                e->wave   = PCM;
+                e->preset = SEQ_DRUM_PCM_PRESET[t];
+                amy_helpers_event_send(e);
             }
+            sequencer_configure_drum_pcm_voice_params(layer_idx);
             return;
         }
 
         /* SYNTH mode — per-track: each drum row loads its OWN patch onto its OWN
          * synth slot, note-offs honored (flags = 0). Mirrors the melodic loop. */
         for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
-            seq_ev_begin();
-            s_ev.patch_number = layer->track_patch[t];
-            s_ev.num_voices   = layer->num_voices;
-            s_ev.synth        = layer->synth_id[t];
-            s_ev.synth_flags  = layer->synth_flags;   /* 0 */
-            seq_ev_send();
+            amy_send_patch(layer->synth_id[t], layer->track_patch[t],
+                           layer->num_voices, layer->synth_flags);
         }
         /* Patch strings carry global EQ/chorus commands; keep them per-synth. */
         synth_ui_fx_reassert_global();
@@ -523,16 +581,13 @@ static void sequencer_configure_synth(uint8_t layer_idx)
 
     /* Melodic: push the shared patch/flags/voices to each row's own synth. */
     for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
-        seq_ev_begin();
-        s_ev.patch_number = layer->patch;
-        s_ev.num_voices   = layer->num_voices;
-        s_ev.synth        = layer->synth_id[t];
-        s_ev.synth_flags  = layer->synth_flags;
-        seq_ev_send();
+        amy_send_patch(layer->synth_id[t], layer->patch,
+                       layer->num_voices, layer->synth_flags);
     }
     /* Patch strings carry global EQ/chorus commands; keep them per-synth. */
     synth_ui_fx_reassert_global();
     sequencer_configure_melodic_envelope(layer_idx);
+    sequencer_configure_melodic_filter(layer_idx);
 }
 
 /* Schedule (or cancel) one grid step as a pair of repeating AMY events: a
@@ -544,6 +599,12 @@ static void sequencer_emit_step(uint8_t layer_idx, uint8_t track, uint8_t step)
     seq_layer_t *layer  = &s_layers[layer_idx];
     /* Total ticks in one loop of this layer's pattern. */
     uint32_t bar_ticks  = (uint32_t)layer->num_steps * SEQ_TICKS_PER_STEP;
+    /* Repeat rate: fire every N bars. period scales bar_ticks accordingly.
+     * note-off must wrap against the same period so it lands in the correct
+     * half of the extended window (not just within the first bar). */
+    uint32_t rr         = (layer->repeat_rate[track] >= SEQ_REPEAT_2)
+                          ? (uint32_t)layer->repeat_rate[track] : 1u;
+    uint32_t period     = bar_ticks * rr;
     /* How long the note is held: drums are short/percussive, melodic longer. */
     uint8_t  gate       = (layer->type == SEQ_LAYER_DRUM)
                           ? SEQ_GATE_DRUM : SEQ_GATE_MELODIC;
@@ -558,8 +619,9 @@ static void sequencer_emit_step(uint8_t layer_idx, uint8_t track, uint8_t step)
     uint32_t tag_off    = seq_tag_off(layer_idx, track, step);
     /* +1 so tick 0 stays reserved (AMY treats tick 0 specially as "clear"). */
     uint32_t tick_on    = (uint32_t)(1 + step * SEQ_TICKS_PER_STEP);
-    /* Note-off wraps within the bar if the gate spills past the loop end. */
-    uint32_t tick_off   = (tick_on + gate) % bar_ticks;
+    /* Note-off wraps within the full period (not just bar_ticks) so a note at
+     * repeat_rate=2 whose gate spills past bar_ticks still fires correctly. */
+    uint32_t tick_off   = (tick_on + gate) % period;
     float note_velocity = sequencer_step_velocity(layer, track, step);
     if (tick_off == 0) tick_off = 1; /* avoid the reserved tick 0 */
 
@@ -573,23 +635,10 @@ static void sequencer_emit_step(uint8_t layer_idx, uint8_t track, uint8_t step)
     /* Both drum and melodic layers now have one synth slot per track. */
     uint8_t synth = layer->synth_id[track];
 
-    seq_ev_begin();
-    s_ev.synth                     = synth;
-    s_ev.midi_note                 = layer->step_note[track][step];
-    s_ev.velocity                  = note_velocity;
-    s_ev.sequence[SEQUENCE_TAG]    = tag_on;
-    s_ev.sequence[SEQUENCE_TICK]   = tick_on;
-    s_ev.sequence[SEQUENCE_PERIOD] = bar_ticks;
-    seq_ev_send();
-
-    seq_ev_begin();
-    s_ev.synth                     = synth;
-    s_ev.midi_note                 = layer->step_note[track][step];
-    s_ev.velocity                  = 0.0f;
-    s_ev.sequence[SEQUENCE_TAG]    = tag_off;
-    s_ev.sequence[SEQUENCE_TICK]   = tick_off;
-    s_ev.sequence[SEQUENCE_PERIOD] = bar_ticks;
-    seq_ev_send();
+    amy_send_note_sched(synth, layer->step_note[track][step], note_velocity,
+                        tag_on, tick_on, period);
+    amy_send_note_sched(synth, layer->step_note[track][step], 0.0f,
+                        tag_off, tick_off, period);
 }
 
 /* Re-emit all steps for a layer (used on play-resume). */
@@ -624,19 +673,54 @@ static uint16_t sequencer_clamp_bpm(uint16_t b)
 
 static void sequencer_push_tempo(uint16_t b)
 {
-    seq_ev_begin();
-    s_ev.tempo = b;
-    seq_ev_send();
+    amy_event *e = amy_helpers_event_begin();
+    e->tempo = b;
+    amy_helpers_event_send(e);
+}
+
+/* ── LFO helpers ─────────────────────────────────────────────────────── */
+
+static float lfo_rate_to_hz(lfo_rate_t rate, uint16_t bpm)
+{
+    float b = (float)bpm;
+    switch (rate) {
+        case LFO_RATE_1_8:  return b / 30.0f;    /* 1/8 note */
+        case LFO_RATE_1_4:  return b / 60.0f;    /* 1/4 note */
+        case LFO_RATE_1_2:  return b / 120.0f;   /* 1/2 note */
+        case LFO_RATE_1BAR: return b / 240.0f;   /* 1 bar (4/4) */
+        case LFO_RATE_2BAR: return b / 480.0f;
+        case LFO_RATE_4BAR: return b / 960.0f;
+        default:            return b / 240.0f;
+    }
+}
+
+static float lfo_next_rand(void)
+{
+    s_lfo_rng_state ^= s_lfo_rng_state << 13;
+    s_lfo_rng_state ^= s_lfo_rng_state >> 17;
+    s_lfo_rng_state ^= s_lfo_rng_state << 5;
+    return (float)(s_lfo_rng_state >> 17) / 32767.0f * 2.0f - 1.0f;
+}
+
+static void lfo_push_target_neutral(uint8_t synth_id, lfo_target_t target)
+{
+    amy_event *e = amy_helpers_event_begin();
+    e->synth = synth_id;
+    switch (target) {
+        case LFO_TARGET_FILTER: e->filter_freq_coefs[COEF_CONST] = 8000.0f; break;
+        case LFO_TARGET_AMP:    e->amp_coefs[COEF_CONST]  = 1.0f;           break;
+        case LFO_TARGET_PITCH:  e->freq_coefs[COEF_CONST] = 1.0f;           break;
+        case LFO_TARGET_PAN:    e->pan_coefs[COEF_CONST]  = 0.5f;           break;
+        default: break;
+    }
+    amy_helpers_event_send(e);
 }
 
 /* ── Public API ──────────────────────────────────────────────────────── */
 
 void sequencer_core_init(void)
 {
-    if (s_ev_mutex == NULL) {
-        s_ev_mutex = xSemaphoreCreateMutex();
-        configASSERT(s_ev_mutex != NULL);
-    }
+    amy_helpers_init();
     s_num_layers = 0;
     s_next_melodic_synth = SEQ_MEL_SYNTH_BASE;
     memset(s_layers, 0, sizeof(s_layers));
@@ -651,6 +735,9 @@ void sequencer_core_init(void)
     if (s_quantizer.scale_index >= quantizer_scale_count()) {
         s_quantizer.scale_index = 0;
     }
+    memset(s_lfo_phase, 0, sizeof(s_lfo_phase));
+    memset(s_lfo_hz,    0, sizeof(s_lfo_hz));
+    memset(s_lfo_rnd,   0, sizeof(s_lfo_rnd));
     CORE_HEAP_CHECK("core_init: before push_tempo");
     sequencer_push_tempo(s_bpm);
     CORE_HEAP_CHECK("core_init: after push_tempo");
@@ -723,12 +810,7 @@ uint8_t sequencer_core_add_layer(seq_layer_type_t type, uint8_t num_steps)
             for (uint8_t s = 0; s < SEQ_MAX_STEPS; s++) {
                 layer->step_note[t][s] = mel_notes[t];
             }
-            /* Seed each row's envelope from the compile-time defaults. */
-            layer->env[t].attack_ms   = CONFIG_SEQ_MELODIC_ENV_ATTACK_MS;
-            layer->env[t].decay_ms    = CONFIG_SEQ_MELODIC_ENV_DECAY_MS;
-            layer->env[t].sustain_pct = CONFIG_SEQ_MELODIC_ENV_SUSTAIN_PCT;
-            layer->env[t].release_ms  = CONFIG_SEQ_MELODIC_ENV_RELEASE_MS;
-            layer->env[t].eg_type     = CONFIG_SEQ_MELODIC_ENV_EG0_TYPE;
+            layer->env[t] = seq_default_melodic_env();
         }
     }
 
@@ -738,6 +820,63 @@ uint8_t sequencer_core_add_layer(seq_layer_type_t type, uint8_t num_steps)
     ESP_LOGI(TAG, "add_layer[%d]: type=%d synth0=%d patch=%d steps=%d",
              idx, type, layer->synth_id[0], layer->patch, layer->num_steps);
     return idx;
+}
+
+bool sequencer_core_delete_layer(uint8_t layer_idx)
+{
+    if (s_num_layers <= 1) return false;                  /* must keep at least 1 */
+    if (layer_idx == 0)   return false;                   /* drum layer is permanent */
+    if (layer_idx >= s_num_layers) return false;
+    if (s_layers[layer_idx].type == SEQ_LAYER_DRUM) return false;
+
+    /* Clear ALL layers' tags before shifting — indices above layer_idx become
+     * stale after compaction and would fire as ghost notes. */
+    for (uint8_t i = 0; i < s_num_layers; i++) {
+        sequencer_clear_layer_tags(i);
+    }
+
+    /* Release AMY oscillator slots for the deleted layer. */
+    const seq_layer_t *dead = &s_layers[layer_idx];
+    for (uint8_t t = 0; t < dead->num_tracks; t++) {
+        amy_event *e = amy_helpers_event_begin();
+        e->synth      = dead->synth_id[t];
+        e->num_voices = 0;
+        amy_helpers_event_send(e);
+    }
+
+    /* Compact all parallel arrays by shifting survivors down by one slot. */
+    uint8_t tail = (uint8_t)(s_num_layers - layer_idx - 1);
+    if (tail > 0) {
+        memmove(&s_layers[layer_idx],
+                &s_layers[layer_idx + 1],
+                tail * sizeof(s_layers[0]));
+        memmove(&s_cached_step[layer_idx],
+                &s_cached_step[layer_idx + 1],
+                tail * sizeof(s_cached_step[0]));
+        memmove(&s_track_source_note[layer_idx],
+                &s_track_source_note[layer_idx + 1],
+                tail * sizeof(s_track_source_note[0]));
+        memmove(&s_lfo_phase[layer_idx],
+                &s_lfo_phase[layer_idx + 1],
+                tail * sizeof(s_lfo_phase[0]));
+        memmove(&s_lfo_hz[layer_idx],
+                &s_lfo_hz[layer_idx + 1],
+                tail * sizeof(s_lfo_hz[0]));
+        memmove(&s_lfo_rnd[layer_idx],
+                &s_lfo_rnd[layer_idx + 1],
+                tail * sizeof(s_lfo_rnd[0]));
+    }
+    s_num_layers--;
+
+    /* Resync all surviving layers so their note tags re-register correctly. */
+    if (s_playing) {
+        for (uint8_t i = 0; i < s_num_layers; i++) {
+            sequencer_resync_layer(i);
+        }
+    }
+
+    ESP_LOGI(TAG, "delete_layer[%u]: %u layers remain", layer_idx, s_num_layers);
+    return true;
 }
 
 void sequencer_core_set_melodic_patch(uint16_t patch_number)
@@ -802,12 +941,8 @@ void sequencer_core_set_drum_patch(uint8_t layer_idx, uint8_t track,
     }
 
     /* Reload only this track's synth slot with the new patch. */
-    seq_ev_begin();
-    s_ev.patch_number = patch_number;
-    s_ev.num_voices   = layer->num_voices;
-    s_ev.synth        = layer->synth_id[track];
-    s_ev.synth_flags  = layer->synth_flags;  /* 0 */
-    seq_ev_send();
+    amy_send_patch(layer->synth_id[track], patch_number,
+                   layer->num_voices, layer->synth_flags);
 
     /* Patch strings carry global EQ/chorus commands; keep them per-synth. */
     synth_ui_fx_reassert_global();
@@ -893,28 +1028,23 @@ void sequencer_core_push_envelope(uint8_t synth, const seq_env_t *env)
     if (env == NULL) return;
     float sustain = (float)env->sustain_pct / 100.0f;
 
-    seq_ev_begin();
-    s_ev.synth         = synth;
-    s_ev.bp_is_set[0]  = 1;
-    s_ev.eg_type[0]    = env->eg_type;
-    s_ev.eg0_times[0]  = env->attack_ms;
-    s_ev.eg0_values[0] = 1.0f;
-    s_ev.eg0_times[1]  = env->decay_ms;
-    s_ev.eg0_values[1] = sustain;
-    s_ev.eg0_times[2]  = env->release_ms;
-    s_ev.eg0_values[2] = 0.0f;
-    seq_ev_send();
+    amy_event *e = amy_helpers_event_begin();
+    e->synth         = synth;
+    e->bp_is_set[0]  = 1;
+    e->eg_type[0]    = env->eg_type;
+    e->eg0_times[0]  = env->attack_ms;
+    e->eg0_values[0] = 1.0f;
+    e->eg0_times[1]  = env->decay_ms;
+    e->eg0_values[1] = sustain;
+    e->eg0_times[2]  = env->release_ms;
+    e->eg0_values[2] = 0.0f;
+    amy_helpers_event_send(e);
 }
 
 void sequencer_core_arp_configure(uint16_t patch_number, uint8_t num_voices)
 {
     patch_number = SEQ_CLAMP_U16(patch_number, 0, 256);
-    seq_ev_begin();
-    s_ev.patch_number = patch_number;
-    s_ev.num_voices   = num_voices;
-    s_ev.synth        = SEQ_ARP_SYNTH;
-    s_ev.synth_flags  = 0;
-    seq_ev_send();
+    amy_send_patch(SEQ_ARP_SYNTH, patch_number, num_voices, 0);
     /* Patch strings carry global EQ/chorus commands; keep them per-synth. */
     synth_ui_fx_reassert_global();
     ESP_LOGI(TAG, "arp synth %u patch -> %u (%u voices)",
@@ -939,23 +1069,10 @@ void sequencer_core_arp_emit_note(uint32_t tag_base, uint8_t midi_note,
     if (tick_off == 0) tick_off = 1; /* tick 0 is reserved (clear) */
     if (tick_on  == 0) tick_on  = 1;
 
-    seq_ev_begin();
-    s_ev.synth                     = SEQ_ARP_SYNTH;
-    s_ev.midi_note                 = midi_note;
-    s_ev.velocity                  = velocity;
-    s_ev.sequence[SEQUENCE_TAG]    = tag_base;
-    s_ev.sequence[SEQUENCE_TICK]   = tick_on;
-    s_ev.sequence[SEQUENCE_PERIOD] = period;
-    seq_ev_send();
-
-    seq_ev_begin();
-    s_ev.synth                     = SEQ_ARP_SYNTH;
-    s_ev.midi_note                 = midi_note;
-    s_ev.velocity                  = 0.0f;
-    s_ev.sequence[SEQUENCE_TAG]    = tag_base + 1;
-    s_ev.sequence[SEQUENCE_TICK]   = tick_off;
-    s_ev.sequence[SEQUENCE_PERIOD] = period;
-    seq_ev_send();
+    amy_send_note_sched(SEQ_ARP_SYNTH, midi_note, velocity,
+                        tag_base, tick_on, period);
+    amy_send_note_sched(SEQ_ARP_SYNTH, midi_note, 0.0f,
+                        tag_base + 1, tick_off, period);
 }
 
 void sequencer_core_arp_clear_note(uint32_t tag_base)
@@ -1008,6 +1125,183 @@ void sequencer_core_set_melodic_envelope(uint8_t layer_idx, uint8_t track,
 #endif
 }
 
+/* ── Per-row melodic filter (runtime-editable) ─────────────────────────── */
+
+/* Push one row's stored filter to its own AMY synth. */
+static void sequencer_configure_melodic_filter_track(uint8_t layer_idx, uint8_t track)
+{
+    const seq_layer_t   *layer = &s_layers[layer_idx];
+    const seq_filter_t  *f     = &layer->filter[track];
+    amy_event *e = amy_helpers_event_begin();
+    e->synth       = layer->synth_id[track];
+    if (f->enabled) {
+        e->filter_type = f->filter_type;
+        e->filter_freq_coefs[COEF_CONST] = f->cutoff_hz;
+        e->resonance = f->resonance;
+    } else {
+        e->filter_type = FILTER_NONE;
+    }
+    amy_helpers_event_send(e);
+}
+
+/* Push the filter for every authored row in a layer (called after patch reload). */
+static void sequencer_configure_melodic_filter(uint8_t layer_idx)
+{
+    const seq_layer_t *layer = &s_layers[layer_idx];
+    for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
+        if (layer->filter_authored[t]) {
+            sequencer_configure_melodic_filter_track(layer_idx, t);
+        }
+    }
+}
+
+bool sequencer_core_get_melodic_filter(uint8_t layer_idx, uint8_t track,
+                                       seq_filter_t *out)
+{
+    if (!out || layer_idx >= s_num_layers || track >= SEQ_TRACKS) return false;
+    if (s_layers[layer_idx].type != SEQ_LAYER_MELODIC) return false;
+    *out = s_layers[layer_idx].filter[track];
+    return true;
+}
+
+void sequencer_core_set_melodic_filter(uint8_t layer_idx, uint8_t track,
+                                       const seq_filter_t *f)
+{
+    if (!f || layer_idx >= s_num_layers || track >= SEQ_TRACKS) return;
+    seq_layer_t *layer = &s_layers[layer_idx];
+    if (layer->type != SEQ_LAYER_MELODIC) return;
+
+    seq_filter_t *dst = &layer->filter[track];
+    dst->filter_type = (f->filter_type < 5) ? f->filter_type : FILTER_NONE;
+    dst->cutoff_hz   = SEQ_CLAMP_F32(f->cutoff_hz,  65.0f, 8000.0f);
+    dst->resonance   = SEQ_CLAMP_F32(f->resonance,  0.51f, 8.0f);
+    dst->enabled     = f->enabled;
+
+    layer->filter_authored[track] = true;
+    sequencer_configure_melodic_filter_track(layer_idx, track);
+    ESP_LOGI(TAG, "filter L%u row%u -> type%u %.0fHz Q%.2f (authored)",
+             layer_idx, track, dst->filter_type,
+             (double)dst->cutoff_hz, (double)dst->resonance);
+}
+
+/* Generic filter push: shared by arp, drone (via synth_ui). */
+void sequencer_core_push_filter(uint8_t synth, const seq_filter_t *f)
+{
+    if (!f) return;
+    amy_event *e = amy_helpers_event_begin();
+    e->synth = synth;
+    if (f->enabled) {
+        e->filter_type = f->filter_type;
+        e->filter_freq_coefs[COEF_CONST] = f->cutoff_hz;
+        e->resonance = f->resonance;
+    } else {
+        e->filter_type = FILTER_NONE;
+    }
+    amy_helpers_event_send(e);
+}
+
+void sequencer_core_set_melodic_lfo(uint8_t layer_idx, uint8_t track,
+                                    const seq_lfo_t *lfo)
+{
+    if (!lfo || layer_idx >= s_num_layers || track >= SEQ_TRACKS) return;
+    seq_layer_t *layer = &s_layers[layer_idx];
+    if (layer->type != SEQ_LAYER_MELODIC) return;
+
+    layer->lfo[track] = *lfo;
+    if (layer->lfo[track].depth > 100) layer->lfo[track].depth = 100;
+    layer->lfo_authored[track] = true;
+
+    if (!lfo->enabled) {
+        /* Restore target to its stored static value rather than a hardcoded
+         * constant — FILTER in particular has a user-set cutoff that must
+         * survive enable/disable round-trips. */
+        if (lfo->target == LFO_TARGET_FILTER) {
+            sequencer_core_push_filter(layer->synth_id[track], &layer->filter[track]);
+        } else {
+            lfo_push_target_neutral(layer->synth_id[track], lfo->target);
+        }
+        s_lfo_hz[layer_idx][track] = 0.0f;
+    } else {
+        s_lfo_hz[layer_idx][track] = lfo_rate_to_hz(lfo->rate, s_bpm);
+    }
+    ESP_LOGI(TAG, "LFO L%u T%u %s %.2f Hz d=%u tgt=%u",
+             layer_idx, track, lfo->enabled ? "ON" : "OFF",
+             (double)s_lfo_hz[layer_idx][track], lfo->depth, lfo->target);
+}
+
+bool sequencer_core_get_melodic_lfo(uint8_t layer_idx, uint8_t track,
+                                    seq_lfo_t *out)
+{
+    if (!out || layer_idx >= s_num_layers || track >= SEQ_TRACKS) return false;
+    if (s_layers[layer_idx].type != SEQ_LAYER_MELODIC) return false;
+    *out = s_layers[layer_idx].lfo[track];
+    return true;
+}
+
+void sequencer_core_lfo_service(void)
+{
+    const float DT = 0.05f; /* 20 Hz */
+    for (int li = 0; li < s_num_layers; li++) {
+        if (s_layers[li].type != SEQ_LAYER_MELODIC) continue;
+        for (int tr = 0; tr < SEQ_TRACKS; tr++) {
+            if (!s_layers[li].lfo_authored[tr]) continue;
+            const seq_lfo_t *lfo = &s_layers[li].lfo[tr];
+            if (!lfo->enabled) continue;
+            float hz = s_lfo_hz[li][tr];
+            if (hz <= 0.0f) continue;
+
+            float ph = s_lfo_phase[li][tr] + hz * DT;
+            if (ph >= 1.0f) {
+                ph -= 1.0f;
+                if (lfo->wave == LFO_WAVE_RANDOM)
+                    s_lfo_rnd[li][tr] = lfo_next_rand();
+            }
+            s_lfo_phase[li][tr] = ph;
+
+            float val;
+            switch (lfo->wave) {
+                case LFO_WAVE_SINE:
+                    val = sinf(2.0f * 3.14159265f * ph);          break;
+                case LFO_WAVE_TRIANGLE:
+                    val = (ph < 0.5f) ? (4.0f*ph - 1.0f)
+                                      : (3.0f - 4.0f*ph);         break;
+                case LFO_WAVE_SAW_UP:   val =  2.0f*ph - 1.0f;   break;
+                case LFO_WAVE_SAW_DOWN: val =  1.0f - 2.0f*ph;   break;
+                case LFO_WAVE_SQUARE:   val = (ph < 0.5f) ? 1.0f : -1.0f; break;
+                case LFO_WAVE_RANDOM:   val = s_lfo_rnd[li][tr];  break;
+                default:                val = 0.0f;                break;
+            }
+
+            float d   = (float)lfo->depth / 100.0f;
+            uint8_t syn = s_layers[li].synth_id[tr];
+
+            amy_event *e = amy_helpers_event_begin();
+            e->synth = syn;
+            switch (lfo->target) {
+                case LFO_TARGET_FILTER: {
+                    float base = (s_layers[li].filter[tr].enabled &&
+                                  s_layers[li].filter[tr].cutoff_hz > 0.0f)
+                                 ? s_layers[li].filter[tr].cutoff_hz : 1000.0f;
+                    e->filter_freq_coefs[COEF_CONST] =
+                        base * powf(2.0f, d * 3.0f * val);
+                    break;
+                }
+                case LFO_TARGET_AMP:
+                    e->amp_coefs[COEF_CONST] = 1.0f - d*(0.5f - 0.5f*val);
+                    break;
+                case LFO_TARGET_PITCH:
+                    e->freq_coefs[COEF_CONST] = powf(2.0f, d * val);
+                    break;
+                case LFO_TARGET_PAN:
+                    e->pan_coefs[COEF_CONST] = 0.5f + d*0.5f*val;
+                    break;
+                default: break;
+            }
+            amy_helpers_event_send(e);
+        }
+    }
+}
+
 uint8_t sequencer_core_get_num_layers(void)
 {
     return s_num_layers;
@@ -1034,6 +1328,12 @@ void sequencer_core_set_bpm(uint16_t new_bpm)
 {
     s_bpm = sequencer_clamp_bpm(new_bpm);
     sequencer_push_tempo(s_bpm);
+    for (int li = 0; li < s_num_layers; li++) {
+        for (int tr = 0; tr < SEQ_TRACKS; tr++) {
+            if (s_layers[li].lfo_authored[tr] && s_layers[li].lfo[tr].enabled)
+                s_lfo_hz[li][tr] = lfo_rate_to_hz(s_layers[li].lfo[tr].rate, s_bpm);
+        }
+    }
 }
 
 /* Derive the currently-playing step from AMY's free-running tick counter:
@@ -1058,6 +1358,10 @@ void sequencer_core_set_playing(bool p)
     if (s_playing == p) return;
     s_playing = p;
     if (s_playing) {
+        /* Anchor the bar counter so bars_elapsed is relative to this play-start. */
+        s_bar_baseline = sequencer_ticks();
+        s_prog.entry_start_bar = 0;
+        s_prog.current = 0;
         for (uint8_t i = 0; i < s_num_layers; i++) {
             sequencer_resync_layer(i);
         }
@@ -1134,3 +1438,247 @@ uint8_t sequencer_core_get_quantizer_scale(void)
     return s_quantizer.scale_index;
 }
 
+/* ── Global chord progression ─────────────────────────────────────────────── */
+
+/* Map a chord type to the closest diatonic scale for arp snap quality. */
+static uint8_t chord_type_to_scale_index(chord_type_t ct)
+{
+    /* Scale indices mirror s_scales[] in quantizer.c:
+     * 0=Chromatic, 1=Major, 2=Natural Minor, 3=Dorian, 4=Phrygian,
+     * 5=Lydian, 6=Mixolydian, 7=Minor Pent, 8=Major Pent */
+    switch (ct) {
+        case CHORD_MAJ:  return 1;
+        case CHORD_MIN:  return 2;
+        case CHORD_MAJ7: return 1;
+        case CHORD_MIN7: return 3;  /* Dorian has the natural 6 common in min7 contexts */
+        case CHORD_DOM7: return 6;  /* Mixolydian */
+        case CHORD_SUS2: return 8;  /* Major Pentatonic — open, no 3rd */
+        case CHORD_SUS4: return 8;
+        case CHORD_DIM:  return 4;  /* Phrygian — dark/diminished flavour */
+        case CHORD_AUG:  return 5;  /* Lydian — raised 4th matches augmented feel */
+        default:         return 1;
+    }
+}
+
+static void chord_progression_apply_current(void)
+{
+    if (s_prog.count == 0) return;
+    const chord_prog_entry_t *e = &s_prog.entries[s_prog.current];
+
+    /* Update every melodic layer's chord state and re-resolve all tracks. */
+    for (uint8_t li = 0; li < s_num_layers; li++) {
+        seq_layer_t *layer = &s_layers[li];
+        if (layer->type != SEQ_LAYER_MELODIC) continue;
+        layer->chord_mode  = true;
+        layer->chord_root  = e->root;
+        layer->chord_type  = e->chord_type;
+    }
+    sequencer_refresh_melodic_layers(false);
+
+    /* Drive arp root + scale to match the new chord. */
+    arp_set_root_note((uint8_t)(e->root + 60));   /* pitch class → MIDI octave 4 */
+    arp_set_scale(chord_type_to_scale_index(e->chord_type));
+}
+
+/* Called from synth_ui_task at 20 Hz. This is the SINGLE task that emits chord
+ * changes to AMY: it both (a) drains s_prog_apply_pending, which input-task entry
+ * points (encoder_task / button callback) set after mutating chord state, and
+ * (b) advances the progression when the current entry expires. Funnelling every
+ * chord_progression_apply_current() / sequencer_refresh_melodic_layers() emit
+ * through this one task means edits never race the periodic advance or each other
+ * across tasks — no lock needed because there is only one writer of the emit. */
+void sequencer_core_progression_service(void)
+{
+    /* Drain deferred chord applies first, regardless of playing/enabled state. */
+    if (s_prog_apply_pending) {
+        s_prog_apply_pending = false;
+        if (s_prog.enabled && s_prog.count > 0) {
+            chord_progression_apply_current();
+        } else {
+            /* Disabled (or empty): layers already had chord_mode cleared by the
+             * caller, or a manual per-layer chord was set/cleared; re-resolve all
+             * melodic layers against their own current chord/scale state. */
+            sequencer_refresh_melodic_layers(false);
+        }
+    }
+
+    if (!s_prog.enabled || s_prog.count == 0 || !s_playing) return;
+
+    uint32_t bars = sequencer_bars_elapsed();
+    const chord_prog_entry_t *e = &s_prog.entries[s_prog.current];
+
+    if (bars - s_prog.entry_start_bar >= e->duration_bars) {
+        uint8_t next = (uint8_t)((s_prog.current + 1) % s_prog.count);
+        s_prog.current = next;
+        s_prog.entry_start_bar = bars;
+        chord_progression_apply_current();
+        ESP_LOGI(TAG, "progression -> entry %u (root=%u type=%u)",
+                 next, s_prog.entries[next].root, (unsigned)s_prog.entries[next].chord_type);
+    }
+}
+
+/* ── Progression public API ─────────────────────────────────────────────── */
+
+void sequencer_core_progression_set_enabled(bool en)
+{
+    s_prog.enabled = en;
+    if (en && s_prog.count > 0) {
+        /* Anchor entry_start_bar to now so the first entry gets its full
+         * duration regardless of when in a play session this is toggled. */
+        s_prog.current = 0;
+        s_prog.entry_start_bar = sequencer_bars_elapsed();
+        /* Defer the AMY emit to the service tick (single-applier). */
+        s_prog_apply_pending = true;
+    } else if (!en) {
+        /* Disable chord mode on all melodic layers so they return to scale
+         * quantizer; defer the re-resolve emit to the service tick. */
+        for (uint8_t li = 0; li < s_num_layers; li++) {
+            s_layers[li].chord_mode = false;
+        }
+        s_prog_apply_pending = true;
+    }
+}
+
+bool sequencer_core_progression_get_enabled(void) { return s_prog.enabled; }
+
+void sequencer_core_progression_set_entry(uint8_t idx, uint8_t root,
+                                          chord_type_t chord_type,
+                                          uint8_t duration_bars)
+{
+    if (idx >= CHORD_PROG_MAX_ENTRIES) return;
+    s_prog.entries[idx].root          = root % 12;
+    s_prog.entries[idx].chord_type    = (chord_type < CHORD_TYPE_COUNT)
+                                        ? chord_type : CHORD_MAJ;
+    s_prog.entries[idx].duration_bars = (duration_bars > 0) ? duration_bars : 4;
+    if (idx >= s_prog.count) s_prog.count = (uint8_t)(idx + 1);
+    /* If we edited the live (currently playing) entry, defer a re-apply so the
+     * audible chord tracks the edit. */
+    if (s_prog.enabled && idx == s_prog.current) s_prog_apply_pending = true;
+}
+
+void sequencer_core_progression_get_entry(uint8_t idx, uint8_t *root,
+                                          chord_type_t *chord_type,
+                                          uint8_t *duration_bars)
+{
+    if (idx >= s_prog.count || idx >= CHORD_PROG_MAX_ENTRIES) return;
+    if (root)          *root          = s_prog.entries[idx].root;
+    if (chord_type)    *chord_type    = s_prog.entries[idx].chord_type;
+    if (duration_bars) *duration_bars = s_prog.entries[idx].duration_bars;
+}
+
+void sequencer_core_progression_set_count(uint8_t count)
+{
+    if (count > CHORD_PROG_MAX_ENTRIES) count = CHORD_PROG_MAX_ENTRIES;
+    s_prog.count = count;
+    /* If the active entry fell out of range, wrap to 0, restart its bar window,
+     * and re-apply so the audible chord follows the new active entry. */
+    if (s_prog.current >= s_prog.count && s_prog.count > 0) {
+        s_prog.current = 0;
+        s_prog.entry_start_bar = sequencer_bars_elapsed();
+        if (s_prog.enabled) s_prog_apply_pending = true;
+    }
+}
+
+uint8_t sequencer_core_progression_get_count(void) { return s_prog.count; }
+uint8_t sequencer_core_progression_get_current(void) { return s_prog.current; }
+uint8_t sequencer_core_progression_get_max(void) { return CHORD_PROG_MAX_ENTRIES; }
+
+/* Bars elapsed within the currently-playing entry (0-based), for the UI status bar. */
+uint8_t sequencer_core_progression_bars_in_current(void)
+{
+    if (!s_prog.enabled || s_prog.count == 0) return 0;
+    uint32_t bars = sequencer_bars_elapsed();
+    if (bars < s_prog.entry_start_bar) return 0;   /* baseline just moved */
+    return (uint8_t)(bars - s_prog.entry_start_bar);
+}
+
+/* Append a default entry (Cmaj, 4 bars) if room remains. Returns true on success. */
+bool sequencer_core_progression_add_entry(void)
+{
+    if (s_prog.count >= CHORD_PROG_MAX_ENTRIES) return false;
+    uint8_t idx = s_prog.count;
+    s_prog.entries[idx].root          = 0;          /* C */
+    s_prog.entries[idx].chord_type    = CHORD_MAJ;
+    s_prog.entries[idx].duration_bars = 4;
+    s_prog.count = (uint8_t)(idx + 1);
+    return true;
+}
+
+/* Delete entry idx, shifting later entries down. Keeps at least one entry. */
+void sequencer_core_progression_delete_entry(uint8_t idx)
+{
+    if (idx >= s_prog.count || s_prog.count <= 1) return;
+    for (uint8_t i = idx; i + 1 < s_prog.count; i++) {
+        s_prog.entries[i] = s_prog.entries[i + 1];
+    }
+    s_prog.count--;
+    /* Fix up the active index/window if it was at or past the deletion point. */
+    bool active_changed = false;
+    if (s_prog.current == idx) {
+        if (s_prog.current >= s_prog.count) s_prog.current = 0;
+        active_changed = true;
+    } else if (s_prog.current > idx) {
+        s_prog.current--;   /* same entry, new slot — no audible change */
+    }
+    if (active_changed) {
+        s_prog.entry_start_bar = sequencer_bars_elapsed();
+        if (s_prog.enabled) s_prog_apply_pending = true;
+    }
+}
+
+void sequencer_core_progression_set_layer_chord(uint8_t layer_idx,
+                                                uint8_t root,
+                                                chord_type_t chord_type)
+{
+    if (layer_idx >= s_num_layers) return;
+    seq_layer_t *layer = &s_layers[layer_idx];
+    if (layer->type != SEQ_LAYER_MELODIC) return;
+    layer->chord_mode = true;
+    layer->chord_root = root % 12;
+    layer->chord_type = chord_type;
+    /* Defer the re-resolve emit to the service tick (single-applier). */
+    s_prog_apply_pending = true;
+}
+
+void sequencer_core_progression_clear_layer_chord(uint8_t layer_idx)
+{
+    if (layer_idx >= s_num_layers) return;
+    s_layers[layer_idx].chord_mode = false;
+    /* Defer the re-resolve emit to the service tick (single-applier). */
+    s_prog_apply_pending = true;
+}
+
+void sequencer_core_get_layer_chord(uint8_t layer_idx, bool *chord_mode,
+                                    uint8_t *root, chord_type_t *chord_type)
+{
+    if (layer_idx >= s_num_layers) return;
+    const seq_layer_t *layer = &s_layers[layer_idx];
+    if (chord_mode) *chord_mode = layer->chord_mode;
+    if (root)       *root       = layer->chord_root;
+    if (chord_type) *chord_type = layer->chord_type;
+}
+
+void sequencer_core_set_track_repeat_rate(uint8_t layer_idx, uint8_t track,
+                                          seq_repeat_rate_t rate)
+{
+    if (layer_idx >= s_num_layers || track >= SEQ_TRACKS) return;
+    seq_layer_t *layer = &s_layers[layer_idx];
+    layer->repeat_rate[track] = (uint8_t)rate;
+    /* Re-emit all steps on this track so AMY picks up the new period. */
+    for (uint8_t s = 0; s < layer->num_steps; s++) {
+        sequencer_emit_step(layer_idx, track, s);
+    }
+}
+
+seq_repeat_rate_t sequencer_core_get_track_repeat_rate(uint8_t layer_idx,
+                                                        uint8_t track)
+{
+    if (layer_idx >= s_num_layers || track >= SEQ_TRACKS) return SEQ_REPEAT_1;
+    uint8_t rr = s_layers[layer_idx].repeat_rate[track];
+    switch (rr) {
+        case 2: return SEQ_REPEAT_2;
+        case 4: return SEQ_REPEAT_4;
+        case 8: return SEQ_REPEAT_8;
+        default: return SEQ_REPEAT_1;
+    }
+}

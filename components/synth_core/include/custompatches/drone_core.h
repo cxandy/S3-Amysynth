@@ -51,11 +51,11 @@ typedef enum {
 #define DRONE_CHORD_MAX_NOTES 5
 
 typedef enum {
-    DRONE_CHORD_AM7   = 0,
-    DRONE_CHORD_FMAJ7 = 1,
-    DRONE_CHORD_DM9   = 2,
-    DRONE_CHORD_CMAJ9 = 3,
-    DRONE_CHORD_GSUS4 = 4,
+    DRONE_CHORD_MIN7  = 0,   /* Minor 7th  : 0 3 7 10    */
+    DRONE_CHORD_MAJ7  = 1,   /* Major 7th  : 0 4 7 11    */
+    DRONE_CHORD_MIN9  = 2,   /* Minor 9th  : 0 3 7 10 14 */
+    DRONE_CHORD_MAJ9  = 3,   /* Major 9th  : 0 4 7 11 14 */
+    DRONE_CHORD_SUS4  = 4,   /* Sus4       : 0 5 7 12    */
     DRONE_CHORD_COUNT
 } drone_chord_t;
 
@@ -84,6 +84,7 @@ void drone_set_enabled(bool on);          /* sustained note-on/off of the voices
 void drone_set_source(drone_source_t src);/* WAVE <-> PATCH (rebuilds the synths) */
 void drone_set_wave(uint16_t amy_wave);   /* SAW_DOWN/SAW_UP/PULSE/TRIANGLE/SINE  */
 void drone_set_chord(drone_chord_t chord);/* chord preset the carrier plays       */
+void drone_set_root_note(uint8_t midi_note); /* drone-local root (24..72); independent of global quantizer root */
 void drone_set_resonance(float r);        /* filter resonance                     */
 /* Carrier amplitude coefs, matching AMY's amp={'const':x,'mod':y} (0.0..1.0).
  * amp = const * (1 + mod * LFO), LFO bipolar (-1..+1): const sets the always-on
@@ -111,6 +112,7 @@ bool           drone_get_enabled(void);
 drone_source_t drone_get_source(void);
 uint16_t       drone_get_wave(void);
 drone_chord_t  drone_get_chord(void);
+uint8_t        drone_get_root_note(void);
 float          drone_get_resonance(void);
 float          drone_get_amp_const(void);
 float          drone_get_amp_mod(void);

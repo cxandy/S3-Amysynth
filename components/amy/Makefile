@@ -34,8 +34,8 @@ EMSCRIPTEN_OPTIONS = -s WASM=1 --bind \
 -sMODULARIZE -s 'EXPORT_NAME="amyModule"' \
 -s EXPORTED_RUNTIME_METHODS="['cwrap','ccall', 'HEAPU8']" \
 -s EXPORTED_FUNCTIONS="['_amy_add_message', '_amy_add_event', '_amy_reset_sysclock', '_amy_sysclock', '_amy_process_single_midi_byte', \
-	 '_amy_live_stop', '_amy_get_input_buffer', '_amy_set_external_input_buffer', '_amy_live_start_web', '_amy_live_start_web_audioin',\
-	  '_amy_start_web', '_amy_start_web_no_synths', '_sequencer_ticks', '_malloc', '_free', '_amy_bleep', '_yield_patch_events', '_size_of_amy_event', '_yield_synth_commands']" \
+	 '_amy_live_stop', '_amy_get_input_buffer', '_amy_get_output_buffer', '_amy_set_external_input_buffer', '_amy_live_start_web', '_amy_live_start_web_audioin',\
+	  '_amy_start_web', '_amy_start_web_no_synths', '_sequencer_ticks', '_malloc', '_free', '_amy_bleep', '_size_of_amy_event', '_yield_synth_commands', '_amy_dump_state_to_string']" \
 -s SUPPORT_LONGJMP=emscripten \
 -s INITIAL_MEMORY=128mb -s TOTAL_STACK=64mb -s ALLOW_MEMORY_GROWTH=1  \
 -s ASYNCIFY -s ASYNCIFY_STACK_SIZE=128000
@@ -49,7 +49,8 @@ all: default
 SOURCES += src/algorithms.c src/amy.c src/envelope.c src/examples.c src/parse.c \
 	src/filters.c src/oscillators.c src/pcm.c src/interp_partials.c src/custom.c \
 	src/delay.c src/log2_exp2.c src/patches.c src/transfer.c src/sequencer.c \
-	src/libminiaudio-audio.c src/instrument.c src/amy_midi.c src/api.c src/midi_mappings.c
+	src/libminiaudio-audio.c src/instrument.c src/amy_midi.c src/api.c src/midi_mappings.c \
+        src/cv_trigger.c
 
 OBJECTS = $(patsubst %.c, %.o, $(SOURCES)) 
 
@@ -91,6 +92,9 @@ test: amy-module
 
 qtest: amy-module
 	${PYTHON} -m amy.test quiet
+
+playfailed: qtest
+	for x in `cat failed_tests.txt`; do echo $$x "ref"; sleep 0.2; afplay tests/ref/$$x.wav; echo $$x "tst"; sleep 0.2; afplay tests/tst/$$x.wav; done
 
 # Report the median FILTER_PROCESS timing over 50 runs.
 timing: amy-module

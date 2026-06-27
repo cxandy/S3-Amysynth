@@ -1,0 +1,62 @@
+menu "AMY Synthesizer"
+
+config AMY_USE_FIXEDPOINT
+    bool "Use fixed-point arithmetic (s8.23 / s.31)"
+    default y
+    help
+        When enabled (default), AMY uses integer fixed-point arithmetic
+        (SAMPLE = s8.23, PHASOR = s.31) instead of single-precision float.
+
+        The ESP32-S3 Xtensa LX7 has a hardware FPU. In practice, float and
+        fixed-point perform similarly for most voice counts, but float mode
+        may be worth testing. Note: float mode replaces the integer shifts
+        inside log2_lut/exp2_lut with ldexpf() calls; ensure you verify
+        CPU headroom after switching.
+
+choice AMY_PROFILE_MODE
+    prompt "AMY DSP profiling"
+    default AMY_PROFILE_OFF
+    help
+        Instruments the AMY render path with esp_timer timestamps so the
+        per-stage CPU cost can be read on-target. Used to measure the
+        parallelizable fraction (osc render vs. serial FX/fill_buffer)
+        before deciding whether dual-core rendering is worthwhile.
+
+config AMY_PROFILE_OFF
+    bool "Off (no profiling, zero overhead)"
+    help
+        Production default. AMY_PROFILE_START/STOP compile to nothing.
+
+config AMY_PROFILE_COARSE
+    bool "Coarse (block-level: render / fill_buffer / deltas)"
+    help
+        Times only the outer render stages (AMY_RENDER, AMY_FILL_BUFFER,
+        AMY_EXECUTE_DELTAS, AMY_ESP_FILL_BUFFER). The per-osc/inner tags
+        compile to nothing, so the AMY_RENDER total is NOT inflated by the
+        profiler's own timestamp calls. This is the mode to use for the
+        Amdahl (parallelizable-fraction) measurement: overhead is ~8
+        esp_timer reads per block (<0.1% of the block budget).
+
+config AMY_PROFILE_FULL
+    bool "Full (per-osc breakdown, defines AMY_DEBUG)"
+    help
+        Enables every AMY profiler tag, including per-osc tags that fire
+        dozens of times per block INSIDE the AMY_RENDER window. Useful to
+        see WHERE render time goes (osc wave vs. filter vs. mix), but the
+        per-osc timestamp calls inflate the AMY_RENDER total and overstate
+        the parallelizable fraction. Do not use its ratio as the go/no-go
+        number; use COARSE for that.
+
+endchoice
+
+config AMY_PROFILE_INTERVAL_MS
+    int "Profiler dump interval (ms)"
+    depends on !AMY_PROFILE_OFF
+    default 5000
+    range 500 60000
+    help
+        How often the accumulated profile is printed to the console and
+        reset. Each dump reports per-stage us/block and % of wall time over
+        the elapsed window.
+
+endmenu

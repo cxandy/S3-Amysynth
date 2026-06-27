@@ -1,6 +1,7 @@
 #pragma once
 
 #include "u8g2.h"
+#include "chord_types.h"
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -25,7 +26,62 @@ typedef enum {
     UI_MODE_SEQUENCER = 0,
     UI_MODE_ARP       = 1,
     UI_MODE_DRONE     = 2,
+    UI_MODE_PROG      = 3,
+    UI_MODE_TRACKOPTS = 4,
 } ui_mode_t;
+
+/* ── Per-track repeat rate (fires every N bars instead of every bar) ── */
+typedef enum {
+    SEQ_REPEAT_1  = 1,
+    SEQ_REPEAT_2  = 2,
+    SEQ_REPEAT_4  = 4,
+    SEQ_REPEAT_8  = 8,
+} seq_repeat_rate_t;
+
+/* ── Filter type constants (mirror AMY's FILTER_* values) ── */
+#define SEQ_FILTER_NONE  0
+#define SEQ_FILTER_LPF   1
+#define SEQ_FILTER_BPF   2
+#define SEQ_FILTER_HPF   3
+#define SEQ_FILTER_LPF24 4
+
+/* ── Per-voice filter state (stored alongside the ADSR envelope) ──
+ * enabled=false means FILTER_NONE is sent (bypass); enabled=true uses filter_type.
+ * cutoff_hz is in Hz (the same unit as AMY amy_event.filter_freq_coefs — the driver
+ * converts to log-freq internally). */
+typedef struct {
+    uint8_t filter_type;   /* SEQ_FILTER_* — typically SEQ_FILTER_NONE */
+    float   cutoff_hz;     /* 65..8000 Hz */
+    float   resonance;     /* 0.51..8.0 (Q factor) */
+    bool    enabled;       /* false = bypass (FILTER_NONE sent) */
+} seq_filter_t;
+
+/* ── LFO (per-track tempo-synced software modulator) ── */
+typedef enum { LFO_MODE_FREE = 0, LFO_MODE_RETRIG = 1 } lfo_mode_t;
+typedef enum {
+    LFO_WAVE_SINE = 0, LFO_WAVE_TRIANGLE,
+    LFO_WAVE_SAW_UP,   LFO_WAVE_SAW_DOWN,
+    LFO_WAVE_SQUARE,   LFO_WAVE_RANDOM,
+    LFO_WAVE_COUNT,
+} lfo_wave_t;
+typedef enum {
+    LFO_TARGET_FILTER = 0, LFO_TARGET_AMP,
+    LFO_TARGET_PITCH,      LFO_TARGET_PAN,
+    LFO_TARGET_COUNT,
+} lfo_target_t;
+typedef enum {
+    LFO_RATE_1_8 = 0, LFO_RATE_1_4,  LFO_RATE_1_2,
+    LFO_RATE_1BAR,    LFO_RATE_2BAR, LFO_RATE_4BAR,
+    LFO_RATE_COUNT,
+} lfo_rate_t;
+typedef struct {
+    bool         enabled;
+    lfo_mode_t   mode;
+    lfo_wave_t   wave;
+    lfo_rate_t   rate;
+    uint8_t      depth;    /* 0..100 % */
+    lfo_target_t target;
+} seq_lfo_t;
 
 /* ── ADSR envelope (one AMY EG0 breakpoint set) ──
  * Stored as concrete ms/percent so it survives patch changes and can be edited
@@ -49,11 +105,20 @@ typedef struct {
     bool     grid[SEQ_TRACKS][SEQ_MAX_STEPS];        /* step on/off state      */
     uint8_t  step_note[SEQ_TRACKS][SEQ_MAX_STEPS];   /* per-step MIDI pitch    */
     uint8_t  track_base_note[SEQ_TRACKS];            /* current base note      */
-    seq_env_t env[SEQ_TRACKS];                       /* per-row ADSR envelope  */
-    bool     env_authored[SEQ_TRACKS]; /* row's env overrides the patch only
-                                          after the user commits in the graph
-                                          editor; until then the patch's own
-                                          envelope wins (deferred authority)  */
+    seq_env_t    env[SEQ_TRACKS];                    /* per-row ADSR envelope  */
+    bool         env_authored[SEQ_TRACKS]; /* row's env overrides the patch only
+                                              after the user commits in the graph
+                                              editor; until then the patch's own
+                                              envelope wins (deferred authority)  */
+    seq_filter_t filter[SEQ_TRACKS];          /* per-row filter (bypass by default) */
+    bool         filter_authored[SEQ_TRACKS]; /* filter overrides patch only after
+                                                 the user commits in the filter editor */
+    seq_lfo_t lfo[SEQ_TRACKS];
+    bool      lfo_authored[SEQ_TRACKS];
+    uint8_t   repeat_rate[SEQ_TRACKS];   /* SEQ_REPEAT_* — fires every N bars */
+    bool      chord_mode;                /* false = scale quantizer (default) */
+    uint8_t   chord_root;                /* chromatic 0-11 (C=0)              */
+    chord_type_t chord_type;
     uint8_t  synth_id[SEQ_TRACKS];   /* one AMY synth per row (both melodic and
                                         drum layers: each track has its own slot */
     uint16_t patch;                  /* shared timbre across the layer's rows

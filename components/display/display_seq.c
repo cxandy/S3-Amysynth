@@ -37,7 +37,7 @@ void display_seq_draw_frame(u8g2_t *u8g2, const display_seq_state_t *state)
 
     /* Layer indicator: "L0 DRM" / "L1 MEL" */
     const char *type_str = (layer->type == SEQ_LAYER_DRUM) ? "DRM" : "MEL";
-    snprintf(buf, sizeof(buf), "L%d %s", state->active_layer_idx, type_str);
+    snprintf(buf, sizeof(buf), "L%d %s", state->active_layer_idx + 1, type_str);
     u8g2_DrawStr(u8g2, 52, 8, buf);
 
     if (layer->type == SEQ_LAYER_MELODIC) {

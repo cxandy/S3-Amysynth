@@ -13,15 +13,21 @@ extern "C" {
  * inputs, its own scale/root, its own AMY synth, and runs in sync with the
  * global tempo via repeating AMY SEQUENCE events.
  *
- * Slots store the RAW chromatic MIDI value (-1 = empty sentinel). The arp
- * snaps to its own scale only at playback (and for display), so the stored
- * value never absorbs its own quantized output — no compounding drift. */
+ * Slots store the RAW chromatic MIDI value. Special sentinels:
+ *   -1 (empty)   : slot unused; not part of the playback cycle.
+ *   ARP_REST (-2): deliberate silent step (SLOT mode only); occupies time but
+ *                  plays nothing. Meaningless in UP/DOWN — store only -1 there.
+ * The arp snaps to its own scale only at playback (and for display), so the
+ * stored value never absorbs its own quantized output — no compounding drift. */
 
 #define ARP_MAX_SLOTS 8
+#define ARP_REST ((int16_t)-2)   /* deliberate silent step in ARP_SLOT mode */
 
 typedef enum {
     ARP_UP   = 0,
     ARP_DOWN = 1,
+    ARP_SLOT = 2,   /* slot-order: position preserved, ARP_REST honoured */
+    ARP_DIR_COUNT
 } arp_dir_t;
 
 /* RATE table: musical subdivision -> ticks per arp note.
@@ -31,7 +37,11 @@ typedef enum {
     ARP_RATE_1_4  = 1,   /* quarter note   */
     ARP_RATE_1_8  = 2,   /* eighth note    */
     ARP_RATE_1_16 = 3,  /* sixteenth note */
-    ARP_RATE_1_32 = 4,   /* thirty-second  */
+    ARP_RATE_1_32 = 4, /* thirty-second  */
+    ARP_RATE_1_4T = 5,
+    ARP_RATE_1_8T = 6,
+    ARP_RATE_1_16T = 7,
+    ARP_RATE_1_32T = 8,  
     ARP_RATE_COUNT
 } arp_rate_t;
 
@@ -56,8 +66,10 @@ void arp_set_rate(arp_rate_t rate);
 void arp_set_gate_pct(uint8_t gate_pct);      /* clamped 10..100        */
 void arp_set_scale(uint8_t scale_index);
 void arp_set_root_note(uint8_t root_note);
+void arp_set_chord(uint8_t root_midi, uint8_t scale_index);
 void arp_set_patch(uint16_t patch_number);
-/* Set slot value to a chromatic MIDI note, or -1 to clear the slot. */
+/* Set slot value to a chromatic MIDI note, -1 to clear, or ARP_REST for a
+ * deliberate silent step (meaningful in ARP_SLOT mode only). */
 void arp_set_slot(uint8_t idx, int16_t chromatic_note);
 
 /* ── Runtime-editable ADSR envelope (shared graph editor) ──
@@ -66,6 +78,12 @@ void arp_set_slot(uint8_t idx, int16_t chromatic_note);
  * patch change so the custom envelope survives patch reconfig. */
 void arp_get_envelope(seq_env_t *out);
 void arp_set_envelope(const seq_env_t *env);
+
+/* ── Runtime-editable filter (shared filter editor) ──
+ * Parallel to the envelope: default enabled=false (bypass). set stores + pushes
+ * to the arp synth. Re-applied after a patch change when filter_authored. */
+void arp_get_filter(seq_filter_t *out);
+void arp_set_filter(const seq_filter_t *f);
 
 /* ── Getters (for UI display) ── */
 bool      arp_get_enabled(void);
@@ -77,10 +95,11 @@ uint8_t   arp_get_gate_pct(void);
 uint8_t   arp_get_scale(void);
 uint8_t   arp_get_root_note(void);
 uint16_t  arp_get_patch(void);
-int16_t   arp_get_slot(uint8_t idx);          /* raw chromatic, -1 = empty */
-/* Snapped pitch the slot will actually play (for display), or -1 if empty. */
+int16_t   arp_get_slot(uint8_t idx);          /* raw chromatic, -1=empty, ARP_REST=-2 */
+/* Snapped pitch the slot will actually play (for display), or -1 if empty/rest. */
 int16_t   arp_get_slot_snapped(uint8_t idx);
-uint8_t   arp_active_slot_count(void);        /* notes up to first empty   */
+uint8_t   arp_active_slot_count(void);        /* notes up to first -1 (UP/DOWN) */
+uint8_t   arp_active_step_count(void);        /* notes + rests across all slots (SLOT mode) */
 
 #define ARP_OCT_MAX 4
 

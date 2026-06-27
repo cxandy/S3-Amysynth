@@ -1,11 +1,8 @@
 #pragma once
 
-#include "freertos/FreeRTOS.h"
-#include "freertos/queue.h"
 #include "driver/gpio.h"
 #include "esp_err.h"
 #include <stdint.h>
-#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -13,8 +10,7 @@ extern "C" {
 
 #define ROTARY_ENCODER_DEFAULT_HIGH_LIMIT  1000
 #define ROTARY_ENCODER_DEFAULT_LOW_LIMIT  -1000
-#define ROTARY_ENCODER_DEFAULT_QUEUE_SIZE  10
-#define ROTARY_ENCODER_DEFAULT_GLITCH_NS   5000 // 5 microseconds, suitable for typical mechanical encoders
+#define ROTARY_ENCODER_DEFAULT_GLITCH_NS   10000 // 5 microseconds, suitable for typical mechanical encoders
 
 typedef struct rotary_encoder_s *rotary_encoder_handle_t;
 
@@ -26,10 +22,7 @@ typedef struct {
     gpio_num_t pin_b;                 /**< GPIO connected to phase B */
     int32_t high_limit;               /**< PCNT high limit */
     int32_t low_limit;                /**< PCNT low limit */
-    const int32_t *watch_points;      /**< Array of watch-point values */
-    size_t watch_point_count;         /**< Number of watch-point entries */
     uint32_t glitch_filter_ns;        /**< Glitch filter (ns), 0 to disable */
-    size_t event_queue_size;          /**< Length of the watch-point queue */
 } rotary_encoder_config_t;
 
 /**
@@ -57,11 +50,6 @@ int32_t rotary_encoder_get_count(rotary_encoder_handle_t handle);
  * Reset counter to zero.
  */
 esp_err_t rotary_encoder_reset(rotary_encoder_handle_t handle);
-
-/**
- * Get the internal event queue (watch-point events are sent here).
- */
-QueueHandle_t rotary_encoder_get_event_queue(rotary_encoder_handle_t handle);
 
 /**
  * Delete encoder and free resources.

@@ -49,6 +49,10 @@ static const uint32_t s_rate_ticks[ARP_RATE_COUNT] = {
     [ARP_RATE_1_8]  = 24,
     [ARP_RATE_1_16] = 12,
     [ARP_RATE_1_32] = 6,
+    [ARP_RATE_1_4T]   = 32,
+    [ARP_RATE_1_8T]   = 16,
+    [ARP_RATE_1_16T]  = 8,
+    [ARP_RATE_1_32T]  = 4,
 };
 
 static const char *s_rate_names[ARP_RATE_COUNT] = {
@@ -57,6 +61,10 @@ static const char *s_rate_names[ARP_RATE_COUNT] = {
     [ARP_RATE_1_8]  = "1/8",
     [ARP_RATE_1_16] = "1/16",
     [ARP_RATE_1_32] = "1/32",
+    [ARP_RATE_1_4T]   = "1/4T",
+    [ARP_RATE_1_8T]   = "1/8T",
+    [ARP_RATE_1_16T]  = "1/16T",
+    [ARP_RATE_1_32T]  = "1/32T",
 };
 
 typedef struct {
@@ -69,8 +77,10 @@ typedef struct {
     uint8_t    scale_index;
     uint8_t    root_note;
     uint16_t   patch;
-    seq_env_t  env;           /* runtime-editable ADSR (shared graph editor) */
-    bool       env_authored;  /* true once the user commits a custom env      */
+    seq_env_t    env;            /* runtime-editable ADSR (shared graph editor) */
+    bool         env_authored;   /* true once the user commits a custom env      */
+    seq_filter_t filter;         /* runtime-editable filter (shared filter editor) */
+    bool         filter_authored;/* true once the user commits a custom filter    */
 } arp_state_t;
 
 static arp_state_t s_arp;
@@ -92,26 +102,33 @@ static inline void arp_mark_dirty(void) { s_arp_dirty = true; }
 
 /* ── Helpers ─────────────────────────────────────────────────────────── */
 
-/* Collect non-empty slots (up to the first empty sentinel) into out[], sorted.
- * Returns the count. Ascending bubble sort; reversed by caller for ARP_DOWN. */
-static uint8_t arp_collect_sorted(uint8_t out[ARP_MAX_SLOTS])
+/* Shared ascending bubble sort for collect helpers. */
+static void arp_sort_asc(uint8_t *out, uint8_t n)
+{
+    for (uint8_t i = 0; i + 1 < n; i++)
+        for (uint8_t j = 0; j + 1 < n - i; j++)
+            if (out[j] > out[j + 1]) { uint8_t t = out[j]; out[j] = out[j+1]; out[j+1] = t; }
+}
+
+/* UP mode: REST is a transparent skip — all non-empty notes are collected.
+ * Returns sorted ascending; caller uses sorted[note_idx] directly. */
+static uint8_t arp_collect_up(uint8_t out[ARP_MAX_SLOTS])
 {
     uint8_t n = 0;
     for (uint8_t i = 0; i < ARP_MAX_SLOTS; i++) {
-        if (s_arp.slots[i] < 0) break;   /* null-termination sentinel */
+        if (s_arp.slots[i] == -1) break;          /* empty sentinel: stop */
+        if (s_arp.slots[i] == ARP_REST) continue; /* REST in UP: skip */
         out[n++] = (uint8_t)s_arp.slots[i];
     }
-    /* Bubble sort ascending (n <= 8, trivial cost, matches user's request). */
-    for (uint8_t i = 0; i + 1 < n; i++) {
-        for (uint8_t j = 0; j + 1 < n - i; j++) {
-            if (out[j] > out[j + 1]) {
-                uint8_t tmp = out[j];
-                out[j] = out[j + 1];
-                out[j + 1] = tmp;
-            }
-        }
-    }
+    arp_sort_asc(out, n);
     return n;
+}
+
+/* DOWN mode: identical skip-REST logic to UP; caller reverses with
+ * sorted[count-1-note_idx]. */
+static uint8_t arp_collect_down(uint8_t out[ARP_MAX_SLOTS])
+{
+    return arp_collect_up(out);
 }
 
 /* Snap a chromatic note to the arp's own scale/root (independent quantizer). */
@@ -146,12 +163,18 @@ void arp_core_init(void)
     s_arp.patch       = CONFIG_SEQ_ARP_DEFAULT_PATCH;
     /* Default ADSR mirrors the melodic compile-time defaults; not authored until
      * the user commits in the graph editor (patch's own env wins until then). */
-    s_arp.env.attack_ms   = 12;
-    s_arp.env.decay_ms    = 220;
-    s_arp.env.sustain_pct = 58;
-    s_arp.env.release_ms  = 280;
+s_arp.env.attack_ms   = 4;    // Tiny curve to prevent an aggressive digital click
+s_arp.env.decay_ms    = 250;  // Medium-short decay allows the note body to breathe
+s_arp.env.sustain_pct = 30;   // Low sustain keeps the sequence energetic but audible if held
+s_arp.env.release_ms  = 200;  // Controlled tail that fills space without causing a muddy low-end
     s_arp.env.eg_type     = 0;   /* ENVELOPE_NORMAL */
-    s_arp.env_authored    = false;
+    s_arp.env_authored      = false;
+    /* Default filter: bypass (not authored; patch's filter wins until user commits). */
+    s_arp.filter.filter_type = 0;   /* SEQ_FILTER_NONE */
+    s_arp.filter.cutoff_hz   = 800.0f;
+    s_arp.filter.resonance   = 1.0f;
+    s_arp.filter.enabled     = false;
+    s_arp.filter_authored    = false;
     if (s_arp.octaves < 1) s_arp.octaves = 1;
     if (s_arp.octaves > ARP_OCT_MAX) s_arp.octaves = ARP_OCT_MAX;
     if (s_arp.scale_index >= quantizer_scale_count()) s_arp.scale_index = 0;
@@ -174,8 +197,47 @@ void arp_core_refresh(void)
         return;
     }
 
+    /* ── SLOT mode: play slots in stored order, rests preserved ── */
+    if (s_arp.dir == ARP_SLOT) {
+        uint8_t active = 0;
+        for (uint8_t i = 0; i < ARP_MAX_SLOTS; i++)
+            if (s_arp.slots[i] != -1) active++;
+        if (active == 0) return;
+
+        uint32_t rate    = s_rate_ticks[s_arp.rate];
+        uint8_t  steps   = (uint8_t)(active * s_arp.octaves);
+        uint32_t period  = (uint32_t)steps * rate;
+        uint32_t gate    = (rate * s_arp.gate_pct) / 100u;
+        if (gate < 1) gate = 1;
+
+        uint32_t tag_base = sequencer_core_arp_tag_base();
+        uint8_t  step_i   = 0;
+
+        for (uint8_t oct = 0; oct < s_arp.octaves; oct++) {
+            for (uint8_t si = 0; si < ARP_MAX_SLOTS; si++) {
+                int16_t v = s_arp.slots[si];
+                if (v == -1) continue;   /* unused: not part of the cycle */
+
+                uint32_t tick_on = 1u + (uint32_t)step_i * rate;
+
+                if (v != ARP_REST) {
+                    int32_t chromatic = (int32_t)v + (int32_t)oct * 12;
+                    uint8_t play_note = arp_snap(sequencer_core_clamp_melodic_note(chromatic));
+                    sequencer_core_arp_emit_note(tag_base + (uint32_t)step_i * 2u,
+                                                 play_note, 0.9f, tick_on, gate, period);
+                }
+                /* REST: tag stays cleared (arp_clear_all already ran); step_i still advances. */
+                step_i++;
+            }
+        }
+        return;
+    }
+
+    /* ── UP / DOWN: sorted pitch order ── */
     uint8_t sorted[ARP_MAX_SLOTS];
-    uint8_t count = arp_collect_sorted(sorted);
+    uint8_t count = (s_arp.dir == ARP_DOWN)
+                    ? arp_collect_down(sorted)
+                    : arp_collect_up(sorted);
     if (count == 0) {
         return;  /* nothing to play */
     }
@@ -260,6 +322,12 @@ void arp_set_root_note(uint8_t root_note)
     arp_mark_dirty();
 }
 
+void arp_set_chord(uint8_t root_midi, uint8_t scale_index)
+{
+    arp_set_root_note(root_midi);
+    arp_set_scale(scale_index);
+}
+
 void arp_set_patch(uint16_t patch_number)
 {
     patch_number = SEQ_CLAMP_U16(patch_number, 0, 256);
@@ -270,6 +338,9 @@ void arp_set_patch(uint16_t patch_number)
      * custom env if they have authored one (deferred authority, like melodic). */
     if (s_arp.env_authored) {
         sequencer_core_push_envelope(sequencer_core_arp_synth(), &s_arp.env);
+    }
+    if (s_arp.filter_authored) {
+        sequencer_core_push_filter(sequencer_core_arp_synth(), &s_arp.filter);
     }
     /* Patch reconfig does not change scheduling; no re-emit needed. */
 }
@@ -290,11 +361,29 @@ void arp_set_envelope(const seq_env_t *env)
              (unsigned)s_arp.env.sustain_pct, (unsigned)s_arp.env.release_ms);
 }
 
+void arp_get_filter(seq_filter_t *out)
+{
+    if (out) *out = s_arp.filter;
+}
+
+void arp_set_filter(const seq_filter_t *f)
+{
+    if (!f) return;
+    s_arp.filter = *f;
+    s_arp.filter_authored = true;
+    sequencer_core_push_filter(sequencer_core_arp_synth(), &s_arp.filter);
+    ESP_LOGI(TAG, "arp filter -> type%u %.0fHz Q%.2f en=%d",
+             s_arp.filter.filter_type, (double)s_arp.filter.cutoff_hz,
+             (double)s_arp.filter.resonance, s_arp.filter.enabled);
+}
+
 void arp_set_slot(uint8_t idx, int16_t chromatic_note)
 {
     if (idx >= ARP_MAX_SLOTS) return;
     if (chromatic_note >= 0) {
         chromatic_note = (int16_t)sequencer_core_clamp_melodic_note(chromatic_note);
+    } else if (chromatic_note == ARP_REST) {
+        /* leave as -2: deliberate silent step */
     } else {
         chromatic_note = -1;
     }
@@ -348,5 +437,13 @@ uint8_t arp_active_slot_count(void)
         if (s_arp.slots[i] < 0) break;
         n++;
     }
+    return n;
+}
+
+uint8_t arp_active_step_count(void)
+{
+    uint8_t n = 0;
+    for (uint8_t i = 0; i < ARP_MAX_SLOTS; i++)
+        if (s_arp.slots[i] != -1) n++;
     return n;
 }

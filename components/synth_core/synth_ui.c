@@ -3,7 +3,12 @@
 #include "display_menu.h"
 #include "display_arp.h"
 #include "display_drone.h"
+#include "display_prog.h"
+#include "display_trackopts.h"
+#include "filter_graph.h"
+#include "display_lfo.h"
 #include "seq_clamp.h"
+#include "seq_defaults.h"
 #include "sequencer_core.h"
 #include "arp_core.h"
 #include "custompatches/drone_core.h"
@@ -11,6 +16,7 @@
 #include "graph_popup.h"
 #include "patch_names.h"
 #include "amy.h"
+#include "amy_helpers.h"
 #include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -21,6 +27,10 @@
 #include <math.h>
 
 static const char *TAG = "synth_ui";
+
+/* Module-private UI state. Forward (tentative) declaration so helpers above the
+ * initialized definition can see it; other modules use seq_get_* accessors. */
+static synth_ui_state_t seq_state;
 
 /* DEBUG: bisect heap corruption inside the init chain. Gated by
  * CONFIG_AMYSYNTH_HEAP_CHECK (menuconfig: Heap Diagnostics); off by default, in
@@ -44,21 +54,8 @@ static const char *TAG = "synth_ui";
  * the single gated branch in synth_ui_task() and the three public
  * synth_ui_graph_* entry points fully restores the original behaviour.
  *
- * The melodic envelope is defined by compile-time CONFIG_SEQ_MELODIC_ENV_*
- * values (see sequencer_core.c). We mirror those defaults here to seed the
- * editor, then map them to/from the widget via the AMY adapter. */
-#ifndef CONFIG_SEQ_MELODIC_ENV_ATTACK_MS
-#define CONFIG_SEQ_MELODIC_ENV_ATTACK_MS 12
-#endif
-#ifndef CONFIG_SEQ_MELODIC_ENV_DECAY_MS
-#define CONFIG_SEQ_MELODIC_ENV_DECAY_MS 220
-#endif
-#ifndef CONFIG_SEQ_MELODIC_ENV_SUSTAIN_PCT
-#define CONFIG_SEQ_MELODIC_ENV_SUSTAIN_PCT 58
-#endif
-#ifndef CONFIG_SEQ_MELODIC_ENV_RELEASE_MS
-#define CONFIG_SEQ_MELODIC_ENV_RELEASE_MS 280
-#endif
+ * The melodic envelope defaults come from seq_defaults.h, then map to/from the
+ * widget via the AMY adapter. */
 
 static gpopup_t s_graph_popup;
 static bool     s_graph_popup_inited = false;
@@ -71,6 +68,17 @@ static volatile bool s_force_redraw = true;
  * write-back targets the same row even if the selection moves underneath. */
 static uint8_t  s_graph_layer = 0;
 static uint8_t  s_graph_track = 0;
+
+/* Deferred layer-delete request, consumed by synth_ui_task each frame. */
+static volatile bool    s_layer_delete_pending = false;
+static volatile uint8_t s_layer_delete_idx     = 0;
+
+/* Track Options screen state — declared here (before synth_ui_task and
+ * synth_ui_request_delete_to_layer) so both can reference s_to_layer. */
+static uint8_t s_to_cursor  = 0;
+static bool    s_to_editing = false;
+static uint8_t s_to_layer   = 0;
+static uint8_t s_to_track   = 0;
 
 /* Which backend the open editor edits. Captured at open time so seed/commit
  * route to the right envelope store (melodic row, the drone, or the arp). The
@@ -95,6 +103,12 @@ static graph_target_t s_graph_target = GRAPH_TGT_MELODIC;
 #define GRAPH_LONG_SQUASH    9.0f
 
 static bool s_graph_long_range = false;   /* false = SHORT, true = LONG */
+
+/* Layer-apply scope: when true, effect-editor commits write to all SEQ_TRACKS
+ * in the active layer instead of only the selected track.  Toggled by
+ * MY_BUTTON_1 while the ADSR graph or LFO editor is open.  The filter editor
+ * repurposes MY_BUTTON_1 for enable/disable, so scope is set there or in LFO. */
+static bool s_editor_apply_all = false;
 
 /* Normalised X (0..1) -> milliseconds, range/curve aware. */
 static uint32_t graph_x_to_ms(float x)
@@ -135,7 +149,7 @@ static float graph_ms_to_x(uint32_t ms)
  * (Y-only) in the widget and recomputed here from attack time + sustain level.
  * Lower sustain -> longer, more audible fall; decay also scales gently with
  * attack. Tunable constants; promote to Kconfig later if desired. */
-#define DECAY_BASE_MS          40u
+#define DECAY_BASE_MS          120u //note 06-20 testing some params moving up from 40
 #define DECAY_ATTACK_K         0.5f
 #define DECAY_SUSTAIN_SPAN_MS  400.0f
 #define DECAY_MIN_MS           20u
@@ -271,11 +285,7 @@ void synth_ui_graph_open_envelope(void)
 
     seq_env_t env;
     if (!graph_read_target_env(&env)) {
-        env.attack_ms   = CONFIG_SEQ_MELODIC_ENV_ATTACK_MS;
-        env.decay_ms    = CONFIG_SEQ_MELODIC_ENV_DECAY_MS;
-        env.sustain_pct = CONFIG_SEQ_MELODIC_ENV_SUSTAIN_PCT;
-        env.release_ms  = CONFIG_SEQ_MELODIC_ENV_RELEASE_MS;
-        env.eg_type     = CONFIG_SEQ_MELODIC_ENV_EG0_TYPE;
+        env = seq_default_melodic_env();
     }
 
     graph_seed_from_env(&env);
@@ -321,7 +331,12 @@ static void graph_commit_to_env(void)
             break;
         case GRAPH_TGT_MELODIC:
         default:
-            sequencer_core_set_melodic_envelope(s_graph_layer, s_graph_track, &env);
+            if (s_editor_apply_all) {
+                for (uint8_t t = 0; t < SEQ_TRACKS; ++t)
+                    sequencer_core_set_melodic_envelope(s_graph_layer, t, &env);
+            } else {
+                sequencer_core_set_melodic_envelope(s_graph_layer, s_graph_track, &env);
+            }
             break;
     }
 }
@@ -411,6 +426,367 @@ bool synth_ui_graph_close_commit(void)
 
 /* ── graph pop-up: end ──────────────────────────────────────────────────── */
 
+/* ── Filter editor ──────────────────────────────────────────────────────── */
+
+static bool         s_filter_active = false;
+static filter_graph_t s_fgraph;
+static seq_filter_t s_filter_edit;   /* scratch copy while editing */
+
+/* ── LFO editor state ── */
+static bool       s_lfo_active = false;
+static lfo_view_t s_lfo_view;
+
+/* Normalisation helpers shared between open and commit. */
+static float filter_hz_to_norm(float hz)
+{
+    if (hz < FGRAPH_CUTOFF_HZ_MIN) hz = FGRAPH_CUTOFF_HZ_MIN;
+    if (hz > FGRAPH_CUTOFF_HZ_MAX) hz = FGRAPH_CUTOFF_HZ_MAX;
+    return log2f(hz / FGRAPH_CUTOFF_HZ_MIN) /
+           log2f(FGRAPH_CUTOFF_HZ_MAX / FGRAPH_CUTOFF_HZ_MIN);
+}
+
+static float filter_norm_to_hz(float norm)
+{
+    return FGRAPH_CUTOFF_HZ_MIN *
+           powf(FGRAPH_CUTOFF_HZ_MAX / FGRAPH_CUTOFF_HZ_MIN,
+                SEQ_CLAMP_F32(norm, 0.0f, 1.0f));
+}
+
+static float filter_q_to_norm(float q)
+{
+    float n = (q - FGRAPH_RES_MIN) / (FGRAPH_RES_MAX - FGRAPH_RES_MIN);
+    return SEQ_CLAMP_F32(n, 0.0f, 1.0f);
+}
+
+static float filter_norm_to_q(float n)
+{
+    return FGRAPH_RES_MIN + SEQ_CLAMP_F32(n, 0.0f, 1.0f) *
+           (FGRAPH_RES_MAX - FGRAPH_RES_MIN);
+}
+
+/* Populate s_fgraph from s_filter_edit and the current graph target. */
+static void filter_sync_fgraph(void)
+{
+    s_fgraph.filter_type    = s_filter_edit.filter_type;
+    s_fgraph.cutoff_norm    = filter_hz_to_norm(s_filter_edit.cutoff_hz);
+    s_fgraph.resonance_norm = filter_q_to_norm(s_filter_edit.resonance);
+    s_fgraph.enabled        = s_filter_edit.enabled;
+    /* cursor and editing stay unchanged */
+}
+
+/* Read the current filter state from the active target into s_filter_edit. */
+static void filter_load_from_target(void)
+{
+    seq_filter_t f = {0};
+    if (seq_state.ui_mode == UI_MODE_DRONE) {
+        /* Drone: always LPF24, cutoff = sweep midpoint, Q from drone_get_resonance. */
+        float lo = drone_get_sweep_lo();
+        float hi = drone_get_sweep_hi();
+        f.filter_type = 4;   /* SEQ_FILTER_LPF24 */
+        f.cutoff_hz   = SEQ_CLAMP_F32((lo + hi) * 0.5f, FGRAPH_CUTOFF_HZ_MIN, FGRAPH_CUTOFF_HZ_MAX);
+        f.resonance   = drone_get_resonance();
+        f.enabled     = true;
+
+        snprintf(s_fgraph.label, sizeof(s_fgraph.label), "DRONE");
+    } else if (seq_state.ui_mode == UI_MODE_ARP) {
+        arp_get_filter(&f);
+        if (!f.enabled) {
+            f.filter_type = SEQ_FILTER_LPF;
+            f.cutoff_hz   = 800.0f;
+            f.resonance   = 1.0f;
+        }
+        snprintf(s_fgraph.label, sizeof(s_fgraph.label), "ARP");
+    } else {
+        uint8_t li = seq_state.active_layer_idx;
+        uint8_t tr = seq_state.selected_track;
+        sequencer_core_get_melodic_filter(li, tr, &f);
+        if (!f.enabled) {
+            f.filter_type = SEQ_FILTER_LPF;
+            f.cutoff_hz   = 800.0f;
+            f.resonance   = 1.0f;
+        }
+        snprintf(s_fgraph.label, sizeof(s_fgraph.label), "L%u T%u%s",
+                 (unsigned)li, (unsigned)tr,
+                 s_editor_apply_all ? ">L" : ">T");
+    }
+    s_filter_edit = f;
+}
+
+bool synth_ui_filter_is_active(void)
+{
+    return s_filter_active;
+}
+
+void synth_ui_filter_open(void)
+{
+    filter_load_from_target();
+    s_fgraph.cursor  = 0;
+    s_fgraph.editing = false;
+    /* Drone filter is always LPF24 (type fixed) — skip the type cursor. */
+    s_fgraph.enabled = s_filter_edit.enabled;
+    filter_sync_fgraph();
+    s_filter_active = true;
+    s_force_redraw  = true;
+    ESP_LOGI(TAG, "filter editor open: %s type%u %.0fHz Q%.2f",
+             s_fgraph.label, s_filter_edit.filter_type,
+             (double)s_filter_edit.cutoff_hz, (double)s_filter_edit.resonance);
+}
+
+bool synth_ui_filter_handle_encoder(long delta)
+{
+    if (!s_filter_active) return false;
+    bool drone = (seq_state.ui_mode == UI_MODE_DRONE);
+
+    if (!s_fgraph.editing) {
+        /* Not editing: scroll cursor position. */
+        uint8_t max_cursor = drone ? 1 : 2;
+        if (delta > 0) {
+            s_fgraph.cursor = (uint8_t)((s_fgraph.cursor + 1) % (max_cursor + 1));
+        } else if (delta < 0) {
+            s_fgraph.cursor = (s_fgraph.cursor == 0) ? max_cursor : (s_fgraph.cursor - 1);
+        }
+        s_force_redraw = true;
+        return true;
+    }
+
+    /* Editing: adjust the selected parameter. */
+    switch (s_fgraph.cursor) {
+        case 0: {   /* cutoff */
+            float step = 0.015f * (float)delta;
+            s_fgraph.cutoff_norm = SEQ_CLAMP_F32(s_fgraph.cutoff_norm + step, 0.0f, 1.0f);
+            s_filter_edit.cutoff_hz = filter_norm_to_hz(s_fgraph.cutoff_norm);
+            break;
+        }
+        case 1: {   /* resonance */
+            float step = 0.02f * (float)delta;
+            s_fgraph.resonance_norm = SEQ_CLAMP_F32(s_fgraph.resonance_norm + step, 0.0f, 1.0f);
+            s_filter_edit.resonance = filter_norm_to_q(s_fgraph.resonance_norm);
+            break;
+        }
+        case 2: {   /* type (melodic/arp only) */
+            if (!drone) {
+                int t = (int)s_filter_edit.filter_type + (int)delta;
+                /* Wrap within 1..4 (NONE is toggled via MY_BUTTON_1, not the type cursor). */
+                if (t < 1) t = 4;
+                if (t > 4) t = 1;
+                s_filter_edit.filter_type = (uint8_t)t;
+                s_fgraph.filter_type      = (uint8_t)t;
+            }
+            break;
+        }
+        default: break;
+    }
+    filter_sync_fgraph();
+    s_force_redraw = true;
+    return true;
+}
+
+bool synth_ui_filter_handle_button(bool is_long)
+{
+    if (!s_filter_active) return false;
+    if (is_long) {
+        /* Long press = cancel: reload original. */
+        filter_load_from_target();
+        filter_sync_fgraph();
+        s_filter_active = false;
+        s_force_redraw  = true;
+        ESP_LOGI(TAG, "filter editor cancelled");
+        return true;
+    }
+    /* Short press: toggle editing on/off for the current cursor. */
+    s_fgraph.editing = !s_fgraph.editing;
+    s_force_redraw = true;
+    return true;
+}
+
+void synth_ui_filter_toggle_enabled(void)
+{
+    if (!s_filter_active) return;
+    s_filter_edit.enabled = !s_filter_edit.enabled;
+    s_fgraph.enabled      = s_filter_edit.enabled;
+    s_force_redraw = true;
+    ESP_LOGI(TAG, "filter enabled -> %d", (int)s_filter_edit.enabled);
+}
+
+bool synth_ui_filter_close_commit(void)
+{
+    if (!s_filter_active) return false;
+
+    if (seq_state.ui_mode == UI_MODE_DRONE) {
+        /* Drone: update resonance + move sweep range to new midpoint. */
+        float lo = drone_get_sweep_lo();
+        float hi = drone_get_sweep_hi();
+        float half = (hi - lo) * 0.5f;
+        float new_mid = filter_norm_to_hz(s_fgraph.cutoff_norm);
+        drone_set_sweep_lo(SEQ_CLAMP_F32(new_mid - half, 65.0f, 7900.0f));
+        drone_set_sweep_hi(SEQ_CLAMP_F32(new_mid + half, 100.0f, 8000.0f));
+        drone_set_resonance(s_filter_edit.resonance);
+        ESP_LOGI(TAG, "filter commit drone: sweepMid=%.0f Q=%.2f",
+                 (double)new_mid, (double)s_filter_edit.resonance);
+    } else if (seq_state.ui_mode == UI_MODE_ARP) {
+        arp_set_filter(&s_filter_edit);
+        ESP_LOGI(TAG, "filter commit arp: type%u %.0fHz Q%.2f",
+                 s_filter_edit.filter_type,
+                 (double)s_filter_edit.cutoff_hz, (double)s_filter_edit.resonance);
+    } else {
+        uint8_t li = seq_state.active_layer_idx;
+        if (s_editor_apply_all) {
+            for (uint8_t t = 0; t < SEQ_TRACKS; ++t)
+                sequencer_core_set_melodic_filter(li, t, &s_filter_edit);
+        } else {
+            sequencer_core_set_melodic_filter(li, seq_state.selected_track, &s_filter_edit);
+        }
+    }
+    s_filter_active = false;
+    s_force_redraw  = true;
+    return true;
+}
+
+/* ── Filter editor: end ──────────────────────────────────────────────────── */
+
+/* ── LFO editor ──────────────────────────────────────────────────────────── */
+
+static uint32_t lfo_view_signature(void)
+{
+    const seq_lfo_t *l = &s_lfo_view.lfo;
+    return (uint32_t)l->enabled
+         | ((uint32_t)l->wave   <<  4)
+         | ((uint32_t)l->target <<  8)
+         | ((uint32_t)l->depth  << 12)
+         | ((uint32_t)l->rate   << 20)
+         | ((uint32_t)s_lfo_view.cursor  << 24)
+         | ((uint32_t)s_lfo_view.editing << 28);
+}
+
+bool synth_ui_lfo_is_active(void) { return s_lfo_active; }
+
+void synth_ui_lfo_open(void)
+{
+    uint8_t li = seq_state.active_layer_idx;
+    uint8_t tr = seq_state.selected_track;
+    seq_lfo_t existing = {
+        .enabled = false,
+        .mode    = LFO_MODE_FREE,
+        .wave    = LFO_WAVE_SINE,
+        .rate    = LFO_RATE_1BAR,
+        .depth   = 50,
+        .target  = LFO_TARGET_FILTER,
+    };
+    sequencer_core_get_melodic_lfo(li, tr, &existing);
+    s_lfo_view.lfo       = existing;
+    s_lfo_view.cursor    = 0;
+    s_lfo_view.editing   = false;
+    s_lfo_view.layer_idx = li;
+    s_lfo_view.track_idx = tr;
+    s_lfo_view.apply_all = s_editor_apply_all;
+    s_lfo_active   = true;
+    s_force_redraw = true;
+    ESP_LOGI(TAG, "LFO editor open L%u T%u", li, tr);
+}
+
+bool synth_ui_lfo_handle_encoder(long delta)
+{
+    if (!s_lfo_active) return false;
+    /* 5 fields: TGT, WAV, RTE, DEP, EN  (MODE removed — RETRIG not yet impl.) */
+    const uint8_t N = 5;
+    if (!s_lfo_view.editing) {
+        if (delta > 0)      s_lfo_view.cursor = (s_lfo_view.cursor + 1) % N;
+        else if (delta < 0) s_lfo_view.cursor = (s_lfo_view.cursor + N - 1) % N;
+        s_force_redraw = true;
+        return true;
+    }
+    seq_lfo_t *l = &s_lfo_view.lfo;
+    int d = (delta > 0) ? 1 : -1;
+    switch (s_lfo_view.cursor) {
+        case 0: /* target */
+            l->target = (lfo_target_t)((l->target + LFO_TARGET_COUNT + d) % LFO_TARGET_COUNT);
+            break;
+        case 1: /* wave */
+            l->wave = (lfo_wave_t)((l->wave + LFO_WAVE_COUNT + d) % LFO_WAVE_COUNT);
+            break;
+        case 2: /* rate */
+            l->rate = (lfo_rate_t)((l->rate + LFO_RATE_COUNT + d) % LFO_RATE_COUNT);
+            break;
+        case 3: /* depth: ±5%, clamped 0..100 */
+            if (d > 0) l->depth = (l->depth < 95) ? l->depth + 5 : 100;
+            else       l->depth = (l->depth >  5) ? l->depth - 5 : 0;
+            break;
+        case 4: /* enabled */
+            l->enabled = !l->enabled;
+            break;
+    }
+    s_force_redraw = true;
+    return true;
+}
+
+bool synth_ui_lfo_handle_button(bool is_long)
+{
+    if (!s_lfo_active) return false;
+    if (is_long) {
+        s_lfo_active   = false;
+        s_force_redraw = true;
+        ESP_LOGI(TAG, "LFO editor cancelled");
+        return true;
+    }
+    s_lfo_view.editing = !s_lfo_view.editing;
+    s_force_redraw = true;
+    return true;
+}
+
+bool synth_ui_lfo_close_commit(void)
+{
+    if (!s_lfo_active) return false;
+    if (s_editor_apply_all) {
+        for (uint8_t t = 0; t < SEQ_TRACKS; ++t)
+            sequencer_core_set_melodic_lfo(s_lfo_view.layer_idx, t, &s_lfo_view.lfo);
+    } else {
+        sequencer_core_set_melodic_lfo(s_lfo_view.layer_idx,
+                                       s_lfo_view.track_idx,
+                                       &s_lfo_view.lfo);
+    }
+    s_lfo_active   = false;
+    s_force_redraw = true;
+    ESP_LOGI(TAG, "LFO editor committed (apply_all=%d)", (int)s_editor_apply_all);
+    return true;
+}
+
+/* Toggle layer-wide vs single-track commit scope for the effects editors.
+ * Returns true if an appropriate editor was active and the event was consumed.
+ * Called from MY_BUTTON_1 while ADSR graph or LFO editor is open. */
+bool synth_ui_toggle_editor_apply_scope(void)
+{
+    bool graph_open = graph_popup_is_active(&s_graph_popup);
+    if (!graph_open && !s_lfo_active) return false;
+
+    s_editor_apply_all = !s_editor_apply_all;
+
+    /* Keep the LFO view in sync so lfo_view_draw() shows the correct indicator. */
+    if (s_lfo_active) {
+        s_lfo_view.apply_all = s_editor_apply_all;
+    }
+
+    s_force_redraw = true;
+    ESP_LOGI(TAG, "editor scope -> %s", s_editor_apply_all ? "LAYER" : "TRACK");
+    return true;
+}
+
+/* Cycle ADSR → Filter → LFO → ADSR (MY_BUTTON_3 while any editor is open). */
+void synth_ui_cycle_editor(void)
+{
+    if (graph_popup_is_active(&s_graph_popup)) {
+        synth_ui_graph_close_commit();
+        synth_ui_filter_open();
+    } else if (s_filter_active) {
+        synth_ui_filter_close_commit();
+        synth_ui_lfo_open();
+    } else if (s_lfo_active) {
+        synth_ui_lfo_close_commit();
+        synth_ui_graph_open_envelope();
+    }
+}
+
+/* ── LFO editor: end ─────────────────────────────────────────────────────── */
+
 #if !CONFIG_SEQ_PATCH_BROWSE_FULL_RANGE
 /* Runtime patch cycling shortlist: intentionally small and musical.
  * Values map to AMY built-ins (Juno/DX7/piano). Used only when the browse mode
@@ -431,7 +807,7 @@ static const uint16_t s_melodic_patch_cycle[] = {
  * built-in piano 256 (matches the sequencer_core clamp upper bound). */
 #define SEQ_PATCH_FULL_MAX 256
 
-synth_ui_state_t seq_state = {
+static synth_ui_state_t seq_state = {
     /* layers[] is zero-initialized by C99 partial-init rules */
     .num_layers       = 0,
     .active_layer_idx = 0,
@@ -492,7 +868,7 @@ static void synth_ui_sync_melodic_patch_cache(void)
 #define FNV1A_OFFSET 2166136261u
 #define FNV1A_PRIME  16777619u
 
-static inline uint32_t fnv1a_bytes(uint32_t h, const void *data, size_t len)
+[[gnu::const]] static inline uint32_t fnv1a_bytes(uint32_t h, const void *data, size_t len)
 {
     const uint8_t *b = (const uint8_t *)data;
     for (size_t i = 0; i < len; ++i) {
@@ -503,7 +879,7 @@ static inline uint32_t fnv1a_bytes(uint32_t h, const void *data, size_t len)
 }
 
 /* Signature of the sequencer view (everything display_seq_draw_frame reads). */
-static uint32_t seq_view_signature(void)
+ static uint32_t seq_view_signature(void)
 {
     uint32_t h = FNV1A_OFFSET;
     h = fnv1a_bytes(h, &seq_state.active_layer_idx, sizeof(seq_state.active_layer_idx));
@@ -533,9 +909,20 @@ static void menu_build_view(menu_view_t *out);
 static void arp_build_view(arp_view_t *out);
 static void drone_build_view(drone_view_t *out);
 static uint32_t drone_view_signature(void);
+static void prog_build_view(prog_view_t *out);
+static uint32_t prog_view_signature(void);
+static void trackopts_build_view(trackopts_view_t *out);
+static uint32_t trackopts_view_signature(void);
+
+[[gnu::pure]] static uint32_t filter_view_signature(void)
+{
+    uint32_t h = FNV1A_OFFSET;
+    h = fnv1a_bytes(h, &s_fgraph, sizeof(s_fgraph));
+    return h;
+}
 
 /* Signature of the menu overlay. */
-static uint32_t menu_view_signature(void)
+[[gnu::pure]] static uint32_t menu_view_signature(void)
 {
     uint32_t h = FNV1A_OFFSET;
     menu_view_t v;
@@ -550,7 +937,7 @@ static uint32_t menu_view_signature(void)
 }
 
 /* Signature of the arp screen. */
-static uint32_t arp_view_signature(void)
+[[gnu::pure]] static uint32_t arp_view_signature(void)
 {
     uint32_t h = FNV1A_OFFSET;
     arp_view_t v;
@@ -566,13 +953,14 @@ static uint32_t arp_view_signature(void)
     h = fnv1a_bytes(h, v.mode_str, 4);
     for (uint8_t i = 0; i < ARP_VIEW_SLOTS; i++) {
         h = fnv1a_bytes(h, &v.slot_active[i], sizeof(v.slot_active[i]));
+        h = fnv1a_bytes(h, &v.slot_rest[i],   sizeof(v.slot_rest[i]));
         h = fnv1a_bytes(h, v.slot_name[i], sizeof(v.slot_name[i]));
     }
     return h;
 }
 
 /* Signature of the graph editor (everything graph_popup_draw + the top bar read). */
-static uint32_t graph_view_signature(void)
+[[gnu::pure]] static uint32_t graph_view_signature(void)
 {
     uint32_t h = FNV1A_OFFSET;
     h = fnv1a_bytes(h, &s_graph_popup.cursor, sizeof(s_graph_popup.cursor));
@@ -593,7 +981,10 @@ static void graph_draw_topbar(u8g2_t *u8g2)
 
     /* Left: which row is being edited. */
     u8g2_SetFont(u8g2, u8g2_font_6x10_tf);
-    snprintf(buf, sizeof(buf), "L%u T%u ENV", s_graph_layer, s_graph_track);
+    snprintf(buf, sizeof(buf), "L%u T%u ENV%s",
+             s_graph_layer, s_graph_track,
+             (s_graph_target == GRAPH_TGT_MELODIC)
+                 ? (s_editor_apply_all ? ">L" : ">T") : "");
     u8g2_DrawStr(u8g2, 2, 8, buf);
 
     /* Right: SHORT/LONG range flag. */
@@ -632,6 +1023,10 @@ static void graph_draw_topbar(u8g2_t *u8g2)
     u8g2_DrawHLine(u8g2, 0, GRAPH_TOPBAR_H - 1, 128);
 }
 
+static uint8_t s_drone_cursor   = 0;
+static bool    s_drone_editing  = false;
+static bool    s_drone_vis_open = false;
+
 static void synth_ui_task(void *pvParameters)
 {
     (void)pvParameters;
@@ -639,7 +1034,7 @@ static void synth_ui_task(void *pvParameters)
     const TickType_t delay = pdMS_TO_TICKS(50); /* 20 Hz */
     uint32_t last_sig = 0;
     /* Which top-level view was rendered last frame; a change forces a redraw. */
-    enum { V_SEQ, V_ARP, V_MENU, V_GRAPH, V_DRONE } last_view = V_SEQ;
+    enum { V_SEQ, V_ARP, V_MENU, V_GRAPH, V_FILTER, V_LFO, V_DRONE, V_DRONE_VIS, V_PROG, V_TRACKOPTS } last_view = V_SEQ;
     for (;;) {
         /* Coalesced arp re-emit: setters mark the arp dirty; we perform at most
          * one full re-emit per frame here, collapsing fast encoder edits. */
@@ -647,22 +1042,61 @@ static void synth_ui_task(void *pvParameters)
         /* Drone: advance the tempo-locked filter sweep + keep the LFO in sync.
          * Cheap no-op while the drone is disabled. */
         drone_core_service();
+        sequencer_core_lfo_service();
+        sequencer_core_progression_service();
+
+        /* Drain deferred layer-delete request (must run in synth_ui_task so that
+         * the array compaction is serialized against all other seq_state readers
+         * on Core 0). */
+        if (s_layer_delete_pending) {
+            s_layer_delete_pending = false;
+            uint8_t del_idx = s_layer_delete_idx;
+            if (sequencer_core_delete_layer(del_idx)) {
+                /* Mirror compaction in the UI-side seq_state. */
+                uint8_t tail = (uint8_t)(seq_state.num_layers - del_idx - 1);
+                if (tail > 0) {
+                    memmove(&seq_state.layers[del_idx],
+                            &seq_state.layers[del_idx + 1],
+                            tail * sizeof(seq_state.layers[0]));
+                }
+                seq_state.num_layers--;
+                /* Clamp indices that may now point past the end. */
+                if (seq_state.active_layer_idx >= seq_state.num_layers)
+                    seq_state.active_layer_idx = (uint8_t)(seq_state.num_layers - 1);
+                if (s_graph_layer >= seq_state.num_layers)
+                    s_graph_layer = (uint8_t)(seq_state.num_layers - 1);
+                if (s_to_layer >= seq_state.num_layers)
+                    s_to_layer = (uint8_t)(seq_state.num_layers - 1);
+                ESP_LOGI(TAG, "UI delete layer %u (%u layers remain)",
+                         del_idx, seq_state.num_layers);
+            }
+        }
 
         seq_state.current_step =
             sequencer_core_get_current_step(seq_state.active_layer_idx);
         if (s_u8g2) {
-            /* Precedence: graph editor > menu overlay > arp/drone screen > seq. */
+            /* Precedence: filter editor > graph editor > menu overlay > arp/drone screen > seq. */
             bool graph = graph_popup_is_active(&s_graph_popup);
             int view;
             uint32_t sig;
-            if (graph) {
+            if (s_filter_active) {
+                view = V_FILTER; sig = filter_view_signature();
+            } else if (s_lfo_active) {
+                view = V_LFO;    sig = lfo_view_signature();
+            } else if (graph) {
                 view = V_GRAPH; sig = graph_view_signature();
             } else if (seq_state.menu_open) {
                 view = V_MENU;  sig = menu_view_signature();
             } else if (seq_state.ui_mode == UI_MODE_ARP) {
                 view = V_ARP;   sig = arp_view_signature();
+            } else if (seq_state.ui_mode == UI_MODE_DRONE && s_drone_vis_open) {
+                view = V_DRONE_VIS; sig = drone_view_signature(); /* vis params change → redraw */
             } else if (seq_state.ui_mode == UI_MODE_DRONE) {
                 view = V_DRONE; sig = drone_view_signature();
+            } else if (seq_state.ui_mode == UI_MODE_PROG) {
+                view = V_PROG;  sig = prog_view_signature();
+            } else if (seq_state.ui_mode == UI_MODE_TRACKOPTS) {
+                view = V_TRACKOPTS; sig = trackopts_view_signature();
             } else {
                 view = V_SEQ;   sig = seq_view_signature();
             }
@@ -670,6 +1104,18 @@ static void synth_ui_task(void *pvParameters)
 
             if (force || sig != last_sig) {
                 switch (view) {
+                    case V_FILTER:
+                        u8g2_ClearBuffer(s_u8g2);
+                        u8g2_SetDrawColor(s_u8g2, 1);
+                        filter_graph_draw(s_u8g2, &s_fgraph);
+                        u8g2_SendBuffer(s_u8g2);
+                        break;
+                    case V_LFO:
+                        u8g2_ClearBuffer(s_u8g2);
+                        u8g2_SetDrawColor(s_u8g2, 1);
+                        lfo_view_draw(s_u8g2, &s_lfo_view);
+                        u8g2_SendBuffer(s_u8g2);
+                        break;
                     case V_GRAPH:
                         u8g2_ClearBuffer(s_u8g2);
                         u8g2_SetDrawColor(s_u8g2, 1);
@@ -693,6 +1139,50 @@ static void synth_ui_task(void *pvParameters)
                         drone_view_t dv;
                         drone_build_view(&dv);
                         display_drone_draw_frame(s_u8g2, &dv);
+                        break;
+                    }
+                    case V_DRONE_VIS: {
+                        const float SWEEP_MIN = 100.0f, SWEEP_MAX = 8000.0f;
+                        float span = SWEEP_MAX - SWEEP_MIN;
+                        float c = drone_get_amp_const();
+                        float m = drone_get_amp_mod();
+                        float fl = c * (1.0f - m);
+                        float cl = c * (1.0f + m);
+                        if (fl < 0.0f) fl = 0.0f;
+                        if (cl > 1.0f) cl = 1.0f;
+                        drone_vis_t dvis = {
+                            .sweep_lo_norm  = (drone_get_sweep_lo() - SWEEP_MIN) / span,
+                            .sweep_hi_norm  = (drone_get_sweep_hi() - SWEEP_MIN) / span,
+                            .amp_const      = c,
+                            .amp_mod        = m,
+                            .amp_floor_norm = fl,
+                            .amp_ceil_norm  = cl,
+                            .resonance      = drone_get_resonance(),
+                            .rate_idx       = (uint8_t)drone_get_rate(),
+                            .sweep_bars     = drone_get_sweep_bars(),
+                            .pattern_mask   = (uint8_t)0xFF, /* filled below */
+                            .gate_len       = drone_get_gate_len(),
+                            .wave_mode      = (drone_get_source() == DRONE_SRC_WAVE),
+                        };
+                        static const uint8_t pat_masks[] = {
+                            0xFF, 0x55, 0xAA, 0x5B, 0x51
+                        };
+                        drone_pattern_t pat = drone_get_pattern();
+                        if ((size_t)pat < sizeof(pat_masks))
+                            dvis.pattern_mask = pat_masks[pat];
+                        display_drone_vis_draw(s_u8g2, &dvis);
+                        break;
+                    }
+                    case V_PROG: {
+                        prog_view_t pv;
+                        prog_build_view(&pv);
+                        display_prog_draw_frame(s_u8g2, &pv);
+                        break;
+                    }
+                    case V_TRACKOPTS: {
+                        trackopts_view_t tv;
+                        trackopts_build_view(&tv);
+                        display_trackopts_draw_frame(s_u8g2, &tv);
                         break;
                     }
                     default:
@@ -720,6 +1210,7 @@ void synth_ui_init(u8g2_t *u8g2)
     seq_state.menu_editing = false;
 
     SEQ_HEAP_CHECK("ui_init: entry");
+    amy_helpers_init();
     sequencer_core_init();
     SEQ_HEAP_CHECK("ui_init: after sequencer_core_init");
     arp_core_init();
@@ -742,8 +1233,8 @@ void synth_ui_init(u8g2_t *u8g2)
     drum->grid[0][0]  = drum->grid[0][4]  =
     drum->grid[0][8]  = drum->grid[0][12] = true;   /* kick  */
     drum->grid[1][4]  = drum->grid[1][12] = true;   /* snare */
-    drum->grid[2][2]  = drum->grid[2][6]  =
-    drum->grid[2][10] = drum->grid[2][14] = true;   /* hats  */
+    drum->grid[2][0]  = drum->grid[2][2]  = drum->grid[2][4]  = drum->grid[2][6]  =
+    drum->grid[2][8]  = drum->grid[2][10] = drum->grid[2][12] = drum->grid[2][14] = true; /* hats: all 8ths */
     drum->grid[3][7]  = drum->grid[3][15] = true;   /* perc  */
 
     sync_layer_to_core(0);
@@ -799,6 +1290,28 @@ uint8_t synth_ui_add_layer(seq_layer_type_t type, uint8_t num_steps)
     ESP_LOGI(TAG, "UI layer %d added (type=%d steps=%d)",
              li, type, layer->num_steps);
     return li;
+}
+
+/* Add a melodic layer immediately (non-destructive; safe to call from any
+ * Core-0 context, matching existing add_layer call-site convention). */
+void synth_ui_request_add_layer(void)
+{
+    if (seq_state.num_layers >= MAX_LAYERS) return;
+    synth_ui_add_layer(SEQ_LAYER_MELODIC, SEQ_STEPS);
+}
+
+/* Schedule a delete of the layer currently targeted by the Track Options
+ * screen (s_to_layer). Uses a pending flag so array compaction is serialized
+ * on Core 0 against all other seq_state readers. */
+void synth_ui_request_delete_to_layer(void)
+{
+    uint8_t layer_idx = s_to_layer;
+    /* Drum layer (0) is permanent; must always keep at least one layer. */
+    if (layer_idx == 0 || seq_state.num_layers <= 1) return;
+    if (layer_idx >= seq_state.num_layers) return;
+    if (seq_state.layers[layer_idx].type == SEQ_LAYER_DRUM) return;
+    s_layer_delete_idx     = layer_idx;
+    s_layer_delete_pending = true;
 }
 
 void synth_ui_cycle_active_layer(void)
@@ -879,6 +1392,16 @@ void synth_ui_set_bpm(uint16_t bpm)
     bpm = SEQ_CLAMP_U16(bpm, 40, 300);
     seq_state.bpm = bpm;
     sequencer_core_set_bpm(bpm);
+}
+
+uint16_t seq_get_bpm(void)
+{
+    return seq_state.bpm;
+}
+
+uint8_t seq_get_active_layer_idx(void)
+{
+    return seq_state.active_layer_idx;
 }
 
 /* Transposes the selected track's note by `delta` semitones. We read/write the
@@ -1055,64 +1578,46 @@ typedef struct {
 
 static fx_state_t s_fx = {
     .eq_low_db = 0, .eq_mid_db = 0, .eq_high_db = 0,
-    .echo_level = 0, .chorus_level = 0, .reverb_level = 0,
+    .echo_level   = CONFIG_SEQ_FX_DEFAULT_ECHO,
+    .chorus_level = CONFIG_SEQ_FX_DEFAULT_CHORUS,
+    .reverb_level = CONFIG_SEQ_FX_DEFAULT_REVERB,
     .presets_alter_global = false,
 };
 
-static amy_event         s_fx_ev;
-static SemaphoreHandle_t s_fx_ev_mutex = NULL;
-
-static void fx_ensure_mutex(void)
-{
-    if (s_fx_ev_mutex == NULL) s_fx_ev_mutex = xSemaphoreCreateMutex();
-}
-
 static void fx_push_eq(void)
 {
-    fx_ensure_mutex();
-    xSemaphoreTake(s_fx_ev_mutex, portMAX_DELAY);
-    s_fx_ev = amy_default_event();
-    s_fx_ev.eq_l = (float)s_fx.eq_low_db;   /* AMY interprets these as dB */
-    s_fx_ev.eq_m = (float)s_fx.eq_mid_db;
-    s_fx_ev.eq_h = (float)s_fx.eq_high_db;
-    amy_add_event(&s_fx_ev);
-    xSemaphoreGive(s_fx_ev_mutex);
+    amy_event *e = amy_helpers_event_begin();
+    e->eq_l = (float)s_fx.eq_low_db;   /* AMY interprets these as dB */
+    e->eq_m = (float)s_fx.eq_mid_db;
+    e->eq_h = (float)s_fx.eq_high_db;
+    amy_helpers_event_send(e);
 }
 
 static void fx_push_echo(void)
 {
-    fx_ensure_mutex();
-    xSemaphoreTake(s_fx_ev_mutex, portMAX_DELAY);
-    s_fx_ev = amy_default_event();
-    s_fx_ev.echo_level = (float)s_fx.echo_level / 100.0f;
-    amy_add_event(&s_fx_ev);
-    xSemaphoreGive(s_fx_ev_mutex);
+    amy_event *e = amy_helpers_event_begin();
+    e->echo_level = (float)s_fx.echo_level / 100.0f;
+    amy_helpers_event_send(e);
 }
 
 static void fx_push_chorus(void)
 {
-    fx_ensure_mutex();
-    xSemaphoreTake(s_fx_ev_mutex, portMAX_DELAY);
-    s_fx_ev = amy_default_event();
-    s_fx_ev.chorus_level = (float)s_fx.chorus_level / 100.0f;
-    amy_add_event(&s_fx_ev);
-    xSemaphoreGive(s_fx_ev_mutex);
+    amy_event *e = amy_helpers_event_begin();
+    e->chorus_level = (float)s_fx.chorus_level / 100.0f;
+    amy_helpers_event_send(e);
 }
 
 static void fx_push_reverb(void)
 {
-    fx_ensure_mutex();
-    xSemaphoreTake(s_fx_ev_mutex, portMAX_DELAY);
-    s_fx_ev = amy_default_event();
-    s_fx_ev.reverb_level = (float)s_fx.reverb_level / 100.0f;
-    amy_add_event(&s_fx_ev);
-    xSemaphoreGive(s_fx_ev_mutex);
+    amy_event *e = amy_helpers_event_begin();
+    e->reverb_level = (float)s_fx.reverb_level / 100.0f;
+    amy_helpers_event_send(e);
 }
 
 /* Re-impose the cached global FX after a patch load so a synth's preset cannot
  * hijack the shared EQ/chorus/echo/reverb. No-op when the user has opted into
  * letting presets drive global FX. Safe to call from the sequencer/arp/drone
- * task contexts: each fx_push_* takes s_fx_ev_mutex internally.
+ * task contexts: each fx_push_* serialises through the shared amy_helpers mutex.
  *
  * Cost is four queued events per patch change (a rare, user-driven action) and
  * zero in the render loop. The reassert events are queued AFTER the patch's own
@@ -1139,6 +1644,8 @@ typedef enum {
     MI_SCREEN_SEQ = 0,
     MI_SCREEN_ARP,
     MI_SCREEN_DRONE,
+    MI_SCREEN_PROG,
+    MI_SCREEN_TRACKOPTS,
     MI_BPM,
     MI_QUANT_ENABLED,
     MI_QUANT_SCALE,
@@ -1146,6 +1653,8 @@ typedef enum {
     MI_ARP_ENABLED,
     MI_DRONE_ENABLED,
     MI_DRUM_ENGINE,
+    MI_ADD_LAYER,
+    MI_REMOVE_LAYER,
     MI_EQ_LOW,
     MI_EQ_MID,
     MI_EQ_HIGH,
@@ -1168,6 +1677,8 @@ static void menu_build_view(menu_view_t *out)
     snprintf(s_menu_items[MI_SCREEN_SEQ].label, MENU_LABEL_LEN, "Screen: Seq");
     snprintf(s_menu_items[MI_SCREEN_ARP].label, MENU_LABEL_LEN, "Screen: Arp");
     snprintf(s_menu_items[MI_SCREEN_DRONE].label, MENU_LABEL_LEN, "Screen: Drone");
+    snprintf(s_menu_items[MI_SCREEN_PROG].label, MENU_LABEL_LEN, "Screen: Prog");
+    snprintf(s_menu_items[MI_SCREEN_TRACKOPTS].label, MENU_LABEL_LEN, "Screen: TrackOpts");
 
     snprintf(s_menu_items[MI_BPM].label, MENU_LABEL_LEN, "BPM");
     snprintf(s_menu_items[MI_BPM].value, MENU_VALUE_LEN, "%u",
@@ -1204,6 +1715,21 @@ static void menu_build_view(menu_view_t *out)
     snprintf(s_menu_items[MI_DRUM_ENGINE].value, MENU_VALUE_LEN, "%s",
              sequencer_core_get_drum_engine() == SEQ_DRUM_PCM ? "PCM" : "Synth");
 
+    snprintf(s_menu_items[MI_ADD_LAYER].label, MENU_LABEL_LEN, "Add Layer");
+    snprintf(s_menu_items[MI_ADD_LAYER].value, MENU_VALUE_LEN, "%u/%u",
+             (unsigned)seq_state.num_layers, (unsigned)MAX_LAYERS);
+
+    {
+        uint8_t li = seq_state.active_layer_idx;
+        bool can_del = (li > 0 && seq_state.num_layers > 1);
+        snprintf(s_menu_items[MI_REMOVE_LAYER].label, MENU_LABEL_LEN, "Del Layer");
+        if (can_del)
+            snprintf(s_menu_items[MI_REMOVE_LAYER].value, MENU_VALUE_LEN,
+                     "L%u", (unsigned)(li + 1));
+        else
+            snprintf(s_menu_items[MI_REMOVE_LAYER].value, MENU_VALUE_LEN, "--");
+    }
+
     /* Global FX (cached values; AMY has no getters). */
     snprintf(s_menu_items[MI_EQ_LOW].label, MENU_LABEL_LEN, "EQ Low");
     snprintf(s_menu_items[MI_EQ_LOW].value, MENU_VALUE_LEN, "%+ddB",
@@ -1221,14 +1747,8 @@ static void menu_build_view(menu_view_t *out)
     snprintf(s_menu_items[MI_CHORUS_LEVEL].value, MENU_VALUE_LEN, "%u%%",
              (unsigned)s_fx.chorus_level);
     snprintf(s_menu_items[MI_REVERB_LEVEL].label, MENU_LABEL_LEN, "Reverb");
-    /* If AMY could not allocate the reverb delay lines (OOM), it forces reverb
-     * off and flags it here. Surface "OOM!" instead of a percentage so the
-     * failure is visible on the OLED without a serial monitor. */
-    if (amy_reverb_alloc_failed())
-        snprintf(s_menu_items[MI_REVERB_LEVEL].value, MENU_VALUE_LEN, "OOM!");
-    else
-        snprintf(s_menu_items[MI_REVERB_LEVEL].value, MENU_VALUE_LEN, "%u%%",
-                 (unsigned)s_fx.reverb_level);
+    snprintf(s_menu_items[MI_REVERB_LEVEL].value, MENU_VALUE_LEN, "%u%%",
+             (unsigned)s_fx.reverb_level);
 
     /* "Presets alter global FX? y/n" — OFF makes Juno presets per-synth. */
     snprintf(s_menu_items[MI_PRESET_GLOBAL_FX].label, MENU_LABEL_LEN, "Preset FX");
@@ -1383,6 +1903,10 @@ bool synth_ui_menu_handle_encoder(long delta)
     return true;
 }
 
+/* Track Options screen state is declared near the top of the file (before
+ * synth_ui_task) so all users can reference s_to_layer. See the declaration
+ * block near s_graph_layer. */
+
 bool synth_ui_menu_handle_button(void)
 {
     if (!seq_state.menu_open) return false;
@@ -1405,6 +1929,26 @@ bool synth_ui_menu_handle_button(void)
                 break;
             case MI_SCREEN_DRONE:
                 seq_state.ui_mode = UI_MODE_DRONE;
+                seq_state.menu_open = false;
+                break;
+            case MI_SCREEN_PROG:
+                seq_state.ui_mode = UI_MODE_PROG;
+                seq_state.menu_open = false;
+                break;
+            case MI_SCREEN_TRACKOPTS:
+                seq_state.ui_mode = UI_MODE_TRACKOPTS;
+                seq_state.menu_open = false;
+                s_to_layer = seq_state.active_layer_idx;
+                s_to_track = seq_state.selected_track;
+                break;
+            case MI_ADD_LAYER:
+                if (seq_state.num_layers < MAX_LAYERS)
+                    synth_ui_request_add_layer();
+                seq_state.menu_open = false;
+                break;
+            case MI_REMOVE_LAYER:
+                s_to_layer = seq_state.active_layer_idx;
+                synth_ui_request_delete_to_layer();
                 seq_state.menu_open = false;
                 break;
             default:
@@ -1435,13 +1979,16 @@ static bool    s_arp_editing = false;
 /* Build the flat arp view from arp_core for the renderer. */
 static void arp_build_view(arp_view_t *out)
 {
+    static const char *s_dir_names[ARP_DIR_COUNT] = { "UP", "DOWN", "SLOT" };
     out->enabled  = arp_get_enabled();
-    out->mode_str = (arp_get_direction() == ARP_DOWN) ? "DOWN" : "UP";
+    out->mode_str = s_dir_names[arp_get_direction()];
     out->octaves  = arp_get_octaves();
     out->rate_str = arp_rate_name(arp_get_rate());
     out->gate_pct = arp_get_gate_pct();
     for (uint8_t i = 0; i < ARP_VIEW_SLOTS; i++) {
+        int16_t raw     = arp_get_slot(i);
         int16_t snapped = arp_get_slot_snapped(i);
+        out->slot_rest[i] = (raw == ARP_REST);
         if (snapped >= 0) {
             out->slot_active[i] = true;
             ui_note_name((uint8_t)snapped, out->slot_name[i]);
@@ -1468,8 +2015,10 @@ static void arp_edit_value(uint8_t cursor, int delta)
             if (dir != 0) arp_set_enabled(!arp_get_enabled());
             break;
         case ARP_CUR_MODE:
-            if (dir != 0)
-                arp_set_direction(arp_get_direction() == ARP_UP ? ARP_DOWN : ARP_UP);
+            if (dir != 0) {
+                int nd = ((int)arp_get_direction() + dir + ARP_DIR_COUNT) % ARP_DIR_COUNT;
+                arp_set_direction((arp_dir_t)nd);
+            }
             break;
         case ARP_CUR_OCT:
             arp_set_octaves((uint8_t)SEQ_CLAMP_INT(
@@ -1490,13 +2039,21 @@ static void arp_edit_value(uint8_t cursor, int delta)
             uint8_t slot = (uint8_t)(cursor - ARP_CUR_SLOT0);
             if (slot >= ARP_VIEW_SLOTS) break;
             int16_t cur = arp_get_slot(slot);
-            if (cur < 0) {
-                /* Empty: first turn seeds from the arp root note. */
+            if (cur == -1) {
+                /* Unused: up seeds a note, down sets REST (one step above floor). */
                 if (dir > 0) arp_set_slot(slot, (int16_t)arp_get_root_note());
+                else         arp_set_slot(slot, ARP_REST);
+            } else if (cur == ARP_REST) {
+                /* REST is the floor: up goes to empty (not root note, so recovery
+                 * is two turns up rather than scrolling through octaves); down clamps. */
+                if (dir > 0) arp_set_slot(slot, -1);
+                /* dir < 0: stay at REST — no bounce back to empty */
             } else {
                 int nv = (int)cur + dir;
                 if (nv < 24) {
-                    arp_set_slot(slot, -1);   /* turn below floor clears slot */
+                    arp_set_slot(slot, -1);   /* below floor → clear to empty */
+                } else if (nv > 127) {
+                    arp_set_slot(slot, 127);  /* ceiling clamp, no wrap */
                 } else {
                     arp_set_slot(slot, (int16_t)nv);
                 }
@@ -1539,10 +2096,12 @@ typedef enum {
     DROW_ENABLE = 0,
     DROW_SOURCE,
     DROW_WAVE,        /* WAVE only */
+    DROW_ROOT,        /* drone-local root note (both modes) */
     DROW_CHORD,
     DROW_RES,
     DROW_CONST,       /* WAVE only */
     DROW_MOD,         /* WAVE only */
+    DROW_VIS_POPUP,   /* always visible — opens the drone visualiser overlay */
     DROW_RATE,        /* WAVE only */
     DROW_GATE_LEN,    /* WAVE only */
     DROW_SWING,
@@ -1556,9 +2115,6 @@ typedef enum {
     DROW_PATCH,       /* PATCH only */
     DROW_ALL_COUNT
 } drone_logical_row_t;
-
-static uint8_t s_drone_cursor  = 0;   /* index into the visible-row list */
-static bool    s_drone_editing = false;
 
 /* Fill `out` with the logical rows visible for the current source; return count.
  * out[] must hold at least DROW_ALL_COUNT entries. */
@@ -1593,6 +2149,13 @@ static void drone_row_label_value(drone_logical_row_t r,
             snprintf(label, DRONE_LABEL_LEN, "WAVE");
             snprintf(value, DRONE_VALUE_LEN, "%s", drone_wave_name(drone_get_wave()));
             break;
+        case DROW_ROOT: {
+            char nn[4];
+            ui_note_name(drone_get_root_note(), nn);
+            snprintf(label, DRONE_LABEL_LEN, "ROOT");
+            snprintf(value, DRONE_VALUE_LEN, "%s", nn);
+            break;
+        }
         case DROW_CHORD:
             snprintf(label, DRONE_LABEL_LEN, "CHORD");
             snprintf(value, DRONE_VALUE_LEN, "%s", drone_chord_name(drone_get_chord()));
@@ -1608,6 +2171,10 @@ static void drone_row_label_value(drone_logical_row_t r,
         case DROW_MOD:
             snprintf(label, DRONE_LABEL_LEN, "MOD");
             snprintf(value, DRONE_VALUE_LEN, "%.1f", (double)drone_get_amp_mod());
+            break;
+        case DROW_VIS_POPUP:
+            snprintf(label, DRONE_LABEL_LEN, "VISUALISE");
+            snprintf(value, DRONE_VALUE_LEN, "[ OPEN ]");
             break;
         case DROW_RATE:
             snprintf(label, DRONE_LABEL_LEN, "STUTTER");
@@ -1698,6 +2265,11 @@ static void drone_edit_row(drone_logical_row_t r, int delta)
             drone_set_wave(waves[idx]);
             break;
         }
+        case DROW_ROOT: {
+            int r = SEQ_CLAMP_INT((int)drone_get_root_note() + dir, 24, 72);
+            drone_set_root_note((uint8_t)r);
+            break;
+        }
         case DROW_CHORD: {
             int c = SEQ_CLAMP_INT((int)drone_get_chord() + dir,
                                   0, DRONE_CHORD_COUNT - 1);
@@ -1719,8 +2291,10 @@ static void drone_edit_row(drone_logical_row_t r, int delta)
         case DROW_MOD:
             drone_set_amp_mod(drone_get_amp_mod() + (float)dir * 0.1f);
             break;
+        case DROW_VIS_POPUP:
+            break; /* encoder turns consumed; popup opened/closed via button */
         case DROW_RATE: {
-            int v = SEQ_CLAMP_INT((int)drone_get_rate() + dir, 0, DRONE_RATE_COUNT - 1);
+            int v = SEQ_CLAMP((int)drone_get_rate() + dir, 0, DRONE_RATE_COUNT - 1);
             drone_set_rate((drone_rate_t)v);
             break;
         }
@@ -1728,11 +2302,11 @@ static void drone_edit_row(drone_logical_row_t r, int delta)
             drone_set_gate_len(drone_get_gate_len() + (float)dir * 0.05f);
             break;
         case DROW_SWING:
-            drone_set_swing((uint8_t)SEQ_CLAMP_INT(
+            drone_set_swing((uint8_t)SEQ_CLAMP(
                 (int)drone_get_swing() + dir * 2, 0, 66));
             break;
         case DROW_PATTERN: {
-            int v = SEQ_CLAMP_INT((int)drone_get_pattern() + dir, 0, DRONE_PAT_COUNT - 1);
+            int v = SEQ_CLAMP((int)drone_get_pattern() + dir, 0, DRONE_PAT_COUNT - 1);
             drone_set_pattern((drone_pattern_t)v);
             break;
         }
@@ -1746,14 +2320,14 @@ static void drone_edit_row(drone_logical_row_t r, int delta)
             drone_set_sweep_hi(drone_get_sweep_hi() + (float)dir * 25.0f);
             break;
         case DROW_SWEEP_BARS:
-            drone_set_sweep_bars((uint8_t)SEQ_CLAMP_INT(
+            drone_set_sweep_bars((uint8_t)SEQ_CLAMP(
                 (int)drone_get_sweep_bars() + dir, 1, 16));
             break;
         case DROW_SUB:
             if (dir != 0) drone_set_sub_enabled(!drone_get_sub_enabled());
             break;
         case DROW_SUB_INTVL:
-            drone_set_sub_interval((int8_t)SEQ_CLAMP_INT(
+            drone_set_sub_interval((int8_t)SEQ_CLAMP(
                 (int)drone_get_sub_interval() + dir, -36, 0));
             break;
         case DROW_PATCH:
@@ -1774,6 +2348,10 @@ bool synth_ui_drone_is_active(void)
 void synth_ui_drone_handle_encoder(long delta)
 {
     if (delta == 0) return;
+    if (s_drone_vis_open) {
+        s_force_redraw = true; /* consume turn; popup has nothing to scroll */
+        return;
+    }
     drone_logical_row_t vis[DROW_ALL_COUNT];
     uint8_t n = drone_visible_rows(vis);
     if (n == 0) return;
@@ -1791,6 +2369,18 @@ void synth_ui_drone_handle_encoder(long delta)
 
 void synth_ui_drone_handle_button(void)
 {
+    if (s_drone_vis_open) {
+        s_drone_vis_open = false;
+        s_force_redraw = true;
+        return;
+    }
+    drone_logical_row_t vis[DROW_ALL_COUNT];
+    uint8_t n = drone_visible_rows(vis);
+    if (n > 0 && s_drone_cursor < n && vis[s_drone_cursor] == DROW_VIS_POPUP) {
+        s_drone_vis_open = true;
+        s_force_redraw = true;
+        return;
+    }
     s_drone_editing = !s_drone_editing;
     s_force_redraw = true;
 }
@@ -1811,3 +2401,312 @@ static uint32_t drone_view_signature(void)
     return h;
 }
 
+/* ════════════════════════════════════════════════════════════════════════
+ *  PROG SCREEN
+ * ════════════════════════════════════════════════════════════════════════ */
+
+static uint8_t s_prog_cursor  = 0;   /* 0=enabled toggle, 1..count=entry rows */
+static bool    s_prog_editing = false;
+static uint8_t s_prog_field   = 0;   /* edit sub-field: 0=root, 1=type, 2=duration */
+
+/* Allowed per-entry durations, in bars. */
+static const uint8_t s_prog_durations[] = { 1, 2, 4, 8, 16 };
+#define PROG_NUM_DURATIONS ((int)(sizeof(s_prog_durations) / sizeof(s_prog_durations[0])))
+
+static void prog_build_view(prog_view_t *out)
+{
+    uint8_t count = sequencer_core_progression_get_count();
+    out->enabled       = sequencer_core_progression_get_enabled();
+    out->count         = count;
+    out->current_entry = sequencer_core_progression_get_current();
+    out->cursor        = s_prog_cursor;
+    out->editing       = s_prog_editing;
+    out->edit_field    = s_prog_field;
+    out->bars_in_current = sequencer_core_progression_bars_in_current();
+
+    uint8_t n = (count < PROG_VIEW_MAX_ENTRIES) ? count : PROG_VIEW_MAX_ENTRIES;
+    for (uint8_t i = 0; i < n; i++) {
+        sequencer_core_progression_get_entry(i,
+            &out->entries[i].root,
+            &out->entries[i].chord_type,
+            &out->entries[i].duration_bars);
+    }
+}
+
+static uint32_t prog_view_signature(void)
+{
+    uint32_t h = FNV1A_OFFSET;
+    prog_view_t v;
+    prog_build_view(&v);
+    h = fnv1a_bytes(h, &v.enabled,       sizeof(v.enabled));
+    h = fnv1a_bytes(h, &v.count,         sizeof(v.count));
+    h = fnv1a_bytes(h, &v.current_entry, sizeof(v.current_entry));
+    h = fnv1a_bytes(h, &v.cursor,        sizeof(v.cursor));
+    h = fnv1a_bytes(h, &v.editing,       sizeof(v.editing));
+    h = fnv1a_bytes(h, &v.edit_field,    sizeof(v.edit_field));
+    h = fnv1a_bytes(h, &v.bars_in_current, sizeof(v.bars_in_current));
+    for (uint8_t i = 0; i < v.count; i++) {
+        h = fnv1a_bytes(h, &v.entries[i], sizeof(v.entries[i]));
+    }
+    return h;
+}
+
+bool synth_ui_prog_is_active(void)
+{
+    return seq_state.ui_mode == UI_MODE_PROG && !seq_state.menu_open;
+}
+
+/* Find the index of `dur` in s_prog_durations[], or the nearest-not-greater. */
+static int prog_duration_index(uint8_t dur)
+{
+    int idx = 0;
+    for (int i = 0; i < PROG_NUM_DURATIONS; i++) {
+        if (s_prog_durations[i] <= dur) idx = i;
+    }
+    return idx;
+}
+
+bool synth_ui_prog_handle_encoder(int delta)
+{
+    if (!synth_ui_prog_is_active()) return false;
+    uint8_t count = sequencer_core_progression_get_count();
+    uint8_t max_cursor = (count > 0) ? count : 0;
+
+    if (s_prog_editing && s_prog_cursor >= 1) {
+        /* Editing the focused field of the selected entry. */
+        uint8_t ei = (uint8_t)(s_prog_cursor - 1);
+        uint8_t root; chord_type_t ct; uint8_t dur;
+        sequencer_core_progression_get_entry(ei, &root, &ct, &dur);
+        switch (s_prog_field) {
+            case 0: {  /* root: chromatic 0–11 */
+                int nr = ((int)root + delta) % 12;
+                if (nr < 0) nr += 12;
+                root = (uint8_t)nr;
+                break;
+            }
+            case 1: {  /* chord type */
+                int nct = (int)ct + delta;
+                while (nct < 0) nct += CHORD_TYPE_COUNT;
+                nct %= CHORD_TYPE_COUNT;
+                ct = (chord_type_t)nct;
+                break;
+            }
+            default: { /* duration: cycle the allowed set */
+                int di = prog_duration_index(dur) + delta;
+                while (di < 0) di += PROG_NUM_DURATIONS;
+                di %= PROG_NUM_DURATIONS;
+                dur = s_prog_durations[di];
+                break;
+            }
+        }
+        sequencer_core_progression_set_entry(ei, root, ct, dur);
+    } else {
+        /* Navigate cursor (0=toggle, 1..count=rows). */
+        int nc = (int)s_prog_cursor + delta;
+        if (nc < 0) nc = (int)max_cursor;
+        if (nc > (int)max_cursor) nc = 0;
+        s_prog_cursor = (uint8_t)nc;
+    }
+    s_force_redraw = true;
+    return true;
+}
+
+bool synth_ui_prog_handle_button(void)
+{
+    if (!synth_ui_prog_is_active()) return false;
+    if (s_prog_cursor == 0) {
+        /* Toggle row: enable/disable the progression. */
+        sequencer_core_progression_set_enabled(
+            !sequencer_core_progression_get_enabled());
+    } else if (!s_prog_editing) {
+        /* Enter field-edit on the focused entry, starting at root. */
+        s_prog_editing = true;
+        s_prog_field   = 0;
+    } else {
+        /* Advance root → type → duration, then exit edit. */
+        if (s_prog_field >= 2) {
+            s_prog_editing = false;
+            s_prog_field   = 0;
+        } else {
+            s_prog_field++;
+        }
+    }
+    s_force_redraw = true;
+    return true;
+}
+
+bool synth_ui_prog_add_entry(void)
+{
+    if (!synth_ui_prog_is_active()) return false;
+    if (sequencer_core_progression_add_entry()) {
+        /* Move the cursor to the freshly-appended row so it can be edited. */
+        s_prog_cursor  = sequencer_core_progression_get_count();
+        s_prog_editing = false;
+    }
+    s_force_redraw = true;
+    return true;
+}
+
+bool synth_ui_prog_delete_entry(void)
+{
+    if (!synth_ui_prog_is_active()) return false;
+    if (s_prog_cursor >= 1) {
+        sequencer_core_progression_delete_entry((uint8_t)(s_prog_cursor - 1));
+        uint8_t count = sequencer_core_progression_get_count();
+        if (s_prog_cursor > count) s_prog_cursor = count;  /* clamp to last row */
+        s_prog_editing = false;
+    }
+    s_force_redraw = true;
+    return true;
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+ *  Track Options screen — per-track repeat rate + per-layer manual chord
+ * ════════════════════════════════════════════════════════════════════════ */
+
+/* Next repeat rate in the 1→2→4→8→1 cycle. */
+static uint8_t to_next_repeat_rate(uint8_t rr, int delta)
+{
+    static const uint8_t rates[] = { 1, 2, 4, 8 };
+    int n = (int)(sizeof(rates) / sizeof(rates[0]));
+    int idx = 0;
+    for (int i = 0; i < n; i++) if (rates[i] == rr) idx = i;
+    idx = (idx + delta) % n;
+    if (idx < 0) idx += n;
+    return rates[idx];
+}
+
+static void trackopts_build_view(trackopts_view_t *out)
+{
+    uint8_t li = s_to_layer;
+    uint8_t tr = s_to_track;
+    bool melodic = (sequencer_core_get_layer_type(li) == SEQ_LAYER_MELODIC);
+
+    /* Drum tracks expose only Repeat Rate and the target selectors. */
+    if (!melodic && s_to_cursor > TO_ROW_REPEAT) s_to_cursor = TO_ROW_REPEAT;
+
+    out->layer_idx    = li;                 /* 0-based; renderer displays as 1-based */
+    out->track_idx    = tr;
+    out->layer_count  = seq_state.num_layers;
+    out->track_count  = SEQ_TRACKS;
+    out->melodic      = melodic;
+    out->repeat_rate  = (uint8_t)sequencer_core_get_track_repeat_rate(li, tr);
+    out->chord_locked = sequencer_core_progression_get_enabled();
+    out->cursor       = s_to_cursor;
+    out->editing      = s_to_editing;
+
+    bool mode = false; uint8_t root = 0; chord_type_t ct = CHORD_MAJ;
+    sequencer_core_get_layer_chord(li, &mode, &root, &ct);
+    out->chord_mode = mode;
+    out->chord_root = root;
+    out->chord_type = ct;
+}
+
+static uint32_t trackopts_view_signature(void)
+{
+    uint32_t h = FNV1A_OFFSET;
+    trackopts_view_t v;
+    trackopts_build_view(&v);
+    h = fnv1a_bytes(h, &v.layer_idx,   sizeof(v.layer_idx));
+    h = fnv1a_bytes(h, &v.track_idx,   sizeof(v.track_idx));
+    h = fnv1a_bytes(h, &v.layer_count, sizeof(v.layer_count));
+    h = fnv1a_bytes(h, &v.track_count, sizeof(v.track_count));
+    h = fnv1a_bytes(h, &v.melodic,     sizeof(v.melodic));
+    h = fnv1a_bytes(h, &v.repeat_rate, sizeof(v.repeat_rate));
+    h = fnv1a_bytes(h, &v.chord_mode,  sizeof(v.chord_mode));
+    h = fnv1a_bytes(h, &v.chord_root,  sizeof(v.chord_root));
+    h = fnv1a_bytes(h, &v.chord_type,  sizeof(v.chord_type));
+    h = fnv1a_bytes(h, &v.cursor,      sizeof(v.cursor));
+    h = fnv1a_bytes(h, &v.editing,     sizeof(v.editing));
+    return h;
+}
+
+bool synth_ui_trackopts_is_active(void)
+{
+    return seq_state.ui_mode == UI_MODE_TRACKOPTS && !seq_state.menu_open;
+}
+
+bool synth_ui_trackopts_handle_encoder(int delta)
+{
+    if (!synth_ui_trackopts_is_active()) return false;
+    uint8_t li = s_to_layer;
+    uint8_t tr = s_to_track;
+    bool melodic = (sequencer_core_get_layer_type(li) == SEQ_LAYER_MELODIC);
+    uint8_t max_row = melodic ? TO_ROW_TYPE : TO_ROW_REPEAT;
+
+    if (s_to_editing) {
+        switch (s_to_cursor) {
+            case TO_ROW_LAYER: {
+                int nl = (int)s_to_layer + delta;
+                int nc = (int)seq_state.num_layers;
+                if (nl < 0) nl += nc; else if (nl >= nc) nl -= nc;
+                s_to_layer = (uint8_t)nl;
+                /* Re-clamp track and cursor if the new layer is a drum layer. */
+                if (sequencer_core_get_layer_type(s_to_layer) != SEQ_LAYER_MELODIC &&
+                    s_to_cursor > TO_ROW_REPEAT) {
+                    s_to_cursor = TO_ROW_REPEAT;
+                }
+                break;
+            }
+            case TO_ROW_TRACK: {
+                int nt = (int)s_to_track + delta;
+                if (nt < 0) nt += SEQ_TRACKS; else if (nt >= SEQ_TRACKS) nt -= SEQ_TRACKS;
+                s_to_track = (uint8_t)nt;
+                break;
+            }
+            case TO_ROW_REPEAT: {
+                uint8_t rr = (uint8_t)sequencer_core_get_track_repeat_rate(li, tr);
+                rr = to_next_repeat_rate(rr, delta);
+                sequencer_core_set_track_repeat_rate(li, tr, (seq_repeat_rate_t)rr);
+                break;
+            }
+            case TO_ROW_CHORD: {
+                if (sequencer_core_progression_get_enabled()) break;
+                bool mode = false; uint8_t root = 0; chord_type_t ct = CHORD_MAJ;
+                sequencer_core_get_layer_chord(li, &mode, &root, &ct);
+                if (mode) sequencer_core_progression_clear_layer_chord(li);
+                else      sequencer_core_progression_set_layer_chord(li, root, ct);
+                break;
+            }
+            case TO_ROW_ROOT:
+            case TO_ROW_TYPE: {
+                if (sequencer_core_progression_get_enabled()) break;
+                bool mode = false; uint8_t root = 0; chord_type_t ct = CHORD_MAJ;
+                sequencer_core_get_layer_chord(li, &mode, &root, &ct);
+                if (!mode) break;
+                if (s_to_cursor == TO_ROW_ROOT) {
+                    int nr = ((int)root + delta) % 12;
+                    if (nr < 0) nr += 12;
+                    root = (uint8_t)nr;
+                } else {
+                    int nct = (int)ct + delta;
+                    while (nct < 0) nct += CHORD_TYPE_COUNT;
+                    nct %= CHORD_TYPE_COUNT;
+                    ct = (chord_type_t)nct;
+                }
+                sequencer_core_progression_set_layer_chord(li, root, ct);
+                break;
+            }
+            default: break;
+        }
+    } else {
+        int nc = (int)s_to_cursor + delta;
+        if (nc < 0) nc = (int)max_row;
+        if (nc > (int)max_row) nc = 0;
+        s_to_cursor = (uint8_t)nc;
+    }
+    s_force_redraw = true;
+    return true;
+}
+
+bool synth_ui_trackopts_handle_button(void)
+{
+    if (!synth_ui_trackopts_is_active()) return false;
+    if (sequencer_core_get_layer_type(s_to_layer) != SEQ_LAYER_MELODIC &&
+        s_to_cursor > TO_ROW_REPEAT) {
+        s_to_cursor = TO_ROW_REPEAT;
+    }
+    s_to_editing = !s_to_editing;
+    s_force_redraw = true;
+    return true;
+}

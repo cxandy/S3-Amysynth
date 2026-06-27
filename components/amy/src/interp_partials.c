@@ -45,18 +45,15 @@ void partials_note_on(uint16_t osc) {
     for (int i = 0; i < num_partials; ++i) {
         int o = osc + 1 + i;
         ensure_osc_allocd(o, NULL);
-        if (synth[o]->wave == PARTIAL) {  // User has marked this as a partial.
-            // Mark this PARTIAL as part of a build-your own with a flag value in its preset field.
-            // This is used I think only at envelope.c:121 to avoid the normal partial preset special-case for PARTIALs.
-            synth[o]->preset = synth[osc]->preset;
-
-            synth[o]->logfreq_coefs[COEF_BEND] = 0;  // Each PARTIAL will receive pitch bend via the midi_note modulation from the parent osc, don't add it twice.
-            synth[o]->status = SYNTH_IS_ALGO_SOURCE;
-            synth[o]->note_on_clock = amy_global.total_blocks*AMY_BLOCK_SIZE;
-            AMY_UNSET(synth[o]->note_off_clock);
-            msynth[o]->logfreq = synth[o]->logfreq_coefs[COEF_CONST] + msynth[osc]->logfreq;
-            partial_note_on(o);
-        }
+        // Mark this PARTIAL as part of a build-your own with a flag value in its preset field.
+        // This is used I think only at envelope.c:121 to avoid the normal partial preset special-case for PARTIALs.
+        synth[o]->preset = synth[osc]->preset;
+        synth[o]->logfreq_coefs[COEF_BEND] = 0;  // Each PARTIAL will receive pitch bend via the midi_note modulation from the parent osc, don't add it twice.
+        synth[o]->status = SYNTH_IS_ALGO_SOURCE;
+        synth[o]->note_on_clock = amy_global.total_blocks*AMY_BLOCK_SIZE;
+        AMY_UNSET(synth[o]->note_off_clock);
+        msynth[o]->logfreq = synth[o]->logfreq_coefs[COEF_CONST] + msynth[osc]->logfreq;
+        partial_note_on(o);
     }
 }
 
@@ -102,16 +99,12 @@ SAMPLE render_partials(SAMPLE *buf, uint16_t osc) {
             //printf("[%d %d] %d amp %f (%f) freq %f (%f) on %d off %d bp0 %d %f bp1 %d %f wave %d\n", amy_global.total_blocks*AMY_BLOCK_SIZE, ms_since_started, o, synth[o]->amp, msynth[o]->amp, synth[o]->freq, msynth[o]->freq, synth[o]->note_on_clock, synth[o]->note_off_clock, synth[o]->breakpoint_times[0][0], 
             //    synth[o]->breakpoint_values[0][0], synth[o]->breakpoint_times[1][0], synth[o]->breakpoint_values[1][0], synth[o]->wave);
             SAMPLE value = render_partial(buf, o);
+            //fprintf(stderr, "render_partials: time %.3f osc %d ctl ampt %.6f msynth_amp %.6f max_val=%.6f\n", amy_global.time, o, msynth[osc]->amp, msynth[o]->amp, S2F(value));
             if (value > max_value) max_value = value;
-            // Deferred termination of this partial, after final ramp-out.
-            if (synth[o]->amp_coefs[COEF_CONST] == 0)  partial_note_off(o);
         }
     }
     return max_value;
 }
-
-
-
 
 
 int _max_partials_for_partials_voice(const interp_partials_voice_t *partials_voice) {
@@ -162,6 +155,7 @@ void _osc_on_with_harm_param(uint16_t o, float *harm_param, const interp_partial
     // Setup the specified frequency.
     synth[o]->logfreq_coefs[COEF_CONST] = _logfreq_of_midi_cents(harm_param[0]);
     // Setup envelope.
+    //synth[o]->eg_type[0] = ENVELOPE_DB;
     synth[o]->breakpoint_times[0][0] = 0;
     synth[o]->breakpoint_values[0][0] = 0;
     int last_time = 0;
@@ -175,13 +169,20 @@ void _osc_on_with_harm_param(uint16_t o, float *harm_param, const interp_partial
     synth[o]->breakpoint_values[0][partials_voice->num_sample_times_ms + 1] = 0;
     // Decouple osc freq and amp from note and amp.
     synth[o]->logfreq_coefs[COEF_NOTE] = 0;
-    synth[o]->amp_coefs[COEF_VEL] = 0;
+    synth[o]->amp_coefs[COEF_VEL] = 1.0;  // velocity is modified on-the-fly by the control osc to vary global amplitude.
     // Other osc params.
     synth[o]->status = SYNTH_IS_ALGO_SOURCE;
     synth[o]->note_on_clock = amy_global.total_blocks*AMY_BLOCK_SIZE;
     AMY_UNSET(synth[o]->note_off_clock);
     partial_note_on(o);
 }
+
+// HOW DOES INTERP_PARTIALS (e.g. DPWE_PIANO) WORK?
+// The special thing about interp_partials is that the harmonic envelopes depend on the note velocity,
+// so they all have to be recomputed in response at note_on time.  Then, because their values have been
+// determined to reflect velocity via the note_on calculation, the parent osc should not use velocity
+// as part of its overall scaling calculation, since it would otherwise be applied twice.
+// Thus, when setting up a control osc for piano, we set amp_coef[COEF_VELOCITY] = 0.
 
 void interp_partials_note_on(uint16_t osc) {
     // Choose the interp_partials preset.
@@ -235,6 +236,7 @@ void interp_partials_note_on(uint16_t osc) {
     for (int o = 0; o < max_num_partials; ++o) {
         ensure_osc_allocd(osc + 1 + o, max_num_breakpoints);
     }
+    int partial_osc = osc;
     for (int h = 0; h < num_harmonics; ++h) {
         if (use_this_partial_map[h]) {
             for (int i = 0; i < MAX_NUM_MAGNITUDES + 1; ++i)  harm_param[i] = 0;
@@ -247,10 +249,12 @@ void interp_partials_note_on(uint16_t osc) {
             _cumulate_scaled_harmonic_params(harm_param, harmonic_base_index_ph_vh + h,
                                              alpha_ph_vh, partials_voice);
             //fprintf(stderr, "harm %d freq %.2f bps %.3f %.3f %.3f %.3f\n", h, harm_param[0], harm_param[1], harm_param[2], harm_param[3], harm_param[4]);
-            ++osc;
-            _osc_on_with_harm_param(osc, harm_param, partials_voice);
+            ++partial_osc;
+            _osc_on_with_harm_param(partial_osc, harm_param, partials_voice);
         }
     }
+    // Make sure any remaining oscs are still marked as ALGO_SOURCE
+    while(partial_osc < osc + 1 + max_num_partials)  { synth[partial_osc]->status = SYNTH_IS_ALGO_SOURCE; ++partial_osc; }
 }
 
 void interp_partials_note_off(uint16_t osc) {

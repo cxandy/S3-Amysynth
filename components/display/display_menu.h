@@ -15,7 +15,7 @@ extern "C" {
  * renderer draws a scrollable highlighted list; the entered item's value is
  * framed/inverted while editing. */
 
-#define MENU_MAX_ITEMS    16
+#define MENU_MAX_ITEMS    24
 #define MENU_LABEL_LEN    18
 #define MENU_VALUE_LEN    14
 

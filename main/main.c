@@ -1,33 +1,32 @@
 
 #include <stdint.h>
-#include <stdio.h>
 #include <string.h>
 #include <inttypes.h>
-#include "freertos/idf_additions.h"
 #include "iot_button.h"
 #include "priv_i2c_u8g2.h"
 #include "u8g2.h"
 #include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "esp_chip_info.h"
-#include "esp_flash.h"
-#include "esp_system.h"
 #include "esp_task.h"
 #include "amy.h"
 #include "freertos/queue.h"
-#include "freertos/event_groups.h"
 #include "esp_err.h"
 #include "rotary_encoder.h"
 #include "synth_ui.h"
 #include "sequencer_core.h"
-#include "seq_clamp.h"
 #include "usb_audio.h"
 #include "esp_timer.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "render_clock.h"
 #include "esp_compiler.h"
+#include "soc/gpio_num.h"
+#include "my_buttons.h"
+
+#ifndef CONFIG_AMYSYNTH_INPUT_DIAGNOSTICS
+#define CONFIG_AMYSYNTH_INPUT_DIAGNOSTICS 0
+#endif
 
 static const char *TAG = "main"; // For ESP_LOG and related logs in this file
 
@@ -47,32 +46,11 @@ static const char *TAG = "main"; // For ESP_LOG and related logs in this file
 #define HEAP_CHECK(where) do { (void)(where); } while (0)
 #endif
 
-#include "driver/i2s_std.h"
-#include "soc/gpio_num.h"
-#include "my_buttons.h"
-/*----------------------------------------------GPIO/MACROS-----------------------------------------------------------*/
-//i2s pins
-#define CONFIG_I2S_BCLK 11 // 25
-#define CONFIG_I2S_LRCLK 9
-#define CONFIG_I2S_DIN 10
-// This can be 32 bit, int32_t -- helpful for digital output to a i2s->USB teensy3 board
-
-
 // Rotary encoder pins
 #define ENCODER_PIN_A GPIO_NUM_40
 #define ENCODER_PIN_B GPIO_NUM_41
-#define ENCODER_PIN_BTN GPIO_NUM_16
-
-#define u8g2_task_stack_size (8 * 1024) // 8KB stack for the u8g2 task
-
-typedef int16_t i2s_sample_type;
-
-
-
 static i2c_u8g2_handle_t s_display;
 static u8g2_t *s_u8g2 = NULL;
-static volatile long last_count = 0; // For encoder count
-static volatile long count = 0; // For encoder count
 static volatile uint32_t s_last_seq_tick = 0;
 static volatile uint32_t s_seq_tick_hook_count = 0;
 static volatile uint32_t s_render_block_count = 0;
@@ -309,10 +287,27 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
 {
     (void)user_data;
 
-    // MY_BUTTON_1 is the patch-select hold button. Plain hold+turn: while held,
-    // the encoder cycles the patch (no timer/latch). On press we enter
-    // patch-select display mode; on release we leave it.
+    // MY_BUTTON_1 is the patch-select hold button, repurposed per editor:
+    //   filter editor  → enabled on/off toggle (single press)
+    //   ADSR/LFO editor → layer-wide vs track-only commit scope toggle
     if (button_id == MY_BUTTON_1) {
+        if (synth_ui_filter_is_active()) {
+            if (event == BUTTON_PRESS_DOWN) {
+                synth_ui_filter_toggle_enabled();
+            }
+            return;
+        }
+        if (event == BUTTON_PRESS_DOWN) {
+            if (synth_ui_toggle_editor_apply_scope()) return;
+        }
+        /* PROG screen: MY_BUTTON_1 deletes the entry at the cursor (the patch-hold
+         * gesture has no meaning here). */
+        if (synth_ui_prog_is_active()) {
+            if (event == BUTTON_PRESS_DOWN) {
+                synth_ui_prog_delete_entry();
+            }
+            return;
+        }
         if (event == BUTTON_PRESS_DOWN) {
             s_patch_held = true;
             synth_ui_set_patch_select_mode(true);
@@ -351,6 +346,59 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
         }
     }
 
+    /* Prog screen isolation: suppress sequencer-only gestures (MY_BUTTON_2
+     * drum-select hold, MY_BUTTON_0 layer-cycle) while the PROG screen is up.
+     * MY_BUTTON_2 is repurposed as "+entry"; MY_BUTTON_1 as "del" (handled above). */
+    if (synth_ui_prog_is_active()) {
+        switch (button_id) {
+            case MY_BUTTON_2:
+                s_drum_select_held = false;
+                synth_ui_set_drum_select_mode(false);
+                if (event == BUTTON_PRESS_DOWN) {
+                    synth_ui_prog_add_entry();
+                }
+                return;
+            case MY_BUTTON_0:
+                if (event == BUTTON_LONG_PRESS_START) {
+                    synth_ui_toggle_playing();
+                }
+                return;
+            default:
+                break;
+        }
+    }
+
+    /* Track Options screen isolation: suppress sequencer-only gestures and
+     * repurpose spare buttons for layer management.
+     *   MY_BUTTON_1 click  → add a melodic layer (if below MAX_LAYERS)
+     *   MY_BUTTON_2 click  → delete the layer currently shown (s_to_layer);
+     *                        no-op if it is the drum layer or the last layer
+     *   MY_BUTTON_0 long   → play / pause (keep live)
+     * MY_BUTTON_1 normally drives patch-hold; suppress that in this context. */
+    if (synth_ui_trackopts_is_active()) {
+        switch (button_id) {
+            case MY_BUTTON_1:
+                if (event == BUTTON_SINGLE_CLICK) {
+                    synth_ui_request_add_layer();
+                }
+                return;
+            case MY_BUTTON_2:
+                s_drum_select_held = false;
+                synth_ui_set_drum_select_mode(false);
+                if (event == BUTTON_SINGLE_CLICK) {
+                    synth_ui_request_delete_to_layer();
+                }
+                return;
+            case MY_BUTTON_0:
+                if (event == BUTTON_LONG_PRESS_START) {
+                    synth_ui_toggle_playing();
+                }
+                return;
+            default:
+                break;
+        }
+    }
+
     /* Drone screen isolation: same rationale as the arp guard above. While the
      * drone screen is showing (no graph/menu), suppress the sequencer's editing
      * gestures so they don't mutate sequencer state behind the hidden grid. The
@@ -378,6 +426,10 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
     // (gated) as the SHORT<->LONG time-range toggle so it never touches that
     // state in that context.
     if (button_id == MY_BUTTON_2) {
+        if (synth_ui_filter_is_active()) {
+            /* Suppress drum-select hold so the latch never gets stuck. */
+            return;
+        }
         if (synth_ui_graph_is_active()) {
             if (event == BUTTON_PRESS_DOWN) {
                 synth_ui_graph_toggle_range();
@@ -394,14 +446,15 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
         return;
     }
 
-    // MY_BUTTON_3 (GPIO42): the graph editor used to need this as a
-    // vertical<->horizontal axis toggle, but each ADSR point now auto-selects the
-    // only axis it can move on, so the toggle is gone. Inside the editor the
-    // press is swallowed (so it never leaks to the menu); outside it is the menu
-    // toggle (single-click), replacing the removed shoulder button (GPIO1).
+    // MY_BUTTON_3: while any editor (ADSR/filter/LFO) is open, single-click
+    // cycles to the next editor. Outside editors it is the menu toggle.
     if (button_id == MY_BUTTON_3) {
-        if (synth_ui_graph_is_active()) {
-            return;   // editor open: consume, no-op (axis toggle removed)
+        if (synth_ui_graph_is_active() || synth_ui_filter_is_active()
+                                       || synth_ui_lfo_is_active()) {
+            if (event == BUTTON_SINGLE_CLICK) {
+                synth_ui_cycle_editor();
+            }
+            return;
         }
         if (event == BUTTON_SINGLE_CLICK) {
             synth_ui_menu_toggle();
@@ -414,6 +467,23 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
      * - short press (editor open)  toggles select<->adjust, or confirms in VIEW
      * Remove this block to revert the integration. */
     if (button_id == MY_BUTTON_ENC) {
+        if (synth_ui_filter_is_active()) {
+            /* Long-press commits + closes; short-press cycles cursor. */
+            if (event == BUTTON_LONG_PRESS_START) {
+                synth_ui_filter_close_commit();
+            } else if (event == BUTTON_PRESS_DOWN) {
+                synth_ui_filter_handle_button(false);
+            }
+            return;
+        }
+        if (synth_ui_lfo_is_active()) {
+            if (event == BUTTON_LONG_PRESS_START) {
+                synth_ui_lfo_close_commit();
+            } else if (event == BUTTON_PRESS_DOWN) {
+                synth_ui_lfo_handle_button(false);
+            }
+            return;
+        }
         if (synth_ui_graph_is_active()) {
             /* Long-press closes the editor and COMMITS, symmetric with the
              * long-press that opens it. Short-press toggles select<->adjust.
@@ -453,6 +523,20 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
             }
             return;
         }
+        /* Prog screen: encoder-click navigates cursor / confirms edits. */
+        if (synth_ui_prog_is_active()) {
+            if (event == BUTTON_PRESS_DOWN) {
+                synth_ui_prog_handle_button();
+            }
+            return;
+        }
+        /* Track Options screen: encoder-click toggles edit on the focused row. */
+        if (synth_ui_trackopts_is_active()) {
+            if (event == BUTTON_PRESS_DOWN) {
+                synth_ui_trackopts_handle_button();
+            }
+            return;
+        }
         if (event == BUTTON_LONG_PRESS_START) {
             synth_ui_graph_open_envelope();
             return;
@@ -460,10 +544,17 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
         /* else fall through to the normal PRESS_DOWN queueing below */
     }
 
-    /* graph pop-up: MY_BUTTON_0 long press cancels the editor while it is open. */
-    if (button_id == MY_BUTTON_0 && synth_ui_graph_is_active()) {
+    /* MY_BUTTON_0 long press cancels whichever overlay editor is open. */
+    if (button_id == MY_BUTTON_0 &&
+        (synth_ui_graph_is_active() || synth_ui_filter_is_active()
+                                    || synth_ui_lfo_is_active())) {
         if (event == BUTTON_LONG_PRESS_START) {
-            synth_ui_graph_handle_button(true); /* long = cancel */
+            if (synth_ui_filter_is_active())
+                synth_ui_filter_handle_button(true); /* long = cancel */
+            else if (synth_ui_lfo_is_active())
+                synth_ui_lfo_handle_button(true);
+            else
+                synth_ui_graph_handle_button(true);
         }
         return;
     }
@@ -503,24 +594,34 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
 static void encoder_task(void *pvParameters)
 {
     rotary_encoder_handle_t enc = (rotary_encoder_handle_t)pvParameters;
-    long prev = last_count;
+    long prev = rotary_encoder_get_count(enc);
     static long enc_accum = 0; // sub-step accumulator (2 raw ticks = 1 action)
     for (;;) {
         long cur = rotary_encoder_get_count(enc);
         
         if (cur != prev) {
             long delta = cur - prev;
+#if CONFIG_AMYSYNTH_INPUT_DIAGNOSTICS
             ESP_LOGI(TAG,
-                 "encoder count=%ld (delta=%ld)",
-                  (long)cur, (long)(delta));
-            last_count = prev;  // Store the previous count for display
-            count = cur;        // Update current count
+                     "encoder count=%ld (delta=%ld)",
+                     (long)cur, (long)(delta));
+#endif
             prev = cur;
 
             enc_accum += delta;
             long steps = enc_accum / 2; // require 2 raw ticks per action
             enc_accum %= 2;
             if (steps == 0) goto next_poll;
+
+            /* filter editor: highest priority encoder consumer. */
+            if (synth_ui_filter_handle_encoder(steps)) {
+                goto next_poll;
+            }
+
+            /* LFO editor: scrolls cursor or adjusts selected field. */
+            if (synth_ui_lfo_handle_encoder(steps)) {
+                goto next_poll;
+            }
 
             /* graph pop-up: when open, the encoder drives the curve editor and
              * normal sequencer routing is skipped. Remove this branch to revert. */
@@ -545,7 +646,7 @@ static void encoder_task(void *pvParameters)
                     synth_ui_drone_cycle_patch((int)steps);
                 } else if (synth_ui_arp_is_active()) {
                     synth_ui_arp_cycle_patch((int)steps);
-                } else if (sequencer_core_get_layer_type(seq_state.active_layer_idx)
+                } else if (sequencer_core_get_layer_type(seq_get_active_layer_idx())
                            == SEQ_LAYER_DRUM) {
                     synth_ui_cycle_drum_patch((int)steps);
                 } else {
@@ -561,6 +662,12 @@ static void encoder_task(void *pvParameters)
             } else if (synth_ui_arp_is_active()) {
                 // Arp screen: encoder moves the cursor / edits the focused field.
                 synth_ui_arp_handle_encoder(steps);
+            } else if (synth_ui_prog_is_active()) {
+                // Prog screen: encoder scrolls cursor / edits the focused entry field.
+                synth_ui_prog_handle_encoder((int)steps);
+            } else if (synth_ui_trackopts_is_active()) {
+                // Track Options screen: encoder scrolls rows / edits focused value.
+                synth_ui_trackopts_handle_encoder((int)steps);
             } else {
                 synth_ui_handle_encoder(steps);
             }
@@ -602,10 +709,34 @@ static void encoder_init_task(void *pvParameters)
     vTaskDelete(NULL);
 }
 
-// AMY synth states
-extern struct state amy_global;
+#if defined(CONFIG_AMY_PROFILE_COARSE) || defined(CONFIG_AMY_PROFILE_FULL)
+// Measure the AMY profiler's own per-timestamp cost on-target so the per-stage
+// numbers can be corrected for instrumentation overhead. AMY's profiler uses
+// amy_get_us() == esp_timer_get_time() on ESP; each START/STOP is two reads.
+// Coarse mode does ~8 reads/block; full mode does 2*(sum of tag 'calls')/block,
+// which the dump itself reports per tag.
+static void amy_profiler_overhead_selftest(void)
+{
+    const int N = 20000;
+    volatile int64_t sink = 0;
+    int64_t t0 = esp_timer_get_time();
+    for (int i = 0; i < N; ++i) sink ^= esp_timer_get_time();
+    int64_t t1 = esp_timer_get_time();
+    (void)sink;
+    // Subtract one read (t1) negligibly; report ns/read averaged over N reads.
+    double ns_per_read = ((double)(t1 - t0) * 1000.0) / (double)N;
+    double coarse_us_per_block = (ns_per_read * 8.0) / 1000.0;  // 4 START/STOP pairs
+    const uint32_t block_us = (uint32_t)(((uint64_t)AMY_BLOCK_SIZE * 1000000ULL)
+                                         / (uint64_t)AMY_SAMPLE_RATE);
+    ESP_LOGW(TAG,
+        "[amy-profile] esp_timer_get_time ~%.1f ns/read | coarse overhead ~%.2f us/block "
+        "(~%.3f%% of %u us budget) | full overhead = 2*sum(tag.calls)/block * read_cost",
+        ns_per_read, coarse_us_per_block,
+        (coarse_us_per_block / (double)block_us) * 100.0, block_us);
+}
+#endif
 
-    void app_main(void)
+void app_main(void)
 {
    
     ESP_LOGI(TAG, "Hello world!");
@@ -708,7 +839,13 @@ extern struct state amy_global;
     HEAP_CHECK("before amy_start");
     amy_start(amy_cfg);
     HEAP_CHECK("after amy_start");
-    
+
+#if defined(CONFIG_AMY_PROFILE_COARSE) || defined(CONFIG_AMY_PROFILE_FULL)
+    // One-shot: characterize profiler timestamp cost so the dumps below can be
+    // read net of instrumentation overhead. See docs/dual-core-render-analysis.md.
+    amy_profiler_overhead_selftest();
+#endif
+
     // Our USB Audio (must be after TinyUSB init)
     ESP_ERROR_CHECK(usb_audio_init());
     HEAP_CHECK("after usb_audio_init");
@@ -804,6 +941,8 @@ extern struct state amy_global;
     const uint32_t idle_loop_ms = CONFIG_AMYSYNTH_RTOS_STATS_PERIOD_MS;
       void heap_caps_get_info( multi_heap_info_t *info, uint32_t caps );
      void heap_caps_print_heap_info( uint32_t caps );
+#elif defined(CONFIG_AMY_PROFILE_COARSE) || defined(CONFIG_AMY_PROFILE_FULL)
+    const uint32_t idle_loop_ms = CONFIG_AMY_PROFILE_INTERVAL_MS;
 #else
     const uint32_t idle_loop_ms = 5000;
 #endif
@@ -817,6 +956,12 @@ extern struct state amy_global;
 #endif
 #if CONFIG_AMYSYNTH_RTOS_STATS
         log_rtos_stats();
+#endif
+#if defined(CONFIG_AMY_PROFILE_COARSE) || defined(CONFIG_AMY_PROFILE_FULL)
+        // Dump and reset the AMY profile accumulated over this window. The
+        // "% render" column in COARSE mode is the parallelizable fraction:
+        // AMY_RENDER us / (AMY_RENDER + AMY_FILL_BUFFER + AMY_EXECUTE_DELTAS).
+        amy_profiles_print();
 #endif
         vTaskDelay(pdMS_TO_TICKS(idle_loop_ms));
     }

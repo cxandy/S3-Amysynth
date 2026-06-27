@@ -94,17 +94,23 @@
 #define INT_OF_S(s, b) ((int)floorf((s) * (float)(1 << (b))))
 #define S_FRAC_OF_S(s, b) ((s) * (1 << (b)) - floorf((s) * (1 << (b))))
 
-#define MUL0_SS(a, b) ((a) * (b))
-#define MUL4_SS(a, b) ((a) * (b))
-#define MUL8_SS(a, b) ((a) * (b))
+#define MUL0_SS(a, b)  ((a) * (b))
+#define MUL4_SS(a, b)  ((a) * (b))
+#define MUL5A_SS(a, b) ((a) * (b))  // LOCAL EDIT (S3-Amysynth): float fallback missing upstream
+#define MUL6A_SS(a, b) ((a) * (b))  // LOCAL EDIT (S3-Amysynth): float fallback missing upstream
+#define MUL8_SS(a, b)  ((a) * (b))
 #define MUL8F_SS(a, b) ((a) * (b))
 #define MUL4E_SS(a, b) ((a) * (b))
 #define MUL4_SP_S(a, b) ((a) * (b))
-#define SMULR6(a, b) ((a) * (b))
-#define SMULR7(a, b) ((a) * (b))
+#define SMULR6(a, b)   ((a) * (b))
+#define SMULR7(a, b)   ((a) * (b))
 
-#define SHIFTR(s, b) ((s) * exp2f(-(b)))
-#define SHIFTL(s, b) ((s) * exp2f(b))
+// LOCAL EDIT (S3-Amysynth): use ldexpf instead of exp2f.
+// exp2f(runtime_int) is a full transcendental call; ldexpf(x, n) is O(1)
+// (hardware exponent-field manipulation). Correct for all integer shift counts.
+// For compile-time constants, GCC still folds ldexpf(x, k) to x * 2^k.
+#define SHIFTR(s, b) ldexpf((s), -(b))
+#define SHIFTL(s, b) ldexpf((s), (b))
 
 #define INT_OF_P(p, b) (((int)floorf((p) * (float)(1 << (b))) + (1 << (b))) % (1 <<(b)))
 #define I2P(i, b) ((i) / (float)(1 << (b)))
@@ -187,7 +193,10 @@ static inline SAMPLE SMULR7(SAMPLE a, SAMPLE b) {
 
 // Multiply two SAMPLE values when the result will always be [-64.0, 64.0).
 // Assume first arg is an unscaled sample and second is an amplitude which can be much larger.
-#define MUL6A_SS(a, b)  FXMUL_TEMPLATE(a, b, 8, 13, S_FRAC_BITS)  // 10+9 = 19, so result is >>4, leaving 4 bits integer part.
+// This is the one used in the interpolating LUT oscillators for (sample, amp)
+#define MUL6A_SS(a, b)  FXMUL_TEMPLATE(a, b, 8, 13, S_FRAC_BITS)  // 8+13 = 21, so result is >>2, leaving 6 bits integer part.
+// Output in [-32, 32), more resolution kept for first arg (sample) than 2nd (scale)
+#define MUL5A_SS(a, b)  FXMUL_TEMPLATE(a, b, 9, 11, S_FRAC_BITS)  // 9+11 = 20, so result is >>3, leaving 5 bits integer part.
 
 // Multiply two SAMPLE values and allow result to occupy full [-256, 256) range
 #define MUL8_SS(a, b)  FXMUL_TEMPLATE(a, b, 12, 11, S_FRAC_BITS)  // 12+11 = 23, so no more shift on result.

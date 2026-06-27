@@ -33,6 +33,27 @@ typedef struct {
 /* Draw the full drone screen (clears + sends the buffer). */
 void display_drone_draw_frame(u8g2_t *u8g2, const drone_view_t *view);
 
+/* ── Drone visualiser overlay ───────────────────────────────────────────────
+ * Plain data snapshot passed from synth_ui (which owns drone_core access).
+ * All values are normalised or primitive so display stays free of synth_core. */
+typedef struct {
+    float   sweep_lo_norm;   /* sweep_lo mapped to 0..1 across 100..8000 Hz */
+    float   sweep_hi_norm;   /* sweep_hi mapped to 0..1 across 100..8000 Hz */
+    float   amp_const;       /* 0..1 always-on DC level */
+    float   amp_mod;         /* 0..1 stutter depth */
+    float   amp_floor_norm;  /* CONST*(1-MOD) clamped 0..1 — minimum amplitude */
+    float   amp_ceil_norm;   /* CONST*(1+MOD) clamped 0..1 — peak amplitude     */
+    float   resonance;       /* raw Q value 0.1..8.0 for needle + label          */
+    uint8_t rate_idx;        /* drone_rate_t enum (0=1/4, 1=1/8, 2=1/16, 3=1/32) */
+    uint8_t sweep_bars;      /* sweep period in bars 1..16                        */
+    uint8_t pattern_mask;    /* 8-bit step on/off mask (LSB = step 0) */
+    float   gate_len;        /* 0..1 chop length (PULSE duty) */
+    bool    wave_mode;       /* true = WAVE (show amp/gate), false = PATCH */
+} drone_vis_t;
+
+/* Draw the full-screen drone visualiser overlay (clears + sends the buffer). */
+void display_drone_vis_draw(u8g2_t *u8g2, const drone_vis_t *vis);
+
 #ifdef __cplusplus
 }
 #endif

@@ -3,6 +3,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "display_seq.h"   /* seq_env_t */
+#include "chord_types.h"   /* chord_type_t, chord_type_name() */
+#include "quantizer.h"     /* quantizer_chord_intervals() */
 
 #ifdef __cplusplus
 extern "C" {
@@ -17,7 +19,10 @@ extern "C" {
  * Sound design (WAVE mode):
  *   osc0 = carrier (SAW/SQUARE/TRI/SINE), NOTE-following so each voice plays a
  *          chord note; amplitude gated by a continuously-running square LFO via
- *          mod_source. amp = const * (1 + mod*LFO) (combine_controls_mult).
+ *          mod_source.  AMY 1.2.12 dB/exp amp model:
+ *            amp = const_sent * 10^(3*m*LFO),  LFO in {-1,+1}
+ *          ON-beat (LFO=+1) = peak_lin; OFF-beat (LFO=-1) = peak_lin * 10^(-duck_db/20).
+ *          See drone_set_amp_peak / drone_set_amp_duck for the knob mapping.
  *   osc1 = PULSE LFO at a tempo-locked note division ("stutter rate").
  *   LPF24 filter whose cutoff is swept slowly (tempo-locked, in bars).
  *   The carrier plays a CHORD (one voice per note); a single "sub" voice
@@ -45,19 +50,12 @@ typedef enum {
     DRONE_RATE_COUNT
 } drone_rate_t;
 
-/* Chord presets. The carrier plays the chord (one voice per note); the sub
- * tracks the chord ROOT only. Each preset is up to DRONE_CHORD_MAX_NOTES MIDI
- * notes; the matrix is fixed-width and padded with -1 sentinels. */
+/* Chord presets.  The carrier plays the chord (one voice per note); the sub
+ * tracks the chord ROOT only.  Chord shapes come from the shared
+ * quantizer_chord_intervals(chord_type_t) table.  The drone caps voice count
+ * at DRONE_CHORD_MAX_NOTES regardless of how many intervals the shared row
+ * contains. */
 #define DRONE_CHORD_MAX_NOTES 5
-
-typedef enum {
-    DRONE_CHORD_MIN7  = 0,   /* Minor 7th  : 0 3 7 10    */
-    DRONE_CHORD_MAJ7  = 1,   /* Major 7th  : 0 4 7 11    */
-    DRONE_CHORD_MIN9  = 2,   /* Minor 9th  : 0 3 7 10 14 */
-    DRONE_CHORD_MAJ9  = 3,   /* Major 9th  : 0 4 7 11 14 */
-    DRONE_CHORD_SUS4  = 4,   /* Sus4       : 0 5 7 12    */
-    DRONE_CHORD_COUNT
-} drone_chord_t;
 
 /* Stutter step patterns. Each is an 8-step per-bar on/off mask consulted by the
  * filter-blip service path: steps whose bit is 0 are skipped (filter closed) so
@@ -83,14 +81,25 @@ void drone_core_service(void);
 void drone_set_enabled(bool on);          /* sustained note-on/off of the voices */
 void drone_set_source(drone_source_t src);/* WAVE <-> PATCH (rebuilds the synths) */
 void drone_set_wave(uint16_t amy_wave);   /* SAW_DOWN/SAW_UP/PULSE/TRIANGLE/SINE  */
-void drone_set_chord(drone_chord_t chord);/* chord preset the carrier plays       */
+void drone_set_chord(chord_type_t chord); /* chord preset the carrier plays       */
 void drone_set_root_note(uint8_t midi_note); /* drone-local root (24..72); independent of global quantizer root */
 void drone_set_resonance(float r);        /* filter resonance                     */
-/* Carrier amplitude coefs, matching AMY's amp={'const':x,'mod':y} (0.0..1.0).
- * amp = const * (1 + mod * LFO), LFO bipolar (-1..+1): const sets the always-on
- * level, mod the stutter depth (mod=1 reaches silence on the LFO-low half). */
-void drone_set_amp_const(float c);        /* 0.0..1.0 always-on carrier level     */
-void drone_set_amp_mod(float m);          /* 0.0..1.0 stutter depth               */
+/* Carrier amplitude — Peak/Duck dB model (WAVE mode only).
+ *
+ * PEAK knob 0..1 (linear):  peak_lin = peak_knob.
+ *   At 1.0 the on-beat (LFO=+1) carrier plays at full-scale; at 0.0 silent.
+ *   Default 0.5.
+ *
+ * DUCK knob 0..1 (linear):  duck_db = duck_knob * 40.0.
+ *   How many dB the off-beat (LFO=-1) is attenuated below the on-beat.
+ *   0 = no ducking; 1 = -40 dB floor.  Default 0.5 (20 dB duck).
+ *
+ * AMY engine coefs (derived internally — do not use these directly):
+ *   m          = duck_db / 120
+ *   const_sent = peak_lin * 10^(-duck_db / 40)
+ * so that: ON-beat = peak_lin, OFF-beat = peak_lin * 10^(-duck_db / 20). */
+void drone_set_amp_peak(float c);         /* 0.0..1.0 on-beat level (linear)      */
+void drone_set_amp_duck(float m);         /* 0.0..1.0 duck depth (0=flat,1=-40dB) */
 void drone_set_rate(drone_rate_t rate);   /* stutter LFO note division            */
 void drone_set_patch(uint16_t patch);     /* PATCH-mode preset                    */
 void drone_set_sub_enabled(bool on);      /* sub drone on/off                     */
@@ -111,11 +120,18 @@ void drone_set_envelope(const seq_env_t *env);
 bool           drone_get_enabled(void);
 drone_source_t drone_get_source(void);
 uint16_t       drone_get_wave(void);
-drone_chord_t  drone_get_chord(void);
+chord_type_t   drone_get_chord(void);
 uint8_t        drone_get_root_note(void);
 float          drone_get_resonance(void);
-float          drone_get_amp_const(void);
-float          drone_get_amp_mod(void);
+float          drone_get_amp_peak(void);   /* 0..1 on-beat level knob value        */
+float          drone_get_amp_duck(void);   /* 0..1 duck depth knob value           */
+void           drone_set_amp_trim(float v);/* 0..1 per-target trim (default 1.0)   */
+float          drone_get_amp_trim(void);   /* 0..1 per-target trim value           */
+
+/* Visualiser helper: returns ON-beat (ceil) and OFF-beat (floor) amplitudes
+ * as 0..1 normalised linear values, computed from the same dB math the AMY
+ * engine uses.  Both pointers may be NULL if not needed. */
+void           drone_get_amp_levels_norm(float *floor_norm, float *ceil_norm);
 drone_rate_t   drone_get_rate(void);
 uint16_t       drone_get_patch(void);
 bool           drone_get_sub_enabled(void);
@@ -131,7 +147,7 @@ drone_pattern_t drone_get_pattern(void);
 /* Human-readable names for the enum values (for display). */
 const char *drone_rate_name(drone_rate_t rate);
 const char *drone_wave_name(uint16_t amy_wave);
-const char *drone_chord_name(drone_chord_t chord);
+const char *drone_chord_name(chord_type_t chord);   /* wraps chord_type_name() */
 const char *drone_pattern_name(drone_pattern_t p);
 
 #ifdef __cplusplus

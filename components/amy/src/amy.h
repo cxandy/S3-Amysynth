@@ -1171,10 +1171,20 @@ extern void reset_parametric(uint8_t bus);
 extern float dsps_sqrtf_f32_ansi(float f);
 extern int8_t dsps_biquad_gen_lpf_f32(SAMPLE *coeffs, float f, float qFactor);
 extern int8_t dsps_biquad_f32_ansi(const SAMPLE *input, SAMPLE *output, int len, SAMPLE *coef, SAMPLE *w);
+
 extern SAMPLE scan_max(SAMPLE* block, int len);
 // Use the esp32 optimized biquad filter if available
+//extern int8_t dsp_biquad_f32(const SAMPLE *input, SAMPLE *output, int len, SAMPLE *coef, SAMPLE *w);
 #ifdef ESP_PLATFORM
+//#define dsp_biquad_f32 dsps_biquad_f32_ansi
+//#if CONFIG_IDF_TARGET_ESP32S3
+//#define dsp_biquad_f32 dsps_biquad_f32_aes3
+//extern esp_err_t dsps_biquad_f32_aes3(const SAMPLE *input, SAMPLE *output, int len, SAMPLE *coef, SAMPLE *w);
+//#else 
 
+//#endif
+
+//  {
 // On Arduino, something doesn't allow ESP_TASK_PRIO_MAX in tasks
 #ifdef ARDUINO
 #define AMY_RENDER_TASK_PRIORITY (ESP_TASK_PRIO_MAX - 5)

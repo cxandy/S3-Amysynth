@@ -533,6 +533,14 @@ static void sequencer_configure_drum_pcm_voice_params(uint8_t layer_idx)
     }
 }
 
+static void sequencer_kill_synth_voices(uint8_t synth_id)
+{
+    amy_event *e = amy_helpers_event_begin();
+    e->synth    = synth_id;
+    e->velocity = 0.0f;
+    amy_helpers_event_send(e);
+}
+
 static void sequencer_configure_synth(uint8_t layer_idx)
 {
     seq_layer_t *layer = &s_layers[layer_idx];
@@ -571,6 +579,7 @@ static void sequencer_configure_synth(uint8_t layer_idx)
         /* SYNTH mode — per-track: each drum row loads its OWN patch onto its OWN
          * synth slot, note-offs honored (flags = 0). Mirrors the melodic loop. */
         for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
+            sequencer_kill_synth_voices(layer->synth_id[t]);
             amy_send_patch(layer->synth_id[t], layer->track_patch[t],
                            layer->num_voices, layer->synth_flags);
         }
@@ -581,6 +590,7 @@ static void sequencer_configure_synth(uint8_t layer_idx)
 
     /* Melodic: push the shared patch/flags/voices to each row's own synth. */
     for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
+        sequencer_kill_synth_voices(layer->synth_id[t]);
         amy_send_patch(layer->synth_id[t], layer->patch,
                        layer->num_voices, layer->synth_flags);
     }
@@ -623,6 +633,9 @@ static void sequencer_emit_step(uint8_t layer_idx, uint8_t track, uint8_t step)
      * repeat_rate=2 whose gate spills past bar_ticks still fires correctly. */
     uint32_t tick_off   = (tick_on + gate) % period;
     float note_velocity = sequencer_step_velocity(layer, track, step);
+    /* Apply per-track amplitude trim (default 1.0; set by graph editor amp mode). */
+    note_velocity *= layer->amp_scale[track];
+    if (note_velocity > 1.0f) note_velocity = 1.0f;
     if (tick_off == 0) tick_off = 1; /* avoid the reserved tick 0 */
 
     /* If stopped or this step is off, cancel any previously scheduled events. */
@@ -814,6 +827,10 @@ uint8_t sequencer_core_add_layer(seq_layer_type_t type, uint8_t num_steps)
         }
     }
 
+    /* amp_scale defaults to 1.0 (unity); memset in add_layer zeroes it, so
+     * explicit init here is required to avoid silencing all tracks. */
+    for (uint8_t t = 0; t < SEQ_TRACKS; t++) layer->amp_scale[t] = 1.0f;
+
     CORE_HEAP_CHECK("add_layer: before configure_synth");
     sequencer_configure_synth(idx);
     CORE_HEAP_CHECK("add_layer: after configure_synth");
@@ -941,6 +958,7 @@ void sequencer_core_set_drum_patch(uint8_t layer_idx, uint8_t track,
     }
 
     /* Reload only this track's synth slot with the new patch. */
+    sequencer_kill_synth_voices(layer->synth_id[track]);
     amy_send_patch(layer->synth_id[track], patch_number,
                    layer->num_voices, layer->synth_flags);
 
@@ -1087,7 +1105,6 @@ bool sequencer_core_get_melodic_envelope(uint8_t layer_idx, uint8_t track,
                                          seq_env_t *out)
 {
     if (!out || layer_idx >= s_num_layers || track >= SEQ_TRACKS) return false;
-    if (s_layers[layer_idx].type != SEQ_LAYER_MELODIC) return false;
     *out = *seq_layer_env(layer_idx, track);
     return true;
 }
@@ -1097,7 +1114,6 @@ void sequencer_core_set_melodic_envelope(uint8_t layer_idx, uint8_t track,
 {
     if (!env || layer_idx >= s_num_layers || track >= SEQ_TRACKS) return;
     seq_layer_t *layer = &s_layers[layer_idx];
-    if (layer->type != SEQ_LAYER_MELODIC) return;
 
     seq_env_t *dst = seq_layer_env(layer_idx, track);
     dst->attack_ms   = SEQ_CLAMP_U32(env->attack_ms,  0, 60000);
@@ -1159,7 +1175,6 @@ bool sequencer_core_get_melodic_filter(uint8_t layer_idx, uint8_t track,
                                        seq_filter_t *out)
 {
     if (!out || layer_idx >= s_num_layers || track >= SEQ_TRACKS) return false;
-    if (s_layers[layer_idx].type != SEQ_LAYER_MELODIC) return false;
     *out = s_layers[layer_idx].filter[track];
     return true;
 }
@@ -1169,7 +1184,6 @@ void sequencer_core_set_melodic_filter(uint8_t layer_idx, uint8_t track,
 {
     if (!f || layer_idx >= s_num_layers || track >= SEQ_TRACKS) return;
     seq_layer_t *layer = &s_layers[layer_idx];
-    if (layer->type != SEQ_LAYER_MELODIC) return;
 
     seq_filter_t *dst = &layer->filter[track];
     dst->filter_type = (f->filter_type < 5) ? f->filter_type : FILTER_NONE;
@@ -1205,7 +1219,6 @@ void sequencer_core_set_melodic_lfo(uint8_t layer_idx, uint8_t track,
 {
     if (!lfo || layer_idx >= s_num_layers || track >= SEQ_TRACKS) return;
     seq_layer_t *layer = &s_layers[layer_idx];
-    if (layer->type != SEQ_LAYER_MELODIC) return;
 
     layer->lfo[track] = *lfo;
     if (layer->lfo[track].depth > 100) layer->lfo[track].depth = 100;
@@ -1233,7 +1246,6 @@ bool sequencer_core_get_melodic_lfo(uint8_t layer_idx, uint8_t track,
                                     seq_lfo_t *out)
 {
     if (!out || layer_idx >= s_num_layers || track >= SEQ_TRACKS) return false;
-    if (s_layers[layer_idx].type != SEQ_LAYER_MELODIC) return false;
     *out = s_layers[layer_idx].lfo[track];
     return true;
 }
@@ -1242,7 +1254,6 @@ void sequencer_core_lfo_service(void)
 {
     const float DT = 0.05f; /* 20 Hz */
     for (int li = 0; li < s_num_layers; li++) {
-        if (s_layers[li].type != SEQ_LAYER_MELODIC) continue;
         for (int tr = 0; tr < SEQ_TRACKS; tr++) {
             if (!s_layers[li].lfo_authored[tr]) continue;
             const seq_lfo_t *lfo = &s_layers[li].lfo[tr];
@@ -1456,6 +1467,8 @@ static uint8_t chord_type_to_scale_index(chord_type_t ct)
         case CHORD_SUS4: return 8;
         case CHORD_DIM:  return 4;  /* Phrygian — dark/diminished flavour */
         case CHORD_AUG:  return 5;  /* Lydian — raised 4th matches augmented feel */
+        case CHORD_MIN9: return 3;  /* Dorian — same family as min7 */
+        case CHORD_MAJ9: return 1;  /* Major */
         default:         return 1;
     }
 }
@@ -1681,4 +1694,35 @@ seq_repeat_rate_t sequencer_core_get_track_repeat_rate(uint8_t layer_idx,
         case 8: return SEQ_REPEAT_8;
         default: return SEQ_REPEAT_1;
     }
+}
+
+/* ── Per-track amplitude trim (graph editor amp mode) ────────────────────────
+ * amp_scale is a per-track multiplier applied to note velocity at emit time.
+ * Default 1.0 (unity). Must be initialised to 1.0 in add_layer since
+ * memset zeroes the struct.
+ *
+ * The setter re-emits all steps for the affected track immediately after
+ * storing the value (same pattern as sequencer_core_set_track_repeat_rate).
+ * This is necessary because steps are scheduled ahead-of-time with a period;
+ * the sequencer does not re-emit each step on every tick during steady
+ * playback, so a store-only change would be silent until an unrelated
+ * re-emit event (patch change, play-stop, etc.). */
+
+float sequencer_core_get_melodic_amp_scale(uint8_t layer_idx, uint8_t track)
+{
+    if (layer_idx >= s_num_layers || track >= SEQ_TRACKS) return 1.0f;
+    return s_layers[layer_idx].amp_scale[track];
+}
+
+void sequencer_core_set_melodic_amp_scale(uint8_t layer_idx, uint8_t track,
+                                          float v)
+{
+    if (layer_idx >= s_num_layers || track >= SEQ_TRACKS) return;
+    if (v < 0.0f) v = 0.0f;
+    if (v > 1.0f) v = 1.0f;
+    s_layers[layer_idx].amp_scale[track] = v;
+    /* Re-emit all steps so the new amplitude takes effect immediately. */
+    seq_layer_t *layer = &s_layers[layer_idx];
+    for (uint8_t s = 0; s < layer->num_steps; s++)
+        sequencer_emit_step(layer_idx, track, s);
 }

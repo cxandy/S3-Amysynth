@@ -59,6 +59,14 @@ bool sequencer_core_get_melodic_envelope(uint8_t layer_idx, uint8_t track,
 void sequencer_core_set_melodic_envelope(uint8_t layer_idx, uint8_t track,
                                          const seq_env_t *env);
 
+/* ── Per-track amplitude trim (graph editor amp mode) ──
+ * 0..1 multiplier on note velocity. Default 1.0 (unity; set init in add_layer).
+ * get returns 1.0 for invalid layer/track. set is a store-only op; the new
+ * value is applied on the next sequencer_emit_step() call for that track. */
+float sequencer_core_get_melodic_amp_scale(uint8_t layer_idx, uint8_t track);
+void  sequencer_core_set_melodic_amp_scale(uint8_t layer_idx, uint8_t track,
+                                           float v);
+
 /* ── Per-row melodic filter (runtime-editable) ──
  * Parallel to the envelope system. Default: enabled=false (bypass).
  * set stores + pushes to that row's synth immediately.

@@ -131,6 +131,11 @@ typedef struct {
     uint32_t synth_flags;            /* shared flags across the layer's rows  */
     uint8_t  num_voices;             /* per-synth voice count                 */
     uint8_t  step_page;                              /* display page 0|1 (32-step) */
+    float    amp_scale[SEQ_TRACKS];  /* per-track output amplitude trim (default 1.0,
+                                        range 0..1); multiplied into step velocity at
+                                        note-emit time. Adjusted via graph editor amp
+                                        mode (MY_BUTTON_2). MUST be initialised to 1.0f
+                                        in sequencer_core_add_layer — memset zeroes it. */
 } seq_layer_t;
 
 /* ── Global sequencer display/UI state ── */

@@ -30,6 +30,15 @@ typedef enum {
     ARP_DIR_COUNT
 } arp_dir_t;
 
+/* Sound source toggle — mirrors drone_source_t in drone_core.h.
+ * ARP_SRC_PATCH: load a DX7/Juno patch (existing behaviour, default).
+ * ARP_SRC_WAVE : configure a bare AMY oscillator with the user-chosen waveform;
+ *                the arp sequence still drives pitch via normal note events. */
+typedef enum {
+    ARP_SRC_WAVE  = 0,   /* raw AMY waveform oscillator — no patch */
+    ARP_SRC_PATCH = 1,   /* DX7/Juno patch (existing behaviour)    */
+} arp_source_t;
+
 /* RATE table: musical subdivision -> ticks per arp note.
  * AMY_SEQUENCER_PPQ = 48, so a 1/16 = 12 ticks (matches SEQ_TICKS_PER_STEP). */
 typedef enum {
@@ -68,6 +77,14 @@ void arp_set_scale(uint8_t scale_index);
 void arp_set_root_note(uint8_t root_note);
 void arp_set_chord(uint8_t root_midi, uint8_t scale_index);
 void arp_set_patch(uint16_t patch_number);
+/* Sound source: switch between a DX7/Juno patch and a raw AMY waveform.
+ * On change, rebuilds the synth slot and re-applies any authored ADSR/filter.
+ * In WAVE mode, arp_set_patch() stores the patch but does not reconfigure the
+ * slot (takes effect on the next switch back to PATCH). */
+void arp_set_source(arp_source_t src);
+/* Select the AMY waveform used in WAVE mode (e.g. SAW_DOWN, SINE, PULSE …).
+ * If WAVE mode is currently active the slot is reconfigured immediately. */
+void arp_set_wave(uint16_t amy_wave);
 /* Set slot value to a chromatic MIDI note, -1 to clear, or ARP_REST for a
  * deliberate silent step (meaningful in ARP_SLOT mode only). */
 void arp_set_slot(uint8_t idx, int16_t chromatic_note);
@@ -94,12 +111,20 @@ const char *arp_rate_name(arp_rate_t rate);
 uint8_t   arp_get_gate_pct(void);
 uint8_t   arp_get_scale(void);
 uint8_t   arp_get_root_note(void);
-uint16_t  arp_get_patch(void);
+uint16_t     arp_get_patch(void);
+arp_source_t arp_get_source(void);
+uint16_t     arp_get_wave(void);
 int16_t   arp_get_slot(uint8_t idx);          /* raw chromatic, -1=empty, ARP_REST=-2 */
 /* Snapped pitch the slot will actually play (for display), or -1 if empty/rest. */
 int16_t   arp_get_slot_snapped(uint8_t idx);
 uint8_t   arp_active_slot_count(void);        /* notes up to first -1 (UP/DOWN) */
 uint8_t   arp_active_step_count(void);        /* notes + rests across all slots (SLOT mode) */
+
+/* ── Per-target amplitude trim (graph editor amp mode) ──
+ * 0..1 multiplier on note velocity at emit time. Default 1.0 (unity).
+ * set stores + marks dirty → coalesced re-emit on next arp_core_service(). */
+void  arp_set_amp_scale(float v);
+float arp_get_amp_scale(void);
 
 #define ARP_OCT_MAX 4
 

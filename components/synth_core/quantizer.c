@@ -127,7 +127,18 @@ static const int8_t s_chord_intervals[CHORD_TYPE_COUNT][6] = {
     /* SUS4 */ {  0,  5,  7, -1, -1, -1 },
     /* DIM  */ {  0,  3,  6, -1, -1, -1 },
     /* AUG  */ {  0,  4,  8, -1, -1, -1 },
+    /* MIN9 */ {  0,  3,  7, 10, 14, -1 },  // min7 + 9th
+    /* MAJ9 */ {  0,  4,  7, 11, 14, -1 },  // maj7 + 9th
 };
+
+/* Return the -1-terminated semitone interval row for a chord type (max 5 notes,
+ * 6 slots including the terminator). Returns NULL for out-of-range types.
+ * Shared so other modules (e.g. the drone) voice chords from one table. */
+const int8_t *quantizer_chord_intervals(chord_type_t chord_type)
+{
+    if ((unsigned)chord_type >= CHORD_TYPE_COUNT) return NULL;
+    return s_chord_intervals[chord_type];
+}
 
 uint8_t quantizer_snap_to_chord(uint8_t midi_note, uint8_t root,
                                 chord_type_t chord_type)

@@ -15,6 +15,8 @@
 #include "synth_ui.h"      /* seq_get_bpm() (live global BPM) */
 #include "sequencer_core.h"    /* sequencer_core_push_envelope */
 #include "seq_clamp.h"
+#include "chord_types.h"   /* chord_type_t, chord_type_name() */
+#include "quantizer.h"     /* quantizer_chord_intervals() */
 #include "amy.h"
 #include "amy_helpers.h"
 #include "sdkconfig.h"
@@ -69,23 +71,10 @@ extern uint32_t sequencer_ticks(void);
 #define DRONE_BLIP_MAX     1.0f    /* per-step downward filter-zap depth (0 = off)     */
 #define DRONE_PAT_STEPS    8       /* steps per bar in a pattern mask                  */
 
-/* ── Chord formulas (semitone intervals from root, -1 = unused) ──
- * Root-relative so the same shape plays in any key via drone_set_root_note(). */
-static const int8_t s_chord_formulas[DRONE_CHORD_COUNT][DRONE_CHORD_MAX_NOTES] = {
-    /* Minor 7th */ [DRONE_CHORD_MIN7] = {  0,  3,  7, 10, -1 },
-    /* Major 7th */ [DRONE_CHORD_MAJ7] = {  0,  4,  7, 11, -1 },
-    /* Minor 9th */ [DRONE_CHORD_MIN9] = {  0,  3,  7, 10, 14 },
-    /* Major 9th */ [DRONE_CHORD_MAJ9] = {  0,  4,  7, 11, 14 },
-    /* Sus4      */ [DRONE_CHORD_SUS4] = {  0,  5,  7, 12, -1 },
-};
-
-static const char *s_chord_names[DRONE_CHORD_COUNT] = {
-    [DRONE_CHORD_MIN7] = "Min7",
-    [DRONE_CHORD_MAJ7] = "Maj7",
-    [DRONE_CHORD_MIN9] = "Min9",
-    [DRONE_CHORD_MAJ9] = "Maj9",
-    [DRONE_CHORD_SUS4] = "Sus4",
-};
+/* Chord intervals come from the shared quantizer_chord_intervals(chord_type_t)
+ * table (components/synth_core/include/quantizer.h).  The private
+ * s_chord_formulas / s_chord_names tables and the drone_chord_t enum have
+ * been removed in favour of the shared chord_type_t system. */
 
 /* Stutter rate -> multiplier on the beat rate (beats/sec * mult = LFO Hz).
  * 1/4 = 1x beat, 1/8 = 2x, 1/16 = 4x, 1/32 = 8x. */
@@ -126,11 +115,11 @@ typedef struct {
     bool           enabled;
     drone_source_t source;
     uint16_t       wave;        /* AMY wave constant for the carrier */
-    drone_chord_t  chord;       /* chord preset the carrier plays    */
+    chord_type_t   chord;       /* chord preset (shared chord_type_t) */
     uint8_t        root_note;   /* drone-local root (DRONE_ROOT_MIN..MAX) */
     float          resonance;
-    float          amp_const;   /* 0..1 always-on carrier level      */
-    float          amp_mod;     /* 0..1 stutter depth (LFO modulation)*/
+    float          amp_peak;    /* 0..1 on-beat level knob (linear: peak_lin = amp_peak) */
+    float          amp_duck;    /* 0..1 duck depth knob  (duck_db = amp_duck * 40 dB)   */
     drone_rate_t   rate;
     uint16_t       patch;
     bool           sub_enabled;
@@ -148,9 +137,57 @@ typedef struct {
     float          last_lfo_hz; /* to avoid redundant LFO re-sends   */
     seq_env_t      env;         /* runtime-editable ADSR (graph editor) */
     bool           env_authored;/* true once the user commits a custom env */
+    float          amp_trim;    /* per-target amplitude trim (default 1.0, 0..1);
+                                   multiplied into amp_peak in s_amp_peak_lin() to give
+                                   the effective on-beat level. Set via the graph editor
+                                   amp mode (MY_BUTTON_2). MUST be init'd to 1.0f in
+                                   drone_core_init — memset zeroes it. */
 } drone_state_t;
 
 static drone_state_t s_d;
+
+/* ── Peak/Duck dB amp helpers ──────────────────────────────────────────────
+ * These are the SINGLE source of truth for the engine math.  Both
+ * drone_configure_wave_synth() and drone_get_amp_levels_norm() call these
+ * helpers — never inline the formula elsewhere.
+ *
+ * Knob→dB/linear mapping:
+ *   peak_lin = amp_peak           (linear 0..1, identity mapping)
+ *   duck_db  = amp_duck * 40.0f  (0 dB at knob=0, -40 dB floor at knob=1)
+ *
+ * AMY engine coefs (from the two-equation solve):
+ *   m          = duck_db / 120
+ *   const_sent = peak_lin * 10^(-duck_db / 40)
+ *
+ * Result:
+ *   ON-beat  (LFO=+1): const_sent * 10^(3*m) = peak_lin
+ *   OFF-beat (LFO=-1): const_sent * 10^(-3*m) = peak_lin * 10^(-duck_db/20)
+ */
+static inline float s_amp_peak_lin(void)
+{
+    /* amp_trim is a per-target volume trim (0..1, default 1.0) set by the graph
+     * editor amp mode. Fold it into amp_peak here so all callers automatically
+     * pick up the trimmed level (single source of truth rule applies). */
+    float v = s_d.amp_peak * s_d.amp_trim;
+    if (v < 0.0f) v = 0.0f;
+    if (v > 1.0f) v = 1.0f;
+    return v;
+}
+
+static inline float s_amp_duck_db(void)
+{
+    return s_d.amp_duck * 40.0f;
+}
+
+static inline float s_amp_m(void)
+{
+    return s_amp_duck_db() / 120.0f;
+}
+
+static inline float s_amp_const_sent(void)
+{
+    return s_amp_peak_lin() * powf(10.0f, -s_amp_duck_db() / 40.0f);
+}
 
 /* AMY events are emitted through the shared amy_helpers scratch buffer. */
 
@@ -170,13 +207,15 @@ static inline float drone_lfo_hz(void)
     return drone_bps() * s_rate_mult[s_d.rate];
 }
 
-/* Count the notes in a chord formula (up to the first -1 sentinel). */
-static uint8_t drone_chord_note_count(drone_chord_t chord)
+/* Count the notes in a chord formula (up to the first -1 sentinel, max DRONE_CHORD_MAX_NOTES).
+ * Uses the shared quantizer_chord_intervals() table; returns 0 if chord is out of range. */
+static uint8_t drone_chord_note_count(chord_type_t chord)
 {
-    if (chord >= DRONE_CHORD_COUNT) return 0;
+    const int8_t *row = quantizer_chord_intervals(chord);
+    if (!row) return 0;
     uint8_t n = 0;
     for (uint8_t i = 0; i < DRONE_CHORD_MAX_NOTES; i++) {
-        if (s_chord_formulas[chord][i] < 0) break;
+        if (row[i] < 0) break;
         n++;
     }
     return n;
@@ -188,15 +227,13 @@ static uint8_t drone_chord_note_count(drone_chord_t chord)
  * A multi-voice main synth therefore sounds a chord when fed multiple notes. */
 static void drone_configure_wave_synth(uint8_t synth, uint8_t voices)
 {
-    float lfo_hz = drone_lfo_hz();
-    /* AMY 1.2.12 (#720) amp combine is dB/log-domain: MOD is applied LINEARLY in
-     * the log domain, so amp = const_sent * 10^(3*m*LFO). A bipolar LFO would BOOST
-     * the on-beat (rail) and cut the off-beat. Remap to a unipolar duck: send a
-     * pre-ducked const so the on-beat lands exactly at amp_const, and scale MOD so
-     * amp_mod=1 ducks the off-beat ~40 dB. ON(LFO=+1)=amp_const, OFF(LFO=-1)=const*10^(-2*amp_mod). */
-    float amp_const = s_d.amp_const;
-    float m         = (1.0f / 3.0f) * s_d.amp_mod;             /* internal MOD coef */
-    float const_sent = amp_const * powf(10.0f, -3.0f * m);     /* = amp_const * 10^(-amp_mod) */
+    float lfo_hz    = drone_lfo_hz();
+    /* AMY 1.2.12 (#720) dB/exp amp model: amp = const_sent * 10^(3*m*LFO).
+     * Peak/Duck mapping (see s_amp_* helpers for full derivation):
+     *   ON-beat (LFO=+1) = peak_lin = amp_peak
+     *   OFF-beat(LFO=-1) = peak_lin * 10^(-duck_db/20), duck_db = amp_duck*40. */
+    float m          = s_amp_m();
+    float const_sent = s_amp_const_sent();
 
     /* Build-your-own synth: N voices, 2 oscs/voice, no patch. */
     amy_event *e = amy_helpers_event_begin();
@@ -308,14 +345,17 @@ static void drone_note(uint8_t synth, bool on, float midi_note)
  * release fades them out. */
 static void drone_apply_enabled(void)
 {
-    const int8_t *formula = s_chord_formulas[s_d.chord];
+    const int8_t *formula = quantizer_chord_intervals(s_d.chord);
     uint8_t chord_n = drone_chord_note_count(s_d.chord);
-    if (chord_n < 1) chord_n = 1;
-
-    for (uint8_t i = 0; i < chord_n; i++) {
-        if (formula[i] < 0) break;
-        int midi = SEQ_CLAMP_INT((int)s_d.root_note + (int)formula[i], 0, 127);
-        drone_note(DRONE_SYNTH_MAIN, s_d.enabled, (float)midi);
+    if (chord_n < 1) {
+        /* NULL or empty chord: play root note only. */
+        drone_note(DRONE_SYNTH_MAIN, s_d.enabled, (float)s_d.root_note);
+    } else {
+        for (uint8_t i = 0; i < chord_n; i++) {
+            if (!formula || formula[i] < 0) break;
+            int midi = SEQ_CLAMP_INT((int)s_d.root_note + (int)formula[i], 0, 127);
+            drone_note(DRONE_SYNTH_MAIN, s_d.enabled, (float)midi);
+        }
     }
 
     if (s_d.sub_enabled) {
@@ -344,11 +384,12 @@ void drone_core_init(void)
     s_d.enabled      = false;
     s_d.source       = DRONE_SRC_WAVE;
     s_d.wave         = SAW_DOWN;
-    s_d.chord        = DRONE_CHORD_MIN7;
+    s_d.chord        = CHORD_MIN7;
     s_d.root_note    = DRONE_ROOT_DEFAULT;
     s_d.resonance    = 1.5f;
-    s_d.amp_const    = 0.5f;     /* always-on level                  */
-    s_d.amp_mod      = 0.5f;     /* moderate stutter depth (LFO mod) */
+    s_d.amp_peak     = 0.5f;     /* on-beat level (linear; 0.5 = -6 dB)   */
+    s_d.amp_duck     = 0.5f;     /* duck depth knob (0.5 -> 20 dB duck)   */
+    s_d.amp_trim     = 1.0f;     /* unity trim; memset zeroes it so must be explicit */
     s_d.rate         = DRONE_RATE_1_16;
     s_d.patch        = 25;
     s_d.sub_enabled  = true;
@@ -501,9 +542,9 @@ void drone_set_wave(uint16_t amy_wave)
     }
 }
 
-void drone_set_chord(drone_chord_t chord)
+void drone_set_chord(chord_type_t chord)
 {
-    if (chord >= DRONE_CHORD_COUNT) return;
+    if (chord >= CHORD_TYPE_COUNT) return;
     if (s_d.chord == chord) return;
     /* Releasing the old chord's held notes before the rebuild avoids leaving
      * voices stuck on when the new chord has fewer notes. */
@@ -557,22 +598,23 @@ void drone_set_resonance(float r)
     }
 }
 
-void drone_set_amp_const(float c)
+void drone_set_amp_peak(float c)
 {
     c = SEQ_CLAMP_F32(c, 0.0f, 1.0f);
-    if (fabsf(s_d.amp_const - c) < 0.001f) return;
-    s_d.amp_const = c;
+    if (fabsf(s_d.amp_peak - c) < 0.001f) return;
+    s_d.amp_peak = c;
     if (s_d.source == DRONE_SRC_WAVE) {
         drone_rebuild();
         if (s_d.enabled) drone_apply_enabled();
     }
 }
 
-void drone_set_amp_mod(float m)
+void drone_set_amp_duck(float m)
 {
-    m = SEQ_CLAMP_F32(m, 0.0f, 0.95f); /* cap at 0.95: mod=1 silences floor completely */
-    if (fabsf(s_d.amp_mod - m) < 0.001f) return;
-    s_d.amp_mod = m;
+    /* Full range 0..1: duck_knob=1 -> -40 dB floor (not silence), no 0.95 cap needed. */
+    m = SEQ_CLAMP_F32(m, 0.0f, 1.0f);
+    if (fabsf(s_d.amp_duck - m) < 0.001f) return;
+    s_d.amp_duck = m;
     if (s_d.source == DRONE_SRC_WAVE) {
         drone_rebuild();
         if (s_d.enabled) drone_apply_enabled();
@@ -708,11 +750,11 @@ void drone_set_envelope(const seq_env_t *env)
 bool           drone_get_enabled(void)      { return s_d.enabled; }
 drone_source_t drone_get_source(void)       { return s_d.source; }
 uint16_t       drone_get_wave(void)         { return s_d.wave; }
-drone_chord_t  drone_get_chord(void)        { return s_d.chord; }
+chord_type_t   drone_get_chord(void)        { return s_d.chord; }
 uint8_t        drone_get_root_note(void)    { return s_d.root_note; }
 float          drone_get_resonance(void)    { return s_d.resonance; }
-float          drone_get_amp_const(void)    { return s_d.amp_const; }
-float          drone_get_amp_mod(void)      { return s_d.amp_mod; }
+float          drone_get_amp_peak(void)     { return s_d.amp_peak; }
+float          drone_get_amp_duck(void)     { return s_d.amp_duck; }
 drone_rate_t   drone_get_rate(void)         { return s_d.rate; }
 uint16_t       drone_get_patch(void)        { return s_d.patch; }
 bool           drone_get_sub_enabled(void)  { return s_d.sub_enabled; }
@@ -743,10 +785,19 @@ const char *drone_wave_name(uint16_t amy_wave)
     }
 }
 
-const char *drone_chord_name(drone_chord_t chord)
+const char *drone_chord_name(chord_type_t chord)
 {
-    if (chord >= DRONE_CHORD_COUNT) return "?";
-    return s_chord_names[chord];
+    return chord_type_name(chord);
+}
+
+void drone_get_amp_levels_norm(float *floor_norm, float *ceil_norm)
+{
+    /* Compute ON-beat and OFF-beat linear amplitudes from the SAME dB math
+     * as drone_configure_wave_synth() — single source of truth via s_amp_*. */
+    float peak    = s_amp_peak_lin();
+    float duck_db = s_amp_duck_db();
+    if (ceil_norm)  *ceil_norm  = peak;
+    if (floor_norm) *floor_norm = peak * powf(10.0f, -duck_db / 20.0f);
 }
 
 const char *drone_pattern_name(drone_pattern_t p)
@@ -754,3 +805,21 @@ const char *drone_pattern_name(drone_pattern_t p)
     if (p >= DRONE_PAT_COUNT) return "?";
     return s_pattern_names[p];
 }
+
+/* ── Per-target amplitude trim (graph editor amp mode) ──────────────────── */
+
+void drone_set_amp_trim(float v)
+{
+    if (v < 0.0f) v = 0.0f;
+    if (v > 1.0f) v = 1.0f;
+    if (fabsf(s_d.amp_trim - v) < 0.001f) return;
+    s_d.amp_trim = v;
+    /* s_amp_peak_lin() is called by drone_configure_wave_synth() via drone_rebuild(),
+     * so a rebuild picks up the new effective peak immediately. */
+    if (s_d.source == DRONE_SRC_WAVE) {
+        drone_rebuild();
+        if (s_d.enabled) drone_apply_enabled();
+    }
+}
+
+float drone_get_amp_trim(void) { return s_d.amp_trim; }

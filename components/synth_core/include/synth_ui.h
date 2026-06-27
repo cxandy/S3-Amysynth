@@ -119,8 +119,16 @@ bool synth_ui_graph_handle_button(bool is_long);
 bool synth_ui_graph_close_commit(void);
 
 /* Toggle the graph time range SHORT(2s linear) <-> LONG(15s, log-squashed tail)
- * while the editor is open. Re-seeds the curve. Returns true if consumed. */
+ * while the editor is open. Re-seeds the curve. Returns true if consumed.
+ * NOTE: range is now auto-switched based on total envelope time; this function
+ * is kept for completeness but MY_BUTTON_2 no longer calls it. */
 bool synth_ui_graph_toggle_range(void);
+
+/* Toggle amp-edit mode while the graph editor is open (MY_BUTTON_2). When
+ * active the encoder adjusts the selected target's amplitude trim (0..1)
+ * instead of moving ADSR points. Mode and scratch value are committed on
+ * editor close (confirm) and reset on every editor open. */
+void synth_ui_graph_toggle_amp_mode(void);
 
 /* ── Filter editor (per-synth LPF/HPF/BPF/LPF24 curve editor) ───────────────
  * Opened by long-press encoder (same as ADSR); toggled with MY_BUTTON_3 while

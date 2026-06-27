@@ -39,10 +39,10 @@ void display_drone_draw_frame(u8g2_t *u8g2, const drone_view_t *view);
 typedef struct {
     float   sweep_lo_norm;   /* sweep_lo mapped to 0..1 across 100..8000 Hz */
     float   sweep_hi_norm;   /* sweep_hi mapped to 0..1 across 100..8000 Hz */
-    float   amp_const;       /* 0..1 always-on DC level */
-    float   amp_mod;         /* 0..1 stutter depth */
-    float   amp_floor_norm;  /* CONST*(1-MOD) clamped 0..1 — minimum amplitude */
-    float   amp_ceil_norm;   /* CONST*(1+MOD) clamped 0..1 — peak amplitude     */
+    float   amp_const;       /* 0..1 PEAK knob value (on-beat level)           */
+    float   amp_mod;         /* 0..1 DUCK knob value (duck depth)              */
+    float   amp_floor_norm;  /* off-beat amplitude from drone_get_amp_levels_norm() */
+    float   amp_ceil_norm;   /* on-beat amplitude from drone_get_amp_levels_norm()  */
     float   resonance;       /* raw Q value 0.1..8.0 for needle + label          */
     uint8_t rate_idx;        /* drone_rate_t enum (0=1/4, 1=1/8, 2=1/16, 3=1/32) */
     uint8_t sweep_bars;      /* sweep period in bars 1..16                        */

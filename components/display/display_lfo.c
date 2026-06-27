@@ -87,8 +87,12 @@ void lfo_view_draw(u8g2_t *u8g2, const lfo_view_t *v)
     /* ── Header bar ── */
     u8g2_SetFont(u8g2, u8g2_font_6x10_tf);
     char hdr[20];
-    snprintf(hdr, sizeof(hdr), "LFO  L%u T%u%s",
-             v->layer_idx, v->track_idx, v->apply_all ? ">L" : ">T");
+    if (v->target_label && v->target_label[0]) {
+        snprintf(hdr, sizeof(hdr), "LFO  %s", v->target_label);
+    } else {
+        snprintf(hdr, sizeof(hdr), "LFO  L%u T%u%s",
+                 v->layer_idx, v->track_idx, v->apply_all ? ">L" : ">T");
+    }
     u8g2_DrawStr(u8g2, 1, 9, hdr);
     u8g2_DrawStr(u8g2, 100, 9, l->enabled ? "ON" : "--");
     u8g2_DrawHLine(u8g2, 0, 11, 128);

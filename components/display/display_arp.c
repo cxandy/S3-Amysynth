@@ -55,18 +55,35 @@ void display_arp_draw_frame(u8g2_t *u8g2, const arp_view_t *view)
     draw_field(u8g2, 56, 20, buf,
                view->cursor == ARP_CUR_GATE, view->editing);
 
-    /* Patch number, right-aligned on row 2. Framed while the patch hold+turn
-     * gesture is active, mirroring the sequencer view's top-bar indicator. */
+    /* Right area of row 2: SOURCE cursor, WAVE cursor, or patch/wave indicator.
+     * In WAVE mode the waveform name replaces the patch number. */
     {
-        const uint8_t patch_right = 126;   /* last column the digits may touch */
-        snprintf(buf, sizeof(buf), "P%u", (unsigned)view->patch);
-        uint8_t pw = (uint8_t)u8g2_GetStrWidth(u8g2, buf);
-        uint8_t px = (pw < patch_right) ? (uint8_t)(patch_right - pw) : 0;
-        if (view->patch_select) {
-            u8g2_DrawRFrame(u8g2, (uint8_t)(px - 2), 12,
-                            (uint8_t)(pw + 4), 11, 1);
+        bool sel_src  = (view->cursor == ARP_CUR_SOURCE);
+        bool sel_wave = (view->cursor == ARP_CUR_WAVE);
+        char rbuf[12];
+        if (sel_src) {
+            snprintf(rbuf, sizeof(rbuf), "SRC:%s",
+                     view->wave_mode ? "WAVE" : "PTCH");
+        } else if (sel_wave) {
+            snprintf(rbuf, sizeof(rbuf), "%s",
+                     view->wave_str ? view->wave_str : "?");
+        } else if (view->wave_mode) {
+            snprintf(rbuf, sizeof(rbuf), "W:%s",
+                     view->wave_str ? view->wave_str : "?");
+        } else {
+            snprintf(rbuf, sizeof(rbuf), "P%u", (unsigned)view->patch);
         }
-        u8g2_DrawStr(u8g2, px, 20, buf);
+        uint8_t rw = (uint8_t)u8g2_GetStrWidth(u8g2, rbuf);
+        uint8_t rx = (rw < 126u) ? (uint8_t)(126u - rw) : 0u;
+        if (sel_src || sel_wave) {
+            draw_field(u8g2, rx, 20, rbuf, true, view->editing);
+        } else if (!view->wave_mode && view->patch_select) {
+            u8g2_DrawRFrame(u8g2, (uint8_t)(rx - 2), 12,
+                            (uint8_t)(rw + 4), 11, 1);
+            u8g2_DrawStr(u8g2, rx, 20, rbuf);
+        } else {
+            u8g2_DrawStr(u8g2, rx, 20, rbuf);
+        }
     }
 
     u8g2_DrawHLine(u8g2, 0, 26, 128);
@@ -103,7 +120,7 @@ void display_arp_draw_frame(u8g2_t *u8g2, const arp_view_t *view)
      * current patch's human name centred over the slot grid so the full-range
      * browser is legible — same affordance as the sequencer view. patch_name is
      * NULL when the name table is compiled out, so this costs nothing then. */
-    if (view->patch_select && view->patch_name) {
+    if (!view->wave_mode && view->patch_select && view->patch_name) {
         u8g2_SetFont(u8g2, u8g2_font_6x10_tf);
         uint8_t nw = (uint8_t)u8g2_GetStrWidth(u8g2, view->patch_name);
         if (nw > 124) nw = 124;

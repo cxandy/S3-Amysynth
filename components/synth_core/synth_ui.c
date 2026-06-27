@@ -102,7 +102,18 @@ static graph_target_t s_graph_target = GRAPH_TGT_MELODIC;
 /* Curvature of the long-view squash: larger = more compression of the tail. */
 #define GRAPH_LONG_SQUASH    9.0f
 
-static bool s_graph_long_range = false;   /* false = SHORT, true = LONG */
+static bool s_graph_long_range = false;   /* false = SHORT, true = LONG (auto-switched) */
+
+/* Graph editor amp-mode state (MY_BUTTON_2 while ADSR editor is open).
+ * s_graph_amp_edit holds the scratch trim value during editing; it is committed
+ * to the target on close. Shown in the topbar right slot (replaces "S/L" flag
+ * which is now set automatically based on envelope duration). */
+static bool  s_graph_amp_mode = false;
+static float s_graph_amp_edit = 1.0f;   /* scratch 0..1, seeds from target on open */
+
+/* Master volume (0..2.0, unity=1.0). Written to amy_global.volume[] on every change
+ * and on init.  2× headroom allows boosting quiet sources. */
+static float s_master_volume = 1.0f;
 
 /* Layer-apply scope: when true, effect-editor commits write to all SEQ_TRACKS
  * in the active layer instead of only the selected track.  Toggled by
@@ -288,14 +299,36 @@ void synth_ui_graph_open_envelope(void)
         env = seq_default_melodic_env();
     }
 
+    /* Set initial range from total env time BEFORE seeding so graph_ms_to_x()
+     * uses the correct mapping when seed runs. No remap needed here since there
+     * are no popup points yet — just flip the flag directly. */
+    uint32_t total_env_ms = env.attack_ms + env.decay_ms + env.release_ms;
+    s_graph_long_range = (total_env_ms >= GRAPH_RANGE_SHORT_MS);
+
+    /* Seed amp scratch from the target's current trim; reset amp mode. */
+    s_graph_amp_mode = false;
+    switch (s_graph_target) {
+        case GRAPH_TGT_DRONE:
+            s_graph_amp_edit = drone_get_amp_trim();
+            break;
+        case GRAPH_TGT_ARP:
+            s_graph_amp_edit = arp_get_amp_scale();
+            break;
+        case GRAPH_TGT_MELODIC:
+        default:
+            s_graph_amp_edit = sequencer_core_get_melodic_amp_scale(
+                s_graph_layer, s_graph_track);
+            break;
+    }
+
     graph_seed_from_env(&env);
     graph_update_ticks();
     graph_popup_open(&s_graph_popup, GPOPUP_MODE_EDIT, NULL);
     graph_popup_set_style(&s_graph_popup, GPOPUP_STYLE_ADSR);
     s_force_redraw = true;
-    ESP_LOGI(TAG, "graph editor open: target=%d L%u row%u range=%s",
+    ESP_LOGI(TAG, "graph editor open: target=%d L%u row%u range=%s amp=%.2f",
              (int)s_graph_target, s_graph_layer, s_graph_track,
-             s_graph_long_range ? "LONG" : "SHORT");
+             s_graph_long_range ? "LONG" : "SHORT", (double)s_graph_amp_edit);
 }
 
 /* Read the edited points back, convert X->ms via the active range mapping, and
@@ -339,43 +372,98 @@ static void graph_commit_to_env(void)
             }
             break;
     }
+
+    /* Commit per-target amplitude trim (s_graph_amp_edit seeded at open; setters
+     * are no-ops when the value is unchanged so this is always safe to call). */
+    switch (s_graph_target) {
+        case GRAPH_TGT_DRONE:
+            drone_set_amp_trim(s_graph_amp_edit);
+            break;
+        case GRAPH_TGT_ARP:
+            arp_set_amp_scale(s_graph_amp_edit);
+            break;
+        case GRAPH_TGT_MELODIC:
+        default:
+            if (s_editor_apply_all) {
+                for (uint8_t t = 0; t < SEQ_TRACKS; ++t)
+                    sequencer_core_set_melodic_amp_scale(s_graph_layer, t, s_graph_amp_edit);
+            } else {
+                sequencer_core_set_melodic_amp_scale(s_graph_layer, s_graph_track,
+                                                     s_graph_amp_edit);
+            }
+            break;
+    }
+    s_graph_amp_mode = false;   /* clear mode so topbar reverts on next open */
 }
 
-/* Toggle SHORT<->LONG time range while the editor is open and re-seed so the
- * displayed curve stays anchored to the same underlying envelope. */
-bool synth_ui_graph_toggle_range(void)
+/* Set the time-range mode (long_range=true → LONG 15s, false → SHORT 2s) and
+ * remap current on-screen points so in-progress edits survive the switch.
+ * No-op when already in the target range. This is the single place that flips
+ * s_graph_long_range — all callers (manual toggle, auto-range) go through here. */
+static void graph_set_range(bool long_range)
 {
-    if (!graph_popup_is_active(&s_graph_popup)) return false;
+    if (s_graph_long_range == long_range) return;
 
-    /* Convert the CURRENT on-screen points through the range change instead of
-     * re-seeding from storage, so in-progress edits are preserved (no reset).
-     * Snapshot the points, read each X back to ms under the OLD range, flip the
-     * range, then re-map ms -> X under the NEW range. Y is range-independent. */
+    /* Snapshot each point's time in ms under the OLD range, then flip the range
+     * and remap ms → x under the NEW range.  Y is range-independent. */
     gpopup_point_t pts[GPOPUP_MAX_POINTS];
     uint8_t n = graph_popup_get_points(&s_graph_popup, pts, GPOPUP_MAX_POINTS);
-
     uint32_t ms[GPOPUP_MAX_POINTS];
-    for (uint8_t i = 0; i < n; ++i) {
-        ms[i] = graph_x_to_ms(pts[i].x);   /* OLD range mapping */
-    }
+    for (uint8_t i = 0; i < n; ++i) ms[i] = graph_x_to_ms(pts[i].x);
 
-    s_graph_long_range = !s_graph_long_range;
+    s_graph_long_range = long_range;
 
-    for (uint8_t i = 0; i < n; ++i) {
-        pts[i].x = graph_ms_to_x(ms[i]);   /* NEW range mapping */
-    }
-    /* Preserve cursor / edit state across the conversion. */
-    uint8_t  saved_cursor   = s_graph_popup.cursor;
-    bool     saved_editing  = s_graph_popup.editing_value;
-    bool     saved_axis_y   = s_graph_popup.adjust_axis_y;
+    for (uint8_t i = 0; i < n; ++i) pts[i].x = graph_ms_to_x(ms[i]);
+    uint8_t saved_cursor  = s_graph_popup.cursor;
+    bool    saved_editing = s_graph_popup.editing_value;
+    bool    saved_axis_y  = s_graph_popup.adjust_axis_y;
     graph_popup_set_points(&s_graph_popup, pts, n);
     s_graph_popup.cursor        = saved_cursor;
     s_graph_popup.editing_value = saved_editing;
     s_graph_popup.adjust_axis_y = saved_axis_y;
 
     graph_update_ticks();
-    ESP_LOGI(TAG, "graph range -> %s", s_graph_long_range ? "LONG(15s)" : "SHORT(2s)");
+    ESP_LOGI(TAG, "graph range -> %s", long_range ? "LONG(15s)" : "SHORT(2s)");
+}
+
+/* Auto-switch the range based on the total envelope time (pts[3].x = cum_r).
+ * Metric: rightmost point because that is the literal x-extent of the curve —
+ * a long attack also overflows the SHORT axis, and cum_r = A+D+R captures all.
+ * Hysteresis: SHORT→LONG at ≥2000ms, LONG→SHORT only at ≤1700ms so the range
+ * does not flicker at the boundary. Called after every encoder edit and once at
+ * editor open. No-op when the popup is not active. */
+static void graph_auto_range_check(void)
+{
+    if (!graph_popup_is_active(&s_graph_popup)) return;
+    gpopup_point_t pts[GPOPUP_MAX_POINTS];
+    uint8_t n = graph_popup_get_points(&s_graph_popup, pts, GPOPUP_MAX_POINTS);
+    if (n < 4) return;
+    uint32_t total_ms = graph_x_to_ms(pts[3].x);
+    if (!s_graph_long_range && total_ms >= GRAPH_RANGE_SHORT_MS) {
+        graph_set_range(true);   /* grow to LONG at the SHORT axis ceiling */
+    } else if (s_graph_long_range && total_ms <= 1700u) {
+        graph_set_range(false);  /* shrink back to SHORT below hysteresis floor */
+    }
+}
+
+/* Toggle SHORT<->LONG time range manually (kept for any external callers).
+ * Now delegates to graph_set_range() to keep the remap logic in one place. */
+bool synth_ui_graph_toggle_range(void)
+{
+    if (!graph_popup_is_active(&s_graph_popup)) return false;
+    graph_set_range(!s_graph_long_range);
     return true;
+}
+
+/* Toggle amp-edit mode: when active the encoder adjusts the selected target's
+ * amplitude trim instead of moving ADSR points. MY_BUTTON_2 activates this while
+ * the graph editor is open. The mode is reset on editor open/close. */
+void synth_ui_graph_toggle_amp_mode(void)
+{
+    if (!graph_popup_is_active(&s_graph_popup)) return;
+    s_graph_amp_mode = !s_graph_amp_mode;
+    s_force_redraw = true;
+    ESP_LOGI(TAG, "graph amp mode %s", s_graph_amp_mode ? "ON" : "OFF");
 }
 
 /* Route an encoder delta to the pop-up. Returns true if the pop-up consumed it
@@ -383,9 +471,22 @@ bool synth_ui_graph_toggle_range(void)
 bool synth_ui_graph_handle_encoder(long delta)
 {
     if (!graph_popup_is_active(&s_graph_popup)) return false;
+
+    if (s_graph_amp_mode) {
+        /* Amp mode: encoder adjusts per-target amplitude trim in 5% steps. */
+        float v = s_graph_amp_edit + (float)delta * 0.05f;
+        if (v < 0.0f) v = 0.0f;
+        if (v > 1.0f) v = 1.0f;
+        s_graph_amp_edit = v;
+        s_force_redraw = true;
+        return true;
+    }
+
     graph_popup_handle_encoder(&s_graph_popup, delta);
     /* Moving A (time) or the S level changes the derived decay; re-snap S.x. */
     graph_recompute_decay();
+    /* Auto-switch range if total envelope time crosses the threshold. */
+    graph_auto_range_check();
     return true;
 }
 
@@ -490,20 +591,27 @@ static void filter_load_from_target(void)
         snprintf(s_fgraph.label, sizeof(s_fgraph.label), "DRONE");
     } else if (seq_state.ui_mode == UI_MODE_ARP) {
         arp_get_filter(&f);
-        if (!f.enabled) {
+        /* Only apply display defaults when the filter was never authored
+         * (cutoff_hz == 0 from zero-init); preserve authored values even
+         * when disabled so enabled=false round-trips correctly. */
+        if (f.cutoff_hz <= 0.0f) {
             f.filter_type = SEQ_FILTER_LPF;
             f.cutoff_hz   = 800.0f;
             f.resonance   = 1.0f;
+            f.enabled     = true;
         }
         snprintf(s_fgraph.label, sizeof(s_fgraph.label), "ARP");
     } else {
         uint8_t li = seq_state.active_layer_idx;
         uint8_t tr = seq_state.selected_track;
         sequencer_core_get_melodic_filter(li, tr, &f);
-        if (!f.enabled) {
+        /* Same sentinel: zero cutoff means never-authored; disabled-but-authored
+         * keeps its authored values for correct round-trip display. */
+        if (f.cutoff_hz <= 0.0f) {
             f.filter_type = SEQ_FILTER_LPF;
             f.cutoff_hz   = 800.0f;
             f.resonance   = 1.0f;
+            f.enabled     = true;
         }
         snprintf(s_fgraph.label, sizeof(s_fgraph.label), "L%u T%u%s",
                  (unsigned)li, (unsigned)tr,
@@ -538,8 +646,10 @@ bool synth_ui_filter_handle_encoder(long delta)
     bool drone = (seq_state.ui_mode == UI_MODE_DRONE);
 
     if (!s_fgraph.editing) {
-        /* Not editing: scroll cursor position. */
-        uint8_t max_cursor = drone ? 1 : 2;
+        /* Not editing: scroll cursor position.
+         * Drone: 0=cutoff 1=resonance (type fixed, no EN cursor).
+         * Non-drone: 0=cutoff 1=resonance 2=type 3=enable. */
+        uint8_t max_cursor = drone ? 1 : 3;
         if (delta > 0) {
             s_fgraph.cursor = (uint8_t)((s_fgraph.cursor + 1) % (max_cursor + 1));
         } else if (delta < 0) {
@@ -571,6 +681,14 @@ bool synth_ui_filter_handle_encoder(long delta)
                 if (t > 4) t = 1;
                 s_filter_edit.filter_type = (uint8_t)t;
                 s_fgraph.filter_type      = (uint8_t)t;
+            }
+            break;
+        }
+        case 3: {   /* enable toggle (melodic/arp only; drone filter is always on) */
+            if (!drone) {
+                s_filter_edit.enabled = !s_filter_edit.enabled;
+                s_fgraph.enabled      = s_filter_edit.enabled;
+                ESP_LOGI(TAG, "filter enabled -> %d", (int)s_filter_edit.enabled);
             }
             break;
         }
@@ -673,12 +791,15 @@ void synth_ui_lfo_open(void)
         .target  = LFO_TARGET_FILTER,
     };
     sequencer_core_get_melodic_lfo(li, tr, &existing);
-    s_lfo_view.lfo       = existing;
-    s_lfo_view.cursor    = 0;
-    s_lfo_view.editing   = false;
-    s_lfo_view.layer_idx = li;
-    s_lfo_view.track_idx = tr;
-    s_lfo_view.apply_all = s_editor_apply_all;
+    s_lfo_view.lfo          = existing;
+    s_lfo_view.cursor       = 0;
+    s_lfo_view.editing      = false;
+    s_lfo_view.layer_idx    = li;
+    s_lfo_view.track_idx    = tr;
+    s_lfo_view.apply_all    = s_editor_apply_all;
+    s_lfo_view.target_label = (seq_state.ui_mode == UI_MODE_ARP)   ? "ARP"
+                            : (seq_state.ui_mode == UI_MODE_DRONE) ? "DRONE"
+                            : NULL;
     s_lfo_active   = true;
     s_force_redraw = true;
     ESP_LOGI(TAG, "LFO editor open L%u T%u", li, tr);
@@ -752,9 +873,12 @@ bool synth_ui_lfo_close_commit(void)
 
 /* Toggle layer-wide vs single-track commit scope for the effects editors.
  * Returns true if an appropriate editor was active and the event was consumed.
- * Called from MY_BUTTON_1 while ADSR graph or LFO editor is open. */
+ * Called from MY_BUTTON_1 while ADSR graph or LFO editor is open.
+ * ARP and DRONE modes have no "apply to all tracks" concept — no-op there. */
 bool synth_ui_toggle_editor_apply_scope(void)
 {
+    if (seq_state.ui_mode == UI_MODE_ARP || seq_state.ui_mode == UI_MODE_DRONE)
+        return false;
     bool graph_open = graph_popup_is_active(&s_graph_popup);
     if (!graph_open && !s_lfo_active) return false;
 
@@ -949,8 +1073,11 @@ static uint32_t trackopts_view_signature(void);
     h = fnv1a_bytes(h, &v.editing, sizeof(v.editing));
     h = fnv1a_bytes(h, &v.patch, sizeof(v.patch));
     h = fnv1a_bytes(h, &v.patch_select, sizeof(v.patch_select));
+    h = fnv1a_bytes(h, &v.wave_mode, sizeof(v.wave_mode));
     h = fnv1a_bytes(h, v.rate_str, 4);
     h = fnv1a_bytes(h, v.mode_str, 4);
+    if (v.source_str) h = fnv1a_bytes(h, v.source_str, 4);
+    if (v.wave_str)   h = fnv1a_bytes(h, v.wave_str,   4);
     for (uint8_t i = 0; i < ARP_VIEW_SLOTS; i++) {
         h = fnv1a_bytes(h, &v.slot_active[i], sizeof(v.slot_active[i]));
         h = fnv1a_bytes(h, &v.slot_rest[i],   sizeof(v.slot_rest[i]));
@@ -969,6 +1096,8 @@ static uint32_t trackopts_view_signature(void);
     h = fnv1a_bytes(h, &s_graph_long_range, sizeof(s_graph_long_range));
     h = fnv1a_bytes(h, &s_graph_layer, sizeof(s_graph_layer));
     h = fnv1a_bytes(h, &s_graph_track, sizeof(s_graph_track));
+    h = fnv1a_bytes(h, &s_graph_amp_mode, sizeof(s_graph_amp_mode));
+    h = fnv1a_bytes(h, &s_graph_amp_edit, sizeof(s_graph_amp_edit));
     h = fnv1a_bytes(h, s_graph_popup.points,
                     s_graph_popup.num_points * sizeof(gpopup_point_t));
     return h;
@@ -979,25 +1108,36 @@ static void graph_draw_topbar(u8g2_t *u8g2)
 {
     char buf[24];
 
-    /* Left: which row is being edited. */
+    /* Left: which target is being edited (ARP/DRONE get named labels). */
     u8g2_SetFont(u8g2, u8g2_font_6x10_tf);
-    snprintf(buf, sizeof(buf), "L%u T%u ENV%s",
-             s_graph_layer, s_graph_track,
-             (s_graph_target == GRAPH_TGT_MELODIC)
-                 ? (s_editor_apply_all ? ">L" : ">T") : "");
+    if (s_graph_target == GRAPH_TGT_ARP) {
+        snprintf(buf, sizeof(buf), "ARP ENV");
+    } else if (s_graph_target == GRAPH_TGT_DRONE) {
+        snprintf(buf, sizeof(buf), "DRONE ENV");
+    } else {
+        snprintf(buf, sizeof(buf), "L%u T%u ENV%s",
+                 s_graph_layer, s_graph_track,
+                 s_editor_apply_all ? ">L" : ">T");
+    }
     u8g2_DrawStr(u8g2, 2, 8, buf);
 
-    /* Right: SHORT/LONG range flag. */
-    const char *rng = s_graph_long_range ? "L" : "S";
-    u8g2_SetFont(u8g2, u8g2_font_6x10_tf);
-    uint8_t rw = (uint8_t)u8g2_GetStrWidth(u8g2, rng);
-    u8g2_DrawStr(u8g2, (uint8_t)(128 - rw - 2), 8, rng);
+    /* Right: amp indicator when in amp mode (replaces the old "S/L" range flag
+     * which is now set automatically and no longer meaningful to the user). */
+    uint8_t rw = 0;
+    if (s_graph_amp_mode) {
+        char amp_buf[10];
+        snprintf(amp_buf, sizeof(amp_buf), "AMP%d%%",
+                 (int)(s_graph_amp_edit * 100.0f + 0.5f));
+        u8g2_SetFont(u8g2, u8g2_font_6x10_tf);
+        rw = (uint8_t)u8g2_GetStrWidth(u8g2, amp_buf);
+        u8g2_DrawStr(u8g2, (uint8_t)(128 - rw - 2), 8, amp_buf);
+    }
 
     /* Middle: live readout of the selected point's real value (ms / %). */
     gpopup_point_t pts[GPOPUP_MAX_POINTS];
     uint8_t n = graph_popup_get_points(&s_graph_popup, pts, GPOPUP_MAX_POINTS);
     uint8_t c = s_graph_popup.cursor;
-    if (n >= 4 && c >= 1 && c <= 3) {
+    if (!s_graph_amp_mode && n >= 4 && c >= 1 && c <= 3) {
         uint32_t cum_a = graph_x_to_ms(pts[1].x);
         uint32_t cum_d = graph_x_to_ms(pts[2].x);
         uint32_t cum_r = graph_x_to_ms(pts[3].x);
@@ -1013,8 +1153,8 @@ static void graph_draw_topbar(u8g2_t *u8g2)
         }
         u8g2_SetFont(u8g2, u8g2_font_5x7_tr);
         uint8_t tw = (uint8_t)u8g2_GetStrWidth(u8g2, buf);
-        /* Centre-ish, between the left label (~x=56) and the range flag. */
-        int mx = 60 + (int)((128 - 60 - rw - 4 - tw) / 2);
+        /* Centre-ish, between the left label (~x=56) and the right indicator. */
+        int mx = 60 + (int)((128 - 60 - (int)rw - 4 - (int)tw) / 2);
         if (mx < 60) mx = 60;
         u8g2_DrawStr(u8g2, (uint8_t)mx, 8, buf);
     }
@@ -1144,12 +1284,10 @@ static void synth_ui_task(void *pvParameters)
                     case V_DRONE_VIS: {
                         const float SWEEP_MIN = 100.0f, SWEEP_MAX = 8000.0f;
                         float span = SWEEP_MAX - SWEEP_MIN;
-                        float c = drone_get_amp_const();
-                        float m = drone_get_amp_mod();
-                        float fl = c * (1.0f - m);
-                        float cl = c * (1.0f + m);
-                        if (fl < 0.0f) fl = 0.0f;
-                        if (cl > 1.0f) cl = 1.0f;
+                        float c = drone_get_amp_peak();
+                        float m = drone_get_amp_duck();
+                        float fl, cl;
+                        drone_get_amp_levels_norm(&fl, &cl);
                         drone_vis_t dvis = {
                             .sweep_lo_norm  = (drone_get_sweep_lo() - SWEEP_MIN) / span,
                             .sweep_hi_norm  = (drone_get_sweep_hi() - SWEEP_MIN) / span,
@@ -1662,6 +1800,7 @@ typedef enum {
     MI_CHORUS_LEVEL,
     MI_REVERB_LEVEL,
     MI_PRESET_GLOBAL_FX,
+    MI_VOLUME,
     MI_COUNT
 } menu_item_id_t;
 
@@ -1755,6 +1894,11 @@ static void menu_build_view(menu_view_t *out)
     snprintf(s_menu_items[MI_PRESET_GLOBAL_FX].value, MENU_VALUE_LEN, "%s",
              s_fx.presets_alter_global ? "ON" : "OFF");
 
+    /* Master output volume (0..200%, unity=100%). Written to amy_global.volume[]. */
+    snprintf(s_menu_items[MI_VOLUME].label, MENU_LABEL_LEN, "Volume");
+    snprintf(s_menu_items[MI_VOLUME].value, MENU_VALUE_LEN, "%.0f%%",
+             (double)(s_master_volume * 100.0f));
+
     out->items   = s_menu_items;
     out->count   = MI_COUNT;
     out->cursor  = seq_state.menu_cursor;
@@ -1779,6 +1923,7 @@ static bool menu_item_is_value(menu_item_id_t id)
         case MI_CHORUS_LEVEL:
         case MI_REVERB_LEVEL:
         case MI_PRESET_GLOBAL_FX:
+        case MI_VOLUME:
             return true;
         default:
             return false;
@@ -1862,6 +2007,19 @@ static void menu_edit_value(menu_item_id_t id, int delta)
                 if (!s_fx.presets_alter_global) synth_ui_fx_reassert_global();
             }
             break;
+        case MI_VOLUME: {
+            /* 5% steps, range 0..200% (0.0..2.0 linear). Written directly to
+             * amy_global.volume[] — an aligned float store, atomic on Xtensa.
+             * This runs in synth_ui_task (not the render body), so the AMY
+             * locking rule (no add_delta_to_queue inside the locked render loop)
+             * is satisfied. */
+            float v = s_master_volume + (float)dir * 0.05f;
+            if (v < 0.0f) v = 0.0f;
+            if (v > 2.0f) v = 2.0f;
+            s_master_volume = v;
+            for (int b = 0; b < AMY_NUM_BUSES; b++) amy_global.volume[b] = v;
+            break;
+        }
         default:
             break;
     }
@@ -2000,6 +2158,12 @@ static void arp_build_view(arp_view_t *out)
     out->cursor  = s_arp_cursor;
     out->editing = s_arp_editing;
 
+    /* Source / wave (F-UI). */
+    bool wave_mode     = (arp_get_source() == ARP_SRC_WAVE);
+    out->wave_mode     = wave_mode;
+    out->source_str    = wave_mode ? "WAVE" : "PTCH";
+    out->wave_str      = drone_wave_name(arp_get_wave());
+
     /* Patch indicator: mirror the sequencer view. Number is always available;
      * the name banner shows only while the patch hold+turn gesture is active. */
     out->patch        = arp_get_patch();
@@ -2034,6 +2198,26 @@ static void arp_edit_value(uint8_t cursor, int delta)
             arp_set_gate_pct((uint8_t)SEQ_CLAMP_INT(
                 (int)arp_get_gate_pct() + dir * 5, 10, 100));
             break;
+        case ARP_CUR_SOURCE:
+            if (dir != 0)
+                arp_set_source(arp_get_source() == ARP_SRC_WAVE
+                               ? ARP_SRC_PATCH : ARP_SRC_WAVE);
+            break;
+        case ARP_CUR_WAVE: {
+            /* Cycle through the same five waveforms the drone uses. */
+            static const uint16_t s_arp_waves[] = {
+                SAW_DOWN, SAW_UP, PULSE, TRIANGLE, SINE
+            };
+            const int wn = (int)(sizeof(s_arp_waves) / sizeof(s_arp_waves[0]));
+            int idx = 0;
+            uint16_t cur_wave = arp_get_wave();
+            for (int i = 0; i < wn; i++) {
+                if (s_arp_waves[i] == cur_wave) { idx = i; break; }
+            }
+            idx = (idx + dir + wn) % wn;
+            arp_set_wave(s_arp_waves[idx]);
+            break;
+        }
         default: {
             /* Slot edit: chromatic note, or clear below the floor. */
             uint8_t slot = (uint8_t)(cursor - ARP_CUR_SLOT0);
@@ -2071,6 +2255,10 @@ void synth_ui_arp_handle_encoder(long delta)
     } else {
         int c = (int)s_arp_cursor + (int)delta;
         c = SEQ_CLAMP_INT(c, 0, ARP_CUR_COUNT - 1);
+        /* Skip the WAVE cursor when source is PATCH — it has no effect there. */
+        if (c == ARP_CUR_WAVE && arp_get_source() == ARP_SRC_PATCH) {
+            c = (delta > 0) ? ARP_CUR_SLOT0 : ARP_CUR_SOURCE;
+        }
         s_arp_cursor = (uint8_t)c;
     }
     s_force_redraw = true;
@@ -2165,12 +2353,12 @@ static void drone_row_label_value(drone_logical_row_t r,
             snprintf(value, DRONE_VALUE_LEN, "%.2f", (double)drone_get_resonance());
             break;
         case DROW_CONST:
-            snprintf(label, DRONE_LABEL_LEN, "CONST");
-            snprintf(value, DRONE_VALUE_LEN, "%.1f", (double)drone_get_amp_const());
+            snprintf(label, DRONE_LABEL_LEN, "PEAK");
+            snprintf(value, DRONE_VALUE_LEN, "%.1f", (double)drone_get_amp_peak());
             break;
         case DROW_MOD:
-            snprintf(label, DRONE_LABEL_LEN, "MOD");
-            snprintf(value, DRONE_VALUE_LEN, "%.1f", (double)drone_get_amp_mod());
+            snprintf(label, DRONE_LABEL_LEN, "DUCK");
+            snprintf(value, DRONE_VALUE_LEN, "%.1f", (double)drone_get_amp_duck());
             break;
         case DROW_VIS_POPUP:
             snprintf(label, DRONE_LABEL_LEN, "VISUALISE");
@@ -2272,8 +2460,8 @@ static void drone_edit_row(drone_logical_row_t r, int delta)
         }
         case DROW_CHORD: {
             int c = SEQ_CLAMP_INT((int)drone_get_chord() + dir,
-                                  0, DRONE_CHORD_COUNT - 1);
-            drone_set_chord((drone_chord_t)c);
+                                  0, CHORD_TYPE_COUNT - 1);
+            drone_set_chord((chord_type_t)c);
             break;
         }
         case DROW_RES: {
@@ -2286,10 +2474,10 @@ static void drone_edit_row(drone_logical_row_t r, int delta)
             break;
         }
         case DROW_CONST:
-            drone_set_amp_const(drone_get_amp_const() + (float)dir * 0.1f);
+            drone_set_amp_peak(drone_get_amp_peak() + (float)dir * 0.1f);
             break;
         case DROW_MOD:
-            drone_set_amp_mod(drone_get_amp_mod() + (float)dir * 0.1f);
+            drone_set_amp_duck(drone_get_amp_duck() + (float)dir * 0.1f);
             break;
         case DROW_VIS_POPUP:
             break; /* encoder turns consumed; popup opened/closed via button */
@@ -2410,7 +2598,7 @@ static bool    s_prog_editing = false;
 static uint8_t s_prog_field   = 0;   /* edit sub-field: 0=root, 1=type, 2=duration */
 
 /* Allowed per-entry durations, in bars. */
-static const uint8_t s_prog_durations[] = { 1, 2, 4, 8, 16 };
+static const uint8_t s_prog_durations[] = { 1, 2, 3, 4, 8, 16 };
 #define PROG_NUM_DURATIONS ((int)(sizeof(s_prog_durations) / sizeof(s_prog_durations[0])))
 
 static void prog_build_view(prog_view_t *out)

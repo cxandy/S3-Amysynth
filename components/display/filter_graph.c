@@ -138,24 +138,40 @@ void filter_graph_draw(u8g2_t *u8g2, const filter_graph_t *fg)
         u8g2_DrawStr(u8g2, vx, 8, val_buf);
     }
 
-    /* Centre: filter type name.  Frame/invert when cursor=2. */
+    /* Centre: filter type name (cursor=2) or EN toggle (cursor=3). */
     {
         u8g2_SetFont(u8g2, u8g2_font_5x7_tr);
-        uint8_t tw = (uint8_t)u8g2_GetStrWidth(u8g2, type_name);
-        uint8_t tx = (uint8_t)((128 - tw) / 2);
-        if (fg->cursor == 2) {
+        if (fg->cursor == 3) {
+            /* EN cursor: show enable state centred in the top bar. */
+            const char *en_str = fg->enabled ? "EN:ON" : "EN:OFF";
+            uint8_t ew = (uint8_t)u8g2_GetStrWidth(u8g2, en_str);
+            uint8_t ex = (uint8_t)((128 - ew) / 2);
             if (fg->editing) {
-                /* Inverted box = value is live. */
-                u8g2_DrawBox(u8g2, (uint8_t)(tx - 2), 0, (uint8_t)(tw + 4), 11);
+                u8g2_DrawBox(u8g2, (uint8_t)(ex - 2), 0, (uint8_t)(ew + 4), 11);
                 u8g2_SetDrawColor(u8g2, 0);
-                u8g2_DrawStr(u8g2, tx, 8, type_name);
+                u8g2_DrawStr(u8g2, ex, 8, en_str);
                 u8g2_SetDrawColor(u8g2, 1);
             } else {
-                u8g2_DrawRFrame(u8g2, (uint8_t)(tx - 2), 0, (uint8_t)(tw + 4), 11, 1);
-                u8g2_DrawStr(u8g2, tx, 8, type_name);
+                u8g2_DrawRFrame(u8g2, (uint8_t)(ex - 2), 0, (uint8_t)(ew + 4), 11, 1);
+                u8g2_DrawStr(u8g2, ex, 8, en_str);
             }
         } else {
-            u8g2_DrawStr(u8g2, tx, 8, type_name);
+            uint8_t tw = (uint8_t)u8g2_GetStrWidth(u8g2, type_name);
+            uint8_t tx = (uint8_t)((128 - tw) / 2);
+            if (fg->cursor == 2) {
+                if (fg->editing) {
+                    /* Inverted box = value is live. */
+                    u8g2_DrawBox(u8g2, (uint8_t)(tx - 2), 0, (uint8_t)(tw + 4), 11);
+                    u8g2_SetDrawColor(u8g2, 0);
+                    u8g2_DrawStr(u8g2, tx, 8, type_name);
+                    u8g2_SetDrawColor(u8g2, 1);
+                } else {
+                    u8g2_DrawRFrame(u8g2, (uint8_t)(tx - 2), 0, (uint8_t)(tw + 4), 11, 1);
+                    u8g2_DrawStr(u8g2, tx, 8, type_name);
+                }
+            } else {
+                u8g2_DrawStr(u8g2, tx, 8, type_name);
+            }
         }
     }
 

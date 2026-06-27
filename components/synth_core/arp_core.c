@@ -1,5 +1,6 @@
 #include "arp_core.h"
 #include "sequencer_core.h"
+#include "amy_helpers.h"   /* amy_helpers_event_begin/send — for WAVE mode osc config */
 #include "quantizer.h"
 #include "seq_clamp.h"
 #include "sdkconfig.h"
@@ -40,6 +41,11 @@
 #define CONFIG_SEQ_ARP_DEFAULT_PATCH 138  /* DX7 E.Piano, matches melodic default */
 #endif
 
+/* Default AMY waveform for WAVE mode.  SAW_DOWN matches the drone's default and
+ * gives a bright, harmonically rich sound that sits well in an arp context.
+ * (SAW_DOWN is defined in amy.h as 2.) */
+#define ARP_DEFAULT_WAVE SAW_DOWN
+
 static const char *TAG = "arp_core";
 
 /* AMY_SEQUENCER_PPQ = 48 → 1/16 = 12 ticks. */
@@ -76,11 +82,18 @@ typedef struct {
     int16_t    slots[ARP_MAX_SLOTS];  /* raw chromatic MIDI, -1 = empty */
     uint8_t    scale_index;
     uint8_t    root_note;
-    uint16_t   patch;
+    uint16_t     patch;
+    arp_source_t source;         /* WAVE or PATCH (default PATCH)               */
+    uint16_t     wave;           /* AMY waveform used when source==ARP_SRC_WAVE */
     seq_env_t    env;            /* runtime-editable ADSR (shared graph editor) */
     bool         env_authored;   /* true once the user commits a custom env      */
     seq_filter_t filter;         /* runtime-editable filter (shared filter editor) */
     bool         filter_authored;/* true once the user commits a custom filter    */
+    float        amp_scale;      /* per-target amplitude trim (default 1.0, 0..1);
+                                    scaled into note velocity at emit time. Set via
+                                    the graph editor amp mode (MY_BUTTON_2). MUST be
+                                    initialised to 1.0f in arp_core_init — memset
+                                    zeroes it. */
 } arp_state_t;
 
 static arp_state_t s_arp;
@@ -148,6 +161,67 @@ static void arp_clear_all(void)
     }
 }
 
+/* ── Source configuration helpers ────────────────────────────────────── */
+
+/* Configure the arp's AMY synth slot as a bare oscillator (WAVE mode).
+ *
+ * One osc per voice — no patch, no LFO carrier.  Pitch follows the MIDI note
+ * delivered by sequencer_core_arp_emit_note() (COEF_NOTE=1).  Amplitude is
+ * velocity-scaled + EG0-gated so the shared ADSR editor and custom envelopes
+ * work exactly as they do in PATCH mode.
+ *
+ * The caller is responsible for pushing an EG0 envelope afterwards (arp_rebuild
+ * always does this in WAVE mode so even the default env is applied). */
+static void arp_configure_wave_synth(void)
+{
+    uint8_t synth  = sequencer_core_arp_synth();
+    uint8_t voices = sequencer_core_arp_voices();
+
+    /* Define the synth pool: N voices, 1 osc each.  This resets all osc state. */
+    amy_event *e = amy_helpers_event_begin();
+    e->synth          = synth;
+    e->num_voices     = voices;
+    e->oscs_per_voice = 1;
+    amy_helpers_event_send(e);
+
+    /* osc0: user-chosen waveform, note-following pitch, velocity + EG0 amplitude.
+     * COEF_NOTE=1 means each voice tracks its assigned midi_note exactly.
+     * COEF_VEL=1 so the 0.9 velocity passed by emit_note scales the output.
+     * COEF_EG0=1 so the ADSR envelope (pushed separately) shapes each note. */
+    e = amy_helpers_event_begin();
+    e->synth                  = synth;
+    e->osc                    = 0;
+    e->wave                   = s_arp.wave;
+    e->freq_coefs[COEF_NOTE]  = 1.0f;
+    e->amp_coefs[COEF_CONST]  = 1.0f;
+    e->amp_coefs[COEF_VEL]    = 1.0f;
+    e->amp_coefs[COEF_EG0]    = 1.0f;
+    amy_helpers_event_send(e);
+}
+
+/* (Re)build the arp synth slot for the current source and params, then
+ * re-impose any authored ADSR / filter.  Mirrors drone_rebuild(). */
+static void arp_rebuild(void)
+{
+    if (s_arp.source == ARP_SRC_WAVE) {
+        arp_configure_wave_synth();
+        /* WAVE mode has no patch envelope; always push the arp's env (authored
+         * or default) so EG0 breakpoints are valid and notes decay correctly. */
+        sequencer_core_push_envelope(sequencer_core_arp_synth(), &s_arp.env);
+    } else {
+        sequencer_core_arp_configure(s_arp.patch, sequencer_core_arp_voices());
+        /* Re-impose the user's custom ADSR when authored (deferred authority,
+         * same pattern as melodic layers and the drone). */
+        if (s_arp.env_authored) {
+            sequencer_core_push_envelope(sequencer_core_arp_synth(), &s_arp.env);
+        }
+    }
+    /* Filter re-apply is source-agnostic: both WAVE and PATCH respect it. */
+    if (s_arp.filter_authored) {
+        sequencer_core_push_filter(sequencer_core_arp_synth(), &s_arp.filter);
+    }
+}
+
 /* ── Public API ──────────────────────────────────────────────────────── */
 
 void arp_core_init(void)
@@ -161,6 +235,8 @@ void arp_core_init(void)
     s_arp.scale_index = CONFIG_SEQ_ARP_DEFAULT_SCALE;
     s_arp.root_note   = CONFIG_SEQ_ARP_DEFAULT_ROOT_NOTE;
     s_arp.patch       = CONFIG_SEQ_ARP_DEFAULT_PATCH;
+    s_arp.source      = ARP_SRC_PATCH;      /* preserve existing PATCH behaviour */
+    s_arp.wave        = ARP_DEFAULT_WAVE;   /* SAW_DOWN — sensible WAVE default  */
     /* Default ADSR mirrors the melodic compile-time defaults; not authored until
      * the user commits in the graph editor (patch's own env wins until then). */
 s_arp.env.attack_ms   = 4;    // Tiny curve to prevent an aggressive digital click
@@ -175,13 +251,14 @@ s_arp.env.release_ms  = 200;  // Controlled tail that fills space without causin
     s_arp.filter.resonance   = 1.0f;
     s_arp.filter.enabled     = false;
     s_arp.filter_authored    = false;
+    s_arp.amp_scale          = 1.0f; /* unity; memset zeroes, so explicit init */
     if (s_arp.octaves < 1) s_arp.octaves = 1;
     if (s_arp.octaves > ARP_OCT_MAX) s_arp.octaves = ARP_OCT_MAX;
     if (s_arp.scale_index >= quantizer_scale_count()) s_arp.scale_index = 0;
     for (uint8_t i = 0; i < ARP_MAX_SLOTS; i++) s_arp.slots[i] = -1;
 
     ARP_HEAP_CHECK("arp_init: before arp_configure");
-    sequencer_core_arp_configure(s_arp.patch, sequencer_core_arp_voices());
+    arp_rebuild();
     ARP_HEAP_CHECK("arp_init: after arp_configure");
     /* If the arp boots enabled (with seeded slots), schedule an initial emit on
      * the first service tick rather than emitting inline during init. */
@@ -213,6 +290,10 @@ void arp_core_refresh(void)
         uint32_t tag_base = sequencer_core_arp_tag_base();
         uint8_t  step_i   = 0;
 
+        /* Apply per-target amp trim; clamp so velocity stays ≤1 (AMY cap). */
+        float arp_vel = 0.9f * s_arp.amp_scale;
+        if (arp_vel > 1.0f) arp_vel = 1.0f;
+
         for (uint8_t oct = 0; oct < s_arp.octaves; oct++) {
             for (uint8_t si = 0; si < ARP_MAX_SLOTS; si++) {
                 int16_t v = s_arp.slots[si];
@@ -224,7 +305,7 @@ void arp_core_refresh(void)
                     int32_t chromatic = (int32_t)v + (int32_t)oct * 12;
                     uint8_t play_note = arp_snap(sequencer_core_clamp_melodic_note(chromatic));
                     sequencer_core_arp_emit_note(tag_base + (uint32_t)step_i * 2u,
-                                                 play_note, 0.9f, tick_on, gate, period);
+                                                 play_note, arp_vel, tick_on, gate, period);
                 }
                 /* REST: tag stays cleared (arp_clear_all already ran); step_i still advances. */
                 step_i++;
@@ -250,6 +331,10 @@ void arp_core_refresh(void)
 
     uint32_t tag_base = sequencer_core_arp_tag_base();
 
+    /* Apply per-target amp trim for UP/DOWN modes. */
+    float arp_vel = 0.9f * s_arp.amp_scale;
+    if (arp_vel > 1.0f) arp_vel = 1.0f;
+
     for (uint8_t i = 0; i < steps; i++) {
         /* index within the sorted set, advancing by octave every `count`. */
         uint8_t note_idx = i % count;
@@ -263,7 +348,7 @@ void arp_core_refresh(void)
 
         uint32_t tick_on = 1u + (uint32_t)i * rate;
         sequencer_core_arp_emit_note(tag_base + (uint32_t)i * 2u,
-                                     play_note, 0.9f, tick_on, gate, period);
+                                     play_note, arp_vel, tick_on, gate, period);
     }
 }
 
@@ -333,14 +418,10 @@ void arp_set_patch(uint16_t patch_number)
     patch_number = SEQ_CLAMP_U16(patch_number, 0, 256);
     if (s_arp.patch == patch_number) return;
     s_arp.patch = patch_number;
-    sequencer_core_arp_configure(s_arp.patch, sequencer_core_arp_voices());
-    /* Reloading the patch resets the synth's osc envelopes; re-impose the user's
-     * custom env if they have authored one (deferred authority, like melodic). */
-    if (s_arp.env_authored) {
-        sequencer_core_push_envelope(sequencer_core_arp_synth(), &s_arp.env);
-    }
-    if (s_arp.filter_authored) {
-        sequencer_core_push_filter(sequencer_core_arp_synth(), &s_arp.filter);
+    /* In WAVE mode: store the new patch number but leave the synth slot alone.
+     * It will be applied when the source is switched back to ARP_SRC_PATCH. */
+    if (s_arp.source == ARP_SRC_PATCH) {
+        arp_rebuild();
     }
     /* Patch reconfig does not change scheduling; no re-emit needed. */
 }
@@ -392,6 +473,25 @@ void arp_set_slot(uint8_t idx, int16_t chromatic_note)
     arp_mark_dirty();
 }
 
+void arp_set_source(arp_source_t src)
+{
+    if (src != ARP_SRC_WAVE && src != ARP_SRC_PATCH) return;
+    if (s_arp.source == src) return;
+    s_arp.source = src;
+    arp_rebuild();
+    ESP_LOGI(TAG, "arp source -> %s", src == ARP_SRC_WAVE ? "WAVE" : "PATCH");
+}
+
+void arp_set_wave(uint16_t amy_wave)
+{
+    if (s_arp.wave == amy_wave) return;
+    s_arp.wave = amy_wave;
+    /* Reconfigure the slot immediately only when WAVE mode is active. */
+    if (s_arp.source == ARP_SRC_WAVE) {
+        arp_rebuild();
+    }
+}
+
 /* Perform a pending re-emit, if any. Called once per UI frame so rapid edits
  * coalesce into a single refresh. Cheap no-op when nothing changed. */
 void arp_core_service(void)
@@ -403,14 +503,16 @@ void arp_core_service(void)
 
 /* ── Getters ─────────────────────────────────────────────────────────── */
 
-bool       arp_get_enabled(void)    { return s_arp.enabled; }
-arp_dir_t  arp_get_direction(void)  { return s_arp.dir; }
-uint8_t    arp_get_octaves(void)    { return s_arp.octaves; }
-arp_rate_t arp_get_rate(void)       { return s_arp.rate; }
-uint8_t    arp_get_gate_pct(void)   { return s_arp.gate_pct; }
-uint8_t    arp_get_scale(void)      { return s_arp.scale_index; }
-uint8_t    arp_get_root_note(void)  { return s_arp.root_note; }
-uint16_t   arp_get_patch(void)      { return s_arp.patch; }
+bool         arp_get_enabled(void)    { return s_arp.enabled; }
+arp_dir_t    arp_get_direction(void)  { return s_arp.dir; }
+uint8_t      arp_get_octaves(void)    { return s_arp.octaves; }
+arp_rate_t   arp_get_rate(void)       { return s_arp.rate; }
+uint8_t      arp_get_gate_pct(void)   { return s_arp.gate_pct; }
+uint8_t      arp_get_scale(void)      { return s_arp.scale_index; }
+uint8_t      arp_get_root_note(void)  { return s_arp.root_note; }
+uint16_t     arp_get_patch(void)      { return s_arp.patch; }
+arp_source_t arp_get_source(void)     { return s_arp.source; }
+uint16_t     arp_get_wave(void)       { return s_arp.wave; }
 
 const char *arp_rate_name(arp_rate_t rate)
 {
@@ -447,3 +549,16 @@ uint8_t arp_active_step_count(void)
         if (s_arp.slots[i] != -1) n++;
     return n;
 }
+
+/* ── Per-target amplitude trim (graph editor amp mode) ──────────────────── */
+
+void arp_set_amp_scale(float v)
+{
+    if (v < 0.0f) v = 0.0f;
+    if (v > 1.0f) v = 1.0f;
+    if (fabsf(s_arp.amp_scale - v) < 0.001f) return;
+    s_arp.amp_scale = v;
+    arp_mark_dirty();   /* coalesced re-emit on next arp_core_service() */
+}
+
+float arp_get_amp_scale(void) { return s_arp.amp_scale; }

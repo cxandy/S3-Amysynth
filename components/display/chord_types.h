@@ -16,13 +16,16 @@ typedef enum {
     CHORD_SUS4,
     CHORD_DIM,
     CHORD_AUG,
+    CHORD_MIN9,
+    CHORD_MAJ9,
     CHORD_TYPE_COUNT
 } chord_type_t;
 
 static inline const char *chord_type_name(chord_type_t t)
 {
     static const char *const s[] = {
-        "Maj", "Min", "Maj7", "Min7", "Dom7", "Sus2", "Sus4", "Dim", "Aug"
+        "Maj", "Min", "Maj7", "Min7", "Dom7", "Sus2", "Sus4", "Dim", "Aug",
+        "Min9", "Maj9"
     };
     return ((unsigned)t < CHORD_TYPE_COUNT) ? s[t] : "?";
 }

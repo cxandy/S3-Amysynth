@@ -14,21 +14,24 @@ extern "C" {
  *
  * Layout (matches the user's sketch):
  *   ARP: ON  | MODE: UP   | OCT: 2     <- macro row 1
- *   RATE: 1/16  | GATE: 75%            <- macro row 2
+ *   RATE: 1/16  | GATE: 75%  | SRC:P   <- macro row 2 (right = source/wave/patch)
  *   [C3]  E3   G3   B3   --   --  ...  <- 8 note slots
  *
- * The cursor walks the macro fields then the 8 slots. cursor index space:
- *   0=ARP enable, 1=MODE, 2=OCT, 3=RATE, 4=GATE, 5..12 = slots 0..7. */
+ * Cursor index space:
+ *   0=ARP enable, 1=MODE, 2=OCT, 3=RATE, 4=GATE,
+ *   5=SOURCE, 6=WAVE (skipped in PATCH mode), 7..14 = slots 0..7. */
 
 #define ARP_VIEW_SLOTS 8
 
-#define ARP_CUR_ENABLE 0
-#define ARP_CUR_MODE   1
-#define ARP_CUR_OCT    2
-#define ARP_CUR_RATE   3
-#define ARP_CUR_GATE   4
-#define ARP_CUR_SLOT0  5
-#define ARP_CUR_COUNT  (ARP_CUR_SLOT0 + ARP_VIEW_SLOTS)
+#define ARP_CUR_ENABLE  0
+#define ARP_CUR_MODE    1
+#define ARP_CUR_OCT     2
+#define ARP_CUR_RATE    3
+#define ARP_CUR_GATE    4
+#define ARP_CUR_SOURCE  5   /* toggle WAVE/PATCH sound source        */
+#define ARP_CUR_WAVE    6   /* waveform selector (WAVE mode only)    */
+#define ARP_CUR_SLOT0   7
+#define ARP_CUR_COUNT   (ARP_CUR_SLOT0 + ARP_VIEW_SLOTS)
 
 typedef struct {
     bool        enabled;
@@ -44,9 +47,14 @@ typedef struct {
     bool        slot_rest[ARP_VIEW_SLOTS];
     uint8_t     cursor;       /* 0..ARP_CUR_COUNT-1   */
     bool        editing;      /* value being adjusted */
+    /* Sound source + waveform (F-UI). source_str: "WAVE" or "PTCH".
+     * wave_str: short waveform name (e.g. "SAW"). wave_mode mirrors source. */
+    const char *source_str;   /* "WAVE" or "PTCH"                          */
+    const char *wave_str;     /* waveform name, e.g. "SAW"                 */
+    bool        wave_mode;    /* true when source == ARP_SRC_WAVE           */
     /* Patch indicator (mirrors the sequencer view). The number is always shown
-     * top-right; while the patch-select button is held, patch_name (if non-NULL)
-     * is drawn as a centred banner so the full-range browser is legible. */
+     * top-right in PATCH mode; while the patch-select button is held,
+     * patch_name (if non-NULL) is drawn as a centred banner. */
     uint16_t    patch;
     bool        patch_select; /* true while the patch hold+turn gesture is active */
     const char *patch_name;   /* human-readable name or NULL (table excluded)     */

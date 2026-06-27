@@ -422,9 +422,9 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
     }
 
     // MY_BUTTON_2 is normally the pitch-edit hold button (transpose the selected
-    // track via the encoder). While the graph editor is open it is repurposed
-    // (gated) as the SHORT<->LONG time-range toggle so it never touches that
-    // state in that context.
+    // track via the encoder). While the graph editor is open it toggles amp-edit
+    // mode so the encoder adjusts the target's amplitude trim instead of ADSR
+    // points. Time-range is now auto-switched; MY_BUTTON_2 is freed for this use.
     if (button_id == MY_BUTTON_2) {
         if (synth_ui_filter_is_active()) {
             /* Suppress drum-select hold so the latch never gets stuck. */
@@ -432,7 +432,7 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
         }
         if (synth_ui_graph_is_active()) {
             if (event == BUTTON_PRESS_DOWN) {
-                synth_ui_graph_toggle_range();
+                synth_ui_graph_toggle_amp_mode();
             }
             return;
         }

@@ -172,7 +172,7 @@ amplitude, so:
 | **65** | **drone sub** (`DRONE_SYNTH_SUB`) |
 
 `main/main.c` sets `amy_cfg.max_synths = 66`. AMY's instrument table is sized
-from config (`instruments_init(config.max_synths)`), and `max_oscs = 180` leaves
+from config (`instruments_init(config.max_synths)`). AMY's default 250 oscs leave
 ample headroom (5-voice main × 2 oscs + sub = ~12 oscs).
 
 **Sequencer tags: zero.** The drone uses **direct** (immediate, non-scheduled)

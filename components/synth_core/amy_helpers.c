@@ -63,3 +63,10 @@ void amy_send_patch(uint8_t synth, uint16_t patch_number, uint16_t num_voices,
     e->synth_flags  = synth_flags;
     amy_helpers_event_send(e);
 }
+
+void amy_send_all_notes_off(void)
+{
+    amy_event *e = amy_helpers_event_begin();
+    e->reset_osc = RESET_ALL_NOTES;
+    amy_helpers_event_send(e);
+}

@@ -251,7 +251,10 @@ static void amy_usb_render_task(void *arg) {
             // we do NOT delay here (the strict-1:1 GPTimer already paces us, and
             // the previous pdMS_TO_TICKS(1) backoff floored to 0 ticks and did
             // nothing anyway). Just count the drop for diagnostics.
-            if (unlikely(usb_audio_write_stereo(block, AMY_BLOCK_SIZE) == ESP_ERR_NO_MEM)) {
+            // Only a real drop if a host is consuming; write_stereo returns
+            // ESP_OK (skips the ring) when idle, so this is belt-and-suspenders.
+            if (unlikely(usb_audio_write_stereo(block, AMY_BLOCK_SIZE) == ESP_ERR_NO_MEM)
+                && usb_audio_consumer_active()) {
                 s_usb_drops++;
             }
 #endif
@@ -831,7 +834,7 @@ void app_main(void)
      * synth (custompatches/drone_core) can claim dedicated slots above the
      * existing map (drum 6..9, melodic 11..62, arp 63). The drone uses slots
      * DRONE_SYNTH_MAIN=64 and DRONE_SYNTH_SUB=65. instruments_init() sizes the
-     * table from this value, and max_oscs=180 leaves ample osc headroom for the
+     * table from this value. AMY's default 250 oscs leave ample headroom for the
      * drone's 2 voices x 2 oscs. Keep in sync with drone_core.c. */
     amy_cfg.max_synths = 66;
     ESP_LOGI(TAG, "Starting AMY synth engine... (audio=%d, Fs=%d)", amy_cfg.audio, AMY_SAMPLE_RATE);

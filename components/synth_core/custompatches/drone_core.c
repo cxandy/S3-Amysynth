@@ -263,6 +263,7 @@ static void drone_configure_wave_synth(uint8_t synth, uint8_t voices)
     e->synth                  = synth;
     e->osc                    = 0;
     e->wave                   = s_d.wave;
+    if (s_d.wave == KS) e->feedback = 0.9f;
     e->freq_coefs[COEF_NOTE]  = 1.0f;    /* follow the voice's note pitch */
     e->amp_coefs[COEF_CONST]  = const_sent;
     e->amp_coefs[COEF_MOD]    = m;
@@ -781,6 +782,8 @@ const char *drone_wave_name(uint16_t amy_wave)
         case SAW_DOWN: return "SAW";
         case SAW_UP:   return "SAWUP";
         case TRIANGLE: return "TRI";
+        case NOISE:    return "NOISE";
+        case KS:       return "KS";
         default:       return "?";
     }
 }

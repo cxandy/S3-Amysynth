@@ -13,6 +13,7 @@ extern "C" {
 void sequencer_core_init(void);
 void sequencer_core_set_playing(bool playing);
 void sequencer_core_set_bpm(uint16_t bpm);
+uint16_t sequencer_core_get_bpm(void);
 void sequencer_core_set_quantizer_enabled(bool enabled);
 void sequencer_core_set_quantizer_root_note(uint8_t root_note);
 void sequencer_core_set_quantizer_scale(uint8_t scale_index);

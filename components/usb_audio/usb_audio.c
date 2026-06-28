@@ -3,6 +3,7 @@
 #include "tusb.h"
 #include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/task.h"   // xTaskGetTickCount / pdMS_TO_TICKS
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_compiler.h"   // likely()/unlikely() branch hints
@@ -43,6 +44,19 @@ static _Atomic size_t s_read_idx  = 0;   // reader-owned (consumer)
 
 static bool s_initialized = false;
 
+// Consumer-liveness: tick of the most recent host pull (uac_input_cb call).
+// Written only by the consumer; read relaxed cross-core for advisory gating.
+#define USB_AUDIO_CONSUMER_TIMEOUT_MS 200
+static _Atomic uint32_t s_last_consumed_tick = 0;
+
+bool usb_audio_consumer_active(void)
+{
+    if (!s_initialized) return false;
+    uint32_t last = atomic_load_explicit(&s_last_consumed_tick, memory_order_relaxed);
+    if (last == 0) return false;   // host never pulled yet
+    return (xTaskGetTickCount() - last) < pdMS_TO_TICKS(USB_AUDIO_CONSUMER_TIMEOUT_MS);
+}
+
 #if CONFIG_USB_AUDIO_DIAGNOSTICS
 // Producer-owned counters (written only by usb_audio_write_stereo).
 static uint32_t s_write_calls = 0;
@@ -71,6 +85,17 @@ static esp_err_t uac_input_cb(uint8_t *buf, size_t len, size_t *bytes_read, void
         *bytes_read = len;
         return ESP_OK;
     }
+
+    // Consumer liveness + flush-on-resume. The consumer owns s_read_idx, so it
+    // may legally advance it to s_write_idx to discard stale buffered audio when
+    // the host resumes after a gap (so playback starts fresh, not 200 ms late).
+    uint32_t now = xTaskGetTickCount();
+    uint32_t last = atomic_load_explicit(&s_last_consumed_tick, memory_order_relaxed);
+    if (last != 0 && (now - last) > pdMS_TO_TICKS(USB_AUDIO_CONSUMER_TIMEOUT_MS)) {
+        size_t w = atomic_load_explicit(&s_write_idx, memory_order_acquire);
+        atomic_store_explicit(&s_read_idx, w, memory_order_release);
+    }
+    atomic_store_explicit(&s_last_consumed_tick, now, memory_order_relaxed);
 
     // CONSUMER side (single reader). s_read_idx is ours to advance; we acquire
     // s_write_idx so every sample below [read, write) is guaranteed committed.
@@ -165,6 +190,12 @@ esp_err_t usb_audio_init(void)
 esp_err_t usb_audio_write_stereo(const int16_t *data, size_t num_frames)
 {
     if (!s_initialized || !data || num_frames == 0) return ESP_ERR_INVALID_STATE;
+
+    // No host consuming → do not churn the ring. Keep it empty so the host gets
+    // fresh audio on open. Not a drop (nobody is listening); report success.
+    if (!usb_audio_consumer_active()) {
+        return ESP_OK;
+    }
 
     const size_t samples = num_frames * 2;   // interleaved L,R
 

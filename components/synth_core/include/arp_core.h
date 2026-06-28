@@ -102,6 +102,12 @@ void arp_set_envelope(const seq_env_t *env);
 void arp_get_filter(seq_filter_t *out);
 void arp_set_filter(const seq_filter_t *f);
 
+/* ── Native AMY LFO (WAVE mode only) ──
+ * Uses a voice-local osc 1 as the LFO carrier (mod_source=1 on osc 0).
+ * PATCH mode: setter is a no-op on AMY (LFO state stored for persistence). */
+void arp_get_lfo(seq_lfo_t *out);
+void arp_set_lfo(const seq_lfo_t *lfo);
+
 /* ── Getters (for UI display) ── */
 bool      arp_get_enabled(void);
 arp_dir_t arp_get_direction(void);

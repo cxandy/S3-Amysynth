@@ -89,6 +89,8 @@ typedef struct {
     bool         env_authored;   /* true once the user commits a custom env      */
     seq_filter_t filter;         /* runtime-editable filter (shared filter editor) */
     bool         filter_authored;/* true once the user commits a custom filter    */
+    seq_lfo_t    lfo;            /* AMY native LFO — WAVE mode only               */
+    bool         lfo_authored;   /* true once the user commits an LFO             */
     float        amp_scale;      /* per-target amplitude trim (default 1.0, 0..1);
                                     scaled into note velocity at emit time. Set via
                                     the graph editor amp mode (MY_BUTTON_2). MUST be
@@ -163,6 +165,34 @@ static void arp_clear_all(void)
 
 /* ── Source configuration helpers ────────────────────────────────────── */
 
+/* Convert lfo_rate_t → Hz (same formula as sequencer_core). */
+static float arp_lfo_rate_to_hz(lfo_rate_t rate, uint16_t bpm)
+{
+    float b = (float)bpm;
+    switch (rate) {
+        case LFO_RATE_1_8:  return b / 30.0f;
+        case LFO_RATE_1_4:  return b / 60.0f;
+        case LFO_RATE_1_2:  return b / 120.0f;
+        case LFO_RATE_1BAR: return b / 240.0f;
+        case LFO_RATE_2BAR: return b / 480.0f;
+        case LFO_RATE_4BAR: return b / 960.0f;
+        default:            return b / 240.0f;
+    }
+}
+
+/* Map lfo_wave_t → AMY wave constant. */
+static uint16_t arp_lfo_wave_to_amy(lfo_wave_t wave)
+{
+    switch (wave) {
+        case LFO_WAVE_SINE:     return SINE;
+        case LFO_WAVE_TRIANGLE: return TRIANGLE;
+        case LFO_WAVE_SAW_UP:   return SAW_UP;
+        case LFO_WAVE_SAW_DOWN: return SAW_DOWN;
+        case LFO_WAVE_SQUARE:   return PULSE;
+        default:                return SINE;   /* LFO_WAVE_RANDOM → SINE fallback */
+    }
+}
+
 /* Configure the arp's AMY synth slot as a bare oscillator (WAVE mode).
  *
  * One osc per voice — no patch, no LFO carrier.  Pitch follows the MIDI note
@@ -177,25 +207,59 @@ static void arp_configure_wave_synth(void)
     uint8_t synth  = sequencer_core_arp_synth();
     uint8_t voices = sequencer_core_arp_voices();
 
-    /* Define the synth pool: N voices, 1 osc each.  This resets all osc state. */
+    /* Define the synth pool: N voices, 2 oscs each.  Osc 1 is the AMY-native
+     * LFO carrier; it is dormant (amp=0) when no LFO is authored.  Always
+     * allocating 2 oscs avoids a pool reset when the LFO is toggled later. */
     amy_event *e = amy_helpers_event_begin();
     e->synth          = synth;
     e->num_voices     = voices;
-    e->oscs_per_voice = 1;
+    e->oscs_per_voice = 2;
     amy_helpers_event_send(e);
 
-    /* osc0: user-chosen waveform, note-following pitch, velocity + EG0 amplitude.
-     * COEF_NOTE=1 means each voice tracks its assigned midi_note exactly.
-     * COEF_VEL=1 so the 0.9 velocity passed by emit_note scales the output.
-     * COEF_EG0=1 so the ADSR envelope (pushed separately) shapes each note. */
+    /* osc 0: user-chosen waveform, note-following pitch, velocity + EG0 amplitude.
+     * When LFO is active, mod_source=1 (voice-local — AMY adds base_osc offset,
+     * so it resolves to osc 1 within each voice) plus the COEF_MOD depth for the
+     * chosen target. */
+    bool lfo_on = s_arp.lfo_authored && s_arp.lfo.enabled;
     e = amy_helpers_event_begin();
     e->synth                  = synth;
     e->osc                    = 0;
     e->wave                   = s_arp.wave;
+    if (s_arp.wave == KS) e->feedback = 0.9f;
     e->freq_coefs[COEF_NOTE]  = 1.0f;
     e->amp_coefs[COEF_CONST]  = 1.0f;
     e->amp_coefs[COEF_VEL]    = 1.0f;
     e->amp_coefs[COEF_EG0]    = 1.0f;
+    if (lfo_on) {
+        e->mod_source = 1;
+        float d = s_arp.lfo.depth / 100.0f;
+        switch (s_arp.lfo.target) {
+            case LFO_TARGET_FILTER: e->filter_freq_coefs[COEF_MOD] = d * 3.0f; break;
+            case LFO_TARGET_AMP:    e->amp_coefs[COEF_MOD]         = d * 0.5f; break;
+            case LFO_TARGET_PITCH:  e->freq_coefs[COEF_MOD]        = d * 1.0f; break;
+            default: break;
+        }
+    }
+    amy_helpers_event_send(e);
+
+    /* osc 1: LFO carrier — no pitch tracking, no velocity, no envelope.
+     * amp_coefs[COEF_CONST]=1 when active so AMY computes mod_value each block;
+     * amp_coefs[COEF_CONST]=0 when disabled (dormant, renders nothing). */
+    e = amy_helpers_event_begin();
+    e->synth = synth;
+    e->osc   = 1;
+    if (lfo_on) {
+        e->wave                   = (uint16_t)arp_lfo_wave_to_amy(s_arp.lfo.wave);
+        e->freq_coefs[COEF_CONST] = arp_lfo_rate_to_hz(s_arp.lfo.rate,
+                                                         sequencer_core_get_bpm());
+        e->freq_coefs[COEF_NOTE]  = 0.0f;   /* no pitch tracking */
+        e->freq_coefs[COEF_BEND]  = 0.0f;   /* no pitch bend     */
+        e->amp_coefs[COEF_CONST]  = 1.0f;   /* active            */
+        e->amp_coefs[COEF_VEL]    = 0.0f;   /* no velocity scale */
+        e->amp_coefs[COEF_EG0]    = 0.0f;   /* no envelope decay */
+    } else {
+        e->amp_coefs[COEF_CONST]  = 0.0f;   /* dormant           */
+    }
     amy_helpers_event_send(e);
 }
 
@@ -251,6 +315,14 @@ s_arp.env.release_ms  = 200;  // Controlled tail that fills space without causin
     s_arp.filter.resonance   = 1.0f;
     s_arp.filter.enabled     = false;
     s_arp.filter_authored    = false;
+    /* Default LFO: disabled, not authored (bypass until user commits). */
+    s_arp.lfo.enabled = false;
+    s_arp.lfo.mode    = LFO_MODE_FREE;
+    s_arp.lfo.wave    = LFO_WAVE_SINE;
+    s_arp.lfo.rate    = LFO_RATE_1BAR;
+    s_arp.lfo.depth   = 50;
+    s_arp.lfo.target  = LFO_TARGET_FILTER;
+    s_arp.lfo_authored = false;
     s_arp.amp_scale          = 1.0f; /* unity; memset zeroes, so explicit init */
     if (s_arp.octaves < 1) s_arp.octaves = 1;
     if (s_arp.octaves > ARP_OCT_MAX) s_arp.octaves = ARP_OCT_MAX;
@@ -456,6 +528,24 @@ void arp_set_filter(const seq_filter_t *f)
     ESP_LOGI(TAG, "arp filter -> type%u %.0fHz Q%.2f en=%d",
              s_arp.filter.filter_type, (double)s_arp.filter.cutoff_hz,
              (double)s_arp.filter.resonance, s_arp.filter.enabled);
+}
+
+void arp_get_lfo(seq_lfo_t *out)
+{
+    if (out) *out = s_arp.lfo;
+}
+
+void arp_set_lfo(const seq_lfo_t *lfo)
+{
+    if (!lfo) return;
+    s_arp.lfo          = *lfo;
+    s_arp.lfo_authored = true;
+    /* LFO is baked into the synth pool config — requires rebuild in WAVE mode.
+     * PATCH mode: native AMY LFO not yet supported (patches own their osc layout). */
+    if (s_arp.source == ARP_SRC_WAVE) arp_rebuild();
+    ESP_LOGI(TAG, "arp LFO -> en=%d wave=%u rate=%u depth=%u tgt=%u",
+             lfo->enabled, (unsigned)lfo->wave, (unsigned)lfo->rate,
+             (unsigned)lfo->depth, (unsigned)lfo->target);
 }
 
 void arp_set_slot(uint8_t idx, int16_t chromatic_note)

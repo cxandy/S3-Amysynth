@@ -25,6 +25,11 @@ void amy_send_note_sched(uint8_t synth, float midi_note, float velocity,
 void amy_send_patch(uint8_t synth, uint16_t patch_number, uint16_t num_voices,
                     uint32_t synth_flags);
 
+/* Global panic: release every sounding note across all synths via RESET_ALL_NOTES
+ * delta. Safe to call from sequencer/UI core — runs on the render thread. Call on
+ * pause to silence mid-gate notes whose scheduled note-offs were just cancelled. */
+void amy_send_all_notes_off(void);
+
 #ifdef __cplusplus
 }
 #endif

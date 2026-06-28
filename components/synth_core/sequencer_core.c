@@ -153,9 +153,21 @@ static const int16_t SEQ_DRUM_PCM_PRESET[SEQ_TRACKS] = {
 
 /* ── Melodic synth defaults ──────────────────────────────────────────── */
 #define SEQ_MEL_PATCH         CONFIG_SEQ_MELODIC_PATCH
+/* Virtual patch IDs for raw AMY waveform "patches" — beyond the 0..256 built-in
+ * range so they never collide with Juno/DX7/piano.  Intercepted in
+ * sequencer_configure_synth() before the amy_send_patch() call. */
+#define SEQ_PATCH_WAVE_BASE   257
+#define SEQ_PATCH_SINE        257   /* AMY SINE     = 0 */
+#define SEQ_PATCH_SAW_DOWN    258   /* AMY SAW_DOWN = 2 */
+#define SEQ_PATCH_SAW_UP      259   /* AMY SAW_UP   = 3 */
+#define SEQ_PATCH_PULSE       260   /* AMY PULSE    = 1 */
+#define SEQ_PATCH_TRIANGLE    261   /* AMY TRIANGLE = 4 */
+#define SEQ_PATCH_NOISE       262   /* AMY NOISE    = 5 */
+#define SEQ_PATCH_KS          263   /* AMY KS       = 6 */
+#define SEQ_PATCH_WAVE_MAX    263
 /* One AMY synth PER ROW (per track). A row only ever sounds one pitch at a
  * time, so a single voice suffices; bump to 2 to give note-off/note-on overlap
- * headroom at the boundary (2x osc cost). AMY default budget is 180 oscs. */
+ * headroom at the boundary (2x osc cost). AMY default budget is 250 oscs. */
 #define SEQ_MEL_VOICES        1
 #define SEQ_MEL_SYNTH_BASE    11    /* first melodic synth slot (drum = 10) */
 #define SEQ_MAX_SYNTH         62    /* melodic ceiling; slot 63 reserved for arp */
@@ -541,6 +553,39 @@ static void sequencer_kill_synth_voices(uint8_t synth_id)
     amy_helpers_event_send(e);
 }
 
+/* Configure a single melodic synth slot as a bare AMY oscillator.
+ * Mirrors arp_configure_wave_synth() but for melodic tracks (SEQ_MEL_VOICES
+ * voices, 1 osc each).  Envelope and filter are applied by the caller. */
+static void sequencer_configure_melodic_wave_track(uint8_t synth_id,
+                                                    uint16_t patch,
+                                                    uint16_t num_voices)
+{
+    static const uint16_t s_wave_for_patch[] = {
+        SINE, SAW_DOWN, SAW_UP, PULSE, TRIANGLE, NOISE, KS,
+    };
+    uint16_t widx = (uint16_t)(patch - SEQ_PATCH_WAVE_BASE);
+    if (widx >= (uint16_t)(sizeof(s_wave_for_patch) / sizeof(s_wave_for_patch[0])))
+        widx = 0;
+    uint16_t wave = s_wave_for_patch[widx];
+
+    amy_event *e = amy_helpers_event_begin();
+    e->synth          = synth_id;
+    e->num_voices     = num_voices;
+    e->oscs_per_voice = 1;
+    amy_helpers_event_send(e);
+
+    e = amy_helpers_event_begin();
+    e->synth                  = synth_id;
+    e->osc                    = 0;
+    e->wave                   = wave;
+    if (wave == KS) e->feedback = 0.9f;
+    e->freq_coefs[COEF_NOTE]  = 1.0f;
+    e->amp_coefs[COEF_CONST]  = 1.0f;
+    e->amp_coefs[COEF_VEL]    = 1.0f;
+    e->amp_coefs[COEF_EG0]    = 1.0f;
+    amy_helpers_event_send(e);
+}
+
 static void sequencer_configure_synth(uint8_t layer_idx)
 {
     seq_layer_t *layer = &s_layers[layer_idx];
@@ -588,14 +633,24 @@ static void sequencer_configure_synth(uint8_t layer_idx)
         return;
     }
 
-    /* Melodic: push the shared patch/flags/voices to each row's own synth. */
+    /* Melodic: push the shared patch/flags/voices to each row's own synth.
+     * Patches >= SEQ_PATCH_WAVE_BASE are raw-waveform virtual patches; they are
+     * configured directly instead of via the amy_send_patch() string loader. */
+    bool is_wave_patch = (layer->patch >= SEQ_PATCH_WAVE_BASE);
     for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
         sequencer_kill_synth_voices(layer->synth_id[t]);
-        amy_send_patch(layer->synth_id[t], layer->patch,
-                       layer->num_voices, layer->synth_flags);
+        if (is_wave_patch) {
+            sequencer_configure_melodic_wave_track(layer->synth_id[t],
+                                                   layer->patch,
+                                                   layer->num_voices);
+        } else {
+            amy_send_patch(layer->synth_id[t], layer->patch,
+                           layer->num_voices, layer->synth_flags);
+        }
     }
-    /* Patch strings carry global EQ/chorus commands; keep them per-synth. */
-    synth_ui_fx_reassert_global();
+    /* Raw-wave patches carry no global EQ/chorus commands; still reassert so a
+     * switch from a Juno/DX7 patch doesn't leave stale global FX active. */
+    if (!is_wave_patch) synth_ui_fx_reassert_global();
     sequencer_configure_melodic_envelope(layer_idx);
     sequencer_configure_melodic_filter(layer_idx);
 }
@@ -898,9 +953,9 @@ bool sequencer_core_delete_layer(uint8_t layer_idx)
 
 void sequencer_core_set_melodic_patch(uint16_t patch_number)
 {
-    /* Runtime UI cycling is intentionally constrained to AMY built-in patch IDs.
-     * 0..127: Juno, 128..255: DX7, 256: built-in piano. */
-    patch_number = SEQ_CLAMP_U16(patch_number, 0, 256);
+    /* 0..127: Juno, 128..255: DX7, 256: built-in piano.
+     * 257..263: raw-waveform virtual patches (SEQ_PATCH_SINE..SEQ_PATCH_WAVE_MAX). */
+    patch_number = SEQ_CLAMP_U16(patch_number, 0, SEQ_PATCH_WAVE_MAX);
     if (s_melodic_patch == patch_number) {
         return;
     }
@@ -1347,6 +1402,8 @@ void sequencer_core_set_bpm(uint16_t new_bpm)
     }
 }
 
+uint16_t sequencer_core_get_bpm(void) { return s_bpm; }
+
 /* Derive the currently-playing step from AMY's free-running tick counter:
  * position within the bar divided by ticks-per-step. When paused we return the
  * frozen value captured at pause time so the UI playhead stops in place. */
@@ -1385,6 +1442,10 @@ void sequencer_core_set_playing(bool p)
                 (uint8_t)((sequencer_ticks() % bar_ticks) / SEQ_TICKS_PER_STEP);
             sequencer_clear_layer_tags(i);
         }
+        /* Clearing tags above removes pending note-offs for any voice mid-gate
+         * at pause time; those notes would sustain forever without this. Also
+         * silences the standalone drone, which is acceptable on stop. */
+        amy_send_all_notes_off();
     }
 }
 

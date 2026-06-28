@@ -503,6 +503,10 @@ float midi_note_for_logfreq(float logfreq) {
 
 
 
+// LOCAL EDIT (S3-Amysynth, 2026-06-27): forward decl; defined with the delta-pool
+// globals below. Counts events dropped on pool OOM (see add_delta_to_queue).
+extern uint32_t amy_delta_drop_count;
+
 void add_delta_to_queue(struct delta *d, struct delta **queue) {
     AMY_PROFILE_START(ADD_DELTA_TO_QUEUE)
     amy_grab_lock();
@@ -512,6 +516,19 @@ void add_delta_to_queue(struct delta *d, struct delta **queue) {
         amy_global.delta_qsize++;
 
     struct delta *new_d = delta_get(d);
+
+    // LOCAL EDIT (S3-Amysynth, 2026-06-27): pool exhausted and could not be grown
+    // (OOM). Undo the decorative qsize bump, count the drop, and bail instead of
+    // dereferencing NULL (was StoreProhibited @0x10). The PSRAM spill in
+    // deltas_add_pool_block makes this path essentially unreachable in practice.
+    if (new_d == NULL) {
+        if (queue == &amy_global.delta_queue && amy_global.delta_qsize > 0)
+            amy_global.delta_qsize--;
+        amy_delta_drop_count++;
+        amy_release_lock();
+        AMY_PROFILE_STOP(ADD_DELTA_TO_QUEUE)
+        return;
+    }
 
     // insert it into the sorted list for fast playback
     struct delta **pptr = queue;
@@ -2078,11 +2095,20 @@ struct delta *free_deltas_pool = NULL;
 struct delta *delta_blocks[MAX_DELTA_BLOCKS];
 int next_delta_block = 0;
 
+// LOCAL EDIT (S3-Amysynth, 2026-06-27): count of events dropped because the
+// delta pool could not be grown (OOM). Stays 0 in practice with PSRAM spill;
+// non-zero means even PSRAM was exhausted. Not logged per-drop (would spam
+// under amy_queue_lock during the exact burst that triggered it).
+uint32_t amy_delta_drop_count = 0;
+
 #define DELTA_BLOCK_SIZE 2048
 
-struct delta *deltas_pool_alloc(int max_delta_pool_size, struct delta *tail) {
-    struct delta *new_pool = (struct delta *)malloc_caps(max_delta_pool_size * sizeof(struct delta),
-                                                         amy_global.config.ram_caps_synth);
+// LOCAL EDIT (S3-Amysynth, 2026-06-27): takes explicit caps so overflow blocks
+// can spill to PSRAM (see deltas_add_pool_block). Returns NULL on alloc failure;
+// every caller must guard. struct delta is 20B; DELTA_BLOCK_SIZE*20 ≈ 40KB.
+static struct delta *deltas_pool_alloc(int max_delta_pool_size, struct delta *tail, uint32_t caps) {
+    struct delta *new_pool = (struct delta *)malloc_caps(max_delta_pool_size * sizeof(struct delta), caps);
+    if (new_pool == NULL) return NULL;
     struct delta *d = new_pool;
     // Link all the deltas together
     for (int i = 1; i < max_delta_pool_size; ++i) {
@@ -2098,12 +2124,22 @@ struct delta *deltas_pool_alloc(int max_delta_pool_size, struct delta *tail) {
 }
 
 void deltas_add_pool_block(void) {
-    //fprintf(stderr, "deltas_add_pool_block %d\n", next_delta_block);
     if (next_delta_block >= MAX_DELTA_BLOCKS) {
-        fprintf(stderr, "**PANIC: Ran out of deltas (%d blocks of %d deltas)\n", MAX_DELTA_BLOCKS, DELTA_BLOCK_SIZE);
-        abort();
+        fprintf(stderr, "**delta pool: MAX_DELTA_BLOCKS (%d) reached — events will be dropped\n", MAX_DELTA_BLOCKS);
+        return;
     }
-    free_deltas_pool = delta_blocks[next_delta_block++] = deltas_pool_alloc(DELTA_BLOCK_SIZE, free_deltas_pool);
+    // LOCAL EDIT (S3-Amysynth, 2026-06-27): block 0 in internal RAM (hot common-
+    // case path walked every audio block); overflow blocks spill to PSRAM where
+    // ~7 MB is free, instead of aborting against the scarce internal heap.
+    uint32_t caps = (next_delta_block == 0) ? amy_global.config.ram_caps_synth
+                                            : (MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    struct delta *block = deltas_pool_alloc(DELTA_BLOCK_SIZE, free_deltas_pool, caps);
+    if (block == NULL) {
+        fprintf(stderr, "**delta pool: OOM growing block %d (caps 0x%lx) — events will be dropped\n",
+                next_delta_block, (unsigned long)caps);
+        return;   // leave free_deltas_pool/next_delta_block untouched; delta_get guards
+    }
+    free_deltas_pool = delta_blocks[next_delta_block++] = block;
 }
 
 void deltas_pool_init() {
@@ -2125,6 +2161,9 @@ struct delta *delta_get(struct delta *from) {
     if (d == NULL)  {
         deltas_add_pool_block();
         d = free_deltas_pool;
+        // LOCAL EDIT (S3-Amysynth, 2026-06-27): pool could not be grown (OOM).
+        // Return NULL; add_delta_to_queue guards and counts the drop.
+        if (d == NULL) return NULL;
     }
     free_deltas_pool = d->next;
     if (from != NULL) {

@@ -162,7 +162,7 @@ AMY's synth ceiling (`SEQ_MAX_SYNTH` = 63 < `max_synths` = 64).
 **Voice sizing.** Each row synth uses `SEQ_MEL_VOICES` voices (default **1** — a
 row only sounds one pitch at a time). Bump to 2 for note-off/note-on overlap
 headroom at the step boundary, at 2× oscillator cost. AMY's default osc budget
-is **180**; worst case (4 layers × 4 rows × 1 voice × ~6 oscs/DX7-voice) ≈ 96
+is **250** (AMY default); worst case (4 layers × 4 rows × 1 voice × ~6 oscs/DX7-voice) ≈ 96
 oscs, comfortably under budget — and lower than the previous over-provisioned
 16-voice shared pools.
 

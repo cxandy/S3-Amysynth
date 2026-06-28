@@ -18,7 +18,7 @@
 
 #if CONFIG_SEQ_PATCH_SHOW_NAMES
 
-#define SEQ_PATCH_NAME_COUNT 257  /* 0..256 inclusive */
+#define SEQ_PATCH_NAME_COUNT 264  /* 0..263 inclusive (257-263 = raw wave patches) */
 
 static const char *const s_patch_names[SEQ_PATCH_NAME_COUNT] = {
     /* ── Juno-106 (0..127) ── */
@@ -283,6 +283,15 @@ static const char *const s_patch_names[SEQ_PATCH_NAME_COUNT] = {
 
     /* ── Built-in piano (256) ── */
     /* 256 */ "Built-in Piano",
+
+    /* ── Raw waveform patches (257-261) ── */
+    /* 257 */ "SINE",
+    /* 258 */ "SAW DOWN",
+    /* 259 */ "SAW UP",
+    /* 260 */ "PULSE",
+    /* 261 */ "TRIANGLE",
+    /* 262 */ "NOISE",
+    /* 263 */ "KS",
 };
 
 const char *patch_name_for(uint16_t patch)

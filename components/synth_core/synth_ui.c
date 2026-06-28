@@ -790,7 +790,10 @@ void synth_ui_lfo_open(void)
         .depth   = 50,
         .target  = LFO_TARGET_FILTER,
     };
-    sequencer_core_get_melodic_lfo(li, tr, &existing);
+    if (seq_state.ui_mode == UI_MODE_ARP)
+        arp_get_lfo(&existing);
+    else
+        sequencer_core_get_melodic_lfo(li, tr, &existing);
     s_lfo_view.lfo          = existing;
     s_lfo_view.cursor       = 0;
     s_lfo_view.editing      = false;
@@ -857,7 +860,9 @@ bool synth_ui_lfo_handle_button(bool is_long)
 bool synth_ui_lfo_close_commit(void)
 {
     if (!s_lfo_active) return false;
-    if (s_editor_apply_all) {
+    if (seq_state.ui_mode == UI_MODE_ARP) {
+        arp_set_lfo(&s_lfo_view.lfo);
+    } else if (s_editor_apply_all) {
         for (uint8_t t = 0; t < SEQ_TRACKS; ++t)
             sequencer_core_set_melodic_lfo(s_lfo_view.layer_idx, t, &s_lfo_view.lfo);
     } else {
@@ -923,13 +928,19 @@ static const uint16_t s_melodic_patch_cycle[] = {
     7,   /* Juno A18 Piano I */
     104, /* Juno B61 E. Piano with Tremolo */
     256, /* Built-in piano */
+    257, /* Raw SINE */
+    258, /* Raw SAW DOWN */
+    259, /* Raw SAW UP */
+    260, /* Raw PULSE */
+    261, /* Raw TRIANGLE */
+    262, /* Raw NOISE */
+    263, /* Raw KS */
 };
 #define SEQ_RUNTIME_PATCH_COUNT ((int)(sizeof(s_melodic_patch_cycle) / sizeof(s_melodic_patch_cycle[0])))
 #endif
 
-/* Full-range browse covers every AMY built-in: Juno 0..127, DX7 128..255,
- * built-in piano 256 (matches the sequencer_core clamp upper bound). */
-#define SEQ_PATCH_FULL_MAX 256
+/* Full-range browse covers Juno 0..127, DX7 128..255, piano 256, raw waves 257..263. */
+#define SEQ_PATCH_FULL_MAX 263
 
 static synth_ui_state_t seq_state = {
     /* layers[] is zero-initialized by C99 partial-init rules */
@@ -2204,9 +2215,9 @@ static void arp_edit_value(uint8_t cursor, int delta)
                                ? ARP_SRC_PATCH : ARP_SRC_WAVE);
             break;
         case ARP_CUR_WAVE: {
-            /* Cycle through the same five waveforms the drone uses. */
+            /* Cycle through the same waveforms the drone uses. */
             static const uint16_t s_arp_waves[] = {
-                SAW_DOWN, SAW_UP, PULSE, TRIANGLE, SINE
+                SAW_DOWN, SAW_UP, PULSE, TRIANGLE, SINE, NOISE, KS
             };
             const int wn = (int)(sizeof(s_arp_waves) / sizeof(s_arp_waves[0]));
             int idx = 0;
@@ -2444,8 +2455,8 @@ static void drone_edit_row(drone_logical_row_t r, int delta)
                                  ? DRONE_SRC_PATCH : DRONE_SRC_WAVE);
             break;
         case DROW_WAVE: {
-            /* Cycle through SAW_DOWN, SAW_UP, PULSE, TRIANGLE, SINE. */
-            static const uint16_t waves[] = { SAW_DOWN, SAW_UP, PULSE, TRIANGLE, SINE };
+            /* Cycle through SAW_DOWN, SAW_UP, PULSE, TRIANGLE, SINE, NOISE, KS. */
+            static const uint16_t waves[] = { SAW_DOWN, SAW_UP, PULSE, TRIANGLE, SINE, NOISE, KS };
             const int wn = (int)(sizeof(waves) / sizeof(waves[0]));
             int idx = 0;
             for (int i = 0; i < wn; i++) if (waves[i] == drone_get_wave()) { idx = i; break; }

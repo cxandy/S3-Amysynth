@@ -1,4 +1,5 @@
 #include "sequencer_core.h"
+#include "custompatches/bass_presets.h"
 #include "arp_core.h"
 #include "amy.h"
 #include "amy_helpers.h"
@@ -88,7 +89,7 @@ extern uint32_t sequencer_ticks(void);
 #endif
 #define SEQ_MIN_BPM           40
 #define SEQ_MAX_BPM           300
-#define SEQ_DEFAULT_BPM       108
+/* SEQ_DEFAULT_BPM is declared in sequencer_core.h (shared with synth_ui). */
 /* ── Drum synth slots ────────────────────────────────────────────────────
  * Drums are now a per-track Juno-patch layer: each of the 4 tracks loads its
  * own AMY patch and gets its own synth slot, exactly like melodic rows. We
@@ -153,18 +154,8 @@ static const int16_t SEQ_DRUM_PCM_PRESET[SEQ_TRACKS] = {
 
 /* ── Melodic synth defaults ──────────────────────────────────────────── */
 #define SEQ_MEL_PATCH         CONFIG_SEQ_MELODIC_PATCH
-/* Virtual patch IDs for raw AMY waveform "patches" — beyond the 0..256 built-in
- * range so they never collide with Juno/DX7/piano.  Intercepted in
- * sequencer_configure_synth() before the amy_send_patch() call. */
-#define SEQ_PATCH_WAVE_BASE   257
-#define SEQ_PATCH_SINE        257   /* AMY SINE     = 0 */
-#define SEQ_PATCH_SAW_DOWN    258   /* AMY SAW_DOWN = 2 */
-#define SEQ_PATCH_SAW_UP      259   /* AMY SAW_UP   = 3 */
-#define SEQ_PATCH_PULSE       260   /* AMY PULSE    = 1 */
-#define SEQ_PATCH_TRIANGLE    261   /* AMY TRIANGLE = 4 */
-#define SEQ_PATCH_NOISE       262   /* AMY NOISE    = 5 */
-#define SEQ_PATCH_KS          263   /* AMY KS       = 6 */
-#define SEQ_PATCH_WAVE_MAX    263
+/* Wave-patch ID constants (SEQ_PATCH_WAVE_BASE, SEQ_PATCH_WAVE_MAX, etc.)
+ * are now in sequencer_core.h so arp_core and drone_core can use them. */
 /* One AMY synth PER ROW (per track). A row only ever sounds one pitch at a
  * time, so a single voice suffices; bump to 2 to give note-off/note-on overlap
  * headroom at the boundary (2x osc cost). AMY default budget is 250 oscs. */
@@ -188,7 +179,7 @@ static seq_layer_t s_layers[MAX_LAYERS];
 static uint8_t     s_num_layers   = 0;
 static uint8_t     s_cached_step[MAX_LAYERS];
 static bool        s_playing      = true;
-static uint16_t    s_bpm          = 120;
+static uint16_t    s_bpm          = SEQ_DEFAULT_BPM;
 /* Drum sound source for the whole drum layer. SYNTH = tonal AMY patches (Juno/
  * DX7) per track; PCM = built-in 808 samples per track. Switchable at runtime;
  * changing it re-configures the drum layer's synth slots in place. */
@@ -327,12 +318,17 @@ static void sequencer_configure_melodic_envelope_track(uint8_t layer_idx, uint8_
     const seq_layer_t *layer = &s_layers[layer_idx];
     const seq_env_t   *env   = seq_layer_env(layer_idx, track);
     float sustain = (float)env->sustain_pct / 100.0f;
+    uint32_t attack_ms = env->attack_ms;
+    /* KS and NOISE excite via an onset transient; an attack ramp suppresses it. */
+    if (layer->patch == SEQ_PATCH_KS || layer->patch == SEQ_PATCH_NOISE) {
+        attack_ms = 2;  /* force floor */
+    }
 
     amy_event *e = amy_helpers_event_begin();
     e->synth = layer->synth_id[track];
     e->bp_is_set[0] = 1;
     e->eg_type[0] = env->eg_type;
-    e->eg0_times[0] = env->attack_ms;
+    e->eg0_times[0] = attack_ms;
     e->eg0_values[0] = 1.0f;
     e->eg0_times[1] = env->decay_ms;
     e->eg0_values[1] = sustain;
@@ -586,6 +582,7 @@ static void sequencer_configure_melodic_wave_track(uint8_t synth_id,
     amy_helpers_event_send(e);
 }
 
+
 static void sequencer_configure_synth(uint8_t layer_idx)
 {
     seq_layer_t *layer = &s_layers[layer_idx];
@@ -635,22 +632,31 @@ static void sequencer_configure_synth(uint8_t layer_idx)
 
     /* Melodic: push the shared patch/flags/voices to each row's own synth.
      * Patches >= SEQ_PATCH_WAVE_BASE are raw-waveform virtual patches; they are
-     * configured directly instead of via the amy_send_patch() string loader. */
-    bool is_wave_patch = (layer->patch >= SEQ_PATCH_WAVE_BASE);
+     * configured directly instead of via the amy_send_patch() string loader.
+     * Patches >= SEQ_PATCH_BASS_BASE are multi-osc bass presets (oscs_per_voice=2). */
+    bool is_wave_patch = (layer->patch >= SEQ_PATCH_WAVE_BASE &&
+                          layer->patch <= SEQ_PATCH_WAVE_MAX);
+    bool is_bass_patch = (layer->patch >= SEQ_PATCH_BASS_BASE &&
+                          layer->patch <= SEQ_PATCH_BASS_MAX);
     for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
         sequencer_kill_synth_voices(layer->synth_id[t]);
         if (is_wave_patch) {
             sequencer_configure_melodic_wave_track(layer->synth_id[t],
                                                    layer->patch,
                                                    layer->num_voices);
+        } else if (is_bass_patch) {
+            bass_preset_configure_track(layer->synth_id[t],
+                                                  layer->patch,
+                                                  layer->num_voices);
         } else {
             amy_send_patch(layer->synth_id[t], layer->patch,
                            layer->num_voices, layer->synth_flags);
         }
     }
-    /* Raw-wave patches carry no global EQ/chorus commands; still reassert so a
-     * switch from a Juno/DX7 patch doesn't leave stale global FX active. */
-    if (!is_wave_patch) synth_ui_fx_reassert_global();
+    /* Raw-wave and bass patches carry no global EQ/chorus commands; skip reassert.
+     * Non-wave/non-bass patches (Juno/DX7) must reassert so that switching away
+     * from one doesn't leave stale global FX active. */
+    if (!is_wave_patch && !is_bass_patch) synth_ui_fx_reassert_global();
     sequencer_configure_melodic_envelope(layer_idx);
     sequencer_configure_melodic_filter(layer_idx);
 }
@@ -748,7 +754,7 @@ static void sequencer_push_tempo(uint16_t b)
 
 /* ── LFO helpers ─────────────────────────────────────────────────────── */
 
-static float lfo_rate_to_hz(lfo_rate_t rate, uint16_t bpm)
+float lfo_rate_to_hz(lfo_rate_t rate, uint16_t bpm)
 {
     float b = (float)bpm;
     switch (rate) {
@@ -818,7 +824,11 @@ uint8_t sequencer_core_add_layer(seq_layer_type_t type, uint8_t num_steps)
         ESP_LOGW(TAG, "sequencer_core_add_layer: max layers (%d) reached", MAX_LAYERS);
         return 0xFF;
     }
-    uint8_t idx = s_num_layers++;
+    /* Claim the slot index but do NOT expose it via s_num_layers yet.
+     * The tick path iterates 0..s_num_layers-1; incrementing here would let
+     * the tick see a half-initialised layer.  s_num_layers++ is deferred to
+     * after sequencer_configure_synth() completes below. */
+    uint8_t idx = s_num_layers;
     seq_layer_t *layer = &s_layers[idx];
     memset(layer, 0, sizeof(seq_layer_t));
 
@@ -889,6 +899,8 @@ uint8_t sequencer_core_add_layer(seq_layer_type_t type, uint8_t num_steps)
     CORE_HEAP_CHECK("add_layer: before configure_synth");
     sequencer_configure_synth(idx);
     CORE_HEAP_CHECK("add_layer: after configure_synth");
+    /* Layer is fully initialised: now expose it to the tick path. */
+    s_num_layers++;
     ESP_LOGI(TAG, "add_layer[%d]: type=%d synth0=%d patch=%d steps=%d",
              idx, type, layer->synth_id[0], layer->patch, layer->num_steps);
     return idx;
@@ -954,8 +966,9 @@ bool sequencer_core_delete_layer(uint8_t layer_idx)
 void sequencer_core_set_melodic_patch(uint16_t patch_number)
 {
     /* 0..127: Juno, 128..255: DX7, 256: built-in piano.
-     * 257..263: raw-waveform virtual patches (SEQ_PATCH_SINE..SEQ_PATCH_WAVE_MAX). */
-    patch_number = SEQ_CLAMP_U16(patch_number, 0, SEQ_PATCH_WAVE_MAX);
+     * 257..263: raw-waveform virtual patches (SEQ_PATCH_SINE..SEQ_PATCH_WAVE_MAX).
+     * 264..266: multi-osc bass presets (SEQ_PATCH_BASS_BASE..SEQ_PATCH_BASS_MAX). */
+    patch_number = SEQ_CLAMP_U16(patch_number, 0, SEQ_PATCH_BASS_MAX);
     if (s_melodic_patch == patch_number) {
         return;
     }
@@ -1105,7 +1118,8 @@ void sequencer_core_push_envelope(uint8_t synth, const seq_env_t *env)
     e->synth         = synth;
     e->bp_is_set[0]  = 1;
     e->eg_type[0]    = env->eg_type;
-    e->eg0_times[0]  = env->attack_ms;
+    uint32_t attack_ms = (env->attack_ms < 2) ? 2 : env->attack_ms;  /* 2 ms floor */
+    e->eg0_times[0]  = attack_ms;
     e->eg0_values[0] = 1.0f;
     e->eg0_times[1]  = env->decay_ms;
     e->eg0_values[1] = sustain;
@@ -1116,9 +1130,16 @@ void sequencer_core_push_envelope(uint8_t synth, const seq_env_t *env)
 
 void sequencer_core_arp_configure(uint16_t patch_number, uint8_t num_voices)
 {
-    patch_number = SEQ_CLAMP_U16(patch_number, 0, 256);
-    amy_send_patch(SEQ_ARP_SYNTH, patch_number, num_voices, 0);
-    /* Patch strings carry global EQ/chorus commands; keep them per-synth. */
+    patch_number = SEQ_CLAMP_U16(patch_number, 0, SEQ_PATCH_WAVE_MAX);
+    if (patch_number >= SEQ_PATCH_WAVE_BASE) {
+        /* Wave virtual patch: configure as a raw-waveform synth (same logic as
+         * melodic wave tracks) instead of loading an amy_send_patch() string. */
+        sequencer_configure_melodic_wave_track(SEQ_ARP_SYNTH, patch_number, num_voices);
+    } else {
+        amy_send_patch(SEQ_ARP_SYNTH, patch_number, num_voices, 0);
+    }
+    /* Patch strings carry global EQ/chorus commands; reassert so Juno/DX7 FX
+     * don't leak when switching to/from a wave patch. */
     synth_ui_fx_reassert_global();
     ESP_LOGI(TAG, "arp synth %u patch -> %u (%u voices)",
              (unsigned)SEQ_ARP_SYNTH, (unsigned)patch_number, (unsigned)num_voices);
@@ -1171,7 +1192,7 @@ void sequencer_core_set_melodic_envelope(uint8_t layer_idx, uint8_t track,
     seq_layer_t *layer = &s_layers[layer_idx];
 
     seq_env_t *dst = seq_layer_env(layer_idx, track);
-    dst->attack_ms   = SEQ_CLAMP_U32(env->attack_ms,  0, 60000);
+    dst->attack_ms   = SEQ_CLAMP_U32(env->attack_ms,  2, 60000);
     dst->decay_ms    = SEQ_CLAMP_U32(env->decay_ms,   0, 60000);
     dst->sustain_pct = SEQ_CLAMP_U8(env->sustain_pct, 0, 100);
     dst->release_ms  = SEQ_CLAMP_U32(env->release_ms, 0, 60000);
@@ -1400,6 +1421,8 @@ void sequencer_core_set_bpm(uint16_t new_bpm)
                 s_lfo_hz[li][tr] = lfo_rate_to_hz(s_layers[li].lfo[tr].rate, s_bpm);
         }
     }
+    /* Sync the arp WAVE-mode LFO carrier to the new BPM (no-op when not active). */
+    arp_core_refresh_lfo_freq();
 }
 
 uint16_t sequencer_core_get_bpm(void) { return s_bpm; }
@@ -1434,6 +1457,10 @@ void sequencer_core_set_playing(bool p)
             sequencer_resync_layer(i);
         }
     } else {
+        /* Bug 1.1: clear arp scheduled events FIRST so repeating arp tags
+         * don't keep firing while the sequencer is paused. */
+        arp_core_clear_all();
+
         /* Freeze display positions before clearing scheduled events. */
         for (uint8_t i = 0; i < s_num_layers; i++) {
             seq_layer_t *layer = &s_layers[i];
@@ -1442,10 +1469,18 @@ void sequencer_core_set_playing(bool p)
                 (uint8_t)((sequencer_ticks() % bar_ticks) / SEQ_TICKS_PER_STEP);
             sequencer_clear_layer_tags(i);
         }
-        /* Clearing tags above removes pending note-offs for any voice mid-gate
-         * at pause time; those notes would sustain forever without this. Also
-         * silences the standalone drone, which is acceptable on stop. */
-        amy_send_all_notes_off();
+
+        /* Bug 1.2: silence only the sequencer's own synth slots (melodic/drum
+         * per-layer, plus arp slot 63). Drone slots 64-65 are intentionally
+         * spared — they manage their own lifecycle and do not auto-resume, so
+         * a global notes-off would permanently silence the drone. */
+        for (uint8_t i = 0; i < s_num_layers; i++) {
+            seq_layer_t *layer = &s_layers[i];
+            for (uint8_t t = 0; t < layer->num_tracks; t++) {
+                sequencer_kill_synth_voices(layer->synth_id[t]);
+            }
+        }
+        sequencer_kill_synth_voices(SEQ_ARP_SYNTH);
     }
 }
 

@@ -154,8 +154,8 @@ static uint8_t arp_snap(uint8_t chromatic)
     return sequencer_core_clamp_melodic_note((int32_t)snapped);
 }
 
-/* Clear every possible arp tag slot. */
-static void arp_clear_all(void)
+/* Clear every possible arp tag slot (removes all scheduled repeating events). */
+void arp_core_clear_all(void)
 {
     uint32_t base = sequencer_core_arp_tag_base();
     for (uint8_t i = 0; i < ARP_MAX_STEPS; i++) {
@@ -164,21 +164,6 @@ static void arp_clear_all(void)
 }
 
 /* ── Source configuration helpers ────────────────────────────────────── */
-
-/* Convert lfo_rate_t → Hz (same formula as sequencer_core). */
-static float arp_lfo_rate_to_hz(lfo_rate_t rate, uint16_t bpm)
-{
-    float b = (float)bpm;
-    switch (rate) {
-        case LFO_RATE_1_8:  return b / 30.0f;
-        case LFO_RATE_1_4:  return b / 60.0f;
-        case LFO_RATE_1_2:  return b / 120.0f;
-        case LFO_RATE_1BAR: return b / 240.0f;
-        case LFO_RATE_2BAR: return b / 480.0f;
-        case LFO_RATE_4BAR: return b / 960.0f;
-        default:            return b / 240.0f;
-    }
-}
 
 /* Map lfo_wave_t → AMY wave constant. */
 static uint16_t arp_lfo_wave_to_amy(lfo_wave_t wave)
@@ -250,7 +235,7 @@ static void arp_configure_wave_synth(void)
     e->osc   = 1;
     if (lfo_on) {
         e->wave                   = (uint16_t)arp_lfo_wave_to_amy(s_arp.lfo.wave);
-        e->freq_coefs[COEF_CONST] = arp_lfo_rate_to_hz(s_arp.lfo.rate,
+        e->freq_coefs[COEF_CONST] = lfo_rate_to_hz(s_arp.lfo.rate,
                                                          sequencer_core_get_bpm());
         e->freq_coefs[COEF_NOTE]  = 0.0f;   /* no pitch tracking */
         e->freq_coefs[COEF_BEND]  = 0.0f;   /* no pitch bend     */
@@ -263,6 +248,24 @@ static void arp_configure_wave_synth(void)
     amy_helpers_event_send(e);
 }
 
+/* Recompute and push the LFO carrier frequency at the current BPM.
+ * Called by sequencer_core_set_bpm() after s_bpm is updated so the carrier
+ * stays in sync when the user changes tempo.  Must NOT be called from the
+ * render body (amy_queue_lock is held there); sequencer_core_set_bpm() runs
+ * from the UI task, which is safe. */
+void arp_core_refresh_lfo_freq(void)
+{
+    if (!s_arp.lfo_authored || !s_arp.lfo.enabled || s_arp.source != ARP_SRC_WAVE)
+        return;
+
+    amy_event *e = amy_helpers_event_begin();
+    e->synth                  = sequencer_core_arp_synth();
+    e->osc                    = 1;
+    e->freq_coefs[COEF_CONST] = lfo_rate_to_hz(s_arp.lfo.rate,
+                                                     sequencer_core_get_bpm());
+    amy_helpers_event_send(e);
+}
+
 /* (Re)build the arp synth slot for the current source and params, then
  * re-impose any authored ADSR / filter.  Mirrors drone_rebuild(). */
 static void arp_rebuild(void)
@@ -271,12 +274,16 @@ static void arp_rebuild(void)
         arp_configure_wave_synth();
         /* WAVE mode has no patch envelope; always push the arp's env (authored
          * or default) so EG0 breakpoints are valid and notes decay correctly. */
-        sequencer_core_push_envelope(sequencer_core_arp_synth(), &s_arp.env);
+        seq_env_t env_to_push = s_arp.env;
+        if (s_arp.wave == KS || s_arp.wave == NOISE) {
+            env_to_push.attack_ms = 2;  /* KS/NOISE: onset transient suppressed by attack ramp */
+        }
+        sequencer_core_push_envelope(sequencer_core_arp_synth(), &env_to_push);
     } else {
         sequencer_core_arp_configure(s_arp.patch, sequencer_core_arp_voices());
-        /* Re-impose the user's custom ADSR when authored (deferred authority,
-         * same pattern as melodic layers and the drone). */
-        if (s_arp.env_authored) {
+        /* Wave patches (257+) have no built-in EG0; always push the envelope so
+         * notes decay.  Juno/DX7 patches: only push when user has authored one. */
+        if (s_arp.patch >= SEQ_PATCH_WAVE_BASE || s_arp.env_authored) {
             sequencer_core_push_envelope(sequencer_core_arp_synth(), &s_arp.env);
         }
     }
@@ -340,7 +347,7 @@ s_arp.env.release_ms  = 200;  // Controlled tail that fills space without causin
 
 void arp_core_refresh(void)
 {
-    arp_clear_all();
+    arp_core_clear_all();
 
     if (!s_arp.enabled) {
         return;
@@ -487,7 +494,7 @@ void arp_set_chord(uint8_t root_midi, uint8_t scale_index)
 
 void arp_set_patch(uint16_t patch_number)
 {
-    patch_number = SEQ_CLAMP_U16(patch_number, 0, 256);
+    patch_number = SEQ_CLAMP_U16(patch_number, 0, SEQ_PATCH_WAVE_MAX);
     if (s_arp.patch == patch_number) return;
     s_arp.patch = patch_number;
     /* In WAVE mode: store the new patch number but leave the synth slot alone.
@@ -507,6 +514,7 @@ void arp_set_envelope(const seq_env_t *env)
 {
     if (!env) return;
     s_arp.env = *env;
+    if (s_arp.env.attack_ms < 2) s_arp.env.attack_ms = 2;  /* 2 ms floor */
     s_arp.env_authored = true;
     sequencer_core_push_envelope(sequencer_core_arp_synth(), &s_arp.env);
     ESP_LOGI(TAG, "arp env -> A%u D%u S%u%% R%u",
@@ -538,11 +546,15 @@ void arp_get_lfo(seq_lfo_t *out)
 void arp_set_lfo(const seq_lfo_t *lfo)
 {
     if (!lfo) return;
-    s_arp.lfo          = *lfo;
-    s_arp.lfo_authored = true;
-    /* LFO is baked into the synth pool config — requires rebuild in WAVE mode.
-     * PATCH mode: native AMY LFO not yet supported (patches own their osc layout). */
-    if (s_arp.source == ARP_SRC_WAVE) arp_rebuild();
+    s_arp.lfo = *lfo;
+    /* Only mark authored and rebuild in WAVE mode: PATCH mode stores the config
+     * for later but does not activate the native LFO (patches own their osc
+     * layout).  Setting lfo_authored while in PATCH mode causes ghost-activation
+     * when the user subsequently switches to WAVE mode. */
+    if (s_arp.source == ARP_SRC_WAVE) {
+        s_arp.lfo_authored = true;
+        arp_rebuild();
+    }
     ESP_LOGI(TAG, "arp LFO -> en=%d wave=%u rate=%u depth=%u tgt=%u",
              lfo->enabled, (unsigned)lfo->wave, (unsigned)lfo->rate,
              (unsigned)lfo->depth, (unsigned)lfo->target);

@@ -9,6 +9,41 @@
 extern "C" {
 #endif
 
+/* ── Virtual wave-patch IDs ─────────────────────────────────────────────────
+ * Patch numbers beyond the 0..256 built-in (Juno/DX7/piano) range.
+ * Intercepted before amy_send_patch() so they never collide with real patches.
+ * Melodic tracks, arp, and drone all use these constants for wave-patch routing.
+ * Drone: only SEQ_PATCH_WAVE_BASE..SEQ_PATCH_TRIANGLE are valid (NOISE/KS excluded).
+ * Arp:   full range SEQ_PATCH_WAVE_BASE..SEQ_PATCH_WAVE_MAX. */
+#define SEQ_PATCH_WAVE_BASE   257
+#define SEQ_PATCH_SINE        257   /* AMY SINE     */
+#define SEQ_PATCH_SAW_DOWN    258   /* AMY SAW_DOWN */
+#define SEQ_PATCH_SAW_UP      259   /* AMY SAW_UP   */
+#define SEQ_PATCH_PULSE       260   /* AMY PULSE    */
+#define SEQ_PATCH_TRIANGLE    261   /* AMY TRIANGLE */
+#define SEQ_PATCH_NOISE       262   /* AMY NOISE    — arp only; drone excludes */
+#define SEQ_PATCH_KS          263   /* AMY KS       — arp only; drone excludes */
+#define SEQ_PATCH_WAVE_MAX    263
+
+/* ── Multi-osc bass presets (melodic only; oscs_per_voice=2) ────────────
+ * Intercepted before amy_send_patch() — never routed to the Juno/DX7 loader.
+ * Osc 0 is the primary audio carrier; osc 1 is the secondary/sub layer.
+ * Osc 0 envelope is overwritten by sequencer_configure_melodic_envelope()
+ * after configure; characteristic sound comes from osc structure + filter. */
+#define SEQ_PATCH_BASS_BASE   264
+#define SEQ_PATCH_BASS_1      264   /* Classic Sub-Heavy Detune (PULSE + detuned SAW, LPF24) */
+#define SEQ_PATCH_BASS_2      265   /* Solid Sine-Reinforced Acid/Pluck (SINE + SAW, LPF24) */
+#define SEQ_PATCH_BASS_3      266   /* FM DX7-Style (SINE carrier + sub-octave SINE, DX7 env) */
+#define SEQ_PATCH_BASS_MAX    266
+
+/* ── BPM range & default (shared with synth_ui for boot initialisation) ── */
+#define SEQ_DEFAULT_BPM  108
+
+/* ── Shared LFO helper ────────────────────────────────────────────────────
+ * Convert a tempo-synced lfo_rate_t to a frequency in Hz for the given BPM.
+ * Defined in sequencer_core.c; also used by arp_core.c (avoids duplication). */
+float lfo_rate_to_hz(lfo_rate_t rate, uint16_t bpm);
+
 /* ── Core lifecycle ── */
 void sequencer_core_init(void);
 void sequencer_core_set_playing(bool playing);

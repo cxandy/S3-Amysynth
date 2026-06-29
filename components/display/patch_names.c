@@ -18,7 +18,7 @@
 
 #if CONFIG_SEQ_PATCH_SHOW_NAMES
 
-#define SEQ_PATCH_NAME_COUNT 264  /* 0..263 inclusive (257-263 = raw wave patches) */
+#define SEQ_PATCH_NAME_COUNT 267  /* 0..266 inclusive (257-263 = waves, 264-266 = bass presets) */
 
 static const char *const s_patch_names[SEQ_PATCH_NAME_COUNT] = {
     /* ── Juno-106 (0..127) ── */
@@ -284,7 +284,7 @@ static const char *const s_patch_names[SEQ_PATCH_NAME_COUNT] = {
     /* ── Built-in piano (256) ── */
     /* 256 */ "Built-in Piano",
 
-    /* ── Raw waveform patches (257-261) ── */
+    /* ── Raw waveform patches (257-263) ── */
     /* 257 */ "SINE",
     /* 258 */ "SAW DOWN",
     /* 259 */ "SAW UP",
@@ -292,6 +292,11 @@ static const char *const s_patch_names[SEQ_PATCH_NAME_COUNT] = {
     /* 261 */ "TRIANGLE",
     /* 262 */ "NOISE",
     /* 263 */ "KS",
+
+    /* ── Multi-osc bass presets (264-266) ── */
+    /* 264 */ "Bass: Sub Detune",
+    /* 265 */ "Bass: Acid Pluck",
+    /* 266 */ "Bass: DX7 Style",
 };
 
 const char *patch_name_for(uint16_t patch)

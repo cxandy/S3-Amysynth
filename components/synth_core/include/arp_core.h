@@ -62,6 +62,12 @@ void arp_core_init(void);
  * inline — they mark the arp dirty and arp_core_service() coalesces the re-emit. */
 void arp_core_refresh(void);
 
+/* Cancel all scheduled arp AMY events without re-emitting. Use on sequencer
+ * pause to silence the arp without affecting the arp's enabled/configuration
+ * state. Does NOT kill any voice currently mid-gate — follow with
+ * sequencer_kill_synth_voices(SEQ_ARP_SYNTH) to silence any live note. */
+void arp_core_clear_all(void);
+
 /* Perform a pending (coalesced) re-emit if a setter marked the arp dirty since
  * the last call; cheap no-op otherwise. Call once per UI frame so a fast encoder
  * spin collapses into a single re-emit instead of one per detent. */
@@ -107,6 +113,11 @@ void arp_set_filter(const seq_filter_t *f);
  * PATCH mode: setter is a no-op on AMY (LFO state stored for persistence). */
 void arp_get_lfo(seq_lfo_t *out);
 void arp_set_lfo(const seq_lfo_t *lfo);
+
+/* Recompute and push the LFO carrier frequency at the current BPM.
+ * Called by sequencer_core_set_bpm() after s_bpm is updated.
+ * No-op when source != ARP_SRC_WAVE or lfo_authored is false. */
+void arp_core_refresh_lfo_freq(void);
 
 /* ── Getters (for UI display) ── */
 bool      arp_get_enabled(void);

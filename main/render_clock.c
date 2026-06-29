@@ -27,7 +27,7 @@ static bool IRAM_ATTR render_clock_on_alarm(gptimer_handle_t timer,
     return higher_prio_woken == pdTRUE;  // request context switch if needed
 }
 
-esp_err_t render_clock_start(uint32_t period_us)
+esp_err_t render_clock_start(uint32_t period_ticks)
 {
     if (s_timer != NULL) {
         return ESP_OK;  // already started
@@ -38,7 +38,7 @@ esp_err_t render_clock_start(uint32_t period_us)
     const gptimer_config_t timer_config = {
         .clk_src = GPTIMER_CLK_SRC_DEFAULT,
         .direction = GPTIMER_COUNT_UP,
-        .resolution_hz = 1 * 1000 * 1000,  // 1 MHz => 1 tick = 1 us
+        .resolution_hz = 3 * 1000 * 1000,  // 3 MHz => 1 tick ≈ 0.333 µs
         .intr_priority = 0,                // auto-select
     };
     esp_err_t err = gptimer_new_timer(&timer_config, &s_timer);
@@ -65,7 +65,7 @@ esp_err_t render_clock_start(uint32_t period_us)
     }
 
     const gptimer_alarm_config_t alarm_config = {
-        .alarm_count = period_us,        // fire every period_us (counter at 1 MHz)
+        .alarm_count = period_ticks,     // fire every period_ticks (counter at 3 MHz)
         .reload_count = 0,
         .flags.auto_reload_on_alarm = true,
     };
@@ -83,8 +83,8 @@ esp_err_t render_clock_start(uint32_t period_us)
         goto fail;
     }
 
-    ESP_LOGI(TAG, "render master clock started: %u us period on core %d",
-             (unsigned)period_us, xPortGetCoreID());
+    ESP_LOGI(TAG, "render master clock started: %u ticks period (3 MHz) on core %d",
+             (unsigned)period_ticks, xPortGetCoreID());
     return ESP_OK;
 
 fail:

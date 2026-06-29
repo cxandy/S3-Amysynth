@@ -16,7 +16,7 @@ extern "C" {
 #define FGRAPH_FILTER_COUNT 5
 
 /* Frequency + resonance mapping constants (used by synth_ui for en/de-normalise). */
-#define FGRAPH_CUTOFF_HZ_MIN   65.0f
+#define FGRAPH_CUTOFF_HZ_MIN   20.0f
 #define FGRAPH_CUTOFF_HZ_MAX 8000.0f
 #define FGRAPH_RES_MIN  0.51f
 #define FGRAPH_RES_MAX  8.0f

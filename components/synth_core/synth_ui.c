@@ -73,6 +73,11 @@ static uint8_t  s_graph_track = 0;
 static volatile bool    s_layer_delete_pending = false;
 static volatile uint8_t s_layer_delete_idx     = 0;
 
+/* Deferred layer-add request, consumed by synth_ui_task each frame.
+ * The add path (memset + patch-string parse via amy_send_patch) is too heavy
+ * for the esp_timer task's 3584-byte stack — defer it here exactly as delete. */
+static volatile bool    s_layer_add_pending    = false;
+
 /* Track Options screen state — declared here (before synth_ui_task and
  * synth_ui_request_delete_to_layer) so both can reference s_to_layer. */
 static uint8_t s_to_cursor  = 0;
@@ -110,6 +115,7 @@ static bool s_graph_long_range = false;   /* false = SHORT, true = LONG (auto-sw
  * which is now set automatically based on envelope duration). */
 static bool  s_graph_amp_mode = false;
 static float s_graph_amp_edit = 1.0f;   /* scratch 0..1, seeds from target on open */
+static bool  s_graph_env_dirty = false; /* set only when user moves an ADSR point */
 
 /* Master volume (0..2.0, unity=1.0). Written to amy_global.volume[] on every change
  * and on init.  2× headroom allows boosting quiet sources. */
@@ -305,8 +311,9 @@ void synth_ui_graph_open_envelope(void)
     uint32_t total_env_ms = env.attack_ms + env.decay_ms + env.release_ms;
     s_graph_long_range = (total_env_ms >= GRAPH_RANGE_SHORT_MS);
 
-    /* Seed amp scratch from the target's current trim; reset amp mode. */
-    s_graph_amp_mode = false;
+    /* Seed amp scratch from the target's current trim; reset amp mode and dirty flag. */
+    s_graph_amp_mode  = false;
+    s_graph_env_dirty = false;
     switch (s_graph_target) {
         case GRAPH_TGT_DRONE:
             s_graph_amp_edit = drone_get_amp_trim();
@@ -343,34 +350,39 @@ static void graph_commit_to_env(void)
     uint32_t cum_d = graph_x_to_ms(pts[2].x);
     uint32_t cum_r = graph_x_to_ms(pts[3].x);
 
-    /* Convert cumulative times back to per-segment durations (clamp monotonic). */
-    uint32_t a = cum_a;
-    uint32_t d = (cum_d > cum_a) ? (cum_d - cum_a) : 0;
-    uint32_t r = (cum_r > cum_d) ? (cum_r - cum_d) : 0;
+    /* Only rewrite the ADSR envelope if the user actually moved a control point.
+     * A volume-only edit (amp mode only) must not overwrite the stored envelope. */
+    if (s_graph_env_dirty) {
+        /* Convert cumulative times back to per-segment durations (clamp monotonic). */
+        uint32_t a = cum_a;
+        if (a < 2) a = 2;  /* minimum 2 ms attack prevents DAC pop on trigger */
+        uint32_t d = (cum_d > cum_a) ? (cum_d - cum_a) : 0;
+        uint32_t r = (cum_r > cum_d) ? (cum_r - cum_d) : 0;
 
-    seq_env_t env;
-    if (!graph_read_target_env(&env)) return;  /* keep eg_type from the target */
-    env.attack_ms   = a;
-    env.decay_ms    = d;
-    env.release_ms  = r;
-    env.sustain_pct = (uint8_t)(pts[2].y * 100.0f + 0.5f);
+        seq_env_t env;
+        if (!graph_read_target_env(&env)) return;  /* keep eg_type from the target */
+        env.attack_ms   = a;
+        env.decay_ms    = d;
+        env.release_ms  = r;
+        env.sustain_pct = (uint8_t)(pts[2].y * 100.0f + 0.5f);
 
-    switch (s_graph_target) {
-        case GRAPH_TGT_DRONE:
-            drone_set_envelope(&env);
-            break;
-        case GRAPH_TGT_ARP:
-            arp_set_envelope(&env);
-            break;
-        case GRAPH_TGT_MELODIC:
-        default:
-            if (s_editor_apply_all) {
-                for (uint8_t t = 0; t < SEQ_TRACKS; ++t)
-                    sequencer_core_set_melodic_envelope(s_graph_layer, t, &env);
-            } else {
-                sequencer_core_set_melodic_envelope(s_graph_layer, s_graph_track, &env);
-            }
-            break;
+        switch (s_graph_target) {
+            case GRAPH_TGT_DRONE:
+                drone_set_envelope(&env);
+                break;
+            case GRAPH_TGT_ARP:
+                arp_set_envelope(&env);
+                break;
+            case GRAPH_TGT_MELODIC:
+            default:
+                if (s_editor_apply_all) {
+                    for (uint8_t t = 0; t < SEQ_TRACKS; ++t)
+                        sequencer_core_set_melodic_envelope(s_graph_layer, t, &env);
+                } else {
+                    sequencer_core_set_melodic_envelope(s_graph_layer, s_graph_track, &env);
+                }
+                break;
+        }
     }
 
     /* Commit per-target amplitude trim (s_graph_amp_edit seeded at open; setters
@@ -482,6 +494,7 @@ bool synth_ui_graph_handle_encoder(long delta)
         return true;
     }
 
+    s_graph_env_dirty = true;   /* user moved an ADSR control point */
     graph_popup_handle_encoder(&s_graph_popup, delta);
     /* Moving A (time) or the S level changes the derived decay; re-snap S.x. */
     graph_recompute_decay();
@@ -780,6 +793,8 @@ bool synth_ui_lfo_is_active(void) { return s_lfo_active; }
 
 void synth_ui_lfo_open(void)
 {
+    // TODO: drone LFO = BPM-multiplier stutter only; implement constrained editor when needed
+    if (seq_state.ui_mode == UI_MODE_DRONE) return; // drone has no free LFO editor
     uint8_t li = seq_state.active_layer_idx;
     uint8_t tr = seq_state.selected_track;
     seq_lfo_t existing = {
@@ -860,6 +875,7 @@ bool synth_ui_lfo_handle_button(bool is_long)
 bool synth_ui_lfo_close_commit(void)
 {
     if (!s_lfo_active) return false;
+    if (seq_state.ui_mode == UI_MODE_DRONE) return false; // drone has no free LFO editor
     if (seq_state.ui_mode == UI_MODE_ARP) {
         arp_set_lfo(&s_lfo_view.lfo);
     } else if (s_editor_apply_all) {
@@ -907,7 +923,10 @@ void synth_ui_cycle_editor(void)
         synth_ui_filter_open();
     } else if (s_filter_active) {
         synth_ui_filter_close_commit();
-        synth_ui_lfo_open();
+        if (seq_state.ui_mode == UI_MODE_DRONE)
+            synth_ui_graph_open_envelope(); // drone: skip LFO tab, cycle back to ADSR
+        else
+            synth_ui_lfo_open();
     } else if (s_lfo_active) {
         synth_ui_lfo_close_commit();
         synth_ui_graph_open_envelope();
@@ -935,18 +954,21 @@ static const uint16_t s_melodic_patch_cycle[] = {
     261, /* Raw TRIANGLE */
     262, /* Raw NOISE */
     263, /* Raw KS */
+    264, /* Bass 1: Sub-Heavy Detune (PULSE + detuned SAW, LPF24) */
+    265, /* Bass 2: Sine-Reinforced Acid/Pluck (SINE + SAW, LPF24) */
+    266, /* Bass 3: FM DX7-Style (SINE + sub-octave SINE, DX7 env) */
 };
 #define SEQ_RUNTIME_PATCH_COUNT ((int)(sizeof(s_melodic_patch_cycle) / sizeof(s_melodic_patch_cycle[0])))
 #endif
 
-/* Full-range browse covers Juno 0..127, DX7 128..255, piano 256, raw waves 257..263. */
-#define SEQ_PATCH_FULL_MAX 263
+/* Full-range browse: Juno 0..127, DX7 128..255, piano 256, waves 257..263, bass 264..266. */
+#define SEQ_PATCH_FULL_MAX 266
 
 static synth_ui_state_t seq_state = {
     /* layers[] is zero-initialized by C99 partial-init rules */
     .num_layers       = 0,
     .active_layer_idx = 0,
-    .bpm              = 120,
+    .bpm              = SEQ_DEFAULT_BPM,
     .current_pattern  = 1,
     .current_step     = 0,
     .playing          = true,
@@ -1199,6 +1221,8 @@ static void synth_ui_task(void *pvParameters)
         /* Drain deferred layer-delete request (must run in synth_ui_task so that
          * the array compaction is serialized against all other seq_state readers
          * on Core 0). */
+        /* Ordering: DELETE is drained before ADD so we never add into a slot
+         * that a concurrent delete has not yet freed and compacted. */
         if (s_layer_delete_pending) {
             s_layer_delete_pending = false;
             uint8_t del_idx = s_layer_delete_idx;
@@ -1220,6 +1244,17 @@ static void synth_ui_task(void *pvParameters)
                     s_to_layer = (uint8_t)(seq_state.num_layers - 1);
                 ESP_LOGI(TAG, "UI delete layer %u (%u layers remain)",
                          del_idx, seq_state.num_layers);
+            }
+        }
+
+        /* Drain deferred layer-add request (runs in synth_ui_task, 4096-byte
+         * stack; safe for the heavy memset + patch-string parse that would
+         * overflow the esp_timer task's 3584-byte stack). */
+        if (s_layer_add_pending) {
+            s_layer_add_pending = false;
+            /* Re-check cap; num_layers may have changed since flag was set. */
+            if (seq_state.num_layers < MAX_LAYERS) {
+                synth_ui_add_layer(SEQ_LAYER_MELODIC, SEQ_STEPS);
             }
         }
 
@@ -1441,12 +1476,14 @@ uint8_t synth_ui_add_layer(seq_layer_type_t type, uint8_t num_steps)
     return li;
 }
 
-/* Add a melodic layer immediately (non-destructive; safe to call from any
- * Core-0 context, matching existing add_layer call-site convention). */
+/* Request a melodic layer add. Sets a pending flag consumed by synth_ui_task
+ * on its next frame, so the heavy work (memset + patch-string parse) runs on
+ * the 4096-byte task stack rather than the 3584-byte esp_timer task stack.
+ * Safe to call from any Core-0 context (esp_timer cb, button handler, etc.). */
 void synth_ui_request_add_layer(void)
 {
     if (seq_state.num_layers >= MAX_LAYERS) return;
-    synth_ui_add_layer(SEQ_LAYER_MELODIC, SEQ_STEPS);
+    s_layer_add_pending = true;
 }
 
 /* Schedule a delete of the layer currently targeted by the Track Options
@@ -2215,7 +2252,7 @@ static void arp_edit_value(uint8_t cursor, int delta)
                                ? ARP_SRC_PATCH : ARP_SRC_WAVE);
             break;
         case ARP_CUR_WAVE: {
-            /* Cycle through the same waveforms the drone uses. */
+            /* Arp keeps NOISE and KS; drone excludes them (see DROW_WAVE). */
             static const uint16_t s_arp_waves[] = {
                 SAW_DOWN, SAW_UP, PULSE, TRIANGLE, SINE, NOISE, KS
             };
@@ -2455,8 +2492,10 @@ static void drone_edit_row(drone_logical_row_t r, int delta)
                                  ? DRONE_SRC_PATCH : DRONE_SRC_WAVE);
             break;
         case DROW_WAVE: {
-            /* Cycle through SAW_DOWN, SAW_UP, PULSE, TRIANGLE, SINE, NOISE, KS. */
-            static const uint16_t waves[] = { SAW_DOWN, SAW_UP, PULSE, TRIANGLE, SINE, NOISE, KS };
+            /* Cycle through SAW_DOWN, SAW_UP, PULSE, TRIANGLE, SINE.
+             * NOISE and KS excluded from drone: their excitation model
+             * misbehaves with the drone's one-shot trigger style. */
+            static const uint16_t waves[] = { SAW_DOWN, SAW_UP, PULSE, TRIANGLE, SINE };
             const int wn = (int)(sizeof(waves) / sizeof(waves[0]));
             int idx = 0;
             for (int i = 0; i < wn; i++) if (waves[i] == drone_get_wave()) { idx = i; break; }

@@ -11,10 +11,10 @@ extern "C" {
 /*
  * render_clock — the master clock for the audio render loop.
  *
- * Emits exactly one "render now" signal per audio block period (5333 us for
- * 256 samples @ 48 kHz), independent of the FreeRTOS tick rate. Phase 1 is
- * backed by a GPTimer whose alarm ISR is pinned to the render task's core and
- * wakes it via a FreeRTOS task notification.
+ * Emits exactly one "render now" signal per audio block period (16000 ticks at
+ * 3 MHz = 5333.333 µs for 256 samples @ 48 kHz), independent of the FreeRTOS
+ * tick rate. Phase 1 is backed by a GPTimer whose alarm ISR is pinned to the
+ * render task's core and wakes it via a FreeRTOS task notification.
  *
  * Phase 2 (future I2S): delete the GPTimer and let the blocking
  * i2s_channel_write(..., portMAX_DELAY) be the clock (DMA backpressure paces
@@ -33,10 +33,11 @@ extern "C" {
  * registered on the core that enables the timer, and the notification target is
  * the calling task), so the ISR and the woken task share a core.
  *
- * @param period_us  Audio block period in microseconds (e.g. 5333).
+ * @param period_ticks  Audio block period in GPTimer ticks (16000 at 3 MHz =
+ *                      5333.333 µs for 256 samples @ 48 kHz).
  * @return ESP_OK on success.
  */
-esp_err_t render_clock_start(uint32_t period_us);
+esp_err_t render_clock_start(uint32_t period_ticks);
 
 /**
  * @brief Block until the next render tick.

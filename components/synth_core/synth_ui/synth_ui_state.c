@@ -36,16 +36,6 @@ void sync_layer_to_core(uint8_t li)
     }
 }
 
-void synth_ui_sync_melodic_patch_cache(void)
-{
-    uint16_t patch = sequencer_core_get_melodic_patch();
-    for (uint8_t i = 0; i < seq_state.num_layers; i++) {
-        if (seq_state.layers[i].type == SEQ_LAYER_MELODIC) {
-            seq_state.layers[i].patch = patch;
-        }
-    }
-}
-
 /* ── Note-name helper (local; mirrors display_seq.c's static one) ─────── */
 void ui_note_name(uint8_t midi_note, char buf[4])
 {

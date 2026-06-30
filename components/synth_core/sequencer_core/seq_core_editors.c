@@ -3,9 +3,89 @@
 /* ── State definitions — owns LFO phase accumulators ────────────────── */
 /* Software LFO state (phase accumulator, per-layer/track) */
 float    s_lfo_phase[MAX_LAYERS][SEQ_TRACKS]; /* 0..1 normalized */
-float    s_lfo_hz[MAX_LAYERS][SEQ_TRACKS];    /* Hz from rate+BPM */
+float    s_lfo_hz[MAX_LAYERS][SEQ_TRACKS];    /* Hz from rate+BPM; 0 = native or inactive */
 float    s_lfo_rnd[MAX_LAYERS][SEQ_TRACKS];   /* S&H held value   */
 uint32_t s_lfo_rng_state = 0xDEADBEEFu;
+
+/* ── AMY native LFO helpers (wave patches only) ──────────────────────── */
+
+#if CONFIG_SEQ_MELODIC_AMY_NATIVE_LFO
+
+static uint16_t lfo_wave_to_amy(lfo_wave_t wave)
+{
+    switch (wave) {
+        case LFO_WAVE_SINE:     return SINE;
+        case LFO_WAVE_TRIANGLE: return TRIANGLE;
+        case LFO_WAVE_SAW_UP:   return SAW_UP;
+        case LFO_WAVE_SAW_DOWN: return SAW_DOWN;
+        case LFO_WAVE_SQUARE:   return PULSE;
+        default:                return SINE;
+    }
+}
+
+/* True when the given authored track should use AMY native LFO.
+ * Caller is responsible for ensuring the layer uses a wave patch. */
+static bool is_native_lfo_track(const seq_lfo_t *lfo)
+{
+    return lfo->enabled
+           && lfo->target != LFO_TARGET_PAN
+           && lfo->wave   != LFO_WAVE_RANDOM;
+}
+
+/* Push native LFO config to one track's AMY synth (wave-patch layers only).
+ * Handles both activation (carrier active) and deactivation (osc 1 dormant,
+ * COEF_MOD cleared) so the caller always reaches a consistent AMY state. */
+static void melodic_configure_native_lfo_track(const seq_layer_t *layer, uint8_t track)
+{
+    const seq_lfo_t *lfo   = &layer->lfo[track];
+    uint8_t          synth = layer->synth_id[track];
+
+    if (is_native_lfo_track(lfo)) {
+        float d = (float)lfo->depth / 100.0f;
+        /* osc 0: wire mod_source to osc 1 and set COEF_MOD depth */
+        amy_event *e = amy_helpers_event_begin();
+        e->synth      = synth;
+        e->osc        = 0;
+        e->mod_source = 1;
+        switch (lfo->target) {
+            case LFO_TARGET_FILTER: e->filter_freq_coefs[COEF_MOD] = d * 3.0f; break;
+            case LFO_TARGET_AMP:    e->amp_coefs[COEF_MOD]         = d * 0.5f; break;
+            case LFO_TARGET_PITCH:  e->freq_coefs[COEF_MOD]        = d * 1.0f; break;
+            default: break;
+        }
+        amy_helpers_event_send(e);
+
+        /* osc 1: BPM-synced carrier (no pitch tracking, no velocity, no envelope) */
+        e = amy_helpers_event_begin();
+        e->synth                  = synth;
+        e->osc                    = 1;
+        e->wave                   = lfo_wave_to_amy(lfo->wave);
+        e->freq_coefs[COEF_CONST] = lfo_rate_to_hz(lfo->rate, s_bpm);
+        e->freq_coefs[COEF_NOTE]  = 0.0f;
+        e->freq_coefs[COEF_BEND]  = 0.0f;
+        e->amp_coefs[COEF_CONST]  = 1.0f;
+        e->amp_coefs[COEF_VEL]    = 0.0f;
+        e->amp_coefs[COEF_EG0]    = 0.0f;
+        amy_helpers_event_send(e);
+    } else {
+        /* Disabled or PAN/RANDOM fallback: clear mod coupling, silence carrier */
+        amy_event *e = amy_helpers_event_begin();
+        e->synth                       = synth;
+        e->osc                         = 0;
+        e->filter_freq_coefs[COEF_MOD] = 0.0f;
+        e->amp_coefs[COEF_MOD]         = 0.0f;
+        e->freq_coefs[COEF_MOD]        = 0.0f;
+        amy_helpers_event_send(e);
+
+        e = amy_helpers_event_begin();
+        e->synth                 = synth;
+        e->osc                   = 1;
+        e->amp_coefs[COEF_CONST] = 0.0f;  /* dormant */
+        amy_helpers_event_send(e);
+    }
+}
+
+#endif /* CONFIG_SEQ_MELODIC_AMY_NATIVE_LFO */
 
 /* ── Per-row melodic envelope (runtime-editable) ─────────────────────────── */
 
@@ -150,10 +230,33 @@ void sequencer_core_set_melodic_lfo(uint8_t layer_idx, uint8_t track,
     if (layer->lfo[track].depth > 100) layer->lfo[track].depth = 100;
     layer->lfo_authored[track] = true;
 
+#if CONFIG_SEQ_MELODIC_AMY_NATIVE_LFO
+    bool is_wave = (layer->patch >= SEQ_PATCH_WAVE_BASE &&
+                    layer->patch <= SEQ_PATCH_WAVE_MAX);
+    if (is_wave) {
+        melodic_configure_native_lfo_track(layer, track);
+        /* Restore static target value when disabled or on software-fallback path
+         * (PAN/RANDOM): native clears COEF_MOD but doesn't push the neutral coef. */
+        if (!lfo->enabled || !is_native_lfo_track(&layer->lfo[track])) {
+            if (lfo->target == LFO_TARGET_FILTER)
+                sequencer_core_push_filter(layer->synth_id[track], &layer->filter[track]);
+            else
+                lfo_push_target_neutral(layer->synth_id[track], lfo->target);
+        }
+        /* s_lfo_hz=0 for native tracks so the service loop skips them;
+         * non-zero for PAN/RANDOM fallback so the service loop picks them up. */
+        s_lfo_hz[layer_idx][track] = (lfo->enabled && is_native_lfo_track(&layer->lfo[track]))
+                                     ? 0.0f
+                                     : (lfo->enabled ? lfo_rate_to_hz(lfo->rate, s_bpm) : 0.0f);
+        ESP_LOGI(TAG, "LFO L%u T%u %s %.2f Hz d=%u tgt=%u [native]",
+                 layer_idx, track, lfo->enabled ? "ON" : "OFF",
+                 (double)s_lfo_hz[layer_idx][track], lfo->depth, lfo->target);
+        return;
+    }
+#endif
+
+    /* Software path: non-wave patches, or native LFO disabled at compile time */
     if (!lfo->enabled) {
-        /* Restore target to its stored static value rather than a hardcoded
-         * constant — FILTER in particular has a user-set cutoff that must
-         * survive enable/disable round-trips. */
         if (lfo->target == LFO_TARGET_FILTER) {
             sequencer_core_push_filter(layer->synth_id[track], &layer->filter[track]);
         } else {
@@ -237,6 +340,59 @@ void sequencer_core_lfo_service(void)
             amy_helpers_event_send(e);
         }
     }
+}
+
+/* ── Native LFO rebuild helpers ─────────────────────────────────────────────
+ * Called after a patch/synth rebuild (sequencer_configure_synth) and after
+ * BPM changes so that native LFO carrier state stays consistent with the
+ * current layer patch and tempo. */
+
+/* Re-apply the authored native LFO configuration for every track in a wave-patch
+ * layer.  No-op for non-wave patches (software service loop handles those). */
+void sequencer_configure_melodic_lfo(uint8_t layer_idx)
+{
+#if CONFIG_SEQ_MELODIC_AMY_NATIVE_LFO
+    const seq_layer_t *layer = &s_layers[layer_idx];
+    bool is_wave = (layer->patch >= SEQ_PATCH_WAVE_BASE &&
+                    layer->patch <= SEQ_PATCH_WAVE_MAX);
+    if (!is_wave) return;
+    for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
+        if (!layer->lfo_authored[t]) continue;
+        melodic_configure_native_lfo_track(layer, t);
+        /* Keep s_lfo_hz in sync so the service loop skips native tracks */
+        const seq_lfo_t *lfo = &layer->lfo[t];
+        s_lfo_hz[layer_idx][t] =
+            (lfo->enabled && is_native_lfo_track(lfo))
+            ? 0.0f
+            : (lfo->enabled ? lfo_rate_to_hz(lfo->rate, s_bpm) : 0.0f);
+    }
+#else
+    (void)layer_idx;
+#endif
+}
+
+/* Update the LFO carrier frequency on all active native-LFO tracks after a
+ * BPM change.  Mirrors arp_core_refresh_lfo_freq() for the melodic layer. */
+void melodic_lfo_refresh_native_freq(void)
+{
+#if CONFIG_SEQ_MELODIC_AMY_NATIVE_LFO
+    for (int li = 0; li < s_num_layers; li++) {
+        const seq_layer_t *layer = &s_layers[li];
+        bool is_wave = (layer->patch >= SEQ_PATCH_WAVE_BASE &&
+                        layer->patch <= SEQ_PATCH_WAVE_MAX);
+        if (!is_wave) continue;
+        for (int tr = 0; tr < SEQ_TRACKS; tr++) {
+            if (!layer->lfo_authored[tr]) continue;
+            const seq_lfo_t *lfo = &layer->lfo[tr];
+            if (!is_native_lfo_track(lfo)) continue;
+            amy_event *e = amy_helpers_event_begin();
+            e->synth                  = layer->synth_id[tr];
+            e->osc                    = 1;
+            e->freq_coefs[COEF_CONST] = lfo_rate_to_hz(lfo->rate, s_bpm);
+            amy_helpers_event_send(e);
+        }
+    }
+#endif
 }
 
 /* ── Per-track amplitude trim (graph editor amp mode) ────────────────────────

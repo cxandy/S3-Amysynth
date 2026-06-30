@@ -72,12 +72,15 @@ void bass_preset_configure_track(uint8_t synth_id, uint16_t patch,
         amy_helpers_event_send(e);
 
     } else if (patch == SEQ_PATCH_BASS_2) {
-        /* ─── Preset 265: Solid Sine-Reinforced Acid/Pluck Bass ─────────
-         * SINE sub (clean, unfiltered) + SAW_DOWN bite with LPF24/high Q.
-         * The SINE guarantees a clean sub even when the filter closes.
-         * 80 Hz cutoff puts the squelch resonance peak in the bass register. */
+        /* ─── Preset 265: Acid Pluck Bass ───────────────────────────────
+         * SINE fundamental + SAW_DOWN, combined through a swept LPF24.
+         * osc1's filter runs on the accumulated osc0+osc1 buffer, so the
+         * EG0-driven sweep shapes the whole voice (classic TB-303 squelch).
+         * Cutoff: 80 Hz at rest, sweeps to ~1800 Hz at attack peak, decays
+         * back to ~150 Hz at EG0 sustain 20% — resonance accentuates the
+         * sweep crossover for the "acid" character. */
 
-        /* osc 0: SINE sub-bass (no filter — bypasses completely) */
+        /* osc 0: SINE fundamental */
         e = amy_helpers_event_begin();
         e->synth                 = synth_id;
         e->osc                   = 0;
@@ -93,7 +96,9 @@ void bass_preset_configure_track(uint8_t synth_id, uint16_t patch,
         e->eg0_times[2]  = 100;  e->eg0_values[2] = 0.0f;   /* rel 100ms */
         amy_helpers_event_send(e);
 
-        /* osc 1: SAW_DOWN bite with aggressive filter (high resonance squelch) */
+        /* osc 1: SAW_DOWN with envelope-swept LPF24 (acid squelch).
+         * Filter on osc1 processes accumulated osc0+osc1 signal — both
+         * oscillators pass through this swept LPF. */
         e = amy_helpers_event_begin();
         e->synth                          = synth_id;
         e->osc                            = 1;
@@ -104,7 +109,8 @@ void bass_preset_configure_track(uint8_t synth_id, uint16_t patch,
         e->amp_coefs[COEF_EG0]            = 1.0f;
         e->filter_type                    = FILTER_LPF24;
         e->resonance                      = 1.5f;             /* squelch resonance */
-        e->filter_freq_coefs[COEF_CONST]  = 80.0f;            /* squelch in bass register per spec */
+        e->filter_freq_coefs[COEF_CONST]  = 80.0f;            /* rest cutoff: 80 Hz */
+        e->filter_freq_coefs[COEF_EG0]    = 4.5f;             /* EG0 sweeps 80→~1800 Hz at peak */
         e->eg_type[0]                     = ENVELOPE_NORMAL;
         e->eg0_times[0]  = 5;    e->eg0_values[0] = 1.0f;   /* atk  5ms (snappy) */
         e->eg0_times[1]  = 120;  e->eg0_values[1] = 0.2f;   /* dec 120ms, sus 20% */
@@ -112,45 +118,43 @@ void bass_preset_configure_track(uint8_t synth_id, uint16_t patch,
         amy_helpers_event_send(e);
 
     } else if (patch == SEQ_PATCH_BASS_3) {
-        /* ─── Preset 266: FM DX7-Style Bass ─────────────────────────────
-         * SINE carrier + sub-octave SINE (ratio=0.5) with DX7 envelopes.
-         * Osc 1 uses a sharp DX7 decay that mimics an FM modulator's
-         * "brightness over time" effect (metallic click at note start).
-         * Note: AMY mod_source is AMP-domain; for pitch-tracking audio-rate
-         * FM, this preset uses a sub-octave approach with ENVELOPE_DX7
-         * on osc 1 to approximate DX7 bass tonal character. */
+        /* ─── Preset 266: Bright Synth Bass ─────────────────────────────
+         * PULSE carrier (odd-harmonic rich) + SAW_DOWN sub-octave layer.
+         * PULSE provides harmonic content that cuts through the mix;
+         * the SAW sub (ratio=0.5) reinforces the low-end body.
+         * Percussive envelope: fast attack, moderate decay to sustained body. */
 
-        /* osc 0: SINE carrier, DX7 envelope (will be overwritten by melodic env) */
+        /* osc 0: PULSE carrier — harmonic-rich, strong perceptual loudness */
         e = amy_helpers_event_begin();
         e->synth                 = synth_id;
         e->osc                   = 0;
-        e->wave                  = SINE;
+        e->wave                  = PULSE;
         e->freq_coefs[COEF_NOTE] = 1.0f;
         e->amp_coefs[COEF_CONST] = 1.0f;
         e->amp_coefs[COEF_VEL]   = 1.0f;
         e->amp_coefs[COEF_EG0]   = 1.0f;
         e->chained_osc           = 1;         /* voice-local osc 1 */
-        e->eg_type[0]            = ENVELOPE_DX7;
+        e->eg_type[0]            = ENVELOPE_NORMAL;
         e->eg0_times[0]  = 5;    e->eg0_values[0] = 1.0f;   /* atk  5ms */
-        e->eg0_times[1]  = 200;  e->eg0_values[1] = 0.8f;   /* dec 200ms, sus 80% */
+        e->eg0_times[1]  = 200;  e->eg0_values[1] = 0.7f;   /* dec 200ms, sus 70% */
         e->eg0_times[2]  = 150;  e->eg0_values[2] = 0.0f;   /* rel 150ms */
         amy_helpers_event_send(e);
 
-        /* osc 1: SINE at ratio=0.5 (one octave sub), sharp DX7 decay for
-         * transient metallic click characteristic of DX7 FM bass. */
+        /* osc 1: SAW_DOWN at ratio=0.5 (one octave sub) — low-end body.
+         * Faster decay than carrier so the sub fades to a click-free sustain. */
         e = amy_helpers_event_begin();
         e->synth                 = synth_id;
         e->osc                   = 1;
-        e->wave                  = SINE;
+        e->wave                  = SAW_DOWN;
         e->freq_coefs[COEF_NOTE] = 1.0f;
         e->ratio                 = 0.5f;     /* one octave below carrier */
         e->amp_coefs[COEF_CONST] = 0.7f;
         e->amp_coefs[COEF_VEL]   = 1.0f;
         e->amp_coefs[COEF_EG0]   = 1.0f;
-        e->eg_type[0]            = ENVELOPE_DX7;
-        e->eg0_times[0]  = 2;    e->eg0_values[0] = 1.0f;   /* atk  2ms (attack floor) */
-        e->eg0_times[1]  = 75;   e->eg0_values[1] = 0.1f;   /* dec  75ms, sus 10% */
-        e->eg0_times[2]  = 100;  e->eg0_values[2] = 0.0f;   /* rel 100ms */
+        e->eg_type[0]            = ENVELOPE_NORMAL;
+        e->eg0_times[0]  = 2;    e->eg0_values[0] = 1.0f;   /* atk  2ms */
+        e->eg0_times[1]  = 100;  e->eg0_values[1] = 0.5f;   /* dec 100ms, sus 50% */
+        e->eg0_times[2]  = 120;  e->eg0_values[2] = 0.0f;   /* rel 120ms */
         amy_helpers_event_send(e);
     }
 }

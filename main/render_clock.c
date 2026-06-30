@@ -9,7 +9,8 @@ static const char *TAG = "render_clock";
 
 static gptimer_handle_t s_timer = NULL;
 static TaskHandle_t s_render_task = NULL;
-
+/* We are evaluating changing to use 1 of 2 I2S peripherals as clock, this behaves identically (one ISR per block) 
+// buffer depth. Tradeoff being a one time delay for buffering. */
 // GPTimer alarm ISR. Runs on the core that called gptimer_enable() (i.e. the
 // render task's core), so the notify + wake stay core-local with no cross-core
 // latency. Kept in IRAM and minimal: just a counting task notification.

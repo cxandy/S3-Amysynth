@@ -55,8 +55,8 @@ void sequencer_core_set_quantizer_scale(uint8_t scale_index);
 bool sequencer_core_get_quantizer_enabled(void);
 uint8_t sequencer_core_get_quantizer_root_note(void);
 uint8_t sequencer_core_get_quantizer_scale(void);
-void sequencer_core_set_melodic_patch(uint16_t patch_number);
-uint16_t sequencer_core_get_melodic_patch(void);
+void     sequencer_core_set_layer_patch(uint8_t layer_idx, uint16_t patch_number);
+uint16_t sequencer_core_get_layer_patch(uint8_t layer_idx);
 
 /* ── Drum per-track patch (curated Juno list) ──
  * Drum layers are per-track Juno-patch layers: each track owns its own patch.

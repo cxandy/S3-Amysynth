@@ -189,6 +189,20 @@ config SEQ_ENV_DEBUG_DUMP
 		you can confirm on hardware that edits reach the oscillators. Leave off
 		for normal builds.
 
+config SEQ_MELODIC_AMY_NATIVE_LFO
+	bool "Use AMY built-in LFO for melodic wave patches"
+	default y
+	help
+		When enabled, melodic tracks using wave patches (SINE, SAW, etc.)
+		drive the LFO via AMY's native modulation oscillator (osc 1 per
+		voice, mod_source=1), mirroring the arp implementation.  Bass and
+		Juno/DX7 patch-based tracks continue to use the software service
+		loop so there is no regression on those patch types.
+		PAN target and RANDOM waveform always fall back to the software
+		path even when this option is enabled, since the AMY native LFO
+		does not support them (same limitation as the arp).
+		Disable to revert all melodic LFO to the software accumulator.
+
 comment "Arpeggiator"
 
 config SEQ_ARP_DEFAULT_ENABLED

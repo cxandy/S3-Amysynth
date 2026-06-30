@@ -87,7 +87,12 @@ void sequencer_kill_synth_voices(uint8_t synth_id)
 
 /* Configure a single melodic synth slot as a bare AMY oscillator.
  * Mirrors arp_configure_wave_synth() but for melodic tracks (SEQ_MEL_VOICES
- * voices, 1 osc each).  Envelope and filter are applied by the caller. */
+ * voices per synth slot).  Envelope, filter, and LFO are applied by the caller.
+ *
+ * In native LFO mode oscs_per_voice=2 is always allocated (even before an LFO
+ * is authored) so that toggling the LFO later never forces a pool resize.
+ * Osc 1 starts dormant (amp=0); sequencer_configure_melodic_lfo() activates it
+ * when an LFO is authored. */
 static void sequencer_configure_melodic_wave_track(uint8_t synth_id,
                                                     uint16_t patch,
                                                     uint16_t num_voices)
@@ -103,9 +108,14 @@ static void sequencer_configure_melodic_wave_track(uint8_t synth_id,
     amy_event *e = amy_helpers_event_begin();
     e->synth          = synth_id;
     e->num_voices     = num_voices;
+#if CONFIG_SEQ_MELODIC_AMY_NATIVE_LFO
+    e->oscs_per_voice = 2;   /* osc 1 reserved as native LFO carrier */
+#else
     e->oscs_per_voice = 1;
+#endif
     amy_helpers_event_send(e);
 
+    /* osc 0: voice oscillator */
     e = amy_helpers_event_begin();
     e->synth                  = synth_id;
     e->osc                    = 0;
@@ -116,6 +126,15 @@ static void sequencer_configure_melodic_wave_track(uint8_t synth_id,
     e->amp_coefs[COEF_VEL]    = 1.0f;
     e->amp_coefs[COEF_EG0]    = 1.0f;
     amy_helpers_event_send(e);
+
+#if CONFIG_SEQ_MELODIC_AMY_NATIVE_LFO
+    /* osc 1: LFO carrier slot — starts dormant until an LFO is authored */
+    e = amy_helpers_event_begin();
+    e->synth                 = synth_id;
+    e->osc                   = 1;
+    e->amp_coefs[COEF_CONST] = 0.0f;  /* dormant */
+    amy_helpers_event_send(e);
+#endif
 }
 
 /* Push each AUTHORED row's stored envelope to its own per-row synth.
@@ -239,6 +258,7 @@ void sequencer_configure_synth(uint8_t layer_idx)
     if (!is_wave_patch && !is_bass_patch) synth_ui_fx_reassert_global();
     sequencer_configure_melodic_envelope(layer_idx);
     sequencer_configure_melodic_filter(layer_idx);
+    sequencer_configure_melodic_lfo(layer_idx);
 }
 
 /* ── Public API — melodic patch ─────────────────────────────────────── */
@@ -269,6 +289,30 @@ void sequencer_core_set_melodic_patch(uint16_t patch_number)
 uint16_t sequencer_core_get_melodic_patch(void)
 {
     return s_melodic_patch;
+}
+
+/* Per-layer patch access — targets a single melodic layer rather than all of
+ * them at once (unlike sequencer_core_set_melodic_patch).  Used by the UI
+ * patch-cycle widget so each active melodic layer can step its patch
+ * independently. */
+
+uint16_t sequencer_core_get_layer_patch(uint8_t layer_idx)
+{
+    if (layer_idx >= s_num_layers) return s_melodic_patch;
+    return s_layers[layer_idx].patch;
+}
+
+void sequencer_core_set_layer_patch(uint8_t layer_idx, uint16_t patch_number)
+{
+    if (layer_idx >= s_num_layers) return;
+    seq_layer_t *layer = &s_layers[layer_idx];
+    if (layer->type != SEQ_LAYER_MELODIC) return;
+    patch_number = SEQ_CLAMP_U16(patch_number, 0, SEQ_PATCH_BASS_MAX);
+    if (layer->patch == patch_number) return;
+    layer->patch    = patch_number;
+    s_melodic_patch = patch_number;  /* keep global accessor consistent */
+    sequencer_configure_synth(layer_idx);
+    ESP_LOGI(TAG, "L%u patch -> %u", (unsigned)layer_idx, (unsigned)patch_number);
 }
 
 /* ── Drum per-track patch (curated Juno list) ────────────────────────────── */

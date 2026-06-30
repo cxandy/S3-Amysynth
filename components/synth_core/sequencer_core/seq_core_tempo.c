@@ -74,6 +74,8 @@ void sequencer_core_set_bpm(uint16_t new_bpm)
     }
     /* Sync the arp WAVE-mode LFO carrier to the new BPM (no-op when not active). */
     arp_core_refresh_lfo_freq();
+    /* Sync native LFO carriers on all melodic wave-patch tracks. */
+    melodic_lfo_refresh_native_freq();
 }
 
 uint16_t sequencer_core_get_bpm(void) { return s_bpm; }

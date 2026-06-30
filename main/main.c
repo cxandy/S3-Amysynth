@@ -794,7 +794,7 @@ void app_main(void)
     amy_config_t amy_cfg = amy_default_config();
     amy_cfg.audio = AMY_AUDIO_IS_NONE;
     /* Disable AMY's internal FABT/render tasks: our amy_usb_render_task owns the
-    // render loop entirely (AMY_AUDIO_IS_NONE mode). With multithread=1 (the default),
+    // render loop entirely (AMY_AUDIO_IS_NONE mode). With multithread=1(?? I think 0) (the default),
     // amy_platform_init spawns esp_fill_audio_buffer_task (FABT) and stores app_main's
     // task handle as amy_update_handle. FABT then notifies app_main instead of our
     // render task, causing a permanent deadlock — render_blocks and seq_tick stay 0.*/

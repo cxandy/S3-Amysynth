@@ -91,7 +91,7 @@ void lfo_view_draw(u8g2_t *u8g2, const lfo_view_t *v)
         snprintf(hdr, sizeof(hdr), "LFO  %s", v->target_label);
     } else {
         snprintf(hdr, sizeof(hdr), "LFO  L%u T%u%s",
-                 v->layer_idx, v->track_idx, v->apply_all ? ">L" : ">T");
+                 v->layer_idx + 1u, v->track_idx + 1u, v->apply_all ? ">L" : ">T");
     }
     u8g2_DrawStr(u8g2, 1, 9, hdr);
     u8g2_DrawStr(u8g2, 100, 9, l->enabled ? "ON" : "--");

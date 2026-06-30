@@ -570,7 +570,7 @@ static void filter_load_from_target(void)
             f.enabled     = true;
         }
         snprintf(s_fgraph.label, sizeof(s_fgraph.label), "L%u T%u%s",
-                 (unsigned)li, (unsigned)tr,
+                 (unsigned)(li + 1), (unsigned)(tr + 1),
                  s_editor_apply_all ? ">L" : ">T");
     }
     s_filter_edit = f;
@@ -918,7 +918,7 @@ static void graph_draw_topbar(u8g2_t *u8g2)
         snprintf(buf, sizeof(buf), "DRONE ENV");
     } else {
         snprintf(buf, sizeof(buf), "L%u T%u ENV%s",
-                 s_graph_layer, s_graph_track,
+                 s_graph_layer + 1, s_graph_track + 1,
                  s_editor_apply_all ? ">L" : ">T");
     }
     u8g2_DrawStr(u8g2, 2, 8, buf);

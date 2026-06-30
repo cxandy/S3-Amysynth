@@ -62,17 +62,18 @@ void synth_ui_cycle_melodic_patch(int delta)
     if (seq_state.layers[li].type != SEQ_LAYER_MELODIC) return;
 
     int dir = (delta > 0) ? 1 : -1;
-    uint16_t next = patch_domain_step(&s_melodic_domain, sequencer_core_get_melodic_patch(), dir);
+    uint16_t next = patch_domain_step(&s_melodic_domain, sequencer_core_get_layer_patch(li), dir);
 
-    sequencer_core_set_melodic_patch(next);
-    synth_ui_sync_melodic_patch_cache();
+    sequencer_core_set_layer_patch(li, next);
 
-    uint16_t applied = sequencer_core_get_melodic_patch();
+    uint16_t applied = sequencer_core_get_layer_patch(li);
+    seq_state.layers[li].patch = applied;
+
     const char *name = patch_name_for(applied);
     if (name) {
-        ESP_LOGI(TAG, "melodic patch cycle -> %u (%s)", (unsigned)applied, name);
+        ESP_LOGI(TAG, "L%u melodic patch -> %u (%s)", (unsigned)li, (unsigned)applied, name);
     } else {
-        ESP_LOGI(TAG, "melodic patch cycle -> %u", (unsigned)applied);
+        ESP_LOGI(TAG, "L%u melodic patch -> %u", (unsigned)li, (unsigned)applied);
     }
 }
 

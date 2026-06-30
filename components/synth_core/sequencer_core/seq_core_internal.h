@@ -107,6 +107,8 @@ seq_env_t *seq_layer_env(uint8_t layer_idx, uint8_t track);
 /* From seq_core_editors.c */
 void sequencer_configure_melodic_envelope_track(uint8_t layer_idx, uint8_t track);
 void sequencer_configure_melodic_filter_track(uint8_t layer_idx, uint8_t track);
+void sequencer_configure_melodic_lfo(uint8_t layer_idx);
+void melodic_lfo_refresh_native_freq(void);
 
 /* From seq_core_tempo.c */
 uint16_t sequencer_clamp_bpm(uint16_t b);

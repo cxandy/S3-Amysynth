@@ -287,7 +287,7 @@ uint8_t synth_ui_add_layer(seq_layer_type_t type, uint8_t num_steps)
     layer->step_page  = 0;
 
     if (type == SEQ_LAYER_MELODIC) {
-        layer->patch = sequencer_core_get_melodic_patch();
+        layer->patch = sequencer_core_get_layer_patch(li);
         /* Default: Cmaj7 voicing — C4 E4 G4 B4 */
         static const uint8_t mel_notes[SEQ_TRACKS] = {60, 64, 67, 71};
         for (int t = 0; t < SEQ_TRACKS; t++) {

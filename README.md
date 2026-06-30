@@ -1,5 +1,6 @@
 # S3-Amysynth
 
+
 A handheld synthesizer and step sequencer built on the ESP32-S3 with ESP-IDF.
 Audio is generated on-device by the [AMY](https://github.com/shorepine/amy)
 synth engine and streamed to a PC/DAW over USB Audio (with an I2S DAC path
@@ -252,6 +253,255 @@ checkpoint compiles to nothing.
 
 General rule: the default (release) configuration has every opt-in hook disabled and only the
 cheap heartbeat active, so shipping firmware pays effectively nothing.
+
+## Usage Guide
+
+### Controls
+
+| Control | Description |
+|---|---|
+| **Encoder (rotate)** | Navigate / select; adjusts value when in edit mode |
+| **ENC push (short)** | Confirm / toggle step; enters edit mode for focused field |
+| **ENC push (long)** | Open ADSR/envelope editor for the active instrument |
+| **B0 — play/layer (short)** | Cycle active layer (sequencer screen only) |
+| **B0 — play/layer (long)** | Toggle global playback |
+| **B1 — patch (hold + encoder)** | Cycle patch for the selected track / instrument |
+| **B2 — pitch (hold + encoder)** | Transpose selected track's base note by semitone |
+| **B3 — menu** | Open / close the main menu overlay |
+
+
+
+---
+
+### Screens and navigation
+
+All screen changes go through the **menu overlay** (B3). Navigation order within the overlay: encoder scrolls items, encoder click activates them. While any editor is open, B3 cycles between editor tabs (ADSR → Filter → LFO → ADSR) instead of toggling the menu.
+
+| Menu action | Destination |
+|---|---|
+| Screen: Seq | Step sequencer grid (default at boot) |
+| Screen: Arp | Arpeggiator |
+| Screen: Drone | Stutter drone |
+| Screen: Prog | Chord progression editor |
+| Screen: TrackOpts | Layer / track options |
+
+**Overlay render priority (highest first):** Filter editor > LFO editor > ADSR graph > Menu > Arp / Drone / Prog / TrackOpts > Sequencer.
+
+---
+
+### Sequencer
+
+The device boots to the sequencer with one drum layer and one melodic layer already running at 120 BPM.
+
+**Controls:**
+
+| Input | Action |
+|---|---|
+| Encoder | Move step cursor (wraps track→track; 32-step layers auto-page) |
+| ENC short | Toggle step at cursor |
+| ENC long | Open ADSR editor (bound to selected track) |
+| B0 short | Cycle active layer — resets cursor to track 0 step 0 |
+| B0 long | Toggle play / stop |
+| B1 hold + encoder | Cycle patch for the selected track |
+| B2 hold + encoder | Transpose selected track's pitch (semitones, MIDI 0–127) |
+| B3 | Open menu |
+
+**Layers:**
+
+- Up to 4 layers; layer 0 is always the drum layer (cannot be deleted).
+- Add / remove melodic layers via menu items **Add Layer** / **Del Layer**, or the **TrackOpts** screen (B1 = add, B2 = delete).
+- Each layer is 4 tracks × 16 or 32 steps (set at creation time).
+- Melodic layers share one patch across all 4 tracks; drum tracks each carry their own patch.
+- A 16-step layer and a 32-step layer running simultaneously stay in phase — the 16-step pattern loops twice per 32-step cycle.
+
+**Patch selection:**
+
+B1 hold + encoder cycles through a curated list of 17 patches by default (DX7 electric pianos, a few Juno leads, acoustic piano, and raw wave types). Set `CONFIG_SEQ_PATCH_BROWSE_FULL_RANGE=y` to walk all 267 presets (Juno 0–127, DX7 128–255, piano 256, waves 257–263, custom bass 264–266).
+
+**Scale quantizer:**
+
+Enabled via menu item **Quant**. Changing **Scale** or **Root** re-snaps all active melodic steps immediately — there is no undo. The arp has its own independent scale and root (see below).
+
+---
+
+### Menu — runtime parameters
+
+| Item | Range |
+|---|---|
+| BPM | 40–300 |
+| Quant | ON / OFF |
+| Scale | Chromatic, Major, Minor, Dorian, Phrygian, Lydian, Mixolydian, Aeolian, Locrian, Pentatonic Maj/Min, Blues, Harmonic Minor, Melodic Minor, Whole Tone, Diminished, Augmented |
+| Root | MIDI 0–127 |
+| Arp | ON / OFF |
+| Drone | ON / OFF |
+| Drum Mode | Synth (Juno/DX7 patches) / PCM (808 samples) |
+| EQ Low / Mid / High | −15 to +15 dB (1 dB steps) |
+| Echo / Chorus / Reverb | 0–100 % (5 % steps) |
+| Preset FX | ON / OFF — see [Quirks](#non-obvious-quirks) |
+| Volume | 0–200 % (unity = 100 %) |
+
+---
+
+### Arpeggiator
+
+The arp runs on synth slot 63, independent of the sequencer's layers. It uses its own scale / root quantizer and schedules repeating AMY events that are always in sync with the sequencer's BPM.
+
+**Controls on the ARP screen:**
+
+| Input | Action |
+|---|---|
+| Encoder | Navigate fields and note slots; adjust when editing |
+| ENC short | Enter / exit edit mode on focused field |
+| ENC long | Open ADSR editor (bound to arp) |
+| B1 hold + encoder | Cycle the arp's own patch |
+| B3 | Menu |
+| B0 long | Play / stop |
+
+**Fields (cursor order):** Enable → Direction (UP / DOWN / SLOT) → Octaves (1–4) → Rate (1/4 · 1/8 · 1/16 · 1/32, tempo-locked) → Gate % (10–100 %) → Source (PTCH / WAVE) → Wave (SAW / PULSE / TRI / SINE / NOISE; visible in WAVE mode only) → Note slots 0–7.
+
+Note slots store raw chromatic MIDI pitches (24–127). Turning below 24 clears the slot. There is a REST step — set by turning down from an empty slot; a rest holds silence for its step. All quantization to the arp's own scale/root happens at playback, so editing a slot never permanently absorbs a quantized pitch.
+
+Defaults at boot: OFF, Major scale, root C4, gate 75 %, 1 octave, patch 138 (DX7 E.Piano 1), all slots empty. The arp produces no sound until enabled **and** at least one slot is filled.
+
+---
+
+### Drone synth
+
+A tempo-locked stutter drone (slots 64/65: chord carrier + mono sub). Fully independent of the sequencer grid; timing derived from the same AMY musical clock.
+
+**Controls on the Drone screen:**
+
+| Input | Action |
+|---|---|
+| Encoder | Move row cursor; adjust value when editing |
+| ENC short | Toggle edit on focused row |
+| ENC long | Open ADSR editor (bound to drone) |
+| B1 hold + encoder | Cycle patch (PATCH mode only) |
+| B3 | Menu |
+| B0 long | Play / stop |
+
+**Parameters:**
+
+| Parameter | Range / notes |
+|---|---|
+| SOURCE | WAVE (raw oscillator) or PATCH (AMY preset) |
+| WAVE | SAW / SAWUP / PULSE / TRI / SINE (WAVE mode only) |
+| ROOT | C1–C5 (chromatic; C, C#, D … B; shifts the entire voicing) |
+| CHORD | Maj, Min, Maj7, Min7, Dom7, Sus2, Sus4, Dim, Aug, Min9, Maj9 — same set as Prog mode; carrier capped at 5 voices |
+| RES | 0.1–8.0 (hard-capped to prevent self-oscillation) |
+| PEAK (CONST amp) | 0.0–1.0 — always-on carrier level (WAVE mode only; must stay > 0) |
+| DUCK (MOD amp) | 0.0–1.0 — stutter depth; 1.0 = full hard gate (WAVE mode only) |
+| STUTTER rate | 1/4 · 1/8 · 1/16 · 1/32, tempo-locked LFO (WAVE mode only) |
+| GATE LEN | 0.0–1.0 — gate duty cycle |
+| SWING | 0–66 % |
+| PATTERN | FULL (all 8), FOUR (1 0 1 0… — 4-on-the-floor), OFFBT (0 1 0 1… — upbeat), GALOP (1 1 0 1 1 0 1 0 — gallop/short-short-long), DUB (1 0 0 0 1 0 1 0 — dub push); 8-step masks against stutter subdivisions |
+| BLIP | filter-zap intensity on gate edge |
+| SWEEP LO / HI | 65–8000 Hz — filter cutoff sweep range |
+| SWEEP SPD | 1–16 bars per sweep cycle |
+| SUB | ON / OFF — mono octave-down voice |
+| SUB INT | 0 to −36 semitones below chord root |
+| PATCH | AMY preset number (PATCH mode only) |
+
+In **PATCH mode**, the stutter LFO (PEAK / DUCK / STUTTER rows) is inactive — the patch owns its own oscillators and amplitude. Filter sweep and resonance still apply.
+
+---
+
+### Chord progression (Prog screen) ⚠ work-in-progress
+
+The Prog screen (menu → Screen: Prog) holds a list of up to 8 chord entries. When the progression is enabled it auto-advances through them as the sequencer plays, re-voicing any layers that have chord mode on and re-rooting the drone to match.
+
+Each entry has three fields, cycled by ENC click while editing:
+
+| Field | Options |
+|---|---|
+| Root | C, C#, D, D#, E, F, F#, G, G#, A, A#, B |
+| Chord type | Maj, Min, Maj7, Min7, Dom7, Sus2, Sus4, Dim, Aug, Min9, Maj9 |
+| Duration | 1, 2, 3, 4, 8, or 16 bars |
+
+**Controls on the Prog screen:**
+
+| Input | Action |
+|---|---|
+| Encoder | Scroll cursor (row 0 = enable toggle; rows 1–8 = entries); adjust when editing |
+| ENC short | Enter / exit edit; advance to next sub-field within an entry |
+| B1 | Delete the entry at the cursor |
+| B2 | Append a new entry (default: C Maj 1 bar) |
+| B3 | Menu |
+| B0 long | Play / stop |
+
+**Per-layer chord mode** is set from TrackOpts (menu → Screen: TrackOpts). When a melodic layer has chord mode on, the progression overwrites its notes to the nearest chord tone on each bar change. Without chord mode on a layer, the progression advances visually but doesn't transpose that layer's steps.
+
+**Current limitations:** there is no way to persist the progression across power cycles (no NVS save yet), the drone follows the progression's root and chord automatically when the progression is enabled but the drone's own ROOT/CHORD rows are not locked out, and there is no per-layer "chord mode off" indicator on the sequencer screen — check TrackOpts to see which layers are following the progression.
+
+---
+
+### Envelope (ADSR) editor
+
+Long-press ENC from the sequencer, arp, or drone screen to open the graphical ADSR editor. The editor binds to whichever instrument opened it.
+
+**Controls:**
+
+| Input | Action |
+|---|---|
+| Encoder | Move / adjust the selected ADSR point |
+| ENC short | Toggle between point-select and value-adjust mode |
+| ENC long | **Commit** envelope and close |
+| B0 long | **Cancel** — close without saving |
+| B1 | Reset to patch default |
+| B2 (melodic/arp only) | Toggle amp-edit mode (encoder adjusts amplitude trim 0–100 % instead of time/level) |
+| B3 | Cycle to Filter editor |
+
+**Points:** Attack peak → Sustain level → Release end. Decay time is auto-derived from attack time and sustain level — it is not a separately draggable point.
+
+A committed envelope persists across patch changes. To restore the patch's own envelope, re-open the editor and press B1.
+
+Time range auto-switches between SHORT (0–2 s) and LONG (0–15 s, log-squashed) based on total envelope length. The transition has hysteresis (≥2000 ms switches to LONG; ≤1700 ms switches back).
+
+---
+
+### Filter and LFO editors
+
+While the ADSR editor is open, press B3 to cycle to the **Filter editor**, then B3 again for the **LFO editor** (sequencer / arp only — drone has no LFO tab), then back to ADSR.
+
+**Filter parameters:** cutoff (~20–8000 Hz), resonance, type (LPF / HPF / BPF / LPF24), enable. ENC long = commit, B0 long = cancel, B1 = instant enable toggle.
+
+**LFO parameters:** target (filter / pitch / amp / …), wave, rate (bar-locked), depth (0–100 %), enable. ENC long = commit, B0 long = cancel.
+
+---
+
+### Effects and global mix
+
+All effects are global — they apply to the entire mix, not per-instrument:
+
+- **EQ Low / Mid / High** — three-band parametric EQ in dB
+- **Echo** — delay level (time is tempo-locked internally)
+- **Chorus** — modulation chorus level
+- **Reverb** — reverb level
+- **Volume** — master output gain (0–200 %, unity at 100 %)
+
+These are set via the menu and cached by the firmware. Audio leaves over **USB Audio Class 2.0** (48 kHz, stereo, 16-bit) — the I2S PCM5102 DAC is wired but not yet the active output path.
+
+---
+
+### Non-obvious quirks
+
+**Preset FX overwrites your EQ and Chorus on every patch load.** AMY's built-in Juno patch strings encode global `eq` and `chorus` commands that fire every time a patch is loaded. With **Preset FX = OFF** (default), the firmware immediately reasserts your EQ/Chorus/Echo/Reverb cache after each load, so patches are "timbre only." With **Preset FX = ON**, each patch load re-applies whatever FX settings that preset embeds — across all layers and instruments simultaneously.
+
+**Scale changes are live and non-destructive only on the grid.** Changing the global scale or root in the menu re-snaps all active melodic step pitches on the next sequencer tick. The stored pitches are updated in place — there is no undo.
+
+**The arp and drone use independent quantizers.** The global Scale / Root set in the menu does not affect the arp's own pitch snapping. The drone chord follows its ROOT and CHORD preset, also independent.
+
+**Drone PATCH mode disables the stutter.** In PATCH mode the PEAK / DUCK / STUTTER rows are hidden and the LFO gate is inactive. The patch's own AMY oscillator drives the amplitude. Filter sweep and resonance still apply.
+
+**CONST (drone) must stay above 0.** AMY skips zero amplitude coefficients entirely. If PEAK hits exactly 0, the always-on carrier level is omitted from the multiply chain and the volume jumps. Keep PEAK above 0.0 for the intended `const·(1 ± mod·LFO)` behaviour.
+
+**B1 and B2 change role per context.** Outside editors they are hold-gesture triggers (patch / pitch). Inside ADSR and LFO editors they become scope-toggle (B1 = apply to this track only vs. all tracks in layer) and amp-edit mode (B2). In the PROG and TrackOpts screens they become entry add (B2) / entry delete or layer add (B1).
+
+**All oscillators share a fixed pool of 250.** Melodic layers, the arp, drum tracks, and the drone all draw from a single pool. Heavy polyphonic patches across many layers can exhaust it and cause voice-stealing.
+
+**Layer cycling resets the grid cursor.** B0 single-click cycles layers but always resets to track 0, step 0, edit mode on. An in-progress patch-hold or pitch-hold gesture does not survive the switch.
+
+---
 
 ## Documentation
 

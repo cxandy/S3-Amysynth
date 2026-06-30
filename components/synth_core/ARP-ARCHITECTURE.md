@@ -306,9 +306,10 @@ neither the menu nor the graph editor is up.
 |---|---|
 | Encoder turn (not editing) | Move cursor across fields then 8 slots (`ARP_CUR_*`) |
 | Encoder turn (editing) | Adjust the focused field / slot value |
-| `MY_BUTTON_ENC` press | Toggle edit on the focused field (`arp_handle_button`) |
+| `MY_BUTTON_ENC` short press | Toggle edit on the focused field (`arp_handle_button`) |
+| `MY_BUTTON_ENC` long press | Open ADSR graph editor (bound to arp envelope) |
 | `MY_BUTTON_1` hold + turn | Cycle the arp's OWN patch (`arp_cycle_patch`) |
-| `MY_BUTTON_3` single-click | Toggle menu overlay |
+| `MY_BUTTON_3` single-click | Toggle menu overlay (or cycle to Filter editor while ADSR is open) |
 | `MY_BUTTON_0` long-press | Global play/pause (shared with sequencer) |
 
 Cursor index space (`display_arp.h`): `0=ENABLE, 1=MODE, 2=OCT, 3=RATE,

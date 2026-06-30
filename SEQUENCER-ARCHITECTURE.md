@@ -197,13 +197,15 @@ extern synth_ui_state_t seq_state;
 
 | Button | Event | Action |
 |---|---|---|
-| MY_BUTTON_0 (GPIO17) | `BUTTON_SINGLE_CLICK` | Cycle active layer (L0 ↔ L1 ↔ …) |
+| MY_BUTTON_0 (GPIO17) | `BUTTON_SINGLE_CLICK` | Cycle active layer (L0 ↔ L1 ↔ …); resets cursor to track 0, step 0, edit mode |
 | MY_BUTTON_0 (GPIO17) | `BUTTON_LONG_PRESS_START` | Toggle play / stop |
-| MY_BUTTON_ENC (GPIO16) | `BUTTON_PRESS_DOWN` | Toggle focused step / toggle play (non-edit mode) |
-| MY_BUTTON_1 (GPIO18) | held + encoder | Adjust BPM |
-| MY_BUTTON_2 (GPIO8) | held + encoder | Scroll base note for selected track (drum or melodic) |
+| MY_BUTTON_ENC (GPIO16) | `BUTTON_SINGLE_CLICK` | Toggle focused step (edit mode) / toggle play (non-edit mode) |
+| MY_BUTTON_ENC (GPIO16) | `BUTTON_LONG_PRESS_START` | Open ADSR graph editor (bound to selected track) |
+| MY_BUTTON_1 (GPIO18) | held + encoder | Cycle patch for selected track (melodic layer) or selected drum track (drum layer) |
+| MY_BUTTON_2 (GPIO8) | held + encoder | Transpose base note for selected track (semitones, MIDI 0–127) |
+| MY_BUTTON_3 (GPIO42) | `BUTTON_SINGLE_CLICK` | Open / close main menu overlay |
 
-Note: MY_BUTTON_0's role changed with this implementation. Previously it was play/stop on press-down. It is now short-press = cycle layer, long-press = play/stop.
+⚠ **Stale correction:** an earlier version of this table listed MY_BUTTON_1 as "Adjust BPM." BPM is now set via the menu overlay (`BPM` value item). MY_BUTTON_1 + encoder is the patch-select gesture. BPM can also be adjusted with a bare encoder turn when `edit_mode=false` (step cursor inactive).
 
 ---
 

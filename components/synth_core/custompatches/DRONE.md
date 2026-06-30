@@ -82,17 +82,27 @@ directly as the **CONST** and **MOD** screen rows (0.0–1.0, 0.1 steps).
 
 ## Chords
 
-The carrier plays a **chord**, one AMY voice per note. Presets live in a fixed
-width-5 MIDI matrix in `drone_core.c` (`-1` = unused), so the main synth is sized
-to each chord's note count:
+The carrier plays a **chord**, one AMY voice per note, up to `DRONE_CHORD_MAX_NOTES = 5`.
+Chord voicing is derived at runtime from the shared `quantizer_chord_intervals(chord_type_t)`
+table — the same table used by the Prog screen and the scale quantizer. The fixed
+per-preset MIDI note lists that appeared here previously have been removed.
 
-| Preset | Notes (MIDI) |
+**Root** is a drone-local MIDI note (24–72, C1–C5); all chord intervals are
+computed relative to it. **Chord type** is any of the 11 shared types:
+
+| Type | Intervals (semitones from root) |
 |---|---|
-| Am7   | A2 C3 E3 G3 |
-| Fmaj7 | F2 A2 C3 E3 |
-| Dm9   | D2 F2 A2 C3 E3 |
-| Cmaj9 | C3 E3 G3 B3 D4 |
-| Gsus4 | G2 C3 D3 G3 |
+| Maj  | 0, 4, 7 |
+| Min  | 0, 3, 7 |
+| Maj7 | 0, 4, 7, 11 |
+| Min7 | 0, 3, 7, 10 |
+| Dom7 | 0, 4, 7, 10 |
+| Sus2 | 0, 2, 7 |
+| Sus4 | 0, 5, 7 |
+| Dim  | 0, 3, 6 |
+| Aug  | 0, 4, 8 |
+| Min9 | 0, 3, 7, 10, 14 |
+| Maj9 | 0, 4, 7, 11, 14 |
 
 `drone_set_chord()` releases the old chord's held notes, rebuilds the main synth
 to the new voice count, then re-triggers — so switching to a smaller chord never

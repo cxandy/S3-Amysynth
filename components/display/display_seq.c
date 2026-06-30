@@ -12,7 +12,7 @@ static void note_name_str(uint8_t midi_note, char buf[4])
     snprintf(buf, 4, "%s%d", note_names[midi_note % 12], octave);
 }
 
-void display_seq_draw_frame(u8g2_t *u8g2, const display_seq_state_t *state)
+void display_seq_draw_frame(u8g2_t *u8g2, const display_seq_state_t *state, uint16_t bpm)
 {
     /* Nothing to draw until at least one layer exists. */
     if (state->num_layers == 0) {
@@ -32,7 +32,7 @@ void display_seq_draw_frame(u8g2_t *u8g2, const display_seq_state_t *state)
     u8g2_SetFont(u8g2, u8g2_font_6x10_tf);
     char buf[16];
 
-    snprintf(buf, sizeof(buf), "BPM %3d", state->bpm);
+    snprintf(buf, sizeof(buf), "BPM %3d", (int)bpm);
     u8g2_DrawStr(u8g2, 2, 8, buf);
 
     /* Layer indicator: "L0 DRM" / "L1 MEL" */

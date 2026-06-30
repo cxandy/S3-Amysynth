@@ -87,8 +87,8 @@ bool synth_ui_trackopts_handle_button(void);
  * loading a preset onto any synth would otherwise re-skin the whole mix's FX.
  * The sequencer/arp/drone patch-load paths call this immediately after loading;
  * it is a no-op while the user has enabled the "Preset FX" menu toggle (i.e.
- * deliberately letting presets drive the global FX). */
-void synth_ui_fx_reassert_global(void);
+ * deliberately letting presets drive the global FX).
+ * Declared in amy_fx.h (canonical) — include that header directly. */
 
 /* Accessors for the (module-private) UI state. seq_state itself is static in
  * synth_ui.c — other modules read what they need through these getters rather

@@ -143,7 +143,6 @@ typedef struct {
     seq_layer_t layers[MAX_LAYERS];
     uint8_t     num_layers;
     uint8_t     active_layer_idx;
-    uint16_t    bpm;
     uint8_t     current_pattern;
     uint8_t     current_step;       /* 0 .. (active layer num_steps - 1) */
     bool        playing;
@@ -162,8 +161,9 @@ typedef struct {
 
 /**
  * @brief Draw one full sequencer frame from the provided state.
+ * @param bpm  Current BPM value, passed explicitly (not stored in state).
  */
-void display_seq_draw_frame(u8g2_t *u8g2, const display_seq_state_t *state);
+void display_seq_draw_frame(u8g2_t *u8g2, const display_seq_state_t *state, uint16_t bpm);
 
 #ifdef __cplusplus
 }

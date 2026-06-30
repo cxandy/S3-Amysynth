@@ -13,6 +13,7 @@
 
 #include "custompatches/drone_core.h"
 #include "synth_ui.h"      /* seq_get_bpm() (live global BPM) */
+#include "amy_fx.h"        /* synth_ui_fx_reassert_global() */
 #include "sequencer_core.h"    /* sequencer_core_push_envelope */
 #include "seq_clamp.h"
 #include "chord_types.h"   /* chord_type_t, chord_type_name() */

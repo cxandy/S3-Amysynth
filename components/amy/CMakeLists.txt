@@ -25,6 +25,13 @@ elseif(CONFIG_AMY_PROFILE_COARSE)
     target_compile_definitions(${COMPONENT_LIB} PUBLIC AMY_PROFILE_COARSE)
 endif()
 
+# Wavetable oscillator (Kconfig: AMY_WAVETABLE). PUBLIC so consumers that
+# include amy.h (synth_core) see the same wave=WAVETABLE support and can read
+# pcm_wavetable_base/samples/len to route virtual wavetable patches.
+if(CONFIG_AMY_WAVETABLE)
+    target_compile_definitions(${COMPONENT_LIB} PUBLIC AMY_WAVETABLE)
+endif()
+
 # Keep the same compile flag for amy.c (relax strict-aliasing warnings)
 set(AMY_CORE_C "${CMAKE_CURRENT_LIST_DIR}/src/amy.c")
 if(EXISTS ${AMY_CORE_C})

@@ -33,6 +33,7 @@ static const char *target_label(lfo_target_t t)
         case LFO_TARGET_AMP:    return "AMP";
         case LFO_TARGET_PITCH:  return "PCH";
         case LFO_TARGET_PAN:    return "PAN";
+        case LFO_TARGET_SCAN:   return "SCN";
         default:                return "???";
     }
 }

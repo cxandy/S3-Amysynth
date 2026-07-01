@@ -51,6 +51,7 @@ static void melodic_configure_native_lfo_track(const seq_layer_t *layer, uint8_t
             case LFO_TARGET_FILTER: e->filter_freq_coefs[COEF_MOD] = d * 3.0f; break;
             case LFO_TARGET_AMP:    e->amp_coefs[COEF_MOD]         = d * 0.5f; break;
             case LFO_TARGET_PITCH:  e->freq_coefs[COEF_MOD]        = d * 1.0f; break;
+            case LFO_TARGET_SCAN:   e->duty_coefs[COEF_MOD]        = d * 0.5f; break;
             default: break;
         }
         amy_helpers_event_send(e);
@@ -292,8 +293,7 @@ void sequencer_core_set_melodic_lfo(uint8_t layer_idx, uint8_t track,
     layer->lfo_authored[track] = true;
 
 #if CONFIG_SEQ_MELODIC_AMY_NATIVE_LFO
-    bool is_wave = (layer->patch >= SEQ_PATCH_WAVE_BASE &&
-                    layer->patch <= SEQ_PATCH_WAVE_MAX);
+    bool is_wave = sequencer_core_is_wave_patch(layer->patch);
     if (is_wave) {
         melodic_configure_native_lfo_track(layer, track);
         /* Restore static target value when disabled or on software-fallback path
@@ -416,8 +416,7 @@ void sequencer_configure_melodic_lfo(uint8_t layer_idx)
 {
 #if CONFIG_SEQ_MELODIC_AMY_NATIVE_LFO
     const seq_layer_t *layer = &s_layers[layer_idx];
-    bool is_wave = (layer->patch >= SEQ_PATCH_WAVE_BASE &&
-                    layer->patch <= SEQ_PATCH_WAVE_MAX);
+    bool is_wave = sequencer_core_is_wave_patch(layer->patch);
     if (!is_wave) return;
     for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
         if (!layer->lfo_authored[t]) continue;
@@ -441,8 +440,7 @@ void melodic_lfo_refresh_native_freq(void)
 #if CONFIG_SEQ_MELODIC_AMY_NATIVE_LFO
     for (int li = 0; li < s_num_layers; li++) {
         const seq_layer_t *layer = &s_layers[li];
-        bool is_wave = (layer->patch >= SEQ_PATCH_WAVE_BASE &&
-                        layer->patch <= SEQ_PATCH_WAVE_MAX);
+        bool is_wave = sequencer_core_is_wave_patch(layer->patch);
         if (!is_wave) continue;
         for (int tr = 0; tr < SEQ_TRACKS; tr++) {
             if (!layer->lfo_authored[tr]) continue;

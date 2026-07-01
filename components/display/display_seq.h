@@ -88,6 +88,8 @@ typedef enum {
 typedef enum {
     LFO_TARGET_FILTER = 0, LFO_TARGET_AMP,
     LFO_TARGET_PITCH,      LFO_TARGET_PAN,
+    LFO_TARGET_SCAN,       /* AMY `duty`: wavetable cycle-scan position when
+                               wave=WAVETABLE, pulse width when wave=PULSE */
     LFO_TARGET_COUNT,
 } lfo_target_t;
 typedef enum {

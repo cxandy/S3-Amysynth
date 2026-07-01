@@ -42,6 +42,24 @@ static const int16_t SEQ_DRUM_PCM_PRESET[SEQ_TRACKS] = {
     9,    /* track 3: [9] 808-DRYCLP-D   */
 };
 
+/* Per-layer, per-track PCM preset override. Defaults (lazily) to
+ * SEQ_DRUM_PCM_PRESET; sequencer_core_set_drum_pcm_preset() is the only way
+ * to change an entry, letting a runtime-recorded sample (custompatches/
+ * sample_rec) take over one track's slot without a shared-struct field. */
+static uint16_t s_drum_pcm_preset[MAX_LAYERS][SEQ_TRACKS];
+static bool     s_drum_pcm_preset_init[MAX_LAYERS];
+
+static uint16_t drum_pcm_preset_for(uint8_t layer_idx, uint8_t track)
+{
+    if (!s_drum_pcm_preset_init[layer_idx]) {
+        for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
+            s_drum_pcm_preset[layer_idx][t] = (uint16_t)SEQ_DRUM_PCM_PRESET[t];
+        }
+        s_drum_pcm_preset_init[layer_idx] = true;
+    }
+    return s_drum_pcm_preset[layer_idx][track];
+}
+
 /* EDM-tuned envelope parameters for PCM drum tracks (one-shot decay, sustain=0). */
 static const float DRUM_PCM_ATK_MS[SEQ_TRACKS] = {2.0f,  1.0f,  1.0f,  1.0f};
 static const float DRUM_PCM_DEC_MS[SEQ_TRACKS] = {600.0f, 200.0f, 100.0f, 150.0f};
@@ -222,7 +240,7 @@ void sequencer_configure_synth(uint8_t layer_idx)
                 e->synth  = layer->synth_id[t];
                 e->osc    = 0;
                 e->wave   = PCM;
-                e->preset = SEQ_DRUM_PCM_PRESET[t];
+                e->preset = drum_pcm_preset_for(layer_idx, t);
                 amy_helpers_event_send(e);
             }
             sequencer_configure_drum_pcm_voice_params(layer_idx);
@@ -409,6 +427,34 @@ void sequencer_core_set_drum_engine(seq_drum_engine_t engine)
 seq_drum_engine_t sequencer_core_get_drum_engine(void)
 {
     return s_drum_engine;
+}
+
+void sequencer_core_set_drum_pcm_preset(uint8_t layer_idx, uint8_t track,
+                                        uint16_t preset_number)
+{
+    if (layer_idx >= s_num_layers || track >= SEQ_TRACKS) return;
+    if (s_layers[layer_idx].type != SEQ_LAYER_DRUM) return;
+
+    (void)drum_pcm_preset_for(layer_idx, track);   /* seed defaults first */
+    s_drum_pcm_preset[layer_idx][track] = preset_number;
+
+    if (s_drum_engine == SEQ_DRUM_PCM) {
+        /* Live-reload just this track's osc (mirrors sequencer_core_set_drum_patch). */
+        amy_event *e = amy_helpers_event_begin();
+        e->synth  = s_layers[layer_idx].synth_id[track];
+        e->osc    = 0;
+        e->wave   = PCM;
+        e->preset = preset_number;
+        amy_helpers_event_send(e);
+    }
+    ESP_LOGI(TAG, "drum L%u track %u PCM preset -> %u",
+             layer_idx, track, (unsigned)preset_number);
+}
+
+uint16_t sequencer_core_get_drum_pcm_preset(uint8_t layer_idx, uint8_t track)
+{
+    if (layer_idx >= s_num_layers || track >= SEQ_TRACKS) return 0;
+    return drum_pcm_preset_for(layer_idx, track);
 }
 
 /* ── Arpeggiator support ─────────────────────────────────────────────────── */

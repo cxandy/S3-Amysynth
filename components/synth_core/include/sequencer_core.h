@@ -85,6 +85,18 @@ typedef enum {
 void              sequencer_core_set_drum_engine(seq_drum_engine_t engine);
 seq_drum_engine_t sequencer_core_get_drum_engine(void);
 
+/* ── Drum per-track PCM preset override ──
+ * PCM mode plays SEQ_DRUM_PCM_PRESET[track] (built-in 808 samples) by
+ * default; this lets a runtime-recorded sample (custompatches/sample_rec)
+ * replace one track's preset without adding a shared-struct field. Live-
+ * reloads the track's osc immediately if the layer is already in PCM mode;
+ * otherwise the override is stored and takes effect on the next
+ * sequencer_core_set_drum_engine(SEQ_DRUM_PCM) call. No-op for non-drum/
+ * out-of-range layers. */
+void     sequencer_core_set_drum_pcm_preset(uint8_t layer_idx, uint8_t track,
+                                            uint16_t preset_number);
+uint16_t sequencer_core_get_drum_pcm_preset(uint8_t layer_idx, uint8_t track);
+
 /* ── Per-row melodic ADSR envelope (runtime-editable) ──
  * Scoped per row (per track); each row has its own AMY synth, so its envelope
  * is fully independent. See seq_env_t in display_seq.h for the extension path

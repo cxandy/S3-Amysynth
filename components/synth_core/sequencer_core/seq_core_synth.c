@@ -163,6 +163,19 @@ static void sequencer_configure_melodic_envelope(uint8_t layer_idx)
     }
 }
 
+/* Push each AUTHORED row's stored second envelope (EG1) to its own synth.
+ * No "force" case (unlike EG0/KS above): EG1 has no raw-wave fallback role,
+ * it only matters once a row has actually been authored. */
+static void sequencer_configure_melodic_envelope1(uint8_t layer_idx)
+{
+    const seq_layer_t *layer = &s_layers[layer_idx];
+    for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
+        if (layer->env1_authored[t]) {
+            sequencer_configure_melodic_envelope1_track(layer_idx, t);
+        }
+    }
+}
+
 /* Push the filter for every authored row in a layer (called after patch reload). */
 static void sequencer_configure_melodic_filter(uint8_t layer_idx)
 {
@@ -185,6 +198,15 @@ seq_env_t *seq_layer_env(uint8_t layer_idx, uint8_t track)
     if (layer_idx >= s_num_layers) layer_idx = 0;
     if (track >= SEQ_TRACKS) track = 0;
     return &s_layers[layer_idx].env[track];
+}
+
+/* Second envelope (EG1) counterpart of seq_layer_env() above — same clamping,
+ * same single point of truth for "which EG1 applies to (layer,track)". */
+seq_env_t *seq_layer_env1(uint8_t layer_idx, uint8_t track)
+{
+    if (layer_idx >= s_num_layers) layer_idx = 0;
+    if (track >= SEQ_TRACKS) track = 0;
+    return &s_layers[layer_idx].env1[track];
 }
 
 /* AMY events are emitted through the shared amy_helpers scratch buffer (see
@@ -271,6 +293,7 @@ void sequencer_configure_synth(uint8_t layer_idx)
      * from one doesn't leave stale global FX active. */
     if (!is_wave_patch && !is_bass_patch) synth_ui_fx_reassert_global();
     sequencer_configure_melodic_envelope(layer_idx);
+    sequencer_configure_melodic_envelope1(layer_idx);
     sequencer_configure_melodic_filter(layer_idx);
     sequencer_configure_melodic_lfo(layer_idx);
 }
@@ -438,6 +461,26 @@ void sequencer_core_push_envelope(uint8_t synth, const seq_env_t *env)
     e->eg0_values[1] = sustain;
     e->eg0_times[2]  = env->release_ms;
     e->eg0_values[2] = 0.0f;
+    amy_helpers_event_send(e);
+}
+
+void sequencer_core_push_envelope_eg1(uint8_t synth, uint8_t osc, const seq_env_t *env)
+{
+    if (env == NULL) return;
+    float sustain = (float)env->sustain_pct / 100.0f;
+
+    amy_event *e = amy_helpers_event_begin();
+    e->synth         = synth;
+    e->osc           = osc;
+    e->bp_is_set[1]  = 1;
+    e->eg_type[1]    = env->eg_type;
+    uint32_t attack_ms = (env->attack_ms < 2) ? 2 : env->attack_ms;  /* 2 ms floor */
+    e->eg1_times[0]  = attack_ms;
+    e->eg1_values[0] = 1.0f;
+    e->eg1_times[1]  = env->decay_ms;
+    e->eg1_values[1] = sustain;
+    e->eg1_times[2]  = env->release_ms;
+    e->eg1_values[2] = 0.0f;
     amy_helpers_event_send(e);
 }
 

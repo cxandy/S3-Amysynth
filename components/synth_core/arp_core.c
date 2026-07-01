@@ -46,6 +46,12 @@
  * (SAW_DOWN is defined in amy.h as 2.) */
 #define ARP_DEFAULT_WAVE SAW_DOWN
 
+/* Octaves of filter-cutoff sweep EG1 contributes in WAVE mode once the arp's
+ * filter is authored+enabled (see arp_configure_wave_synth()). Fixed, not
+ * user-editable — the arp exposes the EG1 *timing* (attack/decay/sustain/
+ * release), not its modulation depth. */
+#define ARP_FILTER_EG1_DEPTH_OCT 3.0f
+
 static const char *TAG = "arp_core";
 
 /* AMY_SEQUENCER_PPQ = 48 → 1/16 = 12 ticks. */
@@ -87,6 +93,8 @@ typedef struct {
     uint16_t     wave;           /* AMY waveform used when source==ARP_SRC_WAVE */
     seq_env_t    env;            /* runtime-editable ADSR (shared graph editor) */
     bool         env_authored;   /* true once the user commits a custom env      */
+    seq_env_t    env1;           /* second envelope (EG1) — see arp_core.h        */
+    bool         env1_authored;  /* true once the user commits a custom EG1       */
     seq_filter_t filter;         /* runtime-editable filter (shared filter editor) */
     bool         filter_authored;/* true once the user commits a custom filter    */
     seq_lfo_t    lfo;            /* AMY native LFO — WAVE mode only               */
@@ -231,6 +239,14 @@ static void arp_configure_wave_synth(void)
             default: break;
         }
     }
+    /* Plucky amp (EG0 above) / slower independent filter sweep (EG1): only
+     * wired once the user has authored+enabled a filter, so a stock arp
+     * voice with no filter is unaffected. arp_rebuild() pushes valid EG1
+     * breakpoints alongside this so the coef never reads a stuck 1.0 (AMY
+     * treats a never-configured breakpoint set as a permanent unity gate). */
+    if (s_arp.filter_authored && s_arp.filter.enabled) {
+        e->filter_freq_coefs[COEF_EG1] = ARP_FILTER_EG1_DEPTH_OCT;
+    }
     amy_helpers_event_send(e);
 
     /* osc 1: LFO carrier — no pitch tracking, no velocity, no envelope.
@@ -304,6 +320,16 @@ static void arp_rebuild(void)
         sequencer_core_push_filter(sequencer_core_arp_synth(), &s_arp.filter,
                                    s_arp.wave == KS);
     }
+    /* EG1 (independent second envelope): push whenever the user has authored
+     * one directly, OR whenever WAVE mode just wired filter_freq_coefs[COEF_EG1]
+     * above (that coef must never read a stuck permanent 1.0). PATCH mode with
+     * no authored EG1 is left alone — if the loaded patch already routes its
+     * own bp1, its own patch-string values keep driving it. */
+    bool wave_filter_eg1 = (s_arp.source == ARP_SRC_WAVE) &&
+                           s_arp.filter_authored && s_arp.filter.enabled;
+    if (s_arp.env1_authored || wave_filter_eg1) {
+        sequencer_core_push_envelope_eg1(sequencer_core_arp_synth(), 0, &s_arp.env1);
+    }
 }
 
 /* ── Public API ──────────────────────────────────────────────────────── */
@@ -329,6 +355,15 @@ s_arp.env.sustain_pct = 30;   // Low sustain keeps the sequence energetic but au
 s_arp.env.release_ms  = 200;  // Controlled tail that fills space without causing a muddy low-end
     s_arp.env.eg_type     = 0;   /* ENVELOPE_NORMAL */
     s_arp.env_authored      = false;
+    /* Second envelope (EG1): slower than the amp env above — the classic
+     * "plucky amp decay, slower filter tail" shape once the filter is
+     * authored+enabled in WAVE mode (see arp_configure_wave_synth()). */
+    s_arp.env1.attack_ms   = 15;
+    s_arp.env1.decay_ms    = 400;
+    s_arp.env1.sustain_pct = 20;
+    s_arp.env1.release_ms  = 300;
+    s_arp.env1.eg_type     = 0;   /* ENVELOPE_NORMAL */
+    s_arp.env1_authored    = false;
     /* Default filter: bypass (not authored; patch's filter wins until user commits). */
     s_arp.filter.filter_type = 0;   /* SEQ_FILTER_NONE */
     s_arp.filter.cutoff_hz   = 800.0f;
@@ -533,6 +568,23 @@ void arp_set_envelope(const seq_env_t *env)
     ESP_LOGI(TAG, "arp env -> A%u D%u S%u%% R%u",
              (unsigned)s_arp.env.attack_ms, (unsigned)s_arp.env.decay_ms,
              (unsigned)s_arp.env.sustain_pct, (unsigned)s_arp.env.release_ms);
+}
+
+void arp_get_envelope2(seq_env_t *out)
+{
+    if (out) *out = s_arp.env1;
+}
+
+void arp_set_envelope2(const seq_env_t *env)
+{
+    if (!env) return;
+    s_arp.env1 = *env;
+    if (s_arp.env1.attack_ms < 2) s_arp.env1.attack_ms = 2;  /* 2 ms floor */
+    s_arp.env1_authored = true;
+    sequencer_core_push_envelope_eg1(sequencer_core_arp_synth(), 0, &s_arp.env1);
+    ESP_LOGI(TAG, "arp env1 -> A%u D%u S%u%% R%u",
+             (unsigned)s_arp.env1.attack_ms, (unsigned)s_arp.env1.decay_ms,
+             (unsigned)s_arp.env1.sustain_pct, (unsigned)s_arp.env1.release_ms);
 }
 
 void arp_get_filter(seq_filter_t *out)

@@ -130,6 +130,12 @@ bool synth_ui_graph_toggle_range(void);
  * editor close (confirm) and reset on every editor open. */
 void synth_ui_graph_toggle_amp_mode(void);
 
+/* Switch the open editor between EG0 (amp) and EG1 (typically filter sweep) —
+ * MY_BUTTON_3 long-press while the ADSR graph editor is open. Any dirty
+ * in-progress edit on the departing eg_index is written through first, then
+ * the curve is reseeded from the other eg_index's own stored envelope. */
+void synth_ui_graph_toggle_eg_index(void);
+
 /* ── Filter editor (per-synth LPF/HPF/BPF/LPF24 curve editor) ───────────────
  * Opened by long-press encoder (same as ADSR); toggled with MY_BUTTON_3 while
  * either editor is open. Controls: encoder adjusts the selected parameter

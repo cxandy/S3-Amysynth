@@ -123,7 +123,8 @@ uint8_t sequencer_core_add_layer(seq_layer_type_t type, uint8_t num_steps)
             for (uint8_t s = 0; s < SEQ_MAX_STEPS; s++) {
                 layer->step_note[t][s] = mel_notes[t];
             }
-            layer->env[t] = seq_default_melodic_env();
+            layer->env[t]  = seq_default_melodic_env();
+            layer->env1[t] = seq_default_melodic_env1();
         }
     }
 

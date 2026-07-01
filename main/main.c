@@ -452,12 +452,16 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
     }
 
     // MY_BUTTON_3: while any editor (ADSR/filter/LFO) is open, single-click
-    // cycles to the next editor. Outside editors it is the menu toggle.
+    // cycles to the next editor. While the ADSR graph editor specifically is
+    // open, long-press instead switches between its EG0 (amp) and EG1
+    // (typically filter) breakpoint sets. Outside editors it is the menu toggle.
     if (button_id == MY_BUTTON_3) {
         if (synth_ui_graph_is_active() || synth_ui_filter_is_active()
                                        || synth_ui_lfo_is_active()) {
             if (event == BUTTON_SINGLE_CLICK) {
                 synth_ui_cycle_editor();
+            } else if (event == BUTTON_LONG_PRESS_START && synth_ui_graph_is_active()) {
+                synth_ui_graph_toggle_eg_index();
             }
             return;
         }

@@ -105,11 +105,20 @@ typedef struct {
     bool     grid[SEQ_TRACKS][SEQ_MAX_STEPS];        /* step on/off state      */
     uint8_t  step_note[SEQ_TRACKS][SEQ_MAX_STEPS];   /* per-step MIDI pitch    */
     uint8_t  track_base_note[SEQ_TRACKS];            /* current base note      */
-    seq_env_t    env[SEQ_TRACKS];                    /* per-row ADSR envelope  */
+    seq_env_t    env[SEQ_TRACKS];                    /* per-row ADSR envelope (EG0) */
     bool         env_authored[SEQ_TRACKS]; /* row's env overrides the patch only
                                               after the user commits in the graph
                                               editor; until then the patch's own
                                               envelope wins (deferred authority)  */
+    seq_env_t    env1[SEQ_TRACKS];         /* per-row second envelope (EG1) — the
+                                              independent generator AMY already
+                                              exposes; typically routed to the
+                                              filter by whichever patch/coef setup
+                                              targets COEF_EG1 (bass presets do;
+                                              many stock Juno/DX7 patch strings
+                                              already route their own filter
+                                              through bp1) */
+    bool         env1_authored[SEQ_TRACKS]; /* deferred authority, mirrors env_authored */
     seq_filter_t filter[SEQ_TRACKS];          /* per-row filter (bypass by default) */
     bool         filter_authored[SEQ_TRACKS]; /* filter overrides patch only after
                                                  the user commits in the filter editor */

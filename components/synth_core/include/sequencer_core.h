@@ -95,6 +95,17 @@ bool sequencer_core_get_melodic_envelope(uint8_t layer_idx, uint8_t track,
 void sequencer_core_set_melodic_envelope(uint8_t layer_idx, uint8_t track,
                                          const seq_env_t *env);
 
+/* ── Per-row second envelope (EG1, runtime-editable) ──
+ * Independent AMY breakpoint generator, parallel to the EG0 accessors above.
+ * Whether it is audible depends entirely on the loaded patch/preset: it does
+ * nothing unless some coef (typically filter_freq_coefs) targets COEF_EG1 —
+ * either baked into a patch string, or into one of our own custom presets
+ * (see AMY-EDITS.md / bass_presets.c). Same deferred-authority model as EG0. */
+bool sequencer_core_get_melodic_envelope2(uint8_t layer_idx, uint8_t track,
+                                          seq_env_t *out);
+void sequencer_core_set_melodic_envelope2(uint8_t layer_idx, uint8_t track,
+                                          const seq_env_t *env);
+
 /* ── Per-track amplitude trim (graph editor amp mode) ──
  * 0..1 multiplier on note velocity. Default 1.0 (unity; set init in add_layer).
  * get returns 1.0 for invalid layer/track. set is a store-only op; the new
@@ -165,6 +176,13 @@ uint8_t sequencer_core_get_track_source_note(uint8_t layer_idx, uint8_t track);
  * enabled (patch-loaded synths do by default; the drone enables it explicitly).
  * Does nothing for an out-of-range eg_type. */
 void sequencer_core_push_envelope(uint8_t synth, const seq_env_t *env);
+
+/* Push env into the given synth/osc's EG1 breakpoint set (bp_is_set[1]).
+ * `osc` lets a caller target a non-zero oscillator (e.g. a bass preset whose
+ * filter lives on osc 1); melodic rows, the arp, and the drone all target
+ * osc 0. Whichever coef is wired to COEF_EG1 (filter_freq_coefs in every
+ * current use) is what actually moves — this call only supplies the timing. */
+void sequencer_core_push_envelope_eg1(uint8_t synth, uint8_t osc, const seq_env_t *env);
 
 /* ── Arpeggiator support ──────────────────────────────────────────────────
  * The arp lives in its own module (arp_core) but routes all AMY traffic

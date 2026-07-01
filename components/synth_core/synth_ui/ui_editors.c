@@ -42,6 +42,13 @@ typedef enum {
 } graph_target_t;
 static graph_target_t s_graph_target = GRAPH_TGT_MELODIC;
 
+/* Which of the target's two independent AMY breakpoint generators the open
+ * editor is showing/editing. 0 = EG0 (amp, the historical default), 1 = EG1
+ * (typically the filter sweep — see sequencer_core_push_envelope_eg1()).
+ * Reset to 0 on every editor open; toggled by MY_BUTTON_3 long-press while
+ * the editor is open (synth_ui_graph_toggle_eg_index()). */
+static uint8_t s_graph_eg_index = 0;
+
 /* ── Time-range mapping ──────────────────────────────────────────────────────
  * The graph X axis is normalised 0..1. We map it to absolute milliseconds with
  * a switchable full-width budget so the same 3-point editor serves both plucky
@@ -206,10 +213,25 @@ static void graph_seed_from_env(const seq_env_t *env)
     graph_recompute_decay();
 }
 
-/* Read the bound target's current envelope into `env`. Returns false only if the
- * melodic target has no valid row (caller then seeds compile-time defaults). */
-static bool graph_read_target_env(seq_env_t *env)
+/* Read the bound target's current envelope into `env`, for eg_index (0=EG0,
+ * 1=EG1). Returns false only if the melodic target has no valid row (caller
+ * then seeds compile-time defaults). */
+static bool graph_read_target_env_idx(seq_env_t *env, uint8_t eg_index)
 {
+    if (eg_index == 1) {
+        switch (s_graph_target) {
+            case GRAPH_TGT_DRONE:
+                drone_get_envelope2(env);
+                return true;
+            case GRAPH_TGT_ARP:
+                arp_get_envelope2(env);
+                return true;
+            case GRAPH_TGT_MELODIC:
+            default:
+                return sequencer_core_get_melodic_envelope2(s_graph_layer,
+                                                            s_graph_track, env);
+        }
+    }
     switch (s_graph_target) {
         case GRAPH_TGT_DRONE:
             drone_get_envelope(env);
@@ -222,6 +244,54 @@ static bool graph_read_target_env(seq_env_t *env)
             return sequencer_core_get_melodic_envelope(s_graph_layer,
                                                        s_graph_track, env);
     }
+}
+
+/* Write `env` back to the bound target's store for eg_index (0=EG0, 1=EG1). */
+static void graph_write_target_env_idx(const seq_env_t *env, uint8_t eg_index)
+{
+    if (eg_index == 1) {
+        switch (s_graph_target) {
+            case GRAPH_TGT_DRONE:
+                drone_set_envelope2(env);
+                break;
+            case GRAPH_TGT_ARP:
+                arp_set_envelope2(env);
+                break;
+            case GRAPH_TGT_MELODIC:
+            default:
+                if (s_editor_apply_all) {
+                    for (uint8_t t = 0; t < SEQ_TRACKS; ++t)
+                        sequencer_core_set_melodic_envelope2(s_graph_layer, t, env);
+                } else {
+                    sequencer_core_set_melodic_envelope2(s_graph_layer, s_graph_track, env);
+                }
+                break;
+        }
+        return;
+    }
+    switch (s_graph_target) {
+        case GRAPH_TGT_DRONE:
+            drone_set_envelope(env);
+            break;
+        case GRAPH_TGT_ARP:
+            arp_set_envelope(env);
+            break;
+        case GRAPH_TGT_MELODIC:
+        default:
+            if (s_editor_apply_all) {
+                for (uint8_t t = 0; t < SEQ_TRACKS; ++t)
+                    sequencer_core_set_melodic_envelope(s_graph_layer, t, env);
+            } else {
+                sequencer_core_set_melodic_envelope(s_graph_layer, s_graph_track, env);
+            }
+            break;
+    }
+}
+
+/* Backward-compatible wrapper: reads whichever eg_index is currently shown. */
+static bool graph_read_target_env(seq_env_t *env)
+{
+    return graph_read_target_env_idx(env, s_graph_eg_index);
 }
 
 /* Open the editor seeded from the active screen's envelope. The target is chosen
@@ -242,6 +312,8 @@ void synth_ui_graph_open_envelope(void)
     /* Melodic write-back targets a specific row; capture it at open time. */
     s_graph_layer = seq_state.active_layer_idx;
     s_graph_track = seq_state.selected_track;
+    /* Always open on EG0 (amp); MY_BUTTON_3 long-press switches to EG1. */
+    s_graph_eg_index = 0;
 
     seq_env_t env;
     if (!graph_read_target_env(&env)) {
@@ -281,9 +353,11 @@ void synth_ui_graph_open_envelope(void)
              s_graph_long_range ? "LONG" : "SHORT", (double)s_graph_amp_edit);
 }
 
-/* Read the edited points back, convert X->ms via the active range mapping, and
- * push the result to the bound row's envelope (which applies it to AMY). */
-static void graph_commit_to_env(void)
+/* Convert the popup's current points to a seq_env_t and write it to the given
+ * eg_index's store on the bound target. Shared by graph_commit_to_env() (the
+ * currently-shown eg_index) and synth_ui_graph_toggle_eg_index() (writes the
+ * DEPARTING eg_index through before switching the view). */
+static void graph_write_points_to_env(uint8_t eg_index)
 {
     gpopup_point_t pts[GPOPUP_MAX_POINTS];
     uint8_t n = graph_popup_get_points(&s_graph_popup, pts, GPOPUP_MAX_POINTS);
@@ -293,39 +367,30 @@ static void graph_commit_to_env(void)
     uint32_t cum_d = graph_x_to_ms(pts[2].x);
     uint32_t cum_r = graph_x_to_ms(pts[3].x);
 
-    /* Only rewrite the ADSR envelope if the user actually moved a control point.
+    /* Convert cumulative times back to per-segment durations (clamp monotonic). */
+    uint32_t a = cum_a;
+    if (a < 2) a = 2;  /* minimum 2 ms attack prevents DAC pop on trigger */
+    uint32_t d = (cum_d > cum_a) ? (cum_d - cum_a) : 0;
+    uint32_t r = (cum_r > cum_d) ? (cum_r - cum_d) : 0;
+
+    seq_env_t env;
+    if (!graph_read_target_env_idx(&env, eg_index)) return;  /* keep eg_type from the target */
+    env.attack_ms   = a;
+    env.decay_ms    = d;
+    env.release_ms  = r;
+    env.sustain_pct = (uint8_t)(pts[2].y * 100.0f + 0.5f);
+
+    graph_write_target_env_idx(&env, eg_index);
+}
+
+/* Read the edited points back, convert X->ms via the active range mapping, and
+ * push the result to the bound row's envelope (which applies it to AMY). */
+static void graph_commit_to_env(void)
+{
+    /* Only rewrite the envelope if the user actually moved a control point.
      * A volume-only edit (amp mode only) must not overwrite the stored envelope. */
     if (s_graph_env_dirty) {
-        /* Convert cumulative times back to per-segment durations (clamp monotonic). */
-        uint32_t a = cum_a;
-        if (a < 2) a = 2;  /* minimum 2 ms attack prevents DAC pop on trigger */
-        uint32_t d = (cum_d > cum_a) ? (cum_d - cum_a) : 0;
-        uint32_t r = (cum_r > cum_d) ? (cum_r - cum_d) : 0;
-
-        seq_env_t env;
-        if (!graph_read_target_env(&env)) return;  /* keep eg_type from the target */
-        env.attack_ms   = a;
-        env.decay_ms    = d;
-        env.release_ms  = r;
-        env.sustain_pct = (uint8_t)(pts[2].y * 100.0f + 0.5f);
-
-        switch (s_graph_target) {
-            case GRAPH_TGT_DRONE:
-                drone_set_envelope(&env);
-                break;
-            case GRAPH_TGT_ARP:
-                arp_set_envelope(&env);
-                break;
-            case GRAPH_TGT_MELODIC:
-            default:
-                if (s_editor_apply_all) {
-                    for (uint8_t t = 0; t < SEQ_TRACKS; ++t)
-                        sequencer_core_set_melodic_envelope(s_graph_layer, t, &env);
-                } else {
-                    sequencer_core_set_melodic_envelope(s_graph_layer, s_graph_track, &env);
-                }
-                break;
-        }
+        graph_write_points_to_env(s_graph_eg_index);
     }
 
     /* Commit per-target amplitude trim (s_graph_amp_edit seeded at open; setters
@@ -419,6 +484,38 @@ void synth_ui_graph_toggle_amp_mode(void)
     s_graph_amp_mode = !s_graph_amp_mode;
     s_force_redraw = true;
     ESP_LOGI(TAG, "graph amp mode %s", s_graph_amp_mode ? "ON" : "OFF");
+}
+
+/* Switch the editor between the target's EG0 (amp) and EG1 (typically filter)
+ * breakpoint sets. Any in-progress, uncommitted edit on the departing
+ * eg_index is written through first (mirrors the "deferred authority" model:
+ * a commit here only reaches AMY if that row/target was already authored, or
+ * becomes authored now) so flipping tabs never silently discards work. The
+ * curve is then fully reseeded (and range re-derived) from the other
+ * eg_index's own stored envelope — the two can have very different shapes. */
+void synth_ui_graph_toggle_eg_index(void)
+{
+    if (!graph_popup_is_active(&s_graph_popup)) return;
+
+    if (s_graph_env_dirty) {
+        graph_write_points_to_env(s_graph_eg_index);
+    }
+
+    s_graph_eg_index = (s_graph_eg_index == 0) ? 1 : 0;
+
+    seq_env_t env;
+    if (!graph_read_target_env(&env)) {
+        env = (s_graph_eg_index == 1) ? seq_default_melodic_env1()
+                                       : seq_default_melodic_env();
+    }
+    uint32_t total_env_ms = env.attack_ms + env.decay_ms + env.release_ms;
+    s_graph_long_range = (total_env_ms >= GRAPH_RANGE_SHORT_MS);
+
+    graph_seed_from_env(&env);
+    graph_update_ticks();
+    s_graph_env_dirty = false;
+    s_force_redraw = true;
+    ESP_LOGI(TAG, "graph eg index -> EG%u", s_graph_eg_index);
 }
 
 /* Route an encoder delta to the pop-up. Returns true if the pop-up consumed it
@@ -898,6 +995,7 @@ void synth_ui_cycle_editor(void)
     h = fnv1a_bytes(h, &s_graph_track, sizeof(s_graph_track));
     h = fnv1a_bytes(h, &s_graph_amp_mode, sizeof(s_graph_amp_mode));
     h = fnv1a_bytes(h, &s_graph_amp_edit, sizeof(s_graph_amp_edit));
+    h = fnv1a_bytes(h, &s_graph_eg_index, sizeof(s_graph_eg_index));
     h = fnv1a_bytes(h, s_graph_popup.points,
                     s_graph_popup.num_points * sizeof(gpopup_point_t));
     return h;
@@ -910,15 +1008,17 @@ static void graph_draw_topbar(u8g2_t *u8g2)
 {
     char buf[24];
 
-    /* Left: which target is being edited (ARP/DRONE get named labels). */
+    /* Left: which target is being edited (ARP/DRONE get named labels), plus
+     * which of the two independent breakpoint generators (EG0/EG1) is shown. */
     u8g2_SetFont(u8g2, u8g2_font_6x10_tf);
+    const char *eg_tag = (s_graph_eg_index == 1) ? "EG1" : "EG0";
     if (s_graph_target == GRAPH_TGT_ARP) {
-        snprintf(buf, sizeof(buf), "ARP ENV");
+        snprintf(buf, sizeof(buf), "ARP %s", eg_tag);
     } else if (s_graph_target == GRAPH_TGT_DRONE) {
-        snprintf(buf, sizeof(buf), "DRONE ENV");
+        snprintf(buf, sizeof(buf), "DRONE %s", eg_tag);
     } else {
-        snprintf(buf, sizeof(buf), "L%u T%u ENV%s",
-                 s_graph_layer + 1, s_graph_track + 1,
+        snprintf(buf, sizeof(buf), "L%u T%u %s%s",
+                 s_graph_layer + 1, s_graph_track + 1, eg_tag,
                  s_editor_apply_all ? ">L" : ">T");
     }
     u8g2_DrawStr(u8g2, 2, 8, buf);

@@ -163,6 +163,46 @@ void sequencer_core_set_melodic_envelope(uint8_t layer_idx, uint8_t track,
 #endif
 }
 
+/* ── Per-row second envelope (runtime-editable EG1) ──────────────────────── */
+
+/* Push the given row's stored EG1 to that row's OWN AMY synth (osc 0 — the
+ * same voice oscillator EG0 targets). No KS/NOISE onset-floor special case:
+ * EG1 has no built-in role for those waveforms today. */
+void sequencer_configure_melodic_envelope1_track(uint8_t layer_idx, uint8_t track)
+{
+    const seq_layer_t *layer = &s_layers[layer_idx];
+    const seq_env_t   *env   = seq_layer_env1(layer_idx, track);
+    sequencer_core_push_envelope_eg1(layer->synth_id[track], 0, env);
+}
+
+bool sequencer_core_get_melodic_envelope2(uint8_t layer_idx, uint8_t track,
+                                          seq_env_t *out)
+{
+    if (!out || layer_idx >= s_num_layers || track >= SEQ_TRACKS) return false;
+    *out = *seq_layer_env1(layer_idx, track);
+    return true;
+}
+
+void sequencer_core_set_melodic_envelope2(uint8_t layer_idx, uint8_t track,
+                                          const seq_env_t *env)
+{
+    if (!env || layer_idx >= s_num_layers || track >= SEQ_TRACKS) return;
+    seq_layer_t *layer = &s_layers[layer_idx];
+
+    seq_env_t *dst = seq_layer_env1(layer_idx, track);
+    dst->attack_ms   = SEQ_CLAMP_U32(env->attack_ms,  2, 60000);
+    dst->decay_ms    = SEQ_CLAMP_U32(env->decay_ms,   0, 60000);
+    dst->sustain_pct = SEQ_CLAMP_U8(env->sustain_pct, 0, 100);
+    dst->release_ms  = SEQ_CLAMP_U32(env->release_ms, 0, 60000);
+    dst->eg_type     = env->eg_type;
+
+    layer->env1_authored[track] = true;
+    sequencer_configure_melodic_envelope1_track(layer_idx, track);
+    ESP_LOGI(TAG, "env1 L%u row%u -> A%u D%u S%u%% R%u (authored)",
+             layer_idx, track, (unsigned)dst->attack_ms, (unsigned)dst->decay_ms,
+             (unsigned)dst->sustain_pct, (unsigned)dst->release_ms);
+}
+
 /* ── Per-row melodic filter (runtime-editable) ─────────────────────────── */
 
 /* Map a Q value (same [0.51, 8.0] range enforced by sequencer_core_set_melodic_filter)

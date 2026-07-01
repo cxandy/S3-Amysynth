@@ -9,10 +9,19 @@
  * the amy_render lock rules documented in AMY-EDITS.md.
  *
  * filter_freq_coefs[] note: COEF_CONST is in Hz (converted to logfreq
- * internally by EVENT_TO_DELTA_FREQ_COEFS).  Non-CONST coefs (COEF_EG0 etc.)
+ * internally by EVENT_TO_DELTA_FREQ_COEFS).  Non-CONST coefs (COEF_EG1 etc.)
  * are dimensionless logfreq-delta weights applied linearly by combine_controls.
- * COEF_EG0 = 4.06 → filter sweeps log2(2000/8.18) - log2(120/8.18) ≈ 4.06
- * octaves when EG0 peaks (120 Hz → ~2000 Hz). */
+ * COEF_EG1 = 4.06 → filter sweeps log2(2000/8.18) - log2(120/8.18) ≈ 4.06
+ * octaves when EG1 peaks (120 Hz → ~2000 Hz).
+ *
+ * BASS_1 and BASS_2 route the filter sweep through EG1, separate from the
+ * amp envelope (EG0): a short plucky amp decay with a slower, lower-settling
+ * filter tail underneath it (classic subtractive pattern). Both breakpoint
+ * sets are pushed in the same event as the coef that reads them, so EG1 is
+ * never left unconfigured — an unconfigured breakpoint set reads as a
+ * permanent 1.0 gate in AMY (see envelope.c), which would otherwise pin the
+ * filter sweep fully open. BASS_3 has no filter section to split and is
+ * unchanged. */
 
 #include "custompatches/bass_presets.h"
 #include "sequencer_core.h"    /* SEQ_PATCH_BASS_* */
@@ -33,7 +42,8 @@ void bass_preset_configure_track(uint8_t synth_id, uint16_t patch,
         /* ─── Preset 264: Classic Sub-Heavy Detune Bass ─────────────────
          * PULSE carrier + detuned SAW_DOWN sub, LPF24 on carrier.
          * Osc 1 detuned +1.005 ratio (~8.6 cents) for chorus thickness.
-         * Filter env-swept: 120 Hz → ~2000 Hz at peak attack. */
+         * Filter env-swept via its own EG1: 120 Hz → ~2000 Hz at peak, then
+         * settles slower than the (EG0) amp decay — plucky amp, longer tail. */
 
         /* osc 0: PULSE carrier with envelope-swept low-pass filter */
         e = amy_helpers_event_begin();
@@ -47,12 +57,16 @@ void bass_preset_configure_track(uint8_t synth_id, uint16_t patch,
         e->filter_type                    = FILTER_LPF24;
         e->resonance                      = 0.5f;
         e->filter_freq_coefs[COEF_CONST]  = 120.0f;   /* start low per spec */
-        e->filter_freq_coefs[COEF_EG0]    = 4.06f;    /* EG0 sweeps 120→~2000 Hz at peak */
+        e->filter_freq_coefs[COEF_EG1]    = 4.06f;    /* EG1 sweeps 120→~2000 Hz at peak */
         e->chained_osc                    = 1;         /* voice-local osc 1 */
         e->eg_type[0]                     = ENVELOPE_NORMAL;
         e->eg0_times[0]  = 5;    e->eg0_values[0] = 1.0f;   /* atk  5ms */
         e->eg0_times[1]  = 250;  e->eg0_values[1] = 0.4f;   /* dec 250ms, sus 40% */
         e->eg0_times[2]  = 150;  e->eg0_values[2] = 0.0f;   /* rel 150ms */
+        e->eg_type[1]                     = ENVELOPE_NORMAL;
+        e->eg1_times[0]  = 5;    e->eg1_values[0] = 1.0f;   /* atk  5ms (snap open) */
+        e->eg1_times[1]  = 450;  e->eg1_values[1] = 0.15f;  /* dec 450ms, settles at 15% */
+        e->eg1_times[2]  = 200;  e->eg1_values[2] = 0.0f;   /* rel 200ms, closes fully */
         amy_helpers_event_send(e);
 
         /* osc 1: SAW_DOWN, slightly detuned (+1.005 ratio ≈ 8.6 cents) */
@@ -74,11 +88,12 @@ void bass_preset_configure_track(uint8_t synth_id, uint16_t patch,
     } else if (patch == SEQ_PATCH_BASS_2) {
         /* ─── Preset 265: Acid Pluck Bass ───────────────────────────────
          * SINE fundamental + SAW_DOWN, combined through a swept LPF24.
-         * osc1's filter runs on the accumulated osc0+osc1 buffer, so the
-         * EG0-driven sweep shapes the whole voice (classic TB-303 squelch).
-         * Cutoff: 80 Hz at rest, sweeps to ~1800 Hz at attack peak, decays
-         * back to ~150 Hz at EG0 sustain 20% — resonance accentuates the
-         * sweep crossover for the "acid" character. */
+         * osc1's filter runs on the accumulated osc0+osc1 buffer. Amp (EG0)
+         * and filter (EG1) are independent envelopes on osc1: cutoff is
+         * 80 Hz at rest, sweeps to ~1800 Hz at attack peak, and settles at a
+         * slower, lower resting cutoff than the amp's own decay would imply
+         * — resonance accentuates the sweep crossover for the "acid"
+         * character (classic TB-303 squelch). */
 
         /* osc 0: SINE fundamental */
         e = amy_helpers_event_begin();
@@ -110,11 +125,15 @@ void bass_preset_configure_track(uint8_t synth_id, uint16_t patch,
         e->filter_type                    = FILTER_LPF24;
         e->resonance                      = 1.5f;             /* squelch resonance */
         e->filter_freq_coefs[COEF_CONST]  = 80.0f;            /* rest cutoff: 80 Hz */
-        e->filter_freq_coefs[COEF_EG0]    = 4.5f;             /* EG0 sweeps 80→~1800 Hz at peak */
+        e->filter_freq_coefs[COEF_EG1]    = 4.5f;             /* EG1 sweeps 80→~1800 Hz at peak */
         e->eg_type[0]                     = ENVELOPE_NORMAL;
         e->eg0_times[0]  = 5;    e->eg0_values[0] = 1.0f;   /* atk  5ms (snappy) */
         e->eg0_times[1]  = 120;  e->eg0_values[1] = 0.2f;   /* dec 120ms, sus 20% */
         e->eg0_times[2]  = 100;  e->eg0_values[2] = 0.0f;   /* rel 100ms */
+        e->eg_type[1]                     = ENVELOPE_NORMAL;
+        e->eg1_times[0]  = 5;    e->eg1_values[0] = 1.0f;   /* atk  5ms (snappy open) */
+        e->eg1_times[1]  = 350;  e->eg1_values[1] = 0.1f;   /* dec 350ms, settles at 10% */
+        e->eg1_times[2]  = 180;  e->eg1_values[2] = 0.0f;   /* rel 180ms, closes fully */
         amy_helpers_event_send(e);
 
     } else if (patch == SEQ_PATCH_BASS_3) {

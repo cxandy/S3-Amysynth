@@ -52,6 +52,7 @@ void arp_build_view(arp_view_t *out)
     out->wave_mode     = wave_mode;
     out->source_str    = wave_mode ? "WAVE" : "PTCH";
     out->wave_str      = drone_wave_name(arp_get_wave());
+    out->portamento_ms = arp_get_portamento_ms();
 
     /* Patch indicator: mirror the sequencer view. Number is always available;
      * the name banner shows only while the patch hold+turn gesture is active. */
@@ -74,6 +75,7 @@ void arp_build_view(arp_view_t *out)
     h = fnv1a_bytes(h, &v.patch, sizeof(v.patch));
     h = fnv1a_bytes(h, &v.patch_select, sizeof(v.patch_select));
     h = fnv1a_bytes(h, &v.wave_mode, sizeof(v.wave_mode));
+    h = fnv1a_bytes(h, &v.portamento_ms, sizeof(v.portamento_ms));
     h = fnv1a_bytes(h, v.rate_str, 4);
     h = fnv1a_bytes(h, v.mode_str, 4);
     if (v.source_str) h = fnv1a_bytes(h, v.source_str, 4);
@@ -133,6 +135,12 @@ static void arp_edit_value(uint8_t cursor, int delta)
             arp_set_wave(s_arp_waves[idx]);
             break;
         }
+        case ARP_CUR_PORTA:
+            /* 25ms/detent: ~80 turns edge-to-edge, fine enough for musical glide
+             * times without needing the full graph-popup drag UI for one scalar. */
+            arp_set_portamento_ms((uint16_t)SEQ_CLAMP_INT(
+                (int)arp_get_portamento_ms() + dir * 25, 0, ARP_PORTAMENTO_MAX_MS));
+            break;
         default: {
             /* Slot edit: chromatic note, or clear below the floor. */
             uint8_t slot = (uint8_t)(cursor - ARP_CUR_SLOT0);
@@ -172,7 +180,7 @@ void synth_ui_arp_handle_encoder(long delta)
         c = SEQ_CLAMP_INT(c, 0, ARP_CUR_COUNT - 1);
         /* Skip the WAVE cursor when source is PATCH — it has no effect there. */
         if (c == ARP_CUR_WAVE && arp_get_source() == ARP_SRC_PATCH) {
-            c = (delta > 0) ? ARP_CUR_SLOT0 : ARP_CUR_SOURCE;
+            c = (delta > 0) ? ARP_CUR_PORTA : ARP_CUR_SOURCE;
         }
         s_arp_cursor = (uint8_t)c;
     }

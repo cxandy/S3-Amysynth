@@ -143,6 +143,19 @@ uint8_t   arp_active_step_count(void);        /* notes + rests across all slots 
 void  arp_set_amp_scale(float v);
 float arp_get_amp_scale(void);
 
+/* ── Portamento / glide (AMY-native, PORTAMENTO_MS delta) ──
+ * Milliseconds of exponential glide between consecutive note pitches, applied
+ * by AMY internally (portamento_alpha low-pass on logfreq) — no scheduling or
+ * render-path change needed here. 0 = off (default, matches AMY's own reset
+ * value). Unlike the scheduling setters above, this does not mark the arp
+ * dirty: it is pushed straight to the synth and survives independently of
+ * note re-emits, but IS wiped by a patch/synth reconfigure (AMY resets
+ * portamento_alpha to 0 on osc reset), so arp_rebuild() re-pushes it after
+ * every source/patch/wave change. */
+void     arp_set_portamento_ms(uint16_t ms);
+uint16_t arp_get_portamento_ms(void);
+#define ARP_PORTAMENTO_MAX_MS 2000u   /* generous glide ceiling for a lead line */
+
 #define ARP_OCT_MAX 4
 
 #ifdef __cplusplus

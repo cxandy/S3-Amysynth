@@ -141,6 +141,8 @@ typedef struct {
     float          last_lfo_hz; /* to avoid redundant LFO re-sends   */
     seq_env_t      env;         /* runtime-editable ADSR (graph editor) */
     bool           env_authored;/* true once the user commits a custom env */
+    seq_env_t      env1;        /* second envelope (EG1) — see drone_core.h */
+    bool           env1_authored;/* true once the user commits a custom EG1 */
     float          amp_trim;    /* per-target amplitude trim (default 1.0, 0..1);
                                    multiplied into amp_peak in s_amp_peak_lin() to give
                                    the effective on-beat level. Set via the graph editor
@@ -352,6 +354,15 @@ static void drone_rebuild(void)
             sequencer_core_push_envelope(DRONE_SYNTH_SUB, &env_to_push);
         }
     }
+    /* Second envelope (EG1): only pushed when authored — nothing in the
+     * drone's own WAVE/PATCH setup above routes a coef to COEF_EG1, so this
+     * is a no-op unless the loaded PATCH-mode instrument already does. */
+    if (s_d.env1_authored) {
+        sequencer_core_push_envelope_eg1(DRONE_SYNTH_MAIN, 0, &s_d.env1);
+        if (s_d.sub_enabled) {
+            sequencer_core_push_envelope_eg1(DRONE_SYNTH_SUB, 0, &s_d.env1);
+        }
+    }
     s_d.last_lfo_hz = drone_lfo_hz();
 }
 
@@ -437,6 +448,18 @@ void drone_core_init(void)
     s_d.env.release_ms  = 600;
     s_d.env.eg_type     = 0;   /* ENVELOPE_NORMAL */
     s_d.env_authored    = false;
+    /* Second envelope (EG1): not routed to anything by the drone's own WAVE
+     * patches (its filter movement already comes from the independent
+     * sweep_lo/sweep_hi + BPM-synced service tick below, layering a second
+     * envelope-driven cutoff shift on top would double-modulate the same
+     * parameter). Kept purely as timing storage for a PATCH-mode drone whose
+     * loaded AMY patch already routes its own bp1. */
+    s_d.env1.attack_ms   = 15;
+    s_d.env1.decay_ms    = 400;
+    s_d.env1.sustain_pct = 25;
+    s_d.env1.release_ms  = 400;
+    s_d.env1.eg_type     = 0;   /* ENVELOPE_NORMAL */
+    s_d.env1_authored    = false;
 
     drone_rebuild();
     ESP_LOGI(TAG, "drone_core initialized (synths %u/%u)",
@@ -778,6 +801,26 @@ void drone_set_envelope(const seq_env_t *env)
     ESP_LOGI(TAG, "drone env -> A%u D%u S%u%% R%u",
              (unsigned)s_d.env.attack_ms, (unsigned)s_d.env.decay_ms,
              (unsigned)s_d.env.sustain_pct, (unsigned)s_d.env.release_ms);
+}
+
+void drone_get_envelope2(seq_env_t *out)
+{
+    if (out) *out = s_d.env1;
+}
+
+void drone_set_envelope2(const seq_env_t *env)
+{
+    if (!env) return;
+    s_d.env1 = *env;
+    if (s_d.env1.attack_ms < 2) s_d.env1.attack_ms = 2;  /* 2 ms floor */
+    s_d.env1_authored = true;
+    sequencer_core_push_envelope_eg1(DRONE_SYNTH_MAIN, 0, &s_d.env1);
+    if (s_d.sub_enabled) {
+        sequencer_core_push_envelope_eg1(DRONE_SYNTH_SUB, 0, &s_d.env1);
+    }
+    ESP_LOGI(TAG, "drone env1 -> A%u D%u S%u%% R%u",
+             (unsigned)s_d.env1.attack_ms, (unsigned)s_d.env1.decay_ms,
+             (unsigned)s_d.env1.sustain_pct, (unsigned)s_d.env1.release_ms);
 }
 
 /* ── Getters ── */

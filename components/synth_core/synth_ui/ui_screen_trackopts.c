@@ -4,7 +4,7 @@
 #include "seq_clamp.h"
 
 /* ════════════════════════════════════════════════════════════════════════
- *  Track Options screen — per-track repeat rate + per-layer manual chord
+ *  Track Options screen — per-track repeat rate/mute/solo + per-layer chord
  * ════════════════════════════════════════════════════════════════════════ */
 
 uint8_t s_to_layer   = 0;  /* owner: this file; task clamps it; menu sets it */
@@ -30,8 +30,9 @@ void trackopts_build_view(trackopts_view_t *out)
     uint8_t tr = s_to_track;
     bool melodic = (sequencer_core_get_layer_type(li) == SEQ_LAYER_MELODIC);
 
-    /* Drum tracks expose only Repeat Rate and the target selectors. */
-    if (!melodic && s_to_cursor > TO_ROW_REPEAT) s_to_cursor = TO_ROW_REPEAT;
+    /* Drum tracks expose only Repeat Rate, Mute, Solo, and the target
+     * selectors — chord rows are melodic-only. */
+    if (!melodic && s_to_cursor > TO_ROW_SOLO) s_to_cursor = TO_ROW_SOLO;
 
     out->layer_idx    = li;                 /* 0-based; renderer displays as 1-based */
     out->track_idx    = tr;
@@ -39,6 +40,8 @@ void trackopts_build_view(trackopts_view_t *out)
     out->track_count  = SEQ_TRACKS;
     out->melodic      = melodic;
     out->repeat_rate  = (uint8_t)sequencer_core_get_track_repeat_rate(li, tr);
+    out->track_mute   = sequencer_core_get_track_mute(li, tr);
+    out->track_solo   = sequencer_core_get_track_solo(li, tr);
     out->chord_locked = sequencer_core_progression_get_enabled();
     out->cursor       = s_to_cursor;
     out->editing      = s_to_editing;
@@ -61,6 +64,8 @@ uint32_t trackopts_view_signature(void)
     h = fnv1a_bytes(h, &v.track_count, sizeof(v.track_count));
     h = fnv1a_bytes(h, &v.melodic,     sizeof(v.melodic));
     h = fnv1a_bytes(h, &v.repeat_rate, sizeof(v.repeat_rate));
+    h = fnv1a_bytes(h, &v.track_mute,  sizeof(v.track_mute));
+    h = fnv1a_bytes(h, &v.track_solo,  sizeof(v.track_solo));
     h = fnv1a_bytes(h, &v.chord_mode,  sizeof(v.chord_mode));
     h = fnv1a_bytes(h, &v.chord_root,  sizeof(v.chord_root));
     h = fnv1a_bytes(h, &v.chord_type,  sizeof(v.chord_type));
@@ -80,7 +85,7 @@ bool synth_ui_trackopts_handle_encoder(int delta)
     uint8_t li = s_to_layer;
     uint8_t tr = s_to_track;
     bool melodic = (sequencer_core_get_layer_type(li) == SEQ_LAYER_MELODIC);
-    uint8_t max_row = melodic ? TO_ROW_TYPE : TO_ROW_REPEAT;
+    uint8_t max_row = melodic ? TO_ROW_TYPE : TO_ROW_SOLO;
 
     if (s_to_editing) {
         switch (s_to_cursor) {
@@ -91,8 +96,8 @@ bool synth_ui_trackopts_handle_encoder(int delta)
                 s_to_layer = (uint8_t)nl;
                 /* Re-clamp track and cursor if the new layer is a drum layer. */
                 if (sequencer_core_get_layer_type(s_to_layer) != SEQ_LAYER_MELODIC &&
-                    s_to_cursor > TO_ROW_REPEAT) {
-                    s_to_cursor = TO_ROW_REPEAT;
+                    s_to_cursor > TO_ROW_SOLO) {
+                    s_to_cursor = TO_ROW_SOLO;
                 }
                 break;
             }
@@ -106,6 +111,14 @@ bool synth_ui_trackopts_handle_encoder(int delta)
                 uint8_t rr = (uint8_t)sequencer_core_get_track_repeat_rate(li, tr);
                 rr = to_next_repeat_rate(rr, delta);
                 sequencer_core_set_track_repeat_rate(li, tr, (seq_repeat_rate_t)rr);
+                break;
+            }
+            case TO_ROW_MUTE: {
+                sequencer_core_set_track_mute(li, tr, !sequencer_core_get_track_mute(li, tr));
+                break;
+            }
+            case TO_ROW_SOLO: {
+                sequencer_core_set_track_solo(li, tr, !sequencer_core_get_track_solo(li, tr));
                 break;
             }
             case TO_ROW_CHORD: {
@@ -151,8 +164,8 @@ bool synth_ui_trackopts_handle_button(void)
 {
     if (!synth_ui_trackopts_is_active()) return false;
     if (sequencer_core_get_layer_type(s_to_layer) != SEQ_LAYER_MELODIC &&
-        s_to_cursor > TO_ROW_REPEAT) {
-        s_to_cursor = TO_ROW_REPEAT;
+        s_to_cursor > TO_ROW_SOLO) {
+        s_to_cursor = TO_ROW_SOLO;
     }
     s_to_editing = !s_to_editing;
     s_force_redraw = true;

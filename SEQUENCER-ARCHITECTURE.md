@@ -38,6 +38,9 @@ typedef struct {
     bool     grid[SEQ_TRACKS][SEQ_MAX_STEPS];     // step on/off
     uint8_t  step_note[SEQ_TRACKS][SEQ_MAX_STEPS];// per-step MIDI pitch (forward-compatible)
     uint8_t  track_base_note[SEQ_TRACKS];         // current base pitch shown on OLED
+    uint8_t  repeat_rate[SEQ_TRACKS];             // fires every N bars (1/2/4/8)
+    bool     mute[SEQ_TRACKS];                    // per-track mute
+    bool     solo[SEQ_TRACKS];                    // per-track solo (overrides mute)
     uint8_t  synth_id;                            // AMY synth slot
     uint16_t patch;                               // AMY patch number
     uint32_t synth_flags;                         // AMY synth flags
@@ -300,7 +303,9 @@ Not currently implemented. `s_num_layers` only ever increments. A delete operati
 
 ### Separate play/stop per layer
 
-Currently `sequencer_core_set_playing(bool)` stops all layers. Per-layer mute would be simpler to implement: add a `bool muted` field to `seq_layer_t`; `sequencer_emit_step()` already checks `s_playing && layer->grid[track][step]` — add `&& !layer->muted` to that condition and call `sequencer_resync_layer(idx)` when mute toggles.
+Currently `sequencer_core_set_playing(bool)` stops all layers.
+
+Per-**track** mute/solo (scoped within a layer, not across layers) is implemented: `seq_layer_t.mute[SEQ_TRACKS]` / `.solo[SEQ_TRACKS]`, gated in `sequencer_emit_step()` via `sequencer_track_audible()` — solo, if engaged on any track in the layer, overrides mute (including on the same track). Exposed via `sequencer_core_set/get_track_mute()` and `sequencer_core_set/get_track_solo()`, editable from the TrackOpts screen (`ui_screen_trackopts.c`, rows `TO_ROW_MUTE`/`TO_ROW_SOLO`). A whole-layer mute/solo (independent of the per-track one) is not implemented and remains a future option.
 
 ### Saving patterns (NVS)
 

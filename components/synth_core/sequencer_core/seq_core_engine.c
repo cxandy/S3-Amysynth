@@ -96,6 +96,27 @@ static float sequencer_step_velocity(const seq_layer_t *layer,
 #endif
 }
 
+/* True when any track in the layer has solo engaged (scans all SEQ_TRACKS,
+ * not just num_tracks, so a stale solo flag on an unused track slot can never
+ * silently affect audibility of the tracks actually in use). */
+static bool sequencer_layer_has_solo(const seq_layer_t *layer)
+{
+    for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
+        if (layer->solo[t]) return true;
+    }
+    return false;
+}
+
+/* Whether `track` will actually sound: solo overrides mute (even on the same
+ * track) whenever any track in the layer is soloed; otherwise mute alone gates. */
+static bool sequencer_track_audible(const seq_layer_t *layer, uint8_t track)
+{
+    if (sequencer_layer_has_solo(layer)) {
+        return layer->solo[track];
+    }
+    return !layer->mute[track];
+}
+
 static uint8_t sequencer_clamp_layer_note(const seq_layer_t *layer, uint8_t note)
 {
     if (layer->type == SEQ_LAYER_DRUM) {
@@ -178,8 +199,10 @@ void sequencer_emit_step(uint8_t layer_idx, uint8_t track, uint8_t step)
     if (note_velocity > 1.0f) note_velocity = 1.0f;
     if (tick_off == 0) tick_off = 1; /* avoid the reserved tick 0 */
 
-    /* If stopped or this step is off, cancel any previously scheduled events. */
-    if (!s_playing || !layer->grid[track][step]) {
+    /* If stopped, this step is off, or the track is muted/soloed-out, cancel
+     * any previously scheduled events instead of emitting a note-on. */
+    if (!s_playing || !layer->grid[track][step] ||
+        !sequencer_track_audible(layer, track)) {
         sequencer_emit_clear_tag(tag_on);
         sequencer_emit_clear_tag(tag_off);
         return;
@@ -426,4 +449,49 @@ seq_repeat_rate_t sequencer_core_get_track_repeat_rate(uint8_t layer_idx,
         case 8: return SEQ_REPEAT_8;
         default: return SEQ_REPEAT_1;
     }
+}
+
+void sequencer_core_set_track_mute(uint8_t layer_idx, uint8_t track, bool mute)
+{
+    if (layer_idx >= s_num_layers || track >= SEQ_TRACKS) return;
+    seq_layer_t *layer = &s_layers[layer_idx];
+    if (layer->mute[track] == mute) return;
+    layer->mute[track] = mute;
+    /* Mute only ever changes this one track's own audibility. */
+    for (uint8_t s = 0; s < layer->num_steps; s++) {
+        sequencer_emit_step(layer_idx, track, s);
+    }
+    if (!sequencer_track_audible(layer, track)) {
+        sequencer_kill_synth_voices(layer->synth_id[track]);
+    }
+}
+
+bool sequencer_core_get_track_mute(uint8_t layer_idx, uint8_t track)
+{
+    if (layer_idx >= s_num_layers || track >= SEQ_TRACKS) return false;
+    return s_layers[layer_idx].mute[track];
+}
+
+void sequencer_core_set_track_solo(uint8_t layer_idx, uint8_t track, bool solo)
+{
+    if (layer_idx >= s_num_layers || track >= SEQ_TRACKS) return;
+    seq_layer_t *layer = &s_layers[layer_idx];
+    if (layer->solo[track] == solo) return;
+    layer->solo[track] = solo;
+    /* Solo changes every track's audibility in this layer, not just this
+     * one's, so re-emit the whole layer and hard-kill whichever tracks just
+     * became inaudible (a note already sounding would otherwise ring out
+     * until its scheduled note-off, which re-emit alone does not force). */
+    sequencer_resync_layer(layer_idx);
+    for (uint8_t t = 0; t < layer->num_tracks; t++) {
+        if (!sequencer_track_audible(layer, t)) {
+            sequencer_kill_synth_voices(layer->synth_id[t]);
+        }
+    }
+}
+
+bool sequencer_core_get_track_solo(uint8_t layer_idx, uint8_t track)
+{
+    if (layer_idx >= s_num_layers || track >= SEQ_TRACKS) return false;
+    return s_layers[layer_idx].solo[track];
 }

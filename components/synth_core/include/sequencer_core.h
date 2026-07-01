@@ -210,6 +210,20 @@ void              sequencer_core_set_track_repeat_rate(uint8_t layer_idx,
 seq_repeat_rate_t sequencer_core_get_track_repeat_rate(uint8_t layer_idx,
                                                        uint8_t track);
 
+/* ── Per-track mute / solo ────────────────────────────────────────────────
+ * Scoped per layer: solo only compares against the other tracks of the SAME
+ * layer, not across layers. Standard mixing-desk semantics — if any track in
+ * the layer is soloed, only soloed tracks are audible; solo overrides mute,
+ * including on a track that is itself both muted and soloed. Gated in the
+ * tick/emit path (sequencer_emit_step): an inaudible track's grid steps are
+ * cancelled instead of scheduled, so it never produces a note-on. Both setters
+ * hard-kill the affected synth slot's live voices so the change is heard
+ * immediately, not just on the next scheduled note. */
+void sequencer_core_set_track_mute(uint8_t layer_idx, uint8_t track, bool mute);
+bool sequencer_core_get_track_mute(uint8_t layer_idx, uint8_t track);
+void sequencer_core_set_track_solo(uint8_t layer_idx, uint8_t track, bool solo);
+bool sequencer_core_get_track_solo(uint8_t layer_idx, uint8_t track);
+
 /* ── Global chord progression ─────────────────────────────────────────────
  * A list of (root, chord_type, duration_bars) entries that auto-advances.
  * When enabled, all melodic layer quantizers and the arp follow the active

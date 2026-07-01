@@ -163,6 +163,19 @@ bool synth_ui_toggle_editor_apply_scope(void);
  * synth_ui_toggle_adsr_filter() two-way swap. */
 void synth_ui_cycle_editor(void);
 
+/* ── Step Trig editor (per-step probability / ratchet / conditional trig) ──
+ * Full-screen popup addressed by the sequencer grid's existing cursor
+ * (active layer / selected track / selected step) — no separate cursor.
+ * Opened/closed by MY_BUTTON_2 long-press while navigating the grid
+ * (main.c); while open, encoder turns adjust the focused field and a short
+ * encoder-button press cycles which field (Prob → Ratchet → Cond → Param)
+ * is focused. */
+bool synth_ui_stepedit_is_active(void);
+void synth_ui_stepedit_open(void);
+void synth_ui_stepedit_close(void);
+bool synth_ui_stepedit_handle_encoder(long delta);
+bool synth_ui_stepedit_handle_button(void);
+
 #ifdef __cplusplus
 }
 #endif

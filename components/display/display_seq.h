@@ -38,6 +38,27 @@ typedef enum {
     SEQ_REPEAT_8  = 8,
 } seq_repeat_rate_t;
 
+/* ── Per-step ratchet (sub-trigger count within one step's slot) ──
+ * 1 = plain single trigger (the historical/default behaviour). >1 subdivides
+ * the step evenly into that many evenly-spaced hits, each with its own short
+ * gate — an Elektron-style "ratchet". */
+#define SEQ_MAX_RATCHET 4
+
+/* ── Per-step conditional trig (Elektron-style) ──
+ * NONE: unconditional — the step fires whenever it is ON, subject only to
+ *       probability/ratchet.
+ * FILL: fires only once every step_cond_param loops of the layer's pattern
+ *       (param clamped 2..8; the first loop after play-start always counts).
+ * PREV: fires only if the immediately preceding step on the SAME track
+ *       actually sounded on its own last evaluation — chains a run of hits,
+ *       any miss breaks the chain for the following step. */
+typedef enum {
+    SEQ_STEP_COND_NONE = 0,
+    SEQ_STEP_COND_FILL = 1,
+    SEQ_STEP_COND_PREV = 2,
+    SEQ_STEP_COND_COUNT,
+} seq_step_cond_type_t;
+
 /* ── Filter type constants (mirror AMY's FILTER_* values) ── */
 #define SEQ_FILTER_NONE  0
 #define SEQ_FILTER_LPF   1
@@ -136,6 +157,21 @@ typedef struct {
                                         note-emit time. Adjusted via graph editor amp
                                         mode (MY_BUTTON_2). MUST be initialised to 1.0f
                                         in sequencer_core_add_layer — memset zeroes it. */
+
+    /* ── Per-step probability / ratchet / conditional trig ──
+     * A step with prob==100 && ratchet==1 && cond_type==NONE is "plain" and
+     * keeps using the original always-on repeating AMY sequence tag (zero
+     * extra cost). Any other combination makes the step "decorated": the
+     * periodic tag is left cleared and sequencer_core_service_tick() (called
+     * once per AMY sequencer tick) decides per loop-iteration whether/how it
+     * fires. MUST be initialised to prob=100, ratchet=1 in
+     * sequencer_core_add_layer — memset zeroes them, and 0% probability would
+     * silence every step by default. cond_type=0 (NONE) is the correct zeroed
+     * default and needs no explicit init. */
+    uint8_t  step_prob[SEQ_TRACKS][SEQ_MAX_STEPS];       /* 0..100 %, trigger probability */
+    uint8_t  step_ratchet[SEQ_TRACKS][SEQ_MAX_STEPS];    /* 1..SEQ_MAX_RATCHET sub-hits    */
+    uint8_t  step_cond_type[SEQ_TRACKS][SEQ_MAX_STEPS];  /* seq_step_cond_type_t           */
+    uint8_t  step_cond_param[SEQ_TRACKS][SEQ_MAX_STEPS]; /* FILL: loop divisor 2..8        */
 } seq_layer_t;
 
 /* ── Global sequencer display/UI state ── */

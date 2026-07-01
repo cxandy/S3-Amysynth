@@ -56,8 +56,8 @@ static inline uint32_t seq_preview_off_tag(uint8_t layer, uint8_t track)
     return seq_preview_tag(layer, track) + (uint32_t)(MAX_LAYERS * SEQ_TRACKS);
 }
 
-static float sequencer_step_velocity(const seq_layer_t *layer,
-                                     uint8_t track, uint8_t step)
+float sequencer_step_velocity(const seq_layer_t *layer,
+                              uint8_t track, uint8_t step)
 {
     /* Drums now share the melodic accent+jitter curve for a less "machine-gun"
      * groove (the old fixed 1.0 made every hit identical). Falls through to the
@@ -178,8 +178,13 @@ void sequencer_emit_step(uint8_t layer_idx, uint8_t track, uint8_t step)
     if (note_velocity > 1.0f) note_velocity = 1.0f;
     if (tick_off == 0) tick_off = 1; /* avoid the reserved tick 0 */
 
-    /* If stopped or this step is off, cancel any previously scheduled events. */
-    if (!s_playing || !layer->grid[track][step]) {
+    /* If stopped, this step is off, or the step carries a probability/ratchet/
+     * conditional decoration, cancel the plain periodic tag pair — decorated
+     * steps are one-shot scheduled per loop-iteration by
+     * sequencer_core_service_tick() (seq_core_trig.c) instead, since AMY's
+     * own period-repeat has no hook to gate an individual repetition. */
+    if (!s_playing || !layer->grid[track][step] ||
+        sequencer_core_step_is_decorated(layer, track, step)) {
         sequencer_emit_clear_tag(tag_on);
         sequencer_emit_clear_tag(tag_off);
         return;
@@ -319,6 +324,7 @@ void sequencer_core_set_playing(bool p)
         s_prog.entry_start_bar = 0;
         s_prog.current = 0;
         for (uint8_t i = 0; i < s_num_layers; i++) {
+            sequencer_core_trig_reset(i);
             sequencer_resync_layer(i);
         }
     } else {
@@ -333,6 +339,12 @@ void sequencer_core_set_playing(bool p)
             s_cached_step[i] =
                 (uint8_t)((sequencer_ticks() % bar_ticks) / SEQ_TICKS_PER_STEP);
             sequencer_clear_layer_tags(i);
+            /* Bug-1.1-style fix, same rationale as arp_core_clear_all() above:
+             * decorated steps' one-shot ratchet tags are not touched by
+             * sequencer_clear_layer_tags() (different tag space), so clear
+             * them explicitly or a pending sub-hit could still fire after
+             * the user hits stop. */
+            sequencer_core_trig_clear_all(i);
         }
 
         /* Bug 1.2: silence only the sequencer's own synth slots (melodic/drum

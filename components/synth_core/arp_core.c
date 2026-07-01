@@ -104,6 +104,9 @@ typedef struct {
                                     the graph editor amp mode (MY_BUTTON_2). MUST be
                                     initialised to 1.0f in arp_core_init — memset
                                     zeroes it. */
+    uint16_t     portamento_ms;  /* glide time between note pitches, 0=off. Default
+                                    0 from memset matches AMY's own reset value, so
+                                    no explicit init needed in arp_core_init. */
 } arp_state_t;
 
 static arp_state_t s_arp;
@@ -288,6 +291,17 @@ void arp_core_refresh_lfo_freq(void)
     amy_helpers_event_send(e);
 }
 
+/* Push the current glide time straight to the arp synth. e->osc is left unset
+ * and e->velocity is unset (not a note on/off), so patches_event_has_voices()
+ * fans this out to every voice's base osc — see amy.c/patches.c dispatch. */
+static void arp_push_portamento(void)
+{
+    amy_event *e = amy_helpers_event_begin();
+    e->synth         = sequencer_core_arp_synth();
+    e->portamento_ms = s_arp.portamento_ms;
+    amy_helpers_event_send(e);
+}
+
 /* (Re)build the arp synth slot for the current source and params, then
  * re-impose any authored ADSR / filter.  Mirrors drone_rebuild(). */
 static void arp_rebuild(void)
@@ -330,6 +344,9 @@ static void arp_rebuild(void)
     if (s_arp.env1_authored || wave_filter_eg1) {
         sequencer_core_push_envelope_eg1(sequencer_core_arp_synth(), 0, &s_arp.env1);
     }
+    /* Any reconfigure above (patch load or WAVE pool re-init) resets AMY's
+     * per-osc portamento_alpha to 0 — reassert regardless of source. */
+    arp_push_portamento();
 }
 
 /* ── Public API ──────────────────────────────────────────────────────── */
@@ -730,3 +747,15 @@ void arp_set_amp_scale(float v)
 }
 
 float arp_get_amp_scale(void) { return s_arp.amp_scale; }
+
+/* ── Portamento / glide ──────────────────────────────────────────────────── */
+
+void arp_set_portamento_ms(uint16_t ms)
+{
+    ms = SEQ_CLAMP_U16(ms, 0, ARP_PORTAMENTO_MAX_MS);
+    if (s_arp.portamento_ms == ms) return;
+    s_arp.portamento_ms = ms;
+    arp_push_portamento();   /* not a scheduling change: push directly, no re-emit */
+}
+
+uint16_t arp_get_portamento_ms(void) { return s_arp.portamento_ms; }

@@ -55,11 +55,14 @@ void display_arp_draw_frame(u8g2_t *u8g2, const arp_view_t *view)
     draw_field(u8g2, 56, 20, buf,
                view->cursor == ARP_CUR_GATE, view->editing);
 
-    /* Right area of row 2: SOURCE cursor, WAVE cursor, or patch/wave indicator.
-     * In WAVE mode the waveform name replaces the patch number. */
+    /* Right area of row 2: SOURCE cursor, WAVE cursor, GLIDE cursor, or the
+     * patch/wave indicator. In WAVE mode the waveform name replaces the patch
+     * number. GLIDE (portamento) has no spare row of its own, so it borrows
+     * this same slot, matching the SOURCE/WAVE cursor-swap convention. */
     {
-        bool sel_src  = (view->cursor == ARP_CUR_SOURCE);
-        bool sel_wave = (view->cursor == ARP_CUR_WAVE);
+        bool sel_src   = (view->cursor == ARP_CUR_SOURCE);
+        bool sel_wave  = (view->cursor == ARP_CUR_WAVE);
+        bool sel_porta = (view->cursor == ARP_CUR_PORTA);
         char rbuf[12];
         if (sel_src) {
             snprintf(rbuf, sizeof(rbuf), "SRC:%s",
@@ -67,6 +70,8 @@ void display_arp_draw_frame(u8g2_t *u8g2, const arp_view_t *view)
         } else if (sel_wave) {
             snprintf(rbuf, sizeof(rbuf), "%s",
                      view->wave_str ? view->wave_str : "?");
+        } else if (sel_porta) {
+            snprintf(rbuf, sizeof(rbuf), "GLIDE:%u", (unsigned)view->portamento_ms);
         } else if (view->wave_mode) {
             snprintf(rbuf, sizeof(rbuf), "W:%s",
                      view->wave_str ? view->wave_str : "?");
@@ -75,7 +80,7 @@ void display_arp_draw_frame(u8g2_t *u8g2, const arp_view_t *view)
         }
         uint8_t rw = (uint8_t)u8g2_GetStrWidth(u8g2, rbuf);
         uint8_t rx = (rw < 126u) ? (uint8_t)(126u - rw) : 0u;
-        if (sel_src || sel_wave) {
+        if (sel_src || sel_wave || sel_porta) {
             draw_field(u8g2, rx, 20, rbuf, true, view->editing);
         } else if (!view->wave_mode && view->patch_select) {
             u8g2_DrawRFrame(u8g2, (uint8_t)(rx - 2), 12,

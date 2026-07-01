@@ -19,7 +19,11 @@ extern "C" {
  *
  * Cursor index space:
  *   0=ARP enable, 1=MODE, 2=OCT, 3=RATE, 4=GATE,
- *   5=SOURCE, 6=WAVE (skipped in PATCH mode), 7..14 = slots 0..7. */
+ *   5=SOURCE, 6=WAVE (skipped in PATCH mode), 7=GLIDE, 8..15 = slots 0..7.
+ *
+ * GLIDE (portamento) shares the row-2 right-hand slot with SOURCE/WAVE/patch:
+ * there is no spare pixel row on this screen, so — like that cluster — only
+ * the field matching the current cursor position is drawn there. */
 
 #define ARP_VIEW_SLOTS 8
 
@@ -30,7 +34,8 @@ extern "C" {
 #define ARP_CUR_GATE    4
 #define ARP_CUR_SOURCE  5   /* toggle WAVE/PATCH sound source        */
 #define ARP_CUR_WAVE    6   /* waveform selector (WAVE mode only)    */
-#define ARP_CUR_SLOT0   7
+#define ARP_CUR_PORTA   7   /* portamento/glide time, ms             */
+#define ARP_CUR_SLOT0   8
 #define ARP_CUR_COUNT   (ARP_CUR_SLOT0 + ARP_VIEW_SLOTS)
 
 typedef struct {
@@ -52,6 +57,7 @@ typedef struct {
     const char *source_str;   /* "WAVE" or "PTCH"                          */
     const char *wave_str;     /* waveform name, e.g. "SAW"                 */
     bool        wave_mode;    /* true when source == ARP_SRC_WAVE           */
+    uint16_t    portamento_ms;/* glide time, ms (0 = off)                   */
     /* Patch indicator (mirrors the sequencer view). The number is always shown
      * top-right in PATCH mode; while the patch-select button is held,
      * patch_name (if non-NULL) is drawn as a centred banner. */

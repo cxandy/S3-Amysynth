@@ -228,6 +228,7 @@ static void arp_configure_wave_synth(void)
             case LFO_TARGET_FILTER: e->filter_freq_coefs[COEF_MOD] = d * 3.0f; break;
             case LFO_TARGET_AMP:    e->amp_coefs[COEF_MOD]         = d * 0.5f; break;
             case LFO_TARGET_PITCH:  e->freq_coefs[COEF_MOD]        = d * 1.0f; break;
+            case LFO_TARGET_SCAN:   e->duty_coefs[COEF_MOD]        = d * 0.5f; break;
             default: break;
         }
     }

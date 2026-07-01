@@ -49,6 +49,26 @@ config AMY_PROFILE_FULL
 
 endchoice
 
+config AMY_WAVETABLE
+    bool "Enable wavetable oscillator (wave=WAVETABLE)"
+    default y
+    help
+        Compiles in AMY's 64-cycle wavetable oscillator (wave constant
+        WAVETABLE) and its 5 built-in tables (111.WAV, BRAIDS01.WAV,
+        PPG_WA00.WAV, SINE2SAW.WAV, VIRAL.WAV; 16384 samples each). Each
+        table is played back by a phase accumulator driven purely by
+        AMY_SAMPLE_RATE, independent of the 22050 Hz rate the source
+        waveforms were captured at; `duty` selects/crossfades between the
+        64 cycles within the chosen table (scan position).
+
+        Measured cost (2026-07, esp32s3, 16 MB flash): ~160 KB added to
+        flash .rodata (const int16_t sample data, XIP-cached, never RAM- or
+        PSRAM-copied — pcm_get_sample_ram_for_preset() returns a pointer
+        straight into flash). Zero internal DRAM, zero PSRAM, zero IRAM
+        impact: the render path (render_wavetable()) borrows the existing
+        LUT renderer and adds no new hot-path code of its own. Safe to
+        leave on; disable only under severe flash pressure.
+
 config AMY_PROFILE_INTERVAL_MS
     int "Profiler dump interval (ms)"
     depends on !AMY_PROFILE_OFF

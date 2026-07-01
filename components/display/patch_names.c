@@ -18,7 +18,12 @@
 
 #if CONFIG_SEQ_PATCH_SHOW_NAMES
 
+#if CONFIG_AMY_WAVETABLE
+#define SEQ_PATCH_NAME_COUNT 272  /* 0..271 inclusive (257-263 = waves, 264-266 = bass
+                                     presets, 267-271 = wavetable banks) */
+#else
 #define SEQ_PATCH_NAME_COUNT 267  /* 0..266 inclusive (257-263 = waves, 264-266 = bass presets) */
+#endif
 
 static const char *const s_patch_names[SEQ_PATCH_NAME_COUNT] = {
     /* ── Juno-106 (0..127) ── */
@@ -297,6 +302,15 @@ static const char *const s_patch_names[SEQ_PATCH_NAME_COUNT] = {
     /* 264 */ "Bass: Sub Detune",
     /* 265 */ "Bass: Acid Pluck",
     /* 266 */ "Bass: DX7 Style",
+
+#if CONFIG_AMY_WAVETABLE
+    /* ── Wavetable banks (267-271) ── */
+    /* 267 */ "Wavetable: 111",
+    /* 268 */ "Wavetable: Braids01",
+    /* 269 */ "Wavetable: PPG WA00",
+    /* 270 */ "Wavetable: Sine2Saw",
+    /* 271 */ "Wavetable: Viral",
+#endif
 };
 
 const char *patch_name_for(uint16_t patch)

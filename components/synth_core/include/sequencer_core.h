@@ -13,8 +13,11 @@ extern "C" {
  * Patch numbers beyond the 0..256 built-in (Juno/DX7/piano) range.
  * Intercepted before amy_send_patch() so they never collide with real patches.
  * Melodic tracks, arp, and drone all use these constants for wave-patch routing.
- * Drone: only SEQ_PATCH_WAVE_BASE..SEQ_PATCH_TRIANGLE are valid (NOISE/KS excluded).
- * Arp:   full range SEQ_PATCH_WAVE_BASE..SEQ_PATCH_WAVE_MAX. */
+ * Drone: SEQ_PATCH_WAVE_BASE..SEQ_PATCH_TRIANGLE plus (AMY_WAVETABLE)
+ *        SEQ_PATCH_WAVETABLE_BASE..MAX; NOISE/KS/bass are excluded (see
+ *        DRONE_PATCH_MAX in drone_core.c).
+ * Arp:   full range SEQ_PATCH_WAVE_BASE..SEQ_PATCH_WAVE_MAX, plus
+ *        (AMY_WAVETABLE) SEQ_PATCH_WAVETABLE_BASE..MAX. */
 #define SEQ_PATCH_WAVE_BASE   257
 #define SEQ_PATCH_SINE        257   /* AMY SINE     */
 #define SEQ_PATCH_SAW_DOWN    258   /* AMY SAW_DOWN */
@@ -35,6 +38,38 @@ extern "C" {
 #define SEQ_PATCH_BASS_2      265   /* Solid Sine-Reinforced Acid/Pluck (SINE + SAW, LPF24) */
 #define SEQ_PATCH_BASS_3      266   /* FM DX7-Style (SINE carrier + sub-octave SINE, DX7 env) */
 #define SEQ_PATCH_BASS_MAX    266
+
+/* ── Wavetable virtual patches (melodic, arp, drone; AMY_WAVETABLE only) ──
+ * One virtual patch per built-in wavetable bank (see pcm_tiny.h /
+ * pcm_wavetable_base). wave=WAVETABLE, preset=pcm_wavetable_base+index.
+ * Intercepted the same way as SEQ_PATCH_WAVE_BASE — never sent to
+ * amy_send_patch(). Range kept separate from SEQ_PATCH_WAVE_BASE so it can be
+ * added without renumbering the bass presets above. */
+#if CONFIG_AMY_WAVETABLE
+#define SEQ_PATCH_WAVETABLE_BASE  267
+#define SEQ_PATCH_WAVETABLE_0     267   /* 111.WAV      */
+#define SEQ_PATCH_WAVETABLE_1     268   /* BRAIDS01.WAV */
+#define SEQ_PATCH_WAVETABLE_2     269   /* PPG_WA00.WAV */
+#define SEQ_PATCH_WAVETABLE_3     270   /* SINE2SAW.WAV */
+#define SEQ_PATCH_WAVETABLE_4     271   /* VIRAL.WAV    */
+#define SEQ_PATCH_WAVETABLE_MAX   271
+#define SEQ_PATCH_ROUTABLE_MAX    SEQ_PATCH_WAVETABLE_MAX
+#else
+#define SEQ_PATCH_ROUTABLE_MAX    SEQ_PATCH_BASS_MAX
+#endif
+
+/* True for any raw-waveform virtual patch (SINE..KS, and — when AMY_WAVETABLE
+ * is compiled in — the wavetable bank patches). Shared by the melodic
+ * synth/LFO configurators so both ranges route the same way (direct oscillator
+ * config, no amy_send_patch(), native-LFO eligible). */
+static inline bool sequencer_core_is_wave_patch(uint16_t patch)
+{
+    if (patch >= SEQ_PATCH_WAVE_BASE && patch <= SEQ_PATCH_WAVE_MAX) return true;
+#if CONFIG_AMY_WAVETABLE
+    if (patch >= SEQ_PATCH_WAVETABLE_BASE && patch <= SEQ_PATCH_WAVETABLE_MAX) return true;
+#endif
+    return false;
+}
 
 /* ── BPM range & default (shared with synth_ui for boot initialisation) ── */
 #define SEQ_DEFAULT_BPM  108

@@ -169,6 +169,28 @@ remaining `+=`-vs-`=0` race can at most carry one window's totals into the next
 (both `us_total` and `calls` scale together, so **`us per call` stays correct**;
 only that window's `% wall` may read high). Benefits coarse and full modes.
 
+### `Kconfig` + `CMakeLists.txt` — wavetable oscillator build flag
+
+Upstream's `wave=WAVETABLE` oscillator (`oscillators.c`, `pcm_tiny.h`,
+`pcm_samples_tiny.h`) was already fully implemented in the vendored source but
+gated behind a bare, unwired `#ifdef AMY_WAVETABLE` — no build path ever
+defined it, so the feature was silently dead code. No source inside
+`components/amy/src/` was edited; this only wires the existing gate to a
+Kconfig option (`AMY_WAVETABLE`, default **y**), mirroring the
+`AMY_USE_FIXEDPOINT` pattern above:
+
+```
+if(CONFIG_AMY_WAVETABLE)
+    target_compile_definitions(${COMPONENT_LIB} PUBLIC AMY_WAVETABLE)
+endif()
+```
+
+Measured cost (2026-07, this target): **+163,952 bytes flash `.rodata`** (5
+built-in 64-cycle tables × 16384 samples × 2 bytes), **zero DIRAM/IRAM/PSRAM**
+— `pcm_get_sample_ram_for_preset()` returns a pointer straight into the flash
+`pcm[]` array (`pcm.c:77`), never RAM-copied. Verified via `idf.py size`
+before/after on an otherwise-identical build.
+
 ## Deferred / needs porting
 
 | Edit | Status |

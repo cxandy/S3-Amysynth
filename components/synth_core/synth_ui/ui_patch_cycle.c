@@ -32,12 +32,24 @@ static const uint16_t s_melodic_patch_cycle[] = {
     264, /* Bass 1: Sub-Heavy Detune (PULSE + detuned SAW, LPF24) */
     265, /* Bass 2: Sine-Reinforced Acid/Pluck (SINE + SAW, LPF24) */
     266, /* Bass 3: FM DX7-Style (SINE + sub-octave SINE, DX7 env) */
+#if CONFIG_AMY_WAVETABLE
+    267, /* Wavetable: 111.WAV      */
+    268, /* Wavetable: BRAIDS01.WAV */
+    269, /* Wavetable: PPG_WA00.WAV */
+    270, /* Wavetable: SINE2SAW.WAV */
+    271, /* Wavetable: VIRAL.WAV    */
+#endif
 };
 #define SEQ_RUNTIME_PATCH_COUNT ((int)(sizeof(s_melodic_patch_cycle) / sizeof(s_melodic_patch_cycle[0])))
 #endif
 
-/* Full-range browse: Juno 0..127, DX7 128..255, piano 256, waves 257..263, bass 264..266. */
-#define SEQ_PATCH_FULL_MAX 266
+/* Full-range browse: Juno 0..127, DX7 128..255, piano 256, waves 257..263, bass
+ * 264..266, wavetable banks 267..271 (AMY_WAVETABLE only). */
+#if CONFIG_AMY_WAVETABLE
+#define SEQ_PATCH_FULL_MAX SEQ_PATCH_WAVETABLE_MAX
+#else
+#define SEQ_PATCH_FULL_MAX SEQ_PATCH_BASS_MAX
+#endif
 
 /* Domain descriptor for melodic, arp, and drone patch cycling.
  * Full-range mode walks 0..SEQ_PATCH_FULL_MAX; curated mode steps the
@@ -50,6 +62,25 @@ static const patch_domain_t s_melodic_domain = {
 static const patch_domain_t s_melodic_domain = {
     .list = s_melodic_patch_cycle, .count = SEQ_RUNTIME_PATCH_COUNT,
     .full_max = SEQ_PATCH_FULL_MAX
+};
+#endif
+
+#if CONFIG_AMY_WAVETABLE
+/* Drone-specific domain: the shared s_melodic_domain (list or full-range) both
+ * pass through NOISE(262)/KS(263)/bass(264-266), which drone_set_patch() snaps
+ * back down to TRIANGLE (its excitation model doesn't support them) — that
+ * snap-back would make 267-271 unreachable by cycling forward from TRIANGLE,
+ * since the domain always re-offers the same excluded value next. A list-mode
+ * domain that skips the gap keeps drone cycling monotonic in both browse
+ * modes. */
+static const uint16_t s_drone_patch_cycle[] = {
+    138, 135, 141, 151, 7, 104, 256,   /* same curated shortlist as melodic  */
+    257, 258, 259, 260, 261,           /* SINE..TRIANGLE (drone excludes NOISE/KS) */
+    267, 268, 269, 270, 271,           /* wavetable banks */
+};
+#define SEQ_DRONE_PATCH_COUNT ((int)(sizeof(s_drone_patch_cycle) / sizeof(s_drone_patch_cycle[0])))
+static const patch_domain_t s_drone_domain = {
+    .list = s_drone_patch_cycle, .count = SEQ_DRONE_PATCH_COUNT, .full_max = 0
 };
 #endif
 
@@ -131,7 +162,11 @@ void synth_ui_drone_cycle_patch(int delta)
 {
     if (delta == 0) return;
     int dir = (delta > 0) ? 1 : -1;
+#if CONFIG_AMY_WAVETABLE
+    uint16_t next = patch_domain_step(&s_drone_domain, drone_get_patch(), dir);
+#else
     uint16_t next = patch_domain_step(&s_melodic_domain, drone_get_patch(), dir);
+#endif
     drone_set_patch(next);
 
     const char *name = patch_name_for(next);

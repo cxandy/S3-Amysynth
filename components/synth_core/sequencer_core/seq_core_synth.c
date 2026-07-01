@@ -102,10 +102,22 @@ static void sequencer_configure_melodic_wave_track(uint8_t synth_id,
     static const uint16_t s_wave_for_patch[] = {
         SINE, SAW_DOWN, SAW_UP, PULSE, TRIANGLE, NOISE, KS,
     };
+#if CONFIG_AMY_WAVETABLE
+    bool is_wavetable = (patch >= SEQ_PATCH_WAVETABLE_BASE && patch <= SEQ_PATCH_WAVETABLE_MAX);
+    uint16_t wave = WAVETABLE;
+    uint16_t wt_preset = pcm_wavetable_base + (uint16_t)(patch - SEQ_PATCH_WAVETABLE_BASE);
+    if (!is_wavetable) {
+        uint16_t widx = (uint16_t)(patch - SEQ_PATCH_WAVE_BASE);
+        if (widx >= (uint16_t)(sizeof(s_wave_for_patch) / sizeof(s_wave_for_patch[0])))
+            widx = 0;
+        wave = s_wave_for_patch[widx];
+    }
+#else
     uint16_t widx = (uint16_t)(patch - SEQ_PATCH_WAVE_BASE);
     if (widx >= (uint16_t)(sizeof(s_wave_for_patch) / sizeof(s_wave_for_patch[0])))
         widx = 0;
     uint16_t wave = s_wave_for_patch[widx];
+#endif
 
     amy_event *e = amy_helpers_event_begin();
     e->synth          = synth_id;
@@ -122,6 +134,11 @@ static void sequencer_configure_melodic_wave_track(uint8_t synth_id,
     e->synth                  = synth_id;
     e->osc                    = 0;
     e->wave                   = wave;
+#if CONFIG_AMY_WAVETABLE
+    if (is_wavetable) {
+        e->preset = wt_preset;
+    }
+#endif
     if (wave == KS) {
         /* Authored Q drives KS string decay once the user has dialed it;
          * otherwise keep the prior fixed default so behavior is unchanged
@@ -244,9 +261,10 @@ void sequencer_configure_synth(uint8_t layer_idx)
     /* Melodic: push the shared patch/flags/voices to each row's own synth.
      * Patches >= SEQ_PATCH_WAVE_BASE are raw-waveform virtual patches; they are
      * configured directly instead of via the amy_send_patch() string loader.
+     * Wavetable virtual patches (SEQ_PATCH_WAVETABLE_BASE..MAX) route through
+     * the same wave-track configurator, which sets wave=WAVETABLE + preset.
      * Patches >= SEQ_PATCH_BASS_BASE are multi-osc bass presets (oscs_per_voice=2). */
-    bool is_wave_patch = (layer->patch >= SEQ_PATCH_WAVE_BASE &&
-                          layer->patch <= SEQ_PATCH_WAVE_MAX);
+    bool is_wave_patch = sequencer_core_is_wave_patch(layer->patch);
     bool is_bass_patch = (layer->patch >= SEQ_PATCH_BASS_BASE &&
                           layer->patch <= SEQ_PATCH_BASS_MAX);
     for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
@@ -282,7 +300,7 @@ void sequencer_core_set_melodic_patch(uint16_t patch_number)
     /* 0..127: Juno, 128..255: DX7, 256: built-in piano.
      * 257..263: raw-waveform virtual patches (SEQ_PATCH_SINE..SEQ_PATCH_WAVE_MAX).
      * 264..266: multi-osc bass presets (SEQ_PATCH_BASS_BASE..SEQ_PATCH_BASS_MAX). */
-    patch_number = SEQ_CLAMP_U16(patch_number, 0, SEQ_PATCH_BASS_MAX);
+    patch_number = SEQ_CLAMP_U16(patch_number, 0, SEQ_PATCH_ROUTABLE_MAX);
     if (s_melodic_patch == patch_number) {
         return;
     }
@@ -321,7 +339,7 @@ void sequencer_core_set_layer_patch(uint8_t layer_idx, uint16_t patch_number)
     if (layer_idx >= s_num_layers) return;
     seq_layer_t *layer = &s_layers[layer_idx];
     if (layer->type != SEQ_LAYER_MELODIC) return;
-    patch_number = SEQ_CLAMP_U16(patch_number, 0, SEQ_PATCH_BASS_MAX);
+    patch_number = SEQ_CLAMP_U16(patch_number, 0, SEQ_PATCH_ROUTABLE_MAX);
     if (layer->patch == patch_number) return;
     layer->patch    = patch_number;
     s_melodic_patch = patch_number;  /* keep global accessor consistent */
@@ -444,9 +462,14 @@ void sequencer_core_push_envelope(uint8_t synth, const seq_env_t *env)
 void sequencer_core_arp_configure(uint16_t patch_number, uint8_t num_voices,
                                   bool filter_authored, float filter_q)
 {
+#if CONFIG_AMY_WAVETABLE
+    patch_number = SEQ_CLAMP_U16(patch_number, 0, SEQ_PATCH_WAVETABLE_MAX);
+#else
     patch_number = SEQ_CLAMP_U16(patch_number, 0, SEQ_PATCH_WAVE_MAX);
+#endif
     if (patch_number >= SEQ_PATCH_WAVE_BASE) {
-        /* Wave virtual patch: configure as a raw-waveform synth (same logic as
+        /* Wave virtual patch (SINE..KS, or — AMY_WAVETABLE — the wavetable
+         * bank patches): configure as a raw-waveform synth (same logic as
          * melodic wave tracks) instead of loading an amy_send_patch() string. */
         sequencer_configure_melodic_wave_track(SEQ_ARP_SYNTH, patch_number, num_voices,
                                                filter_authored, filter_q);

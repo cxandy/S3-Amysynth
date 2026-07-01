@@ -9,6 +9,8 @@
 #include "display_trackopts.h"
 #include "display_menu.h"
 #include "display_arp.h"
+#include "display_hint.h"
+#include "synth_ui_hint.h"
 #include "amy_helpers.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -214,6 +216,13 @@ static void synth_ui_task(void *pvParameters)
                     default:
                         display_seq_draw_frame(s_u8g2, &seq_state, seq_get_bpm());
                         break;
+                }
+                /* Persistent button-hint strip: drawn and flushed as a second,
+                 * small pass on top of whatever the view above just sent, so
+                 * no per-screen renderer needs to know about it. */
+                if (synth_ui_hint_visible()) {
+                    display_hint_draw(s_u8g2, synth_ui_hint_text());
+                    u8g2_SendBuffer(s_u8g2);
                 }
                 last_sig = sig;
                 last_view = view;

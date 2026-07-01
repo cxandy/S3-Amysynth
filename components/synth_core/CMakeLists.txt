@@ -1,6 +1,7 @@
 idf_component_register(SRCS "amy_helpers.c" "amy_fx.c" "arp_core.c" "quantizer.c" "graph_popup_amy.c"
                             "synth_ui/synth_ui_state.c"
                             "synth_ui/synth_ui_task.c"
+                            "synth_ui/synth_ui_hint.c"
                             "synth_ui/ui_editors.c"
                             "synth_ui/ui_patch_cycle.c"
                             "synth_ui/ui_screen_menu.c"

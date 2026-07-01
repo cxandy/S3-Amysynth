@@ -25,6 +25,51 @@ config USB_AUDIO_BLOCKING_WRITE
 
 endmenu
 
+menu "Render Clock Source"
+
+config RENDER_CLOCK_I2S_ENABLE
+    bool "Use I2S DMA backpressure as the render clock (experimental)"
+    default n
+    help
+        Selects an alternate render-clock backend: main/render_clock_i2s.c
+        instead of the default main/render_clock.c (GPTimer). The render
+        task's timing seam is paced by blocking i2s_channel_write() calls
+        to an I2S TX channel configured with every GPIO left unassigned
+        (I2S_GPIO_UNUSED), so this changes no pin mux and produces no
+        physical signal -- the peripheral's internal clock divider free-runs
+        and drains its DMA queue on schedule regardless of GPIO routing,
+        and that DMA drain is the only thing this backend uses.
+
+        The I2S TX DMA queue (see RENDER_CLOCK_I2S_DMA_DESC_NUM) gives the
+        render task up to (queue depth - 1) block periods of look-ahead
+        before a write blocks, trading the GPTimer path's strict zero-slack
+        pacing for extra scheduling headroom against a transient overrun.
+        One consequence: the GPTimer path's counting overrun signal
+        (render_clock_wait() returning >1) does not exist here --
+        this backend always returns 1, so s_render_overruns stays 0
+        regardless of actual render-task headroom.
+
+        Leave this off (default) to keep the proven GPTimer path fully
+        intact. This is a prototype for deliberate, opt-in evaluation, not
+        a proven replacement -- see docs/handoff/i2s-clock-source.md for the
+        full design rationale and impact trace before enabling on hardware.
+
+config RENDER_CLOCK_I2S_DMA_DESC_NUM
+    int "I2S TX DMA buffer count (buffer depth)"
+    depends on RENDER_CLOCK_I2S_ENABLE
+    default 2
+    range 2 8
+    help
+        Number of DMA descriptors (buffers) in the I2S TX ring, each sized
+        to exactly one AMY render block (AMY_BLOCK_SIZE frames). This is
+        the "double buffer depth" lever: 2 (the default, "double buffering")
+        gives one block period (~5.3 ms) of render-task look-ahead before
+        i2s_channel_write() blocks; higher values trade more look-ahead
+        headroom for more worst-case latency between an actual overrun and
+        its effect becoming audible/measurable.
+
+endmenu
+
 menu "Heap Diagnostics"
 
 config AMYSYNTH_HEAP_CHECK

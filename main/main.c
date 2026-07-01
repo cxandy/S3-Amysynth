@@ -209,16 +209,13 @@ static void log_rtos_stats(void)
 static void amy_usb_render_task(void *arg) {
     (void)arg;
 
-    // Master clock: a GPTimer fires every block period. At 3 MHz resolution,
-    // 256 × 3,000,000 / 48,000 = 16,000 ticks exactly (zero remainder, no drift).
-    // Its ISR is pinned to THIS core, waking us via a task notification. This is
-    // tick-rate-independent (the old vTaskDelay(pdMS_TO_TICKS(5)) floored to 0
-    // ticks at FREERTOS_HZ=100 and busy-spun the core). Started from inside the
-    // task so the GPTimer ISR registers on the render core.
-    const uint32_t block_ticks = (uint32_t)(((uint64_t)AMY_BLOCK_SIZE * 3000000ULL)
-                                            / (uint64_t)AMY_SAMPLE_RATE);
-    // 256 × 3,000,000 / 48,000 = 16,000 ticks exact
-    if (render_clock_start(block_ticks) != ESP_OK) {
+    // Master clock: by default a GPTimer fires every block period (256
+    // samples @ 48 kHz = 5333.33 us), tick-rate-independent (the old
+    // vTaskDelay(pdMS_TO_TICKS(5)) floored to 0 ticks at FREERTOS_HZ=100 and
+    // busy-spun the core). CONFIG_RENDER_CLOCK_I2S_ENABLE (default off) swaps
+    // in an I2S-DMA-paced backend instead; see render_clock.h. Started from
+    // inside the task so either backend's ISR registers on the render core.
+    if (render_clock_start(AMY_BLOCK_SIZE, AMY_SAMPLE_RATE) != ESP_OK) {
         ESP_LOGE(TAG, "render_clock_start failed; render task aborting");
         vTaskDelete(NULL);
         return;

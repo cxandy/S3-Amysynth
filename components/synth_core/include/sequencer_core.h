@@ -112,8 +112,17 @@ bool sequencer_core_get_melodic_filter(uint8_t layer_idx, uint8_t track,
 void sequencer_core_set_melodic_filter(uint8_t layer_idx, uint8_t track,
                                        const seq_filter_t *f);
 
-/* Push a filter directly to an arbitrary AMY synth slot (shared by arp/drone). */
-void sequencer_core_push_filter(uint8_t synth, const seq_filter_t *f);
+/* Push a filter directly to an arbitrary AMY synth slot (shared by arp/drone).
+ * is_ks: when true, also pushes f->resonance through sequencer_core_ks_feedback_from_q()
+ * into the synth's KS feedback field (independent of f->enabled — KS feedback is
+ * intrinsic to the oscillator, not the optional post-render filter). */
+void sequencer_core_push_filter(uint8_t synth, const seq_filter_t *f, bool is_ks);
+
+/* Map a Q value (same [0.51, 8.0] range enforced by sequencer_core_set_melodic_filter)
+ * linearly onto AMY's KS oscillator feedback range [0.0, 1.0]. Q=8.0 -> feedback=1.0
+ * is the verified-safe ceiling (lossless two-tap averaging filter, the classic
+ * "infinite sustain" Karplus-Strong case); above 1.0 the KS buffer would diverge. */
+float sequencer_core_ks_feedback_from_q(float q);
 
 /* ── Per-track melodic LFO (tempo-synced software modulator) ─────────────
  * Modulates filter cutoff, amp, pitch, or pan at a rate derived from BPM.
@@ -172,7 +181,8 @@ uint8_t sequencer_core_arp_voices(void);
 uint8_t sequencer_core_clamp_melodic_note(int32_t midi_note);
 
 /* (Re)configure the arp synth with a patch + voice count (flags = 0). */
-void sequencer_core_arp_configure(uint16_t patch_number, uint8_t num_voices);
+void sequencer_core_arp_configure(uint16_t patch_number, uint8_t num_voices,
+                                  bool filter_authored, float filter_q);
 
 /* Schedule a repeating note-on + note-off pair on the arp synth.
  *  tag_base  : unique tag for this arp step (off uses tag_base+1)

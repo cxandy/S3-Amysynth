@@ -95,7 +95,9 @@ void sequencer_kill_synth_voices(uint8_t synth_id)
  * when an LFO is authored. */
 static void sequencer_configure_melodic_wave_track(uint8_t synth_id,
                                                     uint16_t patch,
-                                                    uint16_t num_voices)
+                                                    uint16_t num_voices,
+                                                    bool filter_authored,
+                                                    float filter_q)
 {
     static const uint16_t s_wave_for_patch[] = {
         SINE, SAW_DOWN, SAW_UP, PULSE, TRIANGLE, NOISE, KS,
@@ -120,7 +122,12 @@ static void sequencer_configure_melodic_wave_track(uint8_t synth_id,
     e->synth                  = synth_id;
     e->osc                    = 0;
     e->wave                   = wave;
-    if (wave == KS) e->feedback = 0.9f;
+    if (wave == KS) {
+        /* Authored Q drives KS string decay once the user has dialed it;
+         * otherwise keep the prior fixed default so behavior is unchanged
+         * until they touch the Q control on this track. */
+        e->feedback = filter_authored ? sequencer_core_ks_feedback_from_q(filter_q) : 0.9f;
+    }
     e->freq_coefs[COEF_NOTE]  = 1.0f;
     e->amp_coefs[COEF_CONST]  = 1.0f;
     e->amp_coefs[COEF_VEL]    = 1.0f;
@@ -144,8 +151,13 @@ static void sequencer_configure_melodic_wave_track(uint8_t synth_id,
 static void sequencer_configure_melodic_envelope(uint8_t layer_idx)
 {
     const seq_layer_t *layer = &s_layers[layer_idx];
+    /* KS has no patch envelope of its own (it's a raw-wave primitive), so an
+     * unauthored row would otherwise keep whatever envelope was last on that
+     * synth slot. Force the push so the KS attack/sustain override always
+     * lands, regardless of authored state. */
+    bool force_ks = (layer->patch == SEQ_PATCH_KS);
     for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
-        if (layer->env_authored[t]) {
+        if (layer->env_authored[t] || force_ks) {
             sequencer_configure_melodic_envelope_track(layer_idx, t);
         }
     }
@@ -242,7 +254,9 @@ void sequencer_configure_synth(uint8_t layer_idx)
         if (is_wave_patch) {
             sequencer_configure_melodic_wave_track(layer->synth_id[t],
                                                    layer->patch,
-                                                   layer->num_voices);
+                                                   layer->num_voices,
+                                                   layer->filter_authored[t],
+                                                   layer->filter[t].resonance);
         } else if (is_bass_patch) {
             bass_preset_configure_track(layer->synth_id[t],
                                                   layer->patch,
@@ -427,13 +441,15 @@ void sequencer_core_push_envelope(uint8_t synth, const seq_env_t *env)
     amy_helpers_event_send(e);
 }
 
-void sequencer_core_arp_configure(uint16_t patch_number, uint8_t num_voices)
+void sequencer_core_arp_configure(uint16_t patch_number, uint8_t num_voices,
+                                  bool filter_authored, float filter_q)
 {
     patch_number = SEQ_CLAMP_U16(patch_number, 0, SEQ_PATCH_WAVE_MAX);
     if (patch_number >= SEQ_PATCH_WAVE_BASE) {
         /* Wave virtual patch: configure as a raw-waveform synth (same logic as
          * melodic wave tracks) instead of loading an amy_send_patch() string. */
-        sequencer_configure_melodic_wave_track(SEQ_ARP_SYNTH, patch_number, num_voices);
+        sequencer_configure_melodic_wave_track(SEQ_ARP_SYNTH, patch_number, num_voices,
+                                               filter_authored, filter_q);
     } else {
         amy_send_patch(SEQ_ARP_SYNTH, patch_number, num_voices, 0);
     }

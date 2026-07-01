@@ -97,8 +97,13 @@ void sequencer_configure_melodic_envelope_track(uint8_t layer_idx, uint8_t track
     const seq_env_t   *env   = seq_layer_env(layer_idx, track);
     float sustain = (float)env->sustain_pct / 100.0f;
     uint32_t attack_ms = env->attack_ms;
-    /* KS and NOISE excite via an onset transient; an attack ramp suppresses it. */
-    if (layer->patch == SEQ_PATCH_KS || layer->patch == SEQ_PATCH_NOISE) {
+    /* KS and NOISE excite via an onset transient; an attack ramp suppresses it.
+     * KS additionally forces sustain=0: the string's body is carried entirely
+     * by the KS feedback decay, not by a held amplitude level. */
+    if (layer->patch == SEQ_PATCH_KS) {
+        attack_ms = 2;
+        sustain   = 0.0f;
+    } else if (layer->patch == SEQ_PATCH_NOISE) {
         attack_ms = 2;  /* force floor */
     }
 
@@ -160,6 +165,16 @@ void sequencer_core_set_melodic_envelope(uint8_t layer_idx, uint8_t track,
 
 /* ── Per-row melodic filter (runtime-editable) ─────────────────────────── */
 
+/* Map a Q value (same [0.51, 8.0] range enforced by sequencer_core_set_melodic_filter)
+ * linearly onto AMY's KS oscillator feedback range [0.0, 1.0]. Q=8.0 -> feedback=1.0
+ * is the verified-safe ceiling (lossless two-tap averaging filter, the classic
+ * "infinite sustain" Karplus-Strong case); above 1.0 the KS buffer would diverge. */
+float sequencer_core_ks_feedback_from_q(float q)
+{
+    float n = (q - 0.51f) / (8.0f - 0.51f);
+    return SEQ_CLAMP_F32(n, 0.0f, 1.0f);
+}
+
 /* Push one row's stored filter to its own AMY synth. */
 void sequencer_configure_melodic_filter_track(uint8_t layer_idx, uint8_t track)
 {
@@ -173,6 +188,9 @@ void sequencer_configure_melodic_filter_track(uint8_t layer_idx, uint8_t track)
         e->resonance = f->resonance;
     } else {
         e->filter_type = FILTER_NONE;
+    }
+    if (layer->patch == SEQ_PATCH_KS) {
+        e->feedback = sequencer_core_ks_feedback_from_q(f->resonance);
     }
     amy_helpers_event_send(e);
 }
@@ -205,7 +223,7 @@ void sequencer_core_set_melodic_filter(uint8_t layer_idx, uint8_t track,
 }
 
 /* Generic filter push: shared by arp, drone (via synth_ui). */
-void sequencer_core_push_filter(uint8_t synth, const seq_filter_t *f)
+void sequencer_core_push_filter(uint8_t synth, const seq_filter_t *f, bool is_ks)
 {
     if (!f) return;
     amy_event *e = amy_helpers_event_begin();
@@ -216,6 +234,9 @@ void sequencer_core_push_filter(uint8_t synth, const seq_filter_t *f)
         e->resonance = f->resonance;
     } else {
         e->filter_type = FILTER_NONE;
+    }
+    if (is_ks) {
+        e->feedback = sequencer_core_ks_feedback_from_q(f->resonance);
     }
     amy_helpers_event_send(e);
 }
@@ -239,7 +260,8 @@ void sequencer_core_set_melodic_lfo(uint8_t layer_idx, uint8_t track,
          * (PAN/RANDOM): native clears COEF_MOD but doesn't push the neutral coef. */
         if (!lfo->enabled || !is_native_lfo_track(&layer->lfo[track])) {
             if (lfo->target == LFO_TARGET_FILTER)
-                sequencer_core_push_filter(layer->synth_id[track], &layer->filter[track]);
+                sequencer_core_push_filter(layer->synth_id[track], &layer->filter[track],
+                                           layer->patch == SEQ_PATCH_KS);
             else
                 lfo_push_target_neutral(layer->synth_id[track], lfo->target);
         }
@@ -258,7 +280,8 @@ void sequencer_core_set_melodic_lfo(uint8_t layer_idx, uint8_t track,
     /* Software path: non-wave patches, or native LFO disabled at compile time */
     if (!lfo->enabled) {
         if (lfo->target == LFO_TARGET_FILTER) {
-            sequencer_core_push_filter(layer->synth_id[track], &layer->filter[track]);
+            sequencer_core_push_filter(layer->synth_id[track], &layer->filter[track],
+                                       layer->patch == SEQ_PATCH_KS);
         } else {
             lfo_push_target_neutral(layer->synth_id[track], lfo->target);
         }

@@ -210,7 +210,13 @@ static void arp_configure_wave_synth(void)
     e->synth                  = synth;
     e->osc                    = 0;
     e->wave                   = s_arp.wave;
-    if (s_arp.wave == KS) e->feedback = 0.9f;
+    if (s_arp.wave == KS) {
+        /* Authored Q drives KS string decay once the user has dialed it;
+         * otherwise keep the prior fixed default until they touch Q. */
+        e->feedback = s_arp.filter_authored
+            ? sequencer_core_ks_feedback_from_q(s_arp.filter.resonance)
+            : 0.9f;
+    }
     e->freq_coefs[COEF_NOTE]  = 1.0f;
     e->amp_coefs[COEF_CONST]  = 1.0f;
     e->amp_coefs[COEF_VEL]    = 1.0f;
@@ -275,12 +281,18 @@ static void arp_rebuild(void)
         /* WAVE mode has no patch envelope; always push the arp's env (authored
          * or default) so EG0 breakpoints are valid and notes decay correctly. */
         seq_env_t env_to_push = s_arp.env;
-        if (s_arp.wave == KS || s_arp.wave == NOISE) {
-            env_to_push.attack_ms = 2;  /* KS/NOISE: onset transient suppressed by attack ramp */
+        if (s_arp.wave == KS) {
+            /* KS: onset transient suppressed by attack ramp; the string body is
+             * carried by the KS feedback decay, not by a held amplitude level. */
+            env_to_push.attack_ms   = 2;
+            env_to_push.sustain_pct = 0;
+        } else if (s_arp.wave == NOISE) {
+            env_to_push.attack_ms = 2;  /* NOISE: onset transient suppressed by attack ramp */
         }
         sequencer_core_push_envelope(sequencer_core_arp_synth(), &env_to_push);
     } else {
-        sequencer_core_arp_configure(s_arp.patch, sequencer_core_arp_voices());
+        sequencer_core_arp_configure(s_arp.patch, sequencer_core_arp_voices(),
+                                     s_arp.filter_authored, s_arp.filter.resonance);
         /* Wave patches (257+) have no built-in EG0; always push the envelope so
          * notes decay.  Juno/DX7 patches: only push when user has authored one. */
         if (s_arp.patch >= SEQ_PATCH_WAVE_BASE || s_arp.env_authored) {
@@ -289,7 +301,8 @@ static void arp_rebuild(void)
     }
     /* Filter re-apply is source-agnostic: both WAVE and PATCH respect it. */
     if (s_arp.filter_authored) {
-        sequencer_core_push_filter(sequencer_core_arp_synth(), &s_arp.filter);
+        sequencer_core_push_filter(sequencer_core_arp_synth(), &s_arp.filter,
+                                   s_arp.wave == KS);
     }
 }
 
@@ -532,7 +545,8 @@ void arp_set_filter(const seq_filter_t *f)
     if (!f) return;
     s_arp.filter = *f;
     s_arp.filter_authored = true;
-    sequencer_core_push_filter(sequencer_core_arp_synth(), &s_arp.filter);
+    sequencer_core_push_filter(sequencer_core_arp_synth(), &s_arp.filter,
+                               s_arp.wave == KS);
     ESP_LOGI(TAG, "arp filter -> type%u %.0fHz Q%.2f en=%d",
              s_arp.filter.filter_type, (double)s_arp.filter.cutoff_hz,
              (double)s_arp.filter.resonance, s_arp.filter.enabled);

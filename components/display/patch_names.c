@@ -18,12 +18,12 @@
 
 #if CONFIG_SEQ_PATCH_SHOW_NAMES
 
-#if CONFIG_AMY_WAVETABLE
-#define SEQ_PATCH_NAME_COUNT 272  /* 0..271 inclusive (257-263 = waves, 264-266 = bass
-                                     presets, 267-271 = wavetable banks) */
-#else
-#define SEQ_PATCH_NAME_COUNT 267  /* 0..266 inclusive (257-263 = waves, 264-266 = bass presets) */
-#endif
+/* This table is positional: the 267-271 slot is always present (either real
+ * wavetable names or "(reserved)" placeholders, see below) so that FM/ALGO at
+ * 272-276 lands at a fixed index regardless of CONFIG_AMY_WAVETABLE. */
+#define SEQ_PATCH_NAME_COUNT 277  /* 0..276 inclusive (257-263 = waves, 264-266 = bass
+                                     presets, 267-271 = wavetable banks or reserved,
+                                     272-276 = FM/ALGO) */
 
 static const char *const s_patch_names[SEQ_PATCH_NAME_COUNT] = {
     /* ── Juno-106 (0..127) ── */
@@ -310,7 +310,25 @@ static const char *const s_patch_names[SEQ_PATCH_NAME_COUNT] = {
     /* 269 */ "Wavetable: PPG WA00",
     /* 270 */ "Wavetable: Sine2Saw",
     /* 271 */ "Wavetable: Viral",
+#else
+    /* This table is positional, not designated-index: SEQ_PATCH_FM_BASE is
+     * fixed at 272 unconditionally (see sequencer_core.h) so FM patch numbers
+     * never shift under this build flag. These 5 placeholders reserve the
+     * 267-271 slots that CONFIG_AMY_WAVETABLE would otherwise fill, keeping
+     * every entry below at its correct positional index either way. */
+    /* 267 */ "(reserved)",
+    /* 268 */ "(reserved)",
+    /* 269 */ "(reserved)",
+    /* 270 */ "(reserved)",
+    /* 271 */ "(reserved)",
 #endif
+
+    /* ── FM/ALGO 6-op voices (272-276) ── */
+    /* 272 */ "FM Bass",
+    /* 273 */ "FM E.Piano",
+    /* 274 */ "FM Bell",
+    /* 275 */ "FM Lead",
+    /* 276 */ "FM Custom (edit)",
 };
 
 const char *patch_name_for(uint16_t patch)

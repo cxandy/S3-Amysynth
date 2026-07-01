@@ -53,9 +53,6 @@ extern "C" {
 #define SEQ_PATCH_WAVETABLE_3     270   /* SINE2SAW.WAV */
 #define SEQ_PATCH_WAVETABLE_4     271   /* VIRAL.WAV    */
 #define SEQ_PATCH_WAVETABLE_MAX   271
-#define SEQ_PATCH_ROUTABLE_MAX    SEQ_PATCH_WAVETABLE_MAX
-#else
-#define SEQ_PATCH_ROUTABLE_MAX    SEQ_PATCH_BASS_MAX
 #endif
 
 /* True for any raw-waveform virtual patch (SINE..KS, and — when AMY_WAVETABLE
@@ -70,6 +67,27 @@ static inline bool sequencer_core_is_wave_patch(uint16_t patch)
 #endif
     return false;
 }
+
+/* ── DX7-style 6-operator FM/ALGO voices (melodic only; oscs_per_voice=7) ──
+ * Osc 0 is the AMY ALGO control osc (algorithm + algo_source[0..5] wired to
+ * relative oscs 1..6); oscs 1..6 are SINE operators. Intercepted before
+ * amy_send_patch() exactly like the bass presets above.
+ * FM_BASS/EPIANO/BELL/LEAD are fixed starter presets (see fm_presets.c).
+ * FM_CUSTOM is the single live-editable voice driven by the FM UI screen
+ * (see custompatches/fm_voice.h); its parameters are global, not per-layer —
+ * every melodic row currently on this patch shares the same edited voice.
+ * Numbered to start unconditionally after the wavetable range (267-271, only
+ * ever compiled in under CONFIG_AMY_WAVETABLE) rather than reusing it, so FM
+ * patch numbers never shift under a build-flag change and the two virtual
+ * patch features can never collide. */
+#define SEQ_PATCH_FM_BASE     272
+#define SEQ_PATCH_FM_BASS     272   /* FM Bass (2-op chain, algorithm 0) */
+#define SEQ_PATCH_FM_EPIANO   273   /* FM E.Piano (2 carriers, algorithm 0) */
+#define SEQ_PATCH_FM_BELL     274   /* FM Bell (inharmonic ratios, algorithm 0) */
+#define SEQ_PATCH_FM_LEAD     275   /* FM Lead (brighter 2-op chain, algorithm 0) */
+#define SEQ_PATCH_FM_CUSTOM   276   /* Live-editable voice — opens the FM screen */
+#define SEQ_PATCH_FM_MAX      276
+#define SEQ_PATCH_ROUTABLE_MAX SEQ_PATCH_FM_MAX
 
 /* ── BPM range & default (shared with synth_ui for boot initialisation) ── */
 #define SEQ_DEFAULT_BPM  108
@@ -92,6 +110,12 @@ uint8_t sequencer_core_get_quantizer_root_note(void);
 uint8_t sequencer_core_get_quantizer_scale(void);
 void     sequencer_core_set_layer_patch(uint8_t layer_idx, uint16_t patch_number);
 uint16_t sequencer_core_get_layer_patch(uint8_t layer_idx);
+
+/* Re-push the live custom FM voice (custompatches/fm_voice.h's s_fm_voice) to
+ * every melodic row currently on SEQ_PATCH_FM_CUSTOM. Called by the FM UI
+ * screen after any encoder edit to algorithm/ratio/level/feedback. No-op if
+ * no row is on that patch. */
+void sequencer_core_fm_voice_changed(void);
 
 /* ── Drum per-track patch (curated Juno list) ──
  * Drum layers are per-track Juno-patch layers: each track owns its own patch.

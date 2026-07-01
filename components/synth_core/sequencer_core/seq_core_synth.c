@@ -285,10 +285,14 @@ void sequencer_configure_synth(uint8_t layer_idx)
      * configured directly instead of via the amy_send_patch() string loader.
      * Wavetable virtual patches (SEQ_PATCH_WAVETABLE_BASE..MAX) route through
      * the same wave-track configurator, which sets wave=WAVETABLE + preset.
-     * Patches >= SEQ_PATCH_BASS_BASE are multi-osc bass presets (oscs_per_voice=2). */
+     * Patches >= SEQ_PATCH_BASS_BASE are multi-osc bass presets (oscs_per_voice=2).
+     * Patches >= SEQ_PATCH_FM_BASE are 6-operator FM/ALGO voices (oscs_per_voice=7):
+     * FM_BASS..FM_LEAD are fixed presets, FM_CUSTOM is the live-editable voice. */
     bool is_wave_patch = sequencer_core_is_wave_patch(layer->patch);
     bool is_bass_patch = (layer->patch >= SEQ_PATCH_BASS_BASE &&
                           layer->patch <= SEQ_PATCH_BASS_MAX);
+    bool is_fm_patch   = (layer->patch >= SEQ_PATCH_FM_BASE &&
+                          layer->patch <= SEQ_PATCH_FM_MAX);
     for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
         sequencer_kill_synth_voices(layer->synth_id[t]);
         if (is_wave_patch) {
@@ -301,15 +305,21 @@ void sequencer_configure_synth(uint8_t layer_idx)
             bass_preset_configure_track(layer->synth_id[t],
                                                   layer->patch,
                                                   layer->num_voices);
+        } else if (is_fm_patch) {
+            if (layer->patch == SEQ_PATCH_FM_CUSTOM) {
+                fm_voice_configure_track(layer->synth_id[t], layer->num_voices, &s_fm_voice);
+            } else {
+                fm_preset_configure_track(layer->synth_id[t], layer->patch, layer->num_voices);
+            }
         } else {
             amy_send_patch(layer->synth_id[t], layer->patch,
                            layer->num_voices, layer->synth_flags);
         }
     }
-    /* Raw-wave and bass patches carry no global EQ/chorus commands; skip reassert.
-     * Non-wave/non-bass patches (Juno/DX7) must reassert so that switching away
-     * from one doesn't leave stale global FX active. */
-    if (!is_wave_patch && !is_bass_patch) synth_ui_fx_reassert_global();
+    /* Raw-wave, bass, and FM patches carry no global EQ/chorus commands; skip
+     * reassert. Non-wave/non-bass/non-FM patches (Juno/DX7) must reassert so
+     * that switching away from one doesn't leave stale global FX active. */
+    if (!is_wave_patch && !is_bass_patch && !is_fm_patch) synth_ui_fx_reassert_global();
     sequencer_configure_melodic_envelope(layer_idx);
     sequencer_configure_melodic_envelope1(layer_idx);
     sequencer_configure_melodic_filter(layer_idx);
@@ -322,7 +332,9 @@ void sequencer_core_set_melodic_patch(uint16_t patch_number)
 {
     /* 0..127: Juno, 128..255: DX7, 256: built-in piano.
      * 257..263: raw-waveform virtual patches (SEQ_PATCH_SINE..SEQ_PATCH_WAVE_MAX).
-     * 264..266: multi-osc bass presets (SEQ_PATCH_BASS_BASE..SEQ_PATCH_BASS_MAX). */
+     * 264..266: multi-osc bass presets (SEQ_PATCH_BASS_BASE..SEQ_PATCH_BASS_MAX).
+     * 267..271: wavetable banks (AMY_WAVETABLE only). 272..276: FM/ALGO voices
+     * (SEQ_PATCH_FM_BASE..SEQ_PATCH_FM_MAX), always the true ceiling. */
     patch_number = SEQ_CLAMP_U16(patch_number, 0, SEQ_PATCH_ROUTABLE_MAX);
     if (s_melodic_patch == patch_number) {
         return;
@@ -368,6 +380,20 @@ void sequencer_core_set_layer_patch(uint8_t layer_idx, uint16_t patch_number)
     s_melodic_patch = patch_number;  /* keep global accessor consistent */
     sequencer_configure_synth(layer_idx);
     ESP_LOGI(TAG, "L%u patch -> %u", (unsigned)layer_idx, (unsigned)patch_number);
+}
+
+/* ── Live FM voice edits ──────────────────────────────────────────────────── */
+
+void sequencer_core_fm_voice_changed(void)
+{
+    for (uint8_t i = 0; i < s_num_layers; i++) {
+        seq_layer_t *layer = &s_layers[i];
+        if (layer->type != SEQ_LAYER_MELODIC) continue;
+        if (layer->patch != SEQ_PATCH_FM_CUSTOM) continue;
+        for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
+            fm_voice_push_live(layer->synth_id[t], &s_fm_voice);
+        }
+    }
 }
 
 /* ── Drum per-track patch (curated Juno list) ────────────────────────────── */

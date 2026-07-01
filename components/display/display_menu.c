@@ -10,12 +10,18 @@
 
 void display_menu_draw_frame(u8g2_t *u8g2, const menu_view_t *view)
 {
+    display_menu_draw_frame_titled(u8g2, "MENU", view);
+}
+
+void display_menu_draw_frame_titled(u8g2_t *u8g2, const char *title,
+                                    const menu_view_t *view)
+{
     u8g2_ClearBuffer(u8g2);
     u8g2_SetDrawColor(u8g2, 1);
 
     /* Title bar. */
     u8g2_SetFont(u8g2, u8g2_font_6x10_tf);
-    u8g2_DrawStr(u8g2, 2, MENU_TITLE_Y, "MENU");
+    u8g2_DrawStr(u8g2, 2, MENU_TITLE_Y, title ? title : "MENU");
     u8g2_DrawHLine(u8g2, 0, 10, 128);
 
     if (view == NULL || view->count == 0) {

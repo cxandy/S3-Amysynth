@@ -28,6 +28,7 @@ typedef enum {
     UI_MODE_DRONE     = 2,
     UI_MODE_PROG      = 3,
     UI_MODE_TRACKOPTS = 4,
+    UI_MODE_FM        = 5,
 } ui_mode_t;
 
 /* ── Per-track repeat rate (fires every N bars instead of every bar) ── */

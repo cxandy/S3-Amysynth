@@ -158,6 +158,39 @@ void    sequencer_core_set_track_midi_note(uint8_t layer_idx, uint8_t track,
 uint8_t sequencer_core_get_track_midi_note(uint8_t layer_idx, uint8_t track);
 uint8_t sequencer_core_get_track_source_note(uint8_t layer_idx, uint8_t track);
 
+/* ── Per-step probability / ratchet / conditional trig ────────────────────
+ * A step with prob==100 && ratchet==1 && cond==NONE is "plain" and costs
+ * nothing extra (same always-on periodic AMY tag as before this feature).
+ * Any other combination routes that one step through
+ * sequencer_core_service_tick()'s one-shot per-loop scheduling instead — see
+ * seq_core_trig.c for the engine. All four setters clamp their input and
+ * immediately re-emit the step so the change is audible on its next
+ * occurrence; all four getters return the "plain" default for an
+ * out-of-range layer/track/step. */
+void    sequencer_core_set_step_prob(uint8_t layer_idx, uint8_t track,
+                                     uint8_t step, uint8_t prob_pct);
+uint8_t sequencer_core_get_step_prob(uint8_t layer_idx, uint8_t track,
+                                     uint8_t step);
+void    sequencer_core_set_step_ratchet(uint8_t layer_idx, uint8_t track,
+                                        uint8_t step, uint8_t count);
+uint8_t sequencer_core_get_step_ratchet(uint8_t layer_idx, uint8_t track,
+                                        uint8_t step);
+void    sequencer_core_set_step_cond(uint8_t layer_idx, uint8_t track,
+                                     uint8_t step, seq_step_cond_type_t type,
+                                     uint8_t param);
+void    sequencer_core_get_step_cond(uint8_t layer_idx, uint8_t track,
+                                     uint8_t step, seq_step_cond_type_t *type,
+                                     uint8_t *param);
+
+/* Evaluate one AMY sequencer tick's worth of decorated-step bookkeeping:
+ * detects step-boundary crossings per layer and, for any step that is
+ * "decorated" (see above), rolls its conditional trig + probability and
+ * one-shot schedules its ratchet sub-hits. Must be called once per AMY
+ * sequencer tick — main.c wires this into amy_cfg.amy_external_sequencer_hook,
+ * which already runs at that cadence (~2 kHz worst case, esp_timer task,
+ * Core 0). No-op while paused. */
+void sequencer_core_service_tick(void);
+
 /* ── Generic envelope push ────────────────────────────────────────────────
  * Push an ADSR (EG0 breakpoint set) to an arbitrary AMY synth slot's voices.
  * Shared by the arp and the standalone drone so they reuse the exact same EG0

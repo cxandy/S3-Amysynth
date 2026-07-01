@@ -89,6 +89,11 @@ extern uint32_t       s_lfo_rng_state;
 extern chord_progression_t s_prog;
 extern volatile bool  s_prog_apply_pending;
 
+/* Owned by seq_core_trig.c */
+extern uint32_t s_layer_loop_count[];              /* MAX_LAYERS   */
+extern uint8_t  s_layer_last_step[];                /* MAX_LAYERS, 0xFF = unseen */
+extern bool     s_track_last_played[][SEQ_TRACKS];  /* MAX_LAYERS x SEQ_TRACKS */
+
 /* ── Private function declarations — all defined non-static in owning .c ─ */
 
 /* From seq_core_engine.c */
@@ -119,3 +124,17 @@ void     lfo_push_target_neutral(uint8_t synth_id, lfo_target_t target);
 
 /* From seq_core_progression.c */
 void chord_progression_apply_current(void);
+
+/* From seq_core_engine.c — shared with seq_core_trig.c so ratchet sub-hits use
+ * the exact same accent/jitter velocity curve as the plain periodic path. */
+float sequencer_step_velocity(const seq_layer_t *layer, uint8_t track, uint8_t step);
+
+/* From seq_core_trig.c — per-step probability/ratchet/conditional-trig engine.
+ * sequencer_core_step_is_decorated() is consulted by sequencer_emit_step()
+ * (seq_core_engine.c) to decide whether a step still uses the plain
+ * always-on periodic AMY tag, or is left cleared for the trig engine to
+ * one-shot schedule instead. */
+bool sequencer_core_step_is_decorated(const seq_layer_t *layer, uint8_t track, uint8_t step);
+void sequencer_core_trig_reset(uint8_t layer_idx);   /* called on play-start, one layer   */
+void sequencer_core_trig_clear_all(uint8_t layer_idx); /* called on pause, one layer       */
+void sequencer_core_trig_reset_all(void);            /* called on layer add/delete        */

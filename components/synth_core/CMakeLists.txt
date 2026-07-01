@@ -8,12 +8,14 @@ idf_component_register(SRCS "amy_helpers.c" "amy_fx.c" "arp_core.c" "quantizer.c
                             "synth_ui/ui_screen_drone.c"
                             "synth_ui/ui_screen_prog.c"
                             "synth_ui/ui_screen_trackopts.c"
+                            "synth_ui/ui_screen_stepedit.c"
                             "sequencer_core/seq_core_state.c"
                             "sequencer_core/seq_core_engine.c"
                             "sequencer_core/seq_core_synth.c"
                             "sequencer_core/seq_core_editors.c"
                             "sequencer_core/seq_core_progression.c"
                             "sequencer_core/seq_core_tempo.c"
+                            "sequencer_core/seq_core_trig.c"
                             "custompatches/drone_core.c"
                             "custompatches/bass_presets.c"
                        INCLUDE_DIRS "include"
@@ -31,6 +33,7 @@ set_source_files_properties(
     "${CMAKE_CURRENT_LIST_DIR}/synth_ui/ui_screen_drone.c"
     "${CMAKE_CURRENT_LIST_DIR}/synth_ui/ui_screen_prog.c"
     "${CMAKE_CURRENT_LIST_DIR}/synth_ui/ui_screen_trackopts.c"
+    "${CMAKE_CURRENT_LIST_DIR}/synth_ui/ui_screen_stepedit.c"
     PROPERTIES COMPILE_OPTIONS "-Os"
 )
 set_source_files_properties(
@@ -40,5 +43,6 @@ set_source_files_properties(
     "${CMAKE_CURRENT_LIST_DIR}/sequencer_core/seq_core_editors.c"
     "${CMAKE_CURRENT_LIST_DIR}/sequencer_core/seq_core_progression.c"
     "${CMAKE_CURRENT_LIST_DIR}/sequencer_core/seq_core_tempo.c"
+    "${CMAKE_CURRENT_LIST_DIR}/sequencer_core/seq_core_trig.c"
     PROPERTIES COMPILE_OPTIONS "-O2"
 )

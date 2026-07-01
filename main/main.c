@@ -84,6 +84,11 @@ static void main_sequencer_tick_hook(uint32_t tick_count)
 {
     s_last_seq_tick = tick_count;
     s_seq_tick_hook_count++;
+    /* Per-step probability/ratchet/conditional-trig engine (seq_core_trig.c) —
+     * needs to run at the same cadence as the AMY sequencer tick itself, not
+     * the 20 Hz UI task, so ratchets (which subdivide a single step) resolve
+     * correctly. No-op unless at least one step in the pattern is "decorated". */
+    sequencer_core_service_tick();
 }
 
 #if CONFIG_USB_AUDIO_DIAGNOSTICS
@@ -441,6 +446,25 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
             }
             return;
         }
+        /* Step Trig editor: long-press toggles it open/closed for the step
+         * currently under the sequencer grid cursor. Only reachable here
+         * (plain sequencer screen, edit_mode, no other overlay) since every
+         * arp/drone/prog/trackopts isolation block above already intercepts
+         * MY_BUTTON_2 and returns before this point. */
+        if (event == BUTTON_LONG_PRESS_START) {
+            if (synth_ui_stepedit_is_active()) {
+                synth_ui_stepedit_close();
+            } else if (!synth_ui_menu_is_active()) {
+                s_drum_select_held = false;
+                synth_ui_set_drum_select_mode(false);
+                synth_ui_stepedit_open();
+            }
+            return;
+        }
+        if (synth_ui_stepedit_is_active()) {
+            /* Suppress drum-select hold while the popup owns the encoder. */
+            return;
+        }
         if (event == BUTTON_PRESS_DOWN) {
             s_drum_select_held = true;
             synth_ui_set_drum_select_mode(true);
@@ -486,6 +510,16 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
                 synth_ui_lfo_close_commit();
             } else if (event == BUTTON_PRESS_DOWN) {
                 synth_ui_lfo_handle_button(false);
+            }
+            return;
+        }
+        /* Step Trig editor: short press cycles the focused field, long press
+         * closes it (symmetric with the filter/LFO/graph editors above). */
+        if (synth_ui_stepedit_is_active()) {
+            if (event == BUTTON_LONG_PRESS_START) {
+                synth_ui_stepedit_close();
+            } else if (event == BUTTON_PRESS_DOWN) {
+                synth_ui_stepedit_handle_button();
             }
             return;
         }
@@ -625,6 +659,12 @@ static void encoder_task(void *pvParameters)
 
             /* LFO editor: scrolls cursor or adjusts selected field. */
             if (synth_ui_lfo_handle_encoder(steps)) {
+                goto next_poll;
+            }
+
+            /* Step Trig editor: adjusts the focused field (prob/ratchet/cond/param)
+             * for the currently-selected sequencer grid step. */
+            if (synth_ui_stepedit_handle_encoder(steps)) {
                 goto next_poll;
             }
 
@@ -830,8 +870,14 @@ void app_main(void)
      * 1056..1119 (SEQ_ARP_TAG_BASE + ARP_MAX_SLOTS*ARP_OCT_MAX*2).  Set to 1200
      * so the table covers the arp range AND stays clear of the off-by-one in
      * sequencer_add_event's `tag > max_sequences` guard (writes sequences[tag]).
-     * Keep in sync with SEQ_ARP_TAG_BASE/COUNT in sequencer_core.c. */
-    amy_cfg.max_sequencer_tags = 1200;
+     * Keep in sync with SEQ_ARP_TAG_BASE/COUNT in sequencer_core.c.
+     *
+     * Per-step ratchet trigs (seq_core_trig.c) then claim a further
+     * MAX_LAYERS*SEQ_TRACKS*SEQ_MAX_RATCHET*2 = 128 dedicated one-shot tags
+     * right above the arp range: 1120..1247 (SEQ_RATCHET_TAG_BASE/MAX in
+     * seq_core_config.h). 1200 no longer covers that — raised to 1280 to
+     * clear SEQ_RATCHET_TAG_MAX (1247) with the same +2 off-by-one margin. */
+    amy_cfg.max_sequencer_tags = 1280;
     /* Raise the instrument table from the default 64 so the standalone drone
      * synth (custompatches/drone_core) can claim dedicated slots above the
      * existing map (drum 6..9, melodic 11..62, arp 63). The drone uses slots

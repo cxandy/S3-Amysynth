@@ -59,7 +59,7 @@ static void synth_ui_task(void *pvParameters)
     const TickType_t delay = pdMS_TO_TICKS(50); /* 20 Hz */
     uint32_t last_sig = 0;
     /* Which top-level view was rendered last frame; a change forces a redraw. */
-    enum { V_SEQ, V_ARP, V_MENU, V_GRAPH, V_FILTER, V_LFO, V_DRONE, V_DRONE_VIS, V_PROG, V_TRACKOPTS } last_view = V_SEQ;
+    enum { V_SEQ, V_ARP, V_MENU, V_GRAPH, V_FILTER, V_LFO, V_DRONE, V_DRONE_VIS, V_PROG, V_TRACKOPTS, V_STEPEDIT } last_view = V_SEQ;
     for (;;) {
         /* Coalesced arp re-emit: setters mark the arp dirty; we perform at most
          * one full re-emit per frame here, collapsing fast encoder edits. */
@@ -121,6 +121,8 @@ static void synth_ui_task(void *pvParameters)
                 view = V_FILTER; sig = filter_view_signature();
             } else if (s_lfo_active) {
                 view = V_LFO;    sig = lfo_view_signature();
+            } else if (synth_ui_stepedit_is_active()) {
+                view = V_STEPEDIT; sig = stepedit_view_signature();
             } else if (graph) {
                 view = V_GRAPH; sig = graph_view_signature();
             } else if (seq_state.menu_open) {
@@ -209,6 +211,12 @@ static void synth_ui_task(void *pvParameters)
                         trackopts_view_t tv;
                         trackopts_build_view(&tv);
                         display_trackopts_draw_frame(s_u8g2, &tv);
+                        break;
+                    }
+                    case V_STEPEDIT: {
+                        stepedit_view_t sv;
+                        stepedit_build_view(&sv);
+                        display_stepedit_draw_frame(s_u8g2, &sv);
                         break;
                     }
                     default:

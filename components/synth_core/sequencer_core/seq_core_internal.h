@@ -133,6 +133,10 @@ void chord_progression_apply_current(void);
  * the exact same accent/jitter velocity curve as the plain periodic path. */
 float sequencer_step_velocity(const seq_layer_t *layer, uint8_t track, uint8_t step);
 
+/* From seq_core_engine.c — shared with seq_core_trig.c so the decorated-step
+ * ratchet path respects mute/solo the same way the plain periodic path does. */
+bool sequencer_track_audible(const seq_layer_t *layer, uint8_t track);
+
 /* From seq_core_trig.c — per-step probability/ratchet/conditional-trig engine.
  * sequencer_core_step_is_decorated() is consulted by sequencer_emit_step()
  * (seq_core_engine.c) to decide whether a step still uses the plain

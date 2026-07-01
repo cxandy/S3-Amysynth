@@ -108,8 +108,9 @@ static bool sequencer_layer_has_solo(const seq_layer_t *layer)
 }
 
 /* Whether `track` will actually sound: solo overrides mute (even on the same
- * track) whenever any track in the layer is soloed; otherwise mute alone gates. */
-static bool sequencer_track_audible(const seq_layer_t *layer, uint8_t track)
+ * track) whenever any track in the layer is soloed; otherwise mute alone gates.
+ * Not static: also called from seq_core_trig.c's decorated-step ratchet path. */
+bool sequencer_track_audible(const seq_layer_t *layer, uint8_t track)
 {
     if (sequencer_layer_has_solo(layer)) {
         return layer->solo[track];

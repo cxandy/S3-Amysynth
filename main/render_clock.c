@@ -1,3 +1,11 @@
+#include "sdkconfig.h"
+
+// This file is the default GPTimer-backed render clock. The alternate,
+// opt-in I2S-backed implementation of the same render_clock.h API lives in
+// render_clock_i2s.c, active only when CONFIG_RENDER_CLOCK_I2S_ENABLE=y.
+// Exactly one of the two files defines these symbols for a given build.
+#if !CONFIG_RENDER_CLOCK_I2S_ENABLE
+
 #include "render_clock.h"
 
 #include "driver/gptimer.h"
@@ -9,8 +17,7 @@ static const char *TAG = "render_clock";
 
 static gptimer_handle_t s_timer = NULL;
 static TaskHandle_t s_render_task = NULL;
-/* We are evaluating changing to use 1 of 2 I2S peripherals as clock, this behaves identically (one ISR per block) 
-// buffer depth. Tradeoff being a one time delay for buffering. */
+
 // GPTimer alarm ISR. Runs on the core that called gptimer_enable() (i.e. the
 // render task's core), so the notify + wake stay core-local with no cross-core
 // latency. Kept in IRAM and minimal: just a counting task notification.
@@ -28,11 +35,17 @@ static bool IRAM_ATTR render_clock_on_alarm(gptimer_handle_t timer,
     return higher_prio_woken == pdTRUE;  // request context switch if needed
 }
 
-esp_err_t render_clock_start(uint32_t period_ticks)
+esp_err_t render_clock_start(uint32_t block_frames, uint32_t sample_rate_hz)
 {
     if (s_timer != NULL) {
         return ESP_OK;  // already started
     }
+
+    // 3 MHz resolution gives an exact tick count for 256 frames @ 48 kHz
+    // (256 * 3,000,000 / 48,000 = 16,000, zero remainder); 1 MHz would leave
+    // a non-integer 5333.33 tick count that truncates and drifts.
+    const uint32_t period_ticks =
+        (uint32_t)(((uint64_t)block_frames * 3000000ULL) / (uint64_t)sample_rate_hz);
 
     s_render_task = xTaskGetCurrentTaskHandle();
 
@@ -112,3 +125,5 @@ void render_clock_stop(void)
     s_timer = NULL;
     s_render_task = NULL;
 }
+
+#endif  // !CONFIG_RENDER_CLOCK_I2S_ENABLE

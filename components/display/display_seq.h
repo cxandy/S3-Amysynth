@@ -116,6 +116,10 @@ typedef struct {
     seq_lfo_t lfo[SEQ_TRACKS];
     bool      lfo_authored[SEQ_TRACKS];
     uint8_t   repeat_rate[SEQ_TRACKS];   /* SEQ_REPEAT_* — fires every N bars */
+    bool      mute[SEQ_TRACKS];          /* true = track produces no note-ons */
+    bool      solo[SEQ_TRACKS];          /* true = only soloed tracks in this
+                                             layer are audible; overrides mute
+                                             on the soloed track(s) themselves */
     bool      chord_mode;                /* false = scale quantizer (default) */
     uint8_t   chord_root;                /* chromatic 0-11 (C=0)              */
     chord_type_t chord_type;

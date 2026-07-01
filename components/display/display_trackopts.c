@@ -4,6 +4,7 @@
 #define TO_TITLE_Y    8
 #define TO_ROW_H      11
 #define TO_FIRST_ROW  22
+#define TO_VIS_ROWS   4    /* content rows visible at once (rows 22/33/44/55) */
 
 /* Draw one "label : value" row, inverting the value when this row is the
  * selected+editing target, or boxing the whole row when merely selected. */
@@ -62,33 +63,66 @@ void display_trackopts_draw_frame(u8g2_t *u8g2, const trackopts_view_t *view)
 
     if (view == NULL) { u8g2_SendBuffer(u8g2); return; }
 
+    /* Content rows, indexed relative to TO_ROW_REPEAT: 0=Repeat 1=Mute 2=Solo
+     * 3=Chord 4=Root 5=Type. Drum layers stop at Solo (3 rows); melodic
+     * layers have all 6 and need the same scroll-window technique as the
+     * drone screen to fit the 4 rows visible below the title bar. */
+    uint8_t content_count = view->melodic ? 6 : 3;
+    uint8_t content_cursor = (view->cursor >= TO_ROW_REPEAT)
+                             ? (uint8_t)(view->cursor - TO_ROW_REPEAT) : 0;
+    uint8_t first = 0;
+    if (content_cursor >= TO_VIS_ROWS) {
+        first = (uint8_t)(content_cursor - (TO_VIS_ROWS - 1));
+    }
+    uint8_t last = (uint8_t)(first + TO_VIS_ROWS);
+    if (last > content_count) last = content_count;
+
     u8g2_SetFont(u8g2, u8g2_font_6x10_tf);
-    uint8_t y = TO_FIRST_ROW;
     char val[12];
 
-    /* Repeat Rate (always present). */
-    snprintf(val, sizeof(val), "%u", (unsigned)view->repeat_rate);
-    to_draw_row(u8g2, y, "Repeat Rate", val,
-                view->cursor == TO_ROW_REPEAT, view->editing);
-    y = (uint8_t)(y + TO_ROW_H);
+    for (uint8_t i = first; i < last; i++) {
+        uint8_t y = (uint8_t)(TO_FIRST_ROW + (i - first) * TO_ROW_H);
+        bool selected = (view->cursor == (uint8_t)(TO_ROW_REPEAT + i));
 
-    if (view->melodic) {
-        /* When the global progression is driving harmony, the chord rows are
-         * read-only — show "(prog)" so the user knows why edits don't stick. */
-        to_draw_row(u8g2, y, "Chord Mode",
-                    view->chord_locked ? "(prog)" : (view->chord_mode ? "ON" : "OFF"),
-                    view->cursor == TO_ROW_CHORD, view->editing && !view->chord_locked);
-        y = (uint8_t)(y + TO_ROW_H);
+        switch (i) {
+        case 0:
+            snprintf(val, sizeof(val), "%u", (unsigned)view->repeat_rate);
+            to_draw_row(u8g2, y, "Repeat Rate", val, selected, view->editing);
+            break;
+        case 1:
+            to_draw_row(u8g2, y, "Mute", view->track_mute ? "ON" : "OFF",
+                        selected, view->editing);
+            break;
+        case 2:
+            to_draw_row(u8g2, y, "Solo", view->track_solo ? "ON" : "OFF",
+                        selected, view->editing);
+            break;
+        case 3:
+            /* When the global progression is driving harmony, the chord rows
+             * are read-only — show "(prog)" so edits don't silently no-op. */
+            to_draw_row(u8g2, y, "Chord Mode",
+                        view->chord_locked ? "(prog)" : (view->chord_mode ? "ON" : "OFF"),
+                        selected, view->editing && !view->chord_locked);
+            break;
+        case 4:
+            to_draw_row(u8g2, y, " Root", chord_root_name(view->chord_root),
+                        selected, view->editing);
+            break;
+        case 5:
+            to_draw_row(u8g2, y, " Type", chord_type_name(view->chord_type),
+                        selected, view->editing);
+            break;
+        default:
+            break;
+        }
+    }
 
-        to_draw_row(u8g2, y, " Root", chord_root_name(view->chord_root),
-                    view->cursor == TO_ROW_ROOT, view->editing);
-        y = (uint8_t)(y + TO_ROW_H);
-
-        to_draw_row(u8g2, y, " Type", chord_type_name(view->chord_type),
-                    view->cursor == TO_ROW_TYPE, view->editing);
-    } else {
-        u8g2_SetFont(u8g2, u8g2_font_5x7_tf);
-        u8g2_DrawStr(u8g2, 8, (uint8_t)(y + 4), "(drum track)");
+    /* Scroll affordances, same shape as the drone screen. */
+    if (first > 0) {
+        u8g2_DrawTriangle(u8g2, 124, 14, 120, 18, 128, 18);
+    }
+    if (last < content_count) {
+        u8g2_DrawTriangle(u8g2, 120, 60, 128, 60, 124, 64);
     }
 
     u8g2_SendBuffer(u8g2);

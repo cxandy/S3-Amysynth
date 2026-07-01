@@ -75,6 +75,24 @@ render walks the same pointers on Core 1. Without the lock a patch toggle can
 free `synth[osc]` between the NULL check and the deref in `hold_and_modify`,
 producing a `LoadProhibited` fault (EXCVADDR=0x8).
 
+### `src/amy.h` — lock accessor prototypes
+
+Added `extern SemaphoreHandle_t amy_queue_lock;` (ESP_PLATFORM branch, missing
+alongside the existing `_WIN32`/`_POSIX_THREADS` externs) plus unconditional
+prototypes for `amy_grab_lock(void)` / `amy_release_lock(void)` /
+`amy_init_lock(void)`, none of which upstream declares anywhere despite every
+platform branch in `amy.c` defining them.
+
+**Why:** the runtime PCM sampler (`custompatches/sample_rec.c`) needs to grab
+the render lock around its own `pcm_load()`/`pcm_unload_preset()` calls —
+`pcm.c`'s memory-preset linked list is walked unlocked by `render_pcm()`
+inside the render body, so mutating it from another task without the lock
+races the render task across cores. `add_delta_to_queue()` already does
+exactly this internally; this edit just lets code outside `amy.c` do the same
+without an implicit-declaration warning. **Upstream-PR candidate** — the gap
+is platform-agnostic (every accessor is unprototyped on every platform), not
+an ESP32-specific fix.
+
 ### `src/envelope.c` — IRAM hot path
 
 `compute_mod_value`, `compute_mod_scale`, `compute_breakpoint_scale` annotated

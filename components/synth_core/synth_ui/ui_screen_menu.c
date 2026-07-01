@@ -3,6 +3,7 @@
 #include "sequencer_core.h"
 #include "arp_core.h"
 #include "custompatches/drone_core.h"
+#include "custompatches/sample_rec.h"
 #include "quantizer.h"
 #include "amy_fx.h"
 #include "seq_clamp.h"
@@ -44,6 +45,8 @@ typedef enum {
     MI_REVERB_LEVEL,
     MI_PRESET_GLOBAL_FX,
     MI_VOLUME,
+    MI_SAMPLE,
+    MI_SAMPLE_CANCEL,
     MI_COUNT
 } menu_item_id_t;
 
@@ -142,6 +145,29 @@ void menu_build_view(menu_view_t *out)
     snprintf(s_menu_items[MI_VOLUME].label, MENU_LABEL_LEN, "Volume");
     snprintf(s_menu_items[MI_VOLUME].value, MENU_VALUE_LEN, "%.0f%%",
              (double)(amy_fx_get_master_volume() * 100.0f));
+
+    /* Runtime PCM sampler (custompatches/sample_rec): the label previews what
+     * ARM will target (the currently selected track), since that selection is
+     * only snapshotted at the moment the user actually arms. */
+    snprintf(s_menu_items[MI_SAMPLE].label, MENU_LABEL_LEN, "Sample");
+    switch (sample_rec_get_state()) {
+        case SAMPLE_REC_ARMED:
+            snprintf(s_menu_items[MI_SAMPLE].value, MENU_VALUE_LEN, "Rec!");
+            break;
+        case SAMPLE_REC_RECORDING:
+            snprintf(s_menu_items[MI_SAMPLE].value, MENU_VALUE_LEN, "Rec %u%%",
+                     (unsigned)sample_rec_get_progress_pct());
+            break;
+        case SAMPLE_REC_READY:
+            snprintf(s_menu_items[MI_SAMPLE].value, MENU_VALUE_LEN, "Assign?");
+            break;
+        case SAMPLE_REC_IDLE:
+        default:
+            snprintf(s_menu_items[MI_SAMPLE].value, MENU_VALUE_LEN, "Arm T%u",
+                     (unsigned)(seq_state.selected_track + 1));
+            break;
+    }
+    snprintf(s_menu_items[MI_SAMPLE_CANCEL].label, MENU_LABEL_LEN, "Smp Cancel");
 
     out->items   = s_menu_items;
     out->count   = MI_COUNT;
@@ -359,6 +385,31 @@ bool synth_ui_menu_handle_button(void)
             case MI_REMOVE_LAYER:
                 s_to_layer = seq_state.active_layer_idx;
                 synth_ui_request_delete_to_layer();
+                seq_state.menu_open = false;
+                break;
+            case MI_SAMPLE:
+                switch (sample_rec_get_state()) {
+                    case SAMPLE_REC_IDLE:
+                        if (seq_state.layers[seq_state.active_layer_idx].type == SEQ_LAYER_DRUM) {
+                            sample_rec_arm(seq_state.active_layer_idx, seq_state.selected_track);
+                        } else {
+                            ESP_LOGW(TAG, "sample_rec: select a drum track first");
+                        }
+                        break;
+                    case SAMPLE_REC_ARMED:
+                        sample_rec_start();
+                        break;
+                    case SAMPLE_REC_READY:
+                        sample_rec_assign();
+                        break;
+                    case SAMPLE_REC_RECORDING:
+                    default:
+                        break;   /* capture runs in the background regardless of the menu */
+                }
+                seq_state.menu_open = false;
+                break;
+            case MI_SAMPLE_CANCEL:
+                sample_rec_cancel();
                 seq_state.menu_open = false;
                 break;
             default:

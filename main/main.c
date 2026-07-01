@@ -15,6 +15,7 @@
 #include "rotary_encoder.h"
 #include "synth_ui.h"
 #include "sequencer_core.h"
+#include "custompatches/sample_rec.h"
 #include "usb_audio.h"
 #include "esp_timer.h"
 #include "esp_log.h"
@@ -243,6 +244,12 @@ static void amy_usb_render_task(void *arg) {
         int16_t *block = amy_update();           // synthesizes everything / advances AMY sample clock
         if (likely(block != NULL)) {
             s_render_block_count++;
+
+            // Runtime PCM sampler (custompatches/sample_rec): alloc-free/non-
+            // blocking no-op unless a recording is actually armed/in-progress.
+            // Must run after amy_update() so amy_queue_lock is already released
+            // (see amy-internals.md's lock-ownership section).
+            sample_rec_render_tick(block, AMY_BLOCK_SIZE);
 
 #if CONFIG_USB_AUDIO_BLOCKING_WRITE
             // Resilient path: retry until the host consumes the data, slaving the
@@ -877,6 +884,12 @@ void app_main(void)
      * free. The per-sample PSRAM latency in the FX stage is acceptable; the
      * lines simply do not fit internally. */
     amy_cfg.ram_caps_delay  = MALLOC_CAP_SPIRAM;
+    /* Runtime PCM sampler (custompatches/sample_rec): a 1.5 s mono recording
+     * is ~140 KB, comfortably above the SPIRAM_MALLOC_ALWAYSINTERNAL (16 KB)
+     * threshold, so pcm_load()'s malloc_caps() call would already land in
+     * PSRAM with the default MALLOC_CAP_DEFAULT (0). Set explicitly anyway so
+     * that intent doesn't depend on staying above that threshold. */
+    amy_cfg.ram_caps_sample = MALLOC_CAP_SPIRAM;
     /* Default is 256, which only covers layer 0 (drum).  Each additional
      * layer needs SEQ_TRACKS * SEQ_MAX_STEPS * 2 extra tags.  With
      * MAX_LAYERS=4, SEQ_TRACKS=4, SEQ_MAX_STEPS=32 the sequencer's highest tag

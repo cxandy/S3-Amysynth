@@ -21,6 +21,7 @@ idf_component_register(SRCS "amy_helpers.c" "amy_fx.c" "arp_core.c" "quantizer.c
                             "custompatches/bass_presets.c"
                             "custompatches/fm_voice.c"
                             "custompatches/fm_presets.c"
+                            "custompatches/sample_rec.c"
                        INCLUDE_DIRS "include"
                        PRIV_INCLUDE_DIRS "."
                        REQUIRES u8g2 display amy

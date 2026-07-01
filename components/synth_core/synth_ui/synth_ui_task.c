@@ -4,6 +4,7 @@
 #include "arp_core.h"
 #include "custompatches/drone_core.h"
 #include "custompatches/fm_voice.h"
+#include "custompatches/sample_rec.h"
 #include "display_seq.h"
 #include "display_drone.h"
 #include "display_prog.h"
@@ -261,6 +262,8 @@ void synth_ui_init(u8g2_t *u8g2)
     drone_core_init();
     SEQ_HEAP_CHECK("ui_init: after drone_core_init");
     fm_voice_default(&s_fm_voice);
+    sample_rec_init();
+    SEQ_HEAP_CHECK("ui_init: after sample_rec_init");
 
     /* Add drum layer (index 0). */
     synth_ui_add_layer(SEQ_LAYER_DRUM, SEQ_STEPS);

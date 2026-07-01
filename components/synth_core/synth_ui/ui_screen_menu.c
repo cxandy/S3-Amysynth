@@ -26,6 +26,7 @@ typedef enum {
     MI_SCREEN_DRONE,
     MI_SCREEN_PROG,
     MI_SCREEN_TRACKOPTS,
+    MI_SCREEN_FM,
     MI_BPM,
     MI_QUANT_ENABLED,
     MI_QUANT_SCALE,
@@ -60,6 +61,7 @@ void menu_build_view(menu_view_t *out)
     snprintf(s_menu_items[MI_SCREEN_DRONE].label, MENU_LABEL_LEN, "Screen: Drone");
     snprintf(s_menu_items[MI_SCREEN_PROG].label, MENU_LABEL_LEN, "Screen: Prog");
     snprintf(s_menu_items[MI_SCREEN_TRACKOPTS].label, MENU_LABEL_LEN, "Screen: TrackOpts");
+    snprintf(s_menu_items[MI_SCREEN_FM].label, MENU_LABEL_LEN, "Screen: FM");
 
     snprintf(s_menu_items[MI_BPM].label, MENU_LABEL_LEN, "BPM");
     snprintf(s_menu_items[MI_BPM].value, MENU_VALUE_LEN, "%u",
@@ -344,6 +346,10 @@ bool synth_ui_menu_handle_button(void)
                 seq_state.menu_open = false;
                 s_to_layer = seq_state.active_layer_idx;
                 s_to_track = seq_state.selected_track;
+                break;
+            case MI_SCREEN_FM:
+                seq_state.ui_mode = UI_MODE_FM;
+                seq_state.menu_open = false;
                 break;
             case MI_ADD_LAYER:
                 if (seq_state.num_layers < MAX_LAYERS)

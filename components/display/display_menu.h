@@ -34,6 +34,12 @@ typedef struct {
 /* Draw the full menu overlay (clears + sends the buffer). */
 void display_menu_draw_frame(u8g2_t *u8g2, const menu_view_t *view);
 
+/* Same scrollable label/value list renderer with a caller-supplied title
+ * instead of the fixed "MENU" — lets other screens (e.g. the FM voice editor)
+ * reuse this renderer without inventing their own row-drawing code. */
+void display_menu_draw_frame_titled(u8g2_t *u8g2, const char *title,
+                                    const menu_view_t *view);
+
 #ifdef __cplusplus
 }
 #endif

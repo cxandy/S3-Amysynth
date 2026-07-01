@@ -3,6 +3,7 @@
 #include "sequencer_core.h"
 #include "arp_core.h"
 #include "custompatches/drone_core.h"
+#include "custompatches/fm_voice.h"
 #include "display_seq.h"
 #include "display_drone.h"
 #include "display_prog.h"
@@ -59,7 +60,7 @@ static void synth_ui_task(void *pvParameters)
     const TickType_t delay = pdMS_TO_TICKS(50); /* 20 Hz */
     uint32_t last_sig = 0;
     /* Which top-level view was rendered last frame; a change forces a redraw. */
-    enum { V_SEQ, V_ARP, V_MENU, V_GRAPH, V_FILTER, V_LFO, V_DRONE, V_DRONE_VIS, V_PROG, V_TRACKOPTS } last_view = V_SEQ;
+    enum { V_SEQ, V_ARP, V_MENU, V_GRAPH, V_FILTER, V_LFO, V_DRONE, V_DRONE_VIS, V_PROG, V_TRACKOPTS, V_FM } last_view = V_SEQ;
     for (;;) {
         /* Coalesced arp re-emit: setters mark the arp dirty; we perform at most
          * one full re-emit per frame here, collapsing fast encoder edits. */
@@ -135,6 +136,8 @@ static void synth_ui_task(void *pvParameters)
                 view = V_PROG;  sig = prog_view_signature();
             } else if (seq_state.ui_mode == UI_MODE_TRACKOPTS) {
                 view = V_TRACKOPTS; sig = trackopts_view_signature();
+            } else if (seq_state.ui_mode == UI_MODE_FM) {
+                view = V_FM;    sig = fm_view_signature();
             } else {
                 view = V_SEQ;   sig = seq_view_signature();
             }
@@ -211,6 +214,12 @@ static void synth_ui_task(void *pvParameters)
                         display_trackopts_draw_frame(s_u8g2, &tv);
                         break;
                     }
+                    case V_FM: {
+                        menu_view_t fv;
+                        fm_build_view(&fv);
+                        display_menu_draw_frame_titled(s_u8g2, "FM ALGO", &fv);
+                        break;
+                    }
                     default:
                         display_seq_draw_frame(s_u8g2, &seq_state, seq_get_bpm());
                         break;
@@ -243,6 +252,7 @@ void synth_ui_init(u8g2_t *u8g2)
     SEQ_HEAP_CHECK("ui_init: after arp_core_init");
     drone_core_init();
     SEQ_HEAP_CHECK("ui_init: after drone_core_init");
+    fm_voice_default(&s_fm_voice);
 
     /* Add drum layer (index 0). */
     synth_ui_add_layer(SEQ_LAYER_DRUM, SEQ_STEPS);

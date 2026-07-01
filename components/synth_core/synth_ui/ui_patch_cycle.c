@@ -32,12 +32,21 @@ static const uint16_t s_melodic_patch_cycle[] = {
     264, /* Bass 1: Sub-Heavy Detune (PULSE + detuned SAW, LPF24) */
     265, /* Bass 2: Sine-Reinforced Acid/Pluck (SINE + SAW, LPF24) */
     266, /* Bass 3: FM DX7-Style (SINE + sub-octave SINE, DX7 env) */
+    267, /* FM Bass (6-op ALGO) */
+    268, /* FM E.Piano (6-op ALGO) */
+    269, /* FM Bell (6-op ALGO) */
+    270, /* FM Lead (6-op ALGO) */
+    271, /* FM Custom — opens the FM edit screen (Menu > Screen: FM) */
 };
 #define SEQ_RUNTIME_PATCH_COUNT ((int)(sizeof(s_melodic_patch_cycle) / sizeof(s_melodic_patch_cycle[0])))
 #endif
 
-/* Full-range browse: Juno 0..127, DX7 128..255, piano 256, waves 257..263, bass 264..266. */
-#define SEQ_PATCH_FULL_MAX 266
+/* Full-range browse: Juno 0..127, DX7 128..255, piano 256, waves 257..263, bass
+ * 264..266, FM/ALGO 267..271. Melodic-only: arp/drone independently clamp
+ * below SEQ_PATCH_WAVE_MAX in their own configure paths, so this shared upper
+ * bound reaching into bass/FM territory is a no-op for them (same as it
+ * already was for the bass range). */
+#define SEQ_PATCH_FULL_MAX 271
 
 /* Domain descriptor for melodic, arp, and drone patch cycling.
  * Full-range mode walks 0..SEQ_PATCH_FULL_MAX; curated mode steps the

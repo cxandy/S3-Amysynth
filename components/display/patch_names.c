@@ -18,7 +18,8 @@
 
 #if CONFIG_SEQ_PATCH_SHOW_NAMES
 
-#define SEQ_PATCH_NAME_COUNT 267  /* 0..266 inclusive (257-263 = waves, 264-266 = bass presets) */
+#define SEQ_PATCH_NAME_COUNT 272  /* 0..271 inclusive (257-263 = waves, 264-266 = bass
+                                   * presets, 267-271 = FM/ALGO voices) */
 
 static const char *const s_patch_names[SEQ_PATCH_NAME_COUNT] = {
     /* ── Juno-106 (0..127) ── */
@@ -297,6 +298,13 @@ static const char *const s_patch_names[SEQ_PATCH_NAME_COUNT] = {
     /* 264 */ "Bass: Sub Detune",
     /* 265 */ "Bass: Acid Pluck",
     /* 266 */ "Bass: DX7 Style",
+
+    /* ── FM/ALGO 6-op voices (267-271) ── */
+    /* 267 */ "FM Bass",
+    /* 268 */ "FM E.Piano",
+    /* 269 */ "FM Bell",
+    /* 270 */ "FM Lead",
+    /* 271 */ "FM Custom (edit)",
 };
 
 const char *patch_name_for(uint16_t patch)

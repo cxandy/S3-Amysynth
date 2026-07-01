@@ -542,6 +542,13 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
             }
             return;
         }
+        /* FM screen: encoder-click toggles edit on the focused row. */
+        if (synth_ui_fm_is_active()) {
+            if (event == BUTTON_PRESS_DOWN) {
+                synth_ui_fm_handle_button();
+            }
+            return;
+        }
         if (event == BUTTON_LONG_PRESS_START) {
             synth_ui_graph_open_envelope();
             return;
@@ -673,6 +680,9 @@ static void encoder_task(void *pvParameters)
             } else if (synth_ui_trackopts_is_active()) {
                 // Track Options screen: encoder scrolls rows / edits focused value.
                 synth_ui_trackopts_handle_encoder((int)steps);
+            } else if (synth_ui_fm_is_active()) {
+                // FM screen: encoder scrolls rows / edits focused value.
+                synth_ui_fm_handle_encoder((int)steps);
             } else {
                 synth_ui_handle_encoder(steps);
             }

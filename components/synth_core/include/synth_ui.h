@@ -82,6 +82,15 @@ bool synth_ui_trackopts_is_active(void);
 bool synth_ui_trackopts_handle_encoder(int delta);
 bool synth_ui_trackopts_handle_button(void);
 
+/* FM/ALGO voice editor — algorithm + per-operator ratio/level for the live
+ * SEQ_PATCH_FM_CUSTOM voice (see custompatches/fm_voice.h). Active when
+ * seq_state.ui_mode == UI_MODE_FM and no overlay is up. Reached via the menu
+ * ("Screen: FM"). Encoder scrolls rows / edits the entered row's value;
+ * encoder-click toggles edit on the focused row. */
+bool synth_ui_fm_is_active(void);
+bool synth_ui_fm_handle_encoder(int delta);
+bool synth_ui_fm_handle_button(void);
+
 /* Re-impose the cached global FX (EQ/echo/chorus/reverb) after a synth patch
  * load. Every AMY built-in Juno patch ends with global EQ/chorus commands, so
  * loading a preset onto any synth would otherwise re-skin the whole mix's FX.

@@ -16,6 +16,33 @@ This component provides a USB Audio Class 2.0 (UAC2) Microphone interface for th
 - Relies on the `espressif/usb_device_uac` component for the underlying USB Audio Class implementation.
 - Relies on `espressif__tinyusb` for the TinyUSB stack.
 
+The ring buffer is a lock-free single-producer/single-consumer (SPSC) queue, decoupling the AMY render task from the USB device stack:
+
+```mermaid
+sequenceDiagram
+    participant Producer as amy_usb_render_task (Core 1)
+    participant Ring as SPSC Ring Buffer (PSRAM)
+    participant Consumer as UAC consumer (Core 0)
+    participant Host as TinyUSB mic endpoint / USB host
+
+    loop every render block
+        Producer->>Producer: amy_update() renders 256-sample block
+        Producer->>Ring: usb_audio_write_stereo(block, 256) [all-or-nothing]
+        alt space available
+            Ring-->>Producer: write accepted
+        else ring full
+            Ring-->>Producer: ESP_ERR_NO_MEM
+            note over Producer: block dropped (s_usb_drops++)<br/>preserves render clock phase
+        end
+    end
+
+    loop USB frame service
+        Consumer->>Ring: drain available samples
+        Consumer->>Host: feed mic endpoint
+        Host->>Host: stream to host application
+    end
+```
+
 ## Usage with AMY
 
 To use this component with the AMY synthesizer:

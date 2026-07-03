@@ -75,6 +75,40 @@ typedef struct {
 | `SEQ_MAX_STEPS` | 32 | Maximum per layer |
 | `MAX_LAYERS` | 4 | Maximum simultaneous layers |
 
+`display_seq_state_t` owns a fixed-size array of `seq_layer_t`, bounded by the compile-time limits above:
+
+```mermaid
+classDiagram
+    class display_seq_state_t {
+        seq_layer_t layers[MAX_LAYERS]
+        uint8_t num_layers
+        uint8_t active_layer_idx
+        uint16_t bpm
+        uint8_t current_pattern
+        uint8_t current_step
+        bool playing
+        uint8_t selected_track
+        uint8_t selected_step
+        bool edit_mode
+        bool drum_select_mode
+    }
+    class seq_layer_t {
+        seq_layer_type_t type
+        uint8_t num_steps
+        uint8_t num_tracks
+        bool grid[SEQ_TRACKS][SEQ_MAX_STEPS]
+        uint8_t step_note[SEQ_TRACKS][SEQ_MAX_STEPS]
+        uint8_t track_base_note[SEQ_TRACKS]
+        uint8_t synth_id
+        uint16_t patch
+        uint32_t synth_flags
+        uint8_t num_voices
+        uint8_t step_page
+    }
+    display_seq_state_t "1" *-- "0..4" seq_layer_t : layers[MAX_LAYERS]
+    note for display_seq_state_t "SEQ_TRACKS=4, SEQ_STEPS=16 (default),\nSEQ_MAX_STEPS=32 (per-layer cap),\nMAX_LAYERS=4 (array cap)"
+```
+
 ---
 
 ## AMY Scheduling
@@ -275,6 +309,39 @@ app_main
   ├── xTaskCreatePinnedToCore(amy_render_task, core 1)
   ├── my_buttons_init() + register_cb()
   └── encoder_init_task (deferred 1 s)
+```
+
+The same order expressed as a sequence diagram:
+
+```mermaid
+sequenceDiagram
+    participant app_main
+    participant OLED as i2c_u8g2_init
+    participant AMY as amy_start
+    participant USB as usb_audio_init
+    participant UI as synth_ui_init
+    participant Core as sequencer_core
+    participant SeqTask as seq_ui_task
+    participant Render as amy_usb_render_task (Core 1)
+    participant Btn as my_buttons_init
+    participant Enc as encoder_init_task
+
+    app_main->>OLED: i2c_u8g2_init()
+    app_main->>AMY: amy_start() [multicore=0, multithread=0, AMY_AUDIO_IS_NONE]
+    app_main->>USB: usb_audio_init()
+    app_main->>UI: synth_ui_init()
+    UI->>Core: sequencer_core_init()
+    UI->>UI: synth_ui_add_layer(SEQ_LAYER_DRUM, 16)
+    UI->>Core: sequencer_core_add_layer() -> configures AMY synth slot 10
+    UI->>UI: default pattern written to layers[0].grid
+    UI->>Core: sync_layer_to_core(0)
+    UI->>Core: sequencer_core_set_playing(true)
+    UI->>SeqTask: xTaskCreate(seq_ui_task)
+    app_main->>UI: synth_ui_add_layer(SEQ_LAYER_MELODIC, 16)
+    UI->>Core: sequencer_core_add_layer() -> configures AMY synth slot 12
+    app_main->>Render: xTaskCreatePinnedToCore(amy_usb_render_task, core 1)
+    app_main->>Btn: my_buttons_init() + register_cb()
+    app_main->>Enc: encoder_init_task (deferred 1 s)
 ```
 
 ---

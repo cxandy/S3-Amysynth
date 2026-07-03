@@ -59,6 +59,11 @@ AMY combines amp coefficients with `combine_controls_mult` (amy.c), **not** a
 sum. CONST/NOTE/VEL/EG0/EG1 are pure multipliers; MOD/BEND apply as
 `(1 + coef·control)`. So the carrier amplitude is:
 
+> Note: `combine_controls_mult` describes the pre-1.2.12 model. The active
+> function is `amp_combine_controls` (`amy.c:1512`), which dB-compresses every
+> coef except MOD and sums before a `powf(10, 3·Σ)` stage; MOD still sums
+> linearly, so the const/mod relationship described below still holds.
+
 ```
 amp = amp_const · eg0 · (1 + amp_mod · LFO)        LFO ∈ {−1, +1}
 ```
@@ -157,6 +162,33 @@ long-press** opens the editor bound to the drone (`graph_target_t` =
   and sub synths.
 
 ## PATCH mode
+
+The carrier's source is one of two independent voice models, switched by
+`drone_set_source()`; chord voicing (see [Chords](#chords)) rebuilds the voice
+count in whichever mode is active, without changing modes:
+
+```mermaid
+stateDiagram-v2
+    [*] --> WAVE
+    WAVE : WAVE mode\n(2-osc build-your-own: osc1 PULSE-LFO stutter, osc0 NOTE-carrier + LPF24)
+    PATCH : PATCH mode\n(AMY patch preset owns its own oscillators + amplitude)
+
+    WAVE --> PATCH : drone_set_source(DRONE_SRC_PATCH)
+    PATCH --> WAVE : drone_set_source(DRONE_SRC_WAVE)
+
+    WAVE --> WAVE : drone_set_chord() (rebuild voice count, re-trigger)
+    PATCH --> PATCH : drone_set_chord() (rebuild voice count, re-trigger)
+
+    state WAVE {
+        [*] --> Stuttering
+        Stuttering --> Stuttering : CONST/MOD amp coefs (amp_combine_controls dB model)
+    }
+
+    state PATCH {
+        [*] --> PatchVoice
+        PatchVoice --> PatchVoice : filter sweep + resonance overlaid on patch osc0 (stutter/CONST/MOD hidden, do not apply)
+    }
+```
 
 `drone_set_source(DRONE_SRC_PATCH)` loads an AMY patch preset onto the carrier
 synth instead of the raw 2-osc voice. The patch owns its own oscillators and

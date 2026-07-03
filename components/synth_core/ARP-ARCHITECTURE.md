@@ -56,6 +56,27 @@ encoder / buttons ─▶ synth_ui.c ─▶ arp_core.c ─▶ sequencer_core.c �
 reads or writes `s_layers[]`. The only thing it shares is the global tempo and
 the single AMY event buffer/mutex in `sequencer_core.c`.
 
+### Emit path
+
+From rate/tick input through `arp_core_refresh` to the AMY synth slot:
+
+```mermaid
+flowchart TD
+    RATE["arp_rate_t (1/4 .. 1/32)"] --> TICKS["rate_ticks via AMY_SEQUENCER_PPQ=48\n(48 / 24 / 12 / 6)"]
+    SLOTS["slots[] raw chromatic notes"] --> SORT["arp_collect_sorted\nascending, n <= 8"]
+    OCT["octaves"] --> STEPS
+    SORT --> STEPS["steps = count x octaves\nperiod = steps x rate_ticks"]
+    GATEPCT["gate_pct"] --> GATE["gate = rate_ticks x gate_pct / 100"]
+    TICKS --> STEPS
+    TICKS --> GATE
+    STEPS --> PICK["per step i: note_idx, octave\npick sorted[note_idx] (UP) or\nsorted[count-1-note_idx] (DOWN)"]
+    PICK --> SNAP["chromatic = pick + octave*12\narp_snap() clamps to melodic range"]
+    SNAP --> EMIT["sequencer_core_arp_emit_note\ntick_on = 1 + i*rate_ticks"]
+    GATE --> EMIT
+    EMIT --> TAGWIN["arp tag window\nSEQ_ARP_TAG_BASE 1056 .. SEQ_ARP_TAG_MAX 1119"]
+    TAGWIN --> SYNTH["AMY synth slot 63\n(sequencer_core_arp_synth)"]
+```
+
 ---
 
 ## Data Model
@@ -145,6 +166,14 @@ Each arp step `i` uses tag `SEQ_ARP_TAG_BASE + i*2` (note-on) and `+1`
 > `amy_cfg.max_sequencer_tags = 1200` (well above 1119). `sequencer_core_arp_emit_note()`
 > also defensively drops any tag `> SEQ_ARP_TAG_MAX`. Keep `max_sequencer_tags`,
 > `SEQ_ARP_TAG_BASE/COUNT`, and the sequencer tag formula in sync.
+
+The arp's slice of the global AMY tag ID space, immediately above the
+sequencer's:
+
+```mermaid
+flowchart LR
+    A["Sequencer steps\n0 .. 1023"] --> B["Sequencer previews\n1024 .. 1055"] --> C["Arp tags\nSEQ_ARP_TAG_BASE 1056 .. SEQ_ARP_TAG_MAX 1119"]
+```
 
 ### Rate → ticks
 
@@ -325,7 +354,7 @@ so hidden sequencer state can't be mutated behind the arp view:
 - `MY_BUTTON_0` single-click (layer cycle) is suppressed; long-press play/pause
   stays live.
 - Step-toggle / track-note-nudge never reach the sequencer because the encoder
-  path routes to `arp_handle_encoder` when `arp_is_active()`.
+  path routes to `arp_handle_encoder` when `synth_ui_arp_is_active()`.
 
 The arp's own controls and the `MY_BUTTON_1` arp-patch gesture remain live.
 

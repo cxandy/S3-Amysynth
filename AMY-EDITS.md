@@ -7,6 +7,23 @@ All edits are marked `// LOCAL EDIT` in the source. ESP32-S3-specific edits are
 permanent (upstream has no concept of IRAM/DRAM placement or FreeRTOS task
 signatures); the two bug fixes below were PRd upstream and are no longer here.
 
+```mermaid
+flowchart TD
+    Submodule["amy/ submodule<br/>pristine upstream, reference/diff baseline only<br/>NEVER edited, never built"]
+    Active["components/amy/<br/>ACTIVE vendored copy — built and shipped<br/>all LOCAL EDITs live here"]
+
+    Submodule -.diff baseline only.-> Active
+
+    Active --> FP["Kconfig-gated fixed-point toggle<br/>src/amy.h, src/amy_fixedpoint.h"]
+    Active --> ATTR["IRAM_ATTR / DRAM_ATTR macros<br/>src/amy.h"]
+    Active --> LUT["Clipping LUT DRAM placement<br/>src/clipping_lookup_table.h"]
+    Active --> LOCK["Render lock<br/>src/amy.c"]
+    Active --> HOT["IRAM hot-path annotations<br/>src/envelope.c<br/>src/filters.c<br/>src/log2_exp2.c<br/>src/oscillators.c"]
+    Active --> TASK["IDF 6.0 task-signature fixes<br/>src/i2s.c, src/amy_midi.c"]
+    Active --> SEQ["SEQ_LOCK + active-tag O(1) scan<br/>src/sequencer.c"]
+    Active --> PROF["COARSE profiler mode<br/>src/amy.h, src/amy.c"]
+```
+
 ## Dropped (merged upstream)
 
 | PR | Description |

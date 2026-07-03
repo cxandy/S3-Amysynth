@@ -67,6 +67,32 @@ output, which is planned but not yet the active path.
 
 ## Architecture notes
 
+The audio DSP and everything else run on separate cores, connected only by a
+ring buffer:
+
+```mermaid
+flowchart TD
+    subgraph Core1["Core 1 (audio)"]
+        Timer["GPTimer ISR<br/>(render clock)"]
+        Render["amy_usb_render_task"]
+        Update["amy_update()<br/>(all DSP)"]
+        Timer --> Render --> Update
+    end
+
+    subgraph Core0["Core 0 (everything else)"]
+        SeqPoll["AMY sequencer poll<br/>(esp_timer, 500us)"]
+        UITask["synth_ui_task<br/>(arp / drone / LFO /<br/>progression + OLED)"]
+        Encoder["encoder_task"]
+        Buttons["button_handler_task"]
+        Consumer["ring buffer consumer"]
+        UAC["TinyUSB UAC"]
+        Host["USB host"]
+        Consumer --> UAC --> Host
+    end
+
+    Update -- "SPSC ring buffer (PSRAM)" --> Consumer
+```
+
 A few design decisions worth calling out:
 
 - **Manual render loop.** AMY runs in `AMY_AUDIO_IS_NONE` mode; the project owns

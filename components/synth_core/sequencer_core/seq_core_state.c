@@ -123,19 +123,35 @@ uint8_t sequencer_core_add_layer(seq_layer_type_t type, uint8_t num_steps)
             for (uint8_t s = 0; s < SEQ_MAX_STEPS; s++) {
                 layer->step_note[t][s] = mel_notes[t];
             }
-            layer->env[t] = seq_default_melodic_env();
+            layer->env[t]  = seq_default_melodic_env();
+            layer->env1[t] = seq_default_melodic_env1();
         }
     }
 
     /* amp_scale defaults to 1.0 (unity); memset in add_layer zeroes it, so
-     * explicit init here is required to avoid silencing all tracks. */
-    for (uint8_t t = 0; t < SEQ_TRACKS; t++) layer->amp_scale[t] = 1.0f;
+     * explicit init here is required to avoid silencing all tracks. Same
+     * rationale for step_prob (0% would silence every step) and step_ratchet
+     * (0 sub-hits would fire nothing); step_cond_type/param default correctly
+     * to the zeroed SEQ_STEP_COND_NONE/0 and need no explicit init. */
+    for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
+        layer->amp_scale[t] = 1.0f;
+        for (uint8_t s = 0; s < SEQ_MAX_STEPS; s++) {
+            layer->step_prob[t][s]    = 100;
+            layer->step_ratchet[t][s] = 1;
+        }
+    }
 
     CORE_HEAP_CHECK("add_layer: before configure_synth");
     sequencer_configure_synth(idx);
     CORE_HEAP_CHECK("add_layer: after configure_synth");
     /* Layer is fully initialised: now expose it to the tick path. */
     s_num_layers++;
+    /* Runtime trig bookkeeping (loop counters / last-played / last-step-seen)
+     * is indexed by layer slot, not layer identity; a wholesale reset here
+     * (rather than trying to shift it in lockstep with the new layer) is
+     * cheap and harmless — it only affects FILL/PREV continuity, never the
+     * persisted per-step prob/ratchet/cond data carried in seq_layer_t itself. */
+    sequencer_core_trig_reset_all();
     ESP_LOGI(TAG, "add_layer[%d]: type=%d synth0=%d patch=%d steps=%d",
              idx, type, layer->synth_id[0], layer->patch, layer->num_steps);
     return idx;
@@ -149,9 +165,12 @@ bool sequencer_core_delete_layer(uint8_t layer_idx)
     if (s_layers[layer_idx].type == SEQ_LAYER_DRUM) return false;
 
     /* Clear ALL layers' tags before shifting — indices above layer_idx become
-     * stale after compaction and would fire as ghost notes. */
+     * stale after compaction and would fire as ghost notes. Ratchet one-shot
+     * tags live in a separate tag space (seq_core_trig.c) and need the same
+     * treatment. */
     for (uint8_t i = 0; i < s_num_layers; i++) {
         sequencer_clear_layer_tags(i);
+        sequencer_core_trig_clear_all(i);
     }
 
     /* Release AMY oscillator slots for the deleted layer. */
@@ -186,6 +205,7 @@ bool sequencer_core_delete_layer(uint8_t layer_idx)
                 tail * sizeof(s_lfo_rnd[0]));
     }
     s_num_layers--;
+    sequencer_core_trig_reset_all();  /* see rationale in sequencer_core_add_layer() */
 
     /* Resync all surviving layers so their note tags re-register correctly. */
     if (s_playing) {

@@ -8,6 +8,7 @@
 #include "display_trackopts.h" /* trackopts_view_t */
 #include "display_menu.h"      /* menu_view_t */
 #include "display_arp.h"       /* arp_view_t */
+#include "display_stepedit.h"  /* stepedit_view_t */
 #include "u8g2.h"              /* u8g2_t */
 
 /* ─── Cross-file shared state (owners noted; only these need extern) ──── */
@@ -48,6 +49,8 @@ uint32_t menu_view_signature(void);
 uint32_t drone_view_signature(void);
 uint32_t prog_view_signature(void);
 uint32_t trackopts_view_signature(void);
+uint32_t stepedit_view_signature(void);
+uint32_t fm_view_signature(void);
 
 /* ─── Build-view helpers called from synth_ui_task draw switch ────────── */
 void     drone_build_view(drone_view_t *out);
@@ -55,6 +58,8 @@ void     prog_build_view(prog_view_t *out);
 void     trackopts_build_view(trackopts_view_t *out);
 void     menu_build_view(menu_view_t *out);
 void     arp_build_view(arp_view_t *out);
+void     stepedit_build_view(stepedit_view_t *out);
+void     fm_build_view(menu_view_t *out);
 
 /* ─── Draw wrappers (encapsulate private s_fgraph/s_lfo_view/s_graph_popup) */
 void     synth_ui_graph_view_draw(u8g2_t *u8g2);

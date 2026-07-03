@@ -15,6 +15,7 @@
 #include "rotary_encoder.h"
 #include "synth_ui.h"
 #include "sequencer_core.h"
+#include "custompatches/sample_rec.h"
 #include "usb_audio.h"
 #include "esp_timer.h"
 #include "esp_log.h"
@@ -84,6 +85,11 @@ static void main_sequencer_tick_hook(uint32_t tick_count)
 {
     s_last_seq_tick = tick_count;
     s_seq_tick_hook_count++;
+    /* Per-step probability/ratchet/conditional-trig engine (seq_core_trig.c) —
+     * needs to run at the same cadence as the AMY sequencer tick itself, not
+     * the 20 Hz UI task, so ratchets (which subdivide a single step) resolve
+     * correctly. No-op unless at least one step in the pattern is "decorated". */
+    sequencer_core_service_tick();
 }
 
 #if CONFIG_USB_AUDIO_DIAGNOSTICS
@@ -209,16 +215,13 @@ static void log_rtos_stats(void)
 static void amy_usb_render_task(void *arg) {
     (void)arg;
 
-    // Master clock: a GPTimer fires every block period. At 3 MHz resolution,
-    // 256 × 3,000,000 / 48,000 = 16,000 ticks exactly (zero remainder, no drift).
-    // Its ISR is pinned to THIS core, waking us via a task notification. This is
-    // tick-rate-independent (the old vTaskDelay(pdMS_TO_TICKS(5)) floored to 0
-    // ticks at FREERTOS_HZ=100 and busy-spun the core). Started from inside the
-    // task so the GPTimer ISR registers on the render core.
-    const uint32_t block_ticks = (uint32_t)(((uint64_t)AMY_BLOCK_SIZE * 3000000ULL)
-                                            / (uint64_t)AMY_SAMPLE_RATE);
-    // 256 × 3,000,000 / 48,000 = 16,000 ticks exact
-    if (render_clock_start(block_ticks) != ESP_OK) {
+    // Master clock: by default a GPTimer fires every block period (256
+    // samples @ 48 kHz = 5333.33 us), tick-rate-independent (the old
+    // vTaskDelay(pdMS_TO_TICKS(5)) floored to 0 ticks at FREERTOS_HZ=100 and
+    // busy-spun the core). CONFIG_RENDER_CLOCK_I2S_ENABLE (default off) swaps
+    // in an I2S-DMA-paced backend instead; see render_clock.h. Started from
+    // inside the task so either backend's ISR registers on the render core.
+    if (render_clock_start(AMY_BLOCK_SIZE, AMY_SAMPLE_RATE) != ESP_OK) {
         ESP_LOGE(TAG, "render_clock_start failed; render task aborting");
         vTaskDelete(NULL);
         return;
@@ -238,6 +241,12 @@ static void amy_usb_render_task(void *arg) {
         int16_t *block = amy_update();           // synthesizes everything / advances AMY sample clock
         if (likely(block != NULL)) {
             s_render_block_count++;
+
+            // Runtime PCM sampler (custompatches/sample_rec): alloc-free/non-
+            // blocking no-op unless a recording is actually armed/in-progress.
+            // Must run after amy_update() so amy_queue_lock is already released
+            // (see amy-internals.md's lock-ownership section).
+            sample_rec_render_tick(block, AMY_BLOCK_SIZE);
 
 #if CONFIG_USB_AUDIO_BLOCKING_WRITE
             // Resilient path: retry until the host consumes the data, slaving the
@@ -441,6 +450,25 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
             }
             return;
         }
+        /* Step Trig editor: long-press toggles it open/closed for the step
+         * currently under the sequencer grid cursor. Only reachable here
+         * (plain sequencer screen, edit_mode, no other overlay) since every
+         * arp/drone/prog/trackopts isolation block above already intercepts
+         * MY_BUTTON_2 and returns before this point. */
+        if (event == BUTTON_LONG_PRESS_START) {
+            if (synth_ui_stepedit_is_active()) {
+                synth_ui_stepedit_close();
+            } else if (!synth_ui_menu_is_active()) {
+                s_drum_select_held = false;
+                synth_ui_set_drum_select_mode(false);
+                synth_ui_stepedit_open();
+            }
+            return;
+        }
+        if (synth_ui_stepedit_is_active()) {
+            /* Suppress drum-select hold while the popup owns the encoder. */
+            return;
+        }
         if (event == BUTTON_PRESS_DOWN) {
             s_drum_select_held = true;
             synth_ui_set_drum_select_mode(true);
@@ -452,12 +480,16 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
     }
 
     // MY_BUTTON_3: while any editor (ADSR/filter/LFO) is open, single-click
-    // cycles to the next editor. Outside editors it is the menu toggle.
+    // cycles to the next editor. While the ADSR graph editor specifically is
+    // open, long-press instead switches between its EG0 (amp) and EG1
+    // (typically filter) breakpoint sets. Outside editors it is the menu toggle.
     if (button_id == MY_BUTTON_3) {
         if (synth_ui_graph_is_active() || synth_ui_filter_is_active()
                                        || synth_ui_lfo_is_active()) {
             if (event == BUTTON_SINGLE_CLICK) {
                 synth_ui_cycle_editor();
+            } else if (event == BUTTON_LONG_PRESS_START && synth_ui_graph_is_active()) {
+                synth_ui_graph_toggle_eg_index();
             }
             return;
         }
@@ -486,6 +518,16 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
                 synth_ui_lfo_close_commit();
             } else if (event == BUTTON_PRESS_DOWN) {
                 synth_ui_lfo_handle_button(false);
+            }
+            return;
+        }
+        /* Step Trig editor: short press cycles the focused field, long press
+         * closes it (symmetric with the filter/LFO/graph editors above). */
+        if (synth_ui_stepedit_is_active()) {
+            if (event == BUTTON_LONG_PRESS_START) {
+                synth_ui_stepedit_close();
+            } else if (event == BUTTON_PRESS_DOWN) {
+                synth_ui_stepedit_handle_button();
             }
             return;
         }
@@ -539,6 +581,13 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
         if (synth_ui_trackopts_is_active()) {
             if (event == BUTTON_PRESS_DOWN) {
                 synth_ui_trackopts_handle_button();
+            }
+            return;
+        }
+        /* FM screen: encoder-click toggles edit on the focused row. */
+        if (synth_ui_fm_is_active()) {
+            if (event == BUTTON_PRESS_DOWN) {
+                synth_ui_fm_handle_button();
             }
             return;
         }
@@ -628,6 +677,12 @@ static void encoder_task(void *pvParameters)
                 goto next_poll;
             }
 
+            /* Step Trig editor: adjusts the focused field (prob/ratchet/cond/param)
+             * for the currently-selected sequencer grid step. */
+            if (synth_ui_stepedit_handle_encoder(steps)) {
+                goto next_poll;
+            }
+
             /* graph pop-up: when open, the encoder drives the curve editor and
              * normal sequencer routing is skipped. Remove this branch to revert. */
             if (synth_ui_graph_handle_encoder(steps)) {
@@ -673,6 +728,9 @@ static void encoder_task(void *pvParameters)
             } else if (synth_ui_trackopts_is_active()) {
                 // Track Options screen: encoder scrolls rows / edits focused value.
                 synth_ui_trackopts_handle_encoder((int)steps);
+            } else if (synth_ui_fm_is_active()) {
+                // FM screen: encoder scrolls rows / edits focused value.
+                synth_ui_fm_handle_encoder((int)steps);
             } else {
                 synth_ui_handle_encoder(steps);
             }
@@ -823,6 +881,12 @@ void app_main(void)
      * free. The per-sample PSRAM latency in the FX stage is acceptable; the
      * lines simply do not fit internally. */
     amy_cfg.ram_caps_delay  = MALLOC_CAP_SPIRAM;
+    /* Runtime PCM sampler (custompatches/sample_rec): a 1.5 s mono recording
+     * is ~140 KB, comfortably above the SPIRAM_MALLOC_ALWAYSINTERNAL (16 KB)
+     * threshold, so pcm_load()'s malloc_caps() call would already land in
+     * PSRAM with the default MALLOC_CAP_DEFAULT (0). Set explicitly anyway so
+     * that intent doesn't depend on staying above that threshold. */
+    amy_cfg.ram_caps_sample = MALLOC_CAP_SPIRAM;
     /* Default is 256, which only covers layer 0 (drum).  Each additional
      * layer needs SEQ_TRACKS * SEQ_MAX_STEPS * 2 extra tags.  With
      * MAX_LAYERS=4, SEQ_TRACKS=4, SEQ_MAX_STEPS=32 the sequencer's highest tag
@@ -830,8 +894,14 @@ void app_main(void)
      * 1056..1119 (SEQ_ARP_TAG_BASE + ARP_MAX_SLOTS*ARP_OCT_MAX*2).  Set to 1200
      * so the table covers the arp range AND stays clear of the off-by-one in
      * sequencer_add_event's `tag > max_sequences` guard (writes sequences[tag]).
-     * Keep in sync with SEQ_ARP_TAG_BASE/COUNT in sequencer_core.c. */
-    amy_cfg.max_sequencer_tags = 1200;
+     * Keep in sync with SEQ_ARP_TAG_BASE/COUNT in sequencer_core.c.
+     *
+     * Per-step ratchet trigs (seq_core_trig.c) then claim a further
+     * MAX_LAYERS*SEQ_TRACKS*SEQ_MAX_RATCHET*2 = 128 dedicated one-shot tags
+     * right above the arp range: 1120..1247 (SEQ_RATCHET_TAG_BASE/MAX in
+     * seq_core_config.h). 1200 no longer covers that — raised to 1280 to
+     * clear SEQ_RATCHET_TAG_MAX (1247) with the same +2 off-by-one margin. */
+    amy_cfg.max_sequencer_tags = 1280;
     /* Raise the instrument table from the default 64 so the standalone drone
      * synth (custompatches/drone_core) can claim dedicated slots above the
      * existing map (drum 6..9, melodic 11..62, arp 63). The drone uses slots

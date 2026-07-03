@@ -65,10 +65,17 @@ extern uint32_t sequencer_ticks(void);
 #define DRONE_BARS_MIN     1
 #define DRONE_BARS_MAX     16
 #define DRONE_PATCH_MIN    0
-/* Drone PATCH-mode ceiling: wave patches 257-261 (SINE..TRIANGLE) are supported.
- * NOISE (262) and KS (263) are intentionally excluded from the drone — their
- * excitation model misbehaves with the drone's one-shot trigger style. */
+/* Drone PATCH-mode ceiling: wave patches 257-261 (SINE..TRIANGLE) are supported,
+ * plus the wavetable bank patches (267-271, AMY_WAVETABLE only). NOISE (262),
+ * KS (263), and the bass presets (264-266) are intentionally excluded from the
+ * drone — their excitation/multi-osc model misbehaves with the drone's
+ * one-shot trigger style; drone_set_patch() snaps values in that gap back down
+ * to TRIANGLE rather than clamping the whole range there. */
+#if CONFIG_AMY_WAVETABLE
+#define DRONE_PATCH_MAX    SEQ_PATCH_WAVETABLE_MAX
+#else
 #define DRONE_PATCH_MAX    SEQ_PATCH_TRIANGLE
+#endif
 #define DRONE_GATE_MIN     0.05f   /* osc1 PULSE duty: tighter chop as it shrinks */
 #define DRONE_GATE_MAX     0.95f
 #define DRONE_SWING_MAX    66      /* percent of one subdivision, applied to odd steps */
@@ -141,6 +148,8 @@ typedef struct {
     float          last_lfo_hz; /* to avoid redundant LFO re-sends   */
     seq_env_t      env;         /* runtime-editable ADSR (graph editor) */
     bool           env_authored;/* true once the user commits a custom env */
+    seq_env_t      env1;        /* second envelope (EG1) — see drone_core.h */
+    bool           env1_authored;/* true once the user commits a custom EG1 */
     float          amp_trim;    /* per-target amplitude trim (default 1.0, 0..1);
                                    multiplied into amp_peak in s_amp_peak_lin() to give
                                    the effective on-beat level. Set via the graph editor
@@ -230,8 +239,12 @@ static uint8_t drone_chord_note_count(chord_type_t chord)
  * its pitch comes from the voice's note-on) amplitude-gated by osc1 PULSE LFO.
  * A multi-voice main synth therefore sounds a chord when fed multiple notes. */
 /* `wave` is the AMY waveform to use for the carrier (osc0).  Callers pass
- * s_d.wave for WAVE-mode, or the patch-derived wave for PATCH-mode wave patches. */
-static void drone_configure_wave_synth(uint8_t synth, uint8_t voices, uint16_t wave)
+ * s_d.wave for WAVE-mode, or the patch-derived wave for PATCH-mode wave patches.
+ * `wt_preset` selects which built-in wavetable bank to play when wave==WAVETABLE
+ * (index into pcm_wavetable_base..+pcm_wavetable_samples-1); pass -1 for any
+ * non-wavetable wave, where it is a no-op. */
+static void drone_configure_wave_synth(uint8_t synth, uint8_t voices, uint16_t wave,
+                                       int16_t wt_preset)
 {
     float lfo_hz    = drone_lfo_hz();
     /* AMY 1.2.12 (#720) dB/exp amp model: amp = const_sent * 10^(3*m*LFO).
@@ -270,6 +283,7 @@ static void drone_configure_wave_synth(uint8_t synth, uint8_t voices, uint16_t w
     e->osc                    = 0;
     e->wave                   = wave;
     if (wave == KS) e->feedback = 0.9f;
+    if (wt_preset >= 0) e->preset = wt_preset;
     e->freq_coefs[COEF_NOTE]  = 1.0f;    /* follow the voice's note pitch */
     e->amp_coefs[COEF_CONST]  = const_sent;
     e->amp_coefs[COEF_MOD]    = m;
@@ -315,24 +329,35 @@ static void drone_rebuild(void)
     if (chord_n < 1) chord_n = 1;
 
     if (s_d.source == DRONE_SRC_WAVE) {
-        drone_configure_wave_synth(DRONE_SYNTH_MAIN, chord_n, s_d.wave);
+        drone_configure_wave_synth(DRONE_SYNTH_MAIN, chord_n, s_d.wave, -1);
         if (s_d.sub_enabled) {
-            drone_configure_wave_synth(DRONE_SYNTH_SUB, DRONE_SUB_VOICES, s_d.wave);
+            drone_configure_wave_synth(DRONE_SYNTH_SUB, DRONE_SUB_VOICES, s_d.wave, -1);
         }
     } else if (s_d.source == DRONE_SRC_PATCH && s_d.patch >= SEQ_PATCH_WAVE_BASE) {
-        /* PATCH-mode wave virtual patches (257-261): configure as a wave synth
-         * using the full drone stutter/filter/mod setup, waveform derived from
-         * the patch number.  Sends 257-261 as AMY patch numbers would be silent
-         * (they are not real AMY patches), so we intercept here like the melodic
+        /* PATCH-mode wave virtual patches (257-261, and — AMY_WAVETABLE —
+         * 267-271): configure as a wave synth using the full drone
+         * stutter/filter/mod setup, waveform derived from the patch number.
+         * Sends these ranges as AMY patch numbers would be silent (they are
+         * not real AMY patches), so we intercept here like the melodic
          * sequencer does in sequencer_configure_synth(). */
         static const uint16_t s_wave_for_patch[] = {
             SINE, SAW_DOWN, SAW_UP, PULSE, TRIANGLE,
         };
-        uint16_t widx = s_d.patch - SEQ_PATCH_WAVE_BASE;
-        uint16_t wave = (widx < 5) ? s_wave_for_patch[widx] : SAW_DOWN;
-        drone_configure_wave_synth(DRONE_SYNTH_MAIN, chord_n, wave);
+        uint16_t wave = SAW_DOWN;
+        int16_t  wt_preset = -1;
+#if CONFIG_AMY_WAVETABLE
+        if (s_d.patch >= SEQ_PATCH_WAVETABLE_BASE && s_d.patch <= SEQ_PATCH_WAVETABLE_MAX) {
+            wave = WAVETABLE;
+            wt_preset = (int16_t)(pcm_wavetable_base + (s_d.patch - SEQ_PATCH_WAVETABLE_BASE));
+        } else
+#endif
+        {
+            uint16_t widx = s_d.patch - SEQ_PATCH_WAVE_BASE;
+            wave = (widx < 5) ? s_wave_for_patch[widx] : SAW_DOWN;
+        }
+        drone_configure_wave_synth(DRONE_SYNTH_MAIN, chord_n, wave, wt_preset);
         if (s_d.sub_enabled) {
-            drone_configure_wave_synth(DRONE_SYNTH_SUB, DRONE_SUB_VOICES, wave);
+            drone_configure_wave_synth(DRONE_SYNTH_SUB, DRONE_SUB_VOICES, wave, wt_preset);
         }
     } else {
         drone_configure_patch_synth(DRONE_SYNTH_MAIN, chord_n);
@@ -350,6 +375,15 @@ static void drone_rebuild(void)
         sequencer_core_push_envelope(DRONE_SYNTH_MAIN, &env_to_push);
         if (s_d.sub_enabled) {
             sequencer_core_push_envelope(DRONE_SYNTH_SUB, &env_to_push);
+        }
+    }
+    /* Second envelope (EG1): only pushed when authored — nothing in the
+     * drone's own WAVE/PATCH setup above routes a coef to COEF_EG1, so this
+     * is a no-op unless the loaded PATCH-mode instrument already does. */
+    if (s_d.env1_authored) {
+        sequencer_core_push_envelope_eg1(DRONE_SYNTH_MAIN, 0, &s_d.env1);
+        if (s_d.sub_enabled) {
+            sequencer_core_push_envelope_eg1(DRONE_SYNTH_SUB, 0, &s_d.env1);
         }
     }
     s_d.last_lfo_hz = drone_lfo_hz();
@@ -437,6 +471,18 @@ void drone_core_init(void)
     s_d.env.release_ms  = 600;
     s_d.env.eg_type     = 0;   /* ENVELOPE_NORMAL */
     s_d.env_authored    = false;
+    /* Second envelope (EG1): not routed to anything by the drone's own WAVE
+     * patches (its filter movement already comes from the independent
+     * sweep_lo/sweep_hi + BPM-synced service tick below, layering a second
+     * envelope-driven cutoff shift on top would double-modulate the same
+     * parameter). Kept purely as timing storage for a PATCH-mode drone whose
+     * loaded AMY patch already routes its own bp1. */
+    s_d.env1.attack_ms   = 15;
+    s_d.env1.decay_ms    = 400;
+    s_d.env1.sustain_pct = 25;
+    s_d.env1.release_ms  = 400;
+    s_d.env1.eg_type     = 0;   /* ENVELOPE_NORMAL */
+    s_d.env1_authored    = false;
 
     drone_rebuild();
     ESP_LOGI(TAG, "drone_core initialized (synths %u/%u)",
@@ -662,6 +708,14 @@ void drone_set_rate(drone_rate_t rate)
 void drone_set_patch(uint16_t patch)
 {
     patch = SEQ_CLAMP_U16((int)patch, DRONE_PATCH_MIN, DRONE_PATCH_MAX);
+#if CONFIG_AMY_WAVETABLE
+    /* Snap NOISE/KS/bass (262-266) — excluded from the drone — back to
+     * TRIANGLE rather than clamping the whole upper range away, since
+     * AMY_WAVETABLE widens DRONE_PATCH_MAX past that gap. */
+    if (patch > SEQ_PATCH_TRIANGLE && patch < SEQ_PATCH_WAVETABLE_BASE) {
+        patch = SEQ_PATCH_TRIANGLE;
+    }
+#endif
     if (s_d.patch == patch) return;
     s_d.patch = patch;
     if (s_d.source == DRONE_SRC_PATCH) {
@@ -778,6 +832,26 @@ void drone_set_envelope(const seq_env_t *env)
     ESP_LOGI(TAG, "drone env -> A%u D%u S%u%% R%u",
              (unsigned)s_d.env.attack_ms, (unsigned)s_d.env.decay_ms,
              (unsigned)s_d.env.sustain_pct, (unsigned)s_d.env.release_ms);
+}
+
+void drone_get_envelope2(seq_env_t *out)
+{
+    if (out) *out = s_d.env1;
+}
+
+void drone_set_envelope2(const seq_env_t *env)
+{
+    if (!env) return;
+    s_d.env1 = *env;
+    if (s_d.env1.attack_ms < 2) s_d.env1.attack_ms = 2;  /* 2 ms floor */
+    s_d.env1_authored = true;
+    sequencer_core_push_envelope_eg1(DRONE_SYNTH_MAIN, 0, &s_d.env1);
+    if (s_d.sub_enabled) {
+        sequencer_core_push_envelope_eg1(DRONE_SYNTH_SUB, 0, &s_d.env1);
+    }
+    ESP_LOGI(TAG, "drone env1 -> A%u D%u S%u%% R%u",
+             (unsigned)s_d.env1.attack_ms, (unsigned)s_d.env1.decay_ms,
+             (unsigned)s_d.env1.sustain_pct, (unsigned)s_d.env1.release_ms);
 }
 
 /* ── Getters ── */

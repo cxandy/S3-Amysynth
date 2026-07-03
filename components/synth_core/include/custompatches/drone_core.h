@@ -116,6 +116,14 @@ void drone_set_pattern(drone_pattern_t p);/* per-bar step on/off mask           
 void drone_get_envelope(seq_env_t *out);
 void drone_set_envelope(const seq_env_t *env);
 
+/* ── Second envelope (EG1, shared graph editor) ──
+ * Independent breakpoint generator, timing-only (no coef wiring is added to
+ * the drone's own WAVE-mode patches by this feature — see AMY-EDITS.md /
+ * docs/handoff/a1-second-envelope.md for why). Still useful for a PATCH-mode
+ * drone whose loaded AMY patch already routes its own bp1 internally. */
+void drone_get_envelope2(seq_env_t *out);
+void drone_set_envelope2(const seq_env_t *env);
+
 /* ── Getters (for the list UI) ── */
 bool           drone_get_enabled(void);
 drone_source_t drone_get_source(void);

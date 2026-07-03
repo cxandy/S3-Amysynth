@@ -92,6 +92,24 @@ render walks the same pointers on Core 1. Without the lock a patch toggle can
 free `synth[osc]` between the NULL check and the deref in `hold_and_modify`,
 producing a `LoadProhibited` fault (EXCVADDR=0x8).
 
+### `src/amy.h` — lock accessor prototypes
+
+Added `extern SemaphoreHandle_t amy_queue_lock;` (ESP_PLATFORM branch, missing
+alongside the existing `_WIN32`/`_POSIX_THREADS` externs) plus unconditional
+prototypes for `amy_grab_lock(void)` / `amy_release_lock(void)` /
+`amy_init_lock(void)`, none of which upstream declares anywhere despite every
+platform branch in `amy.c` defining them.
+
+**Why:** the runtime PCM sampler (`custompatches/sample_rec.c`) needs to grab
+the render lock around its own `pcm_load()`/`pcm_unload_preset()` calls —
+`pcm.c`'s memory-preset linked list is walked unlocked by `render_pcm()`
+inside the render body, so mutating it from another task without the lock
+races the render task across cores. `add_delta_to_queue()` already does
+exactly this internally; this edit just lets code outside `amy.c` do the same
+without an implicit-declaration warning. **Upstream-PR candidate** — the gap
+is platform-agnostic (every accessor is unprototyped on every platform), not
+an ESP32-specific fix.
+
 ### `src/envelope.c` — IRAM hot path
 
 `compute_mod_value`, `compute_mod_scale`, `compute_breakpoint_scale` annotated
@@ -185,6 +203,28 @@ so it never needs zeroing). `us_total`/`calls` are still reset each window; the
 remaining `+=`-vs-`=0` race can at most carry one window's totals into the next
 (both `us_total` and `calls` scale together, so **`us per call` stays correct**;
 only that window's `% wall` may read high). Benefits coarse and full modes.
+
+### `Kconfig` + `CMakeLists.txt` — wavetable oscillator build flag
+
+Upstream's `wave=WAVETABLE` oscillator (`oscillators.c`, `pcm_tiny.h`,
+`pcm_samples_tiny.h`) was already fully implemented in the vendored source but
+gated behind a bare, unwired `#ifdef AMY_WAVETABLE` — no build path ever
+defined it, so the feature was silently dead code. No source inside
+`components/amy/src/` was edited; this only wires the existing gate to a
+Kconfig option (`AMY_WAVETABLE`, default **y**), mirroring the
+`AMY_USE_FIXEDPOINT` pattern above:
+
+```
+if(CONFIG_AMY_WAVETABLE)
+    target_compile_definitions(${COMPONENT_LIB} PUBLIC AMY_WAVETABLE)
+endif()
+```
+
+Measured cost (2026-07, this target): **+163,952 bytes flash `.rodata`** (5
+built-in 64-cycle tables × 16384 samples × 2 bytes), **zero DIRAM/IRAM/PSRAM**
+— `pcm_get_sample_ram_for_preset()` returns a pointer straight into the flash
+`pcm[]` array (`pcm.c:77`), never RAM-copied. Verified via `idf.py size`
+before/after on an otherwise-identical build.
 
 ## Deferred / needs porting
 

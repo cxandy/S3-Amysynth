@@ -102,6 +102,14 @@ void arp_set_slot(uint8_t idx, int16_t chromatic_note);
 void arp_get_envelope(seq_env_t *out);
 void arp_set_envelope(const seq_env_t *env);
 
+/* ── Second envelope (EG1, shared graph editor) ──
+ * Independent breakpoint generator; audible only once something is wired to
+ * COEF_EG1 — WAVE mode routes its filter_freq_coefs through it whenever the
+ * arp's filter is authored+enabled, and a PATCH-mode instrument may already
+ * route its own bp1 internally (many Juno/DX7 patches do). */
+void arp_get_envelope2(seq_env_t *out);
+void arp_set_envelope2(const seq_env_t *env);
+
 /* ── Runtime-editable filter (shared filter editor) ──
  * Parallel to the envelope: default enabled=false (bypass). set stores + pushes
  * to the arp synth. Re-applied after a patch change when filter_authored. */
@@ -142,6 +150,19 @@ uint8_t   arp_active_step_count(void);        /* notes + rests across all slots 
  * set stores + marks dirty → coalesced re-emit on next arp_core_service(). */
 void  arp_set_amp_scale(float v);
 float arp_get_amp_scale(void);
+
+/* ── Portamento / glide (AMY-native, PORTAMENTO_MS delta) ──
+ * Milliseconds of exponential glide between consecutive note pitches, applied
+ * by AMY internally (portamento_alpha low-pass on logfreq) — no scheduling or
+ * render-path change needed here. 0 = off (default, matches AMY's own reset
+ * value). Unlike the scheduling setters above, this does not mark the arp
+ * dirty: it is pushed straight to the synth and survives independently of
+ * note re-emits, but IS wiped by a patch/synth reconfigure (AMY resets
+ * portamento_alpha to 0 on osc reset), so arp_rebuild() re-pushes it after
+ * every source/patch/wave change. */
+void     arp_set_portamento_ms(uint16_t ms);
+uint16_t arp_get_portamento_ms(void);
+#define ARP_PORTAMENTO_MAX_MS 2000u   /* generous glide ceiling for a lead line */
 
 #define ARP_OCT_MAX 4
 

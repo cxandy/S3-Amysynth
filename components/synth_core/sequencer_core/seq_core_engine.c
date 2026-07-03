@@ -56,8 +56,8 @@ static inline uint32_t seq_preview_off_tag(uint8_t layer, uint8_t track)
     return seq_preview_tag(layer, track) + (uint32_t)(MAX_LAYERS * SEQ_TRACKS);
 }
 
-static float sequencer_step_velocity(const seq_layer_t *layer,
-                                     uint8_t track, uint8_t step)
+float sequencer_step_velocity(const seq_layer_t *layer,
+                              uint8_t track, uint8_t step)
 {
     /* Drums now share the melodic accent+jitter curve for a less "machine-gun"
      * groove (the old fixed 1.0 made every hit identical). Falls through to the
@@ -94,6 +94,28 @@ static float sequencer_step_velocity(const seq_layer_t *layer,
     velocity = SEQ_CLAMP_F32(velocity, 0.45f, 1.0f);
     return velocity;
 #endif
+}
+
+/* True when any track in the layer has solo engaged (scans all SEQ_TRACKS,
+ * not just num_tracks, so a stale solo flag on an unused track slot can never
+ * silently affect audibility of the tracks actually in use). */
+static bool sequencer_layer_has_solo(const seq_layer_t *layer)
+{
+    for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
+        if (layer->solo[t]) return true;
+    }
+    return false;
+}
+
+/* Whether `track` will actually sound: solo overrides mute (even on the same
+ * track) whenever any track in the layer is soloed; otherwise mute alone gates.
+ * Not static: also called from seq_core_trig.c's decorated-step ratchet path. */
+bool sequencer_track_audible(const seq_layer_t *layer, uint8_t track)
+{
+    if (sequencer_layer_has_solo(layer)) {
+        return layer->solo[track];
+    }
+    return !layer->mute[track];
 }
 
 static uint8_t sequencer_clamp_layer_note(const seq_layer_t *layer, uint8_t note)
@@ -178,8 +200,15 @@ void sequencer_emit_step(uint8_t layer_idx, uint8_t track, uint8_t step)
     if (note_velocity > 1.0f) note_velocity = 1.0f;
     if (tick_off == 0) tick_off = 1; /* avoid the reserved tick 0 */
 
-    /* If stopped or this step is off, cancel any previously scheduled events. */
-    if (!s_playing || !layer->grid[track][step]) {
+    /* If stopped, this step is off, the track is muted/soloed-out, or the
+     * step carries a probability/ratchet/conditional decoration, cancel the
+     * plain periodic tag pair instead of emitting a note-on. Decorated steps
+     * are one-shot scheduled per loop-iteration by
+     * sequencer_core_service_tick() (seq_core_trig.c) instead, since AMY's
+     * own period-repeat has no hook to gate an individual repetition. */
+    if (!s_playing || !layer->grid[track][step] ||
+        !sequencer_track_audible(layer, track) ||
+        sequencer_core_step_is_decorated(layer, track, step)) {
         sequencer_emit_clear_tag(tag_on);
         sequencer_emit_clear_tag(tag_off);
         return;
@@ -319,6 +348,7 @@ void sequencer_core_set_playing(bool p)
         s_prog.entry_start_bar = 0;
         s_prog.current = 0;
         for (uint8_t i = 0; i < s_num_layers; i++) {
+            sequencer_core_trig_reset(i);
             sequencer_resync_layer(i);
         }
     } else {
@@ -333,6 +363,12 @@ void sequencer_core_set_playing(bool p)
             s_cached_step[i] =
                 (uint8_t)((sequencer_ticks() % bar_ticks) / SEQ_TICKS_PER_STEP);
             sequencer_clear_layer_tags(i);
+            /* Bug-1.1-style fix, same rationale as arp_core_clear_all() above:
+             * decorated steps' one-shot ratchet tags are not touched by
+             * sequencer_clear_layer_tags() (different tag space), so clear
+             * them explicitly or a pending sub-hit could still fire after
+             * the user hits stop. */
+            sequencer_core_trig_clear_all(i);
         }
 
         /* Bug 1.2: silence only the sequencer's own synth slots (melodic/drum
@@ -426,4 +462,49 @@ seq_repeat_rate_t sequencer_core_get_track_repeat_rate(uint8_t layer_idx,
         case 8: return SEQ_REPEAT_8;
         default: return SEQ_REPEAT_1;
     }
+}
+
+void sequencer_core_set_track_mute(uint8_t layer_idx, uint8_t track, bool mute)
+{
+    if (layer_idx >= s_num_layers || track >= SEQ_TRACKS) return;
+    seq_layer_t *layer = &s_layers[layer_idx];
+    if (layer->mute[track] == mute) return;
+    layer->mute[track] = mute;
+    /* Mute only ever changes this one track's own audibility. */
+    for (uint8_t s = 0; s < layer->num_steps; s++) {
+        sequencer_emit_step(layer_idx, track, s);
+    }
+    if (!sequencer_track_audible(layer, track)) {
+        sequencer_kill_synth_voices(layer->synth_id[track]);
+    }
+}
+
+bool sequencer_core_get_track_mute(uint8_t layer_idx, uint8_t track)
+{
+    if (layer_idx >= s_num_layers || track >= SEQ_TRACKS) return false;
+    return s_layers[layer_idx].mute[track];
+}
+
+void sequencer_core_set_track_solo(uint8_t layer_idx, uint8_t track, bool solo)
+{
+    if (layer_idx >= s_num_layers || track >= SEQ_TRACKS) return;
+    seq_layer_t *layer = &s_layers[layer_idx];
+    if (layer->solo[track] == solo) return;
+    layer->solo[track] = solo;
+    /* Solo changes every track's audibility in this layer, not just this
+     * one's, so re-emit the whole layer and hard-kill whichever tracks just
+     * became inaudible (a note already sounding would otherwise ring out
+     * until its scheduled note-off, which re-emit alone does not force). */
+    sequencer_resync_layer(layer_idx);
+    for (uint8_t t = 0; t < layer->num_tracks; t++) {
+        if (!sequencer_track_audible(layer, t)) {
+            sequencer_kill_synth_voices(layer->synth_id[t]);
+        }
+    }
+}
+
+bool sequencer_core_get_track_solo(uint8_t layer_idx, uint8_t track)
+{
+    if (layer_idx >= s_num_layers || track >= SEQ_TRACKS) return false;
+    return s_layers[layer_idx].solo[track];
 }

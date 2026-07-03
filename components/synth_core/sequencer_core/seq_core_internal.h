@@ -3,6 +3,8 @@
 /* Public and standard headers — order mirrors original sequencer_core.c includes */
 #include "sequencer_core.h"
 #include "custompatches/bass_presets.h"
+#include "custompatches/fm_presets.h"
+#include "custompatches/fm_voice.h"
 #include "arp_core.h"
 #include "amy.h"
 #include "amy_helpers.h"
@@ -89,6 +91,11 @@ extern uint32_t       s_lfo_rng_state;
 extern chord_progression_t s_prog;
 extern volatile bool  s_prog_apply_pending;
 
+/* Owned by seq_core_trig.c */
+extern uint32_t s_layer_loop_count[];              /* MAX_LAYERS   */
+extern uint8_t  s_layer_last_step[];                /* MAX_LAYERS, 0xFF = unseen */
+extern bool     s_track_last_played[][SEQ_TRACKS];  /* MAX_LAYERS x SEQ_TRACKS */
+
 /* ── Private function declarations — all defined non-static in owning .c ─ */
 
 /* From seq_core_engine.c */
@@ -103,9 +110,11 @@ uint32_t sequencer_bars_elapsed(void);
 void      sequencer_configure_synth(uint8_t layer_idx);
 void      sequencer_kill_synth_voices(uint8_t synth_id);
 seq_env_t *seq_layer_env(uint8_t layer_idx, uint8_t track);
+seq_env_t *seq_layer_env1(uint8_t layer_idx, uint8_t track);
 
 /* From seq_core_editors.c */
 void sequencer_configure_melodic_envelope_track(uint8_t layer_idx, uint8_t track);
+void sequencer_configure_melodic_envelope1_track(uint8_t layer_idx, uint8_t track);
 void sequencer_configure_melodic_filter_track(uint8_t layer_idx, uint8_t track);
 void sequencer_configure_melodic_lfo(uint8_t layer_idx);
 void melodic_lfo_refresh_native_freq(void);
@@ -119,3 +128,21 @@ void     lfo_push_target_neutral(uint8_t synth_id, lfo_target_t target);
 
 /* From seq_core_progression.c */
 void chord_progression_apply_current(void);
+
+/* From seq_core_engine.c — shared with seq_core_trig.c so ratchet sub-hits use
+ * the exact same accent/jitter velocity curve as the plain periodic path. */
+float sequencer_step_velocity(const seq_layer_t *layer, uint8_t track, uint8_t step);
+
+/* From seq_core_engine.c — shared with seq_core_trig.c so the decorated-step
+ * ratchet path respects mute/solo the same way the plain periodic path does. */
+bool sequencer_track_audible(const seq_layer_t *layer, uint8_t track);
+
+/* From seq_core_trig.c — per-step probability/ratchet/conditional-trig engine.
+ * sequencer_core_step_is_decorated() is consulted by sequencer_emit_step()
+ * (seq_core_engine.c) to decide whether a step still uses the plain
+ * always-on periodic AMY tag, or is left cleared for the trig engine to
+ * one-shot schedule instead. */
+bool sequencer_core_step_is_decorated(const seq_layer_t *layer, uint8_t track, uint8_t step);
+void sequencer_core_trig_reset(uint8_t layer_idx);   /* called on play-start, one layer   */
+void sequencer_core_trig_clear_all(uint8_t layer_idx); /* called on pause, one layer       */
+void sequencer_core_trig_reset_all(void);            /* called on layer add/delete        */

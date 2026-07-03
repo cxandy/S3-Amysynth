@@ -28,6 +28,7 @@ typedef enum {
     UI_MODE_DRONE     = 2,
     UI_MODE_PROG      = 3,
     UI_MODE_TRACKOPTS = 4,
+    UI_MODE_FM        = 5,
 } ui_mode_t;
 
 /* ── Per-track repeat rate (fires every N bars instead of every bar) ── */
@@ -37,6 +38,27 @@ typedef enum {
     SEQ_REPEAT_4  = 4,
     SEQ_REPEAT_8  = 8,
 } seq_repeat_rate_t;
+
+/* ── Per-step ratchet (sub-trigger count within one step's slot) ──
+ * 1 = plain single trigger (the historical/default behaviour). >1 subdivides
+ * the step evenly into that many evenly-spaced hits, each with its own short
+ * gate — an Elektron-style "ratchet". */
+#define SEQ_MAX_RATCHET 4
+
+/* ── Per-step conditional trig (Elektron-style) ──
+ * NONE: unconditional — the step fires whenever it is ON, subject only to
+ *       probability/ratchet.
+ * FILL: fires only once every step_cond_param loops of the layer's pattern
+ *       (param clamped 2..8; the first loop after play-start always counts).
+ * PREV: fires only if the immediately preceding step on the SAME track
+ *       actually sounded on its own last evaluation — chains a run of hits,
+ *       any miss breaks the chain for the following step. */
+typedef enum {
+    SEQ_STEP_COND_NONE = 0,
+    SEQ_STEP_COND_FILL = 1,
+    SEQ_STEP_COND_PREV = 2,
+    SEQ_STEP_COND_COUNT,
+} seq_step_cond_type_t;
 
 /* ── Filter type constants (mirror AMY's FILTER_* values) ── */
 #define SEQ_FILTER_NONE  0
@@ -67,6 +89,8 @@ typedef enum {
 typedef enum {
     LFO_TARGET_FILTER = 0, LFO_TARGET_AMP,
     LFO_TARGET_PITCH,      LFO_TARGET_PAN,
+    LFO_TARGET_SCAN,       /* AMY `duty`: wavetable cycle-scan position when
+                               wave=WAVETABLE, pulse width when wave=PULSE */
     LFO_TARGET_COUNT,
 } lfo_target_t;
 typedef enum {
@@ -105,17 +129,30 @@ typedef struct {
     bool     grid[SEQ_TRACKS][SEQ_MAX_STEPS];        /* step on/off state      */
     uint8_t  step_note[SEQ_TRACKS][SEQ_MAX_STEPS];   /* per-step MIDI pitch    */
     uint8_t  track_base_note[SEQ_TRACKS];            /* current base note      */
-    seq_env_t    env[SEQ_TRACKS];                    /* per-row ADSR envelope  */
+    seq_env_t    env[SEQ_TRACKS];                    /* per-row ADSR envelope (EG0) */
     bool         env_authored[SEQ_TRACKS]; /* row's env overrides the patch only
                                               after the user commits in the graph
                                               editor; until then the patch's own
                                               envelope wins (deferred authority)  */
+    seq_env_t    env1[SEQ_TRACKS];         /* per-row second envelope (EG1) — the
+                                              independent generator AMY already
+                                              exposes; typically routed to the
+                                              filter by whichever patch/coef setup
+                                              targets COEF_EG1 (bass presets do;
+                                              many stock Juno/DX7 patch strings
+                                              already route their own filter
+                                              through bp1) */
+    bool         env1_authored[SEQ_TRACKS]; /* deferred authority, mirrors env_authored */
     seq_filter_t filter[SEQ_TRACKS];          /* per-row filter (bypass by default) */
     bool         filter_authored[SEQ_TRACKS]; /* filter overrides patch only after
                                                  the user commits in the filter editor */
     seq_lfo_t lfo[SEQ_TRACKS];
     bool      lfo_authored[SEQ_TRACKS];
     uint8_t   repeat_rate[SEQ_TRACKS];   /* SEQ_REPEAT_* — fires every N bars */
+    bool      mute[SEQ_TRACKS];          /* true = track produces no note-ons */
+    bool      solo[SEQ_TRACKS];          /* true = only soloed tracks in this
+                                             layer are audible; overrides mute
+                                             on the soloed track(s) themselves */
     bool      chord_mode;                /* false = scale quantizer (default) */
     uint8_t   chord_root;                /* chromatic 0-11 (C=0)              */
     chord_type_t chord_type;
@@ -136,6 +173,21 @@ typedef struct {
                                         note-emit time. Adjusted via graph editor amp
                                         mode (MY_BUTTON_2). MUST be initialised to 1.0f
                                         in sequencer_core_add_layer — memset zeroes it. */
+
+    /* ── Per-step probability / ratchet / conditional trig ──
+     * A step with prob==100 && ratchet==1 && cond_type==NONE is "plain" and
+     * keeps using the original always-on repeating AMY sequence tag (zero
+     * extra cost). Any other combination makes the step "decorated": the
+     * periodic tag is left cleared and sequencer_core_service_tick() (called
+     * once per AMY sequencer tick) decides per loop-iteration whether/how it
+     * fires. MUST be initialised to prob=100, ratchet=1 in
+     * sequencer_core_add_layer — memset zeroes them, and 0% probability would
+     * silence every step by default. cond_type=0 (NONE) is the correct zeroed
+     * default and needs no explicit init. */
+    uint8_t  step_prob[SEQ_TRACKS][SEQ_MAX_STEPS];       /* 0..100 %, trigger probability */
+    uint8_t  step_ratchet[SEQ_TRACKS][SEQ_MAX_STEPS];    /* 1..SEQ_MAX_RATCHET sub-hits    */
+    uint8_t  step_cond_type[SEQ_TRACKS][SEQ_MAX_STEPS];  /* seq_step_cond_type_t           */
+    uint8_t  step_cond_param[SEQ_TRACKS][SEQ_MAX_STEPS]; /* FILL: loop divisor 2..8        */
 } seq_layer_t;
 
 /* ── Global sequencer display/UI state ── */

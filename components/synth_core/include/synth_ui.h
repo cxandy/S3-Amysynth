@@ -82,6 +82,15 @@ bool synth_ui_trackopts_is_active(void);
 bool synth_ui_trackopts_handle_encoder(int delta);
 bool synth_ui_trackopts_handle_button(void);
 
+/* FM/ALGO voice editor — algorithm + per-operator ratio/level for the live
+ * SEQ_PATCH_FM_CUSTOM voice (see custompatches/fm_voice.h). Active when
+ * seq_state.ui_mode == UI_MODE_FM and no overlay is up. Reached via the menu
+ * ("Screen: FM"). Encoder scrolls rows / edits the entered row's value;
+ * encoder-click toggles edit on the focused row. */
+bool synth_ui_fm_is_active(void);
+bool synth_ui_fm_handle_encoder(int delta);
+bool synth_ui_fm_handle_button(void);
+
 /* Re-impose the cached global FX (EQ/echo/chorus/reverb) after a synth patch
  * load. Every AMY built-in Juno patch ends with global EQ/chorus commands, so
  * loading a preset onto any synth would otherwise re-skin the whole mix's FX.
@@ -130,6 +139,12 @@ bool synth_ui_graph_toggle_range(void);
  * editor close (confirm) and reset on every editor open. */
 void synth_ui_graph_toggle_amp_mode(void);
 
+/* Switch the open editor between EG0 (amp) and EG1 (typically filter sweep) —
+ * MY_BUTTON_3 long-press while the ADSR graph editor is open. Any dirty
+ * in-progress edit on the departing eg_index is written through first, then
+ * the curve is reseeded from the other eg_index's own stored envelope. */
+void synth_ui_graph_toggle_eg_index(void);
+
 /* ── Filter editor (per-synth LPF/HPF/BPF/LPF24 curve editor) ───────────────
  * Opened by long-press encoder (same as ADSR); toggled with MY_BUTTON_3 while
  * either editor is open. Controls: encoder adjusts the selected parameter
@@ -162,6 +177,19 @@ bool synth_ui_toggle_editor_apply_scope(void);
  * Commits the departing editor and opens the next one.  Replaces the old
  * synth_ui_toggle_adsr_filter() two-way swap. */
 void synth_ui_cycle_editor(void);
+
+/* ── Step Trig editor (per-step probability / ratchet / conditional trig) ──
+ * Full-screen popup addressed by the sequencer grid's existing cursor
+ * (active layer / selected track / selected step) — no separate cursor.
+ * Opened/closed by MY_BUTTON_2 long-press while navigating the grid
+ * (main.c); while open, encoder turns adjust the focused field and a short
+ * encoder-button press cycles which field (Prob → Ratchet → Cond → Param)
+ * is focused. */
+bool synth_ui_stepedit_is_active(void);
+void synth_ui_stepedit_open(void);
+void synth_ui_stepedit_close(void);
+bool synth_ui_stepedit_handle_encoder(long delta);
+bool synth_ui_stepedit_handle_button(void);
 
 #ifdef __cplusplus
 }

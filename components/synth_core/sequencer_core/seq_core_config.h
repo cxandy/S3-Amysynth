@@ -104,5 +104,19 @@
 #define SEQ_ARP_TAG_COUNT     (ARP_MAX_SLOTS * ARP_OCT_MAX * 2)  /* = 64 */
 #define SEQ_ARP_TAG_MAX       (SEQ_ARP_TAG_BASE + SEQ_ARP_TAG_COUNT - 1)  /* 1119 */
 
+/* ── Ratchet tag space ────────────────────────────────────────────────────
+ * A "decorated" step (probability<100, ratchet>1, or a conditional trig) is
+ * never scheduled on the plain per-step ON/OFF tag pair — instead
+ * sequencer_core_service_tick() one-shot schedules up to SEQ_MAX_RATCHET
+ * note-on/off pairs per firing, each on its own dedicated, statically
+ * assigned tag so ratchet sub-hits never overwrite each other's schedule.
+ * Sits just above the arp's tag space; needs
+ * MAX_LAYERS*SEQ_TRACKS*SEQ_MAX_RATCHET*2 tags (4*4*4*2 = 128, 1120..1247).
+ * Same off-by-one rule as the arp block above applies — main.c's
+ * amy_cfg.max_sequencer_tags must stay >= SEQ_RATCHET_TAG_MAX + 2. */
+#define SEQ_RATCHET_TAG_BASE  (SEQ_ARP_TAG_MAX + 1u)                          /* 1120 */
+#define SEQ_RATCHET_TAG_COUNT (MAX_LAYERS * SEQ_TRACKS * SEQ_MAX_RATCHET * 2) /* 128 */
+#define SEQ_RATCHET_TAG_MAX   (SEQ_RATCHET_TAG_BASE + SEQ_RATCHET_TAG_COUNT - 1) /* 1247 */
+
 /* ── Global chord progression ────────────────────────────────────────────── */
 #define CHORD_PROG_MAX_ENTRIES 8

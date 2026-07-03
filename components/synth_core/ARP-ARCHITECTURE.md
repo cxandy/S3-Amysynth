@@ -286,7 +286,15 @@ uint16_t   arp_get_patch(void);
 int16_t    arp_get_slot(uint8_t idx);          // raw chromatic, -1 = empty
 int16_t    arp_get_slot_snapped(uint8_t idx);  // pitch actually played
 uint8_t    arp_active_slot_count(void);
+
+/* Portamento / glide — pushed straight to the synth, does not mark dirty */
+void       arp_set_portamento_ms(uint16_t ms); // 0..ARP_PORTAMENTO_MAX_MS (2000)
+uint16_t   arp_get_portamento_ms(void);
 ```
+
+> This list is illustrative, not exhaustive — `arp_core.h` also exposes source/
+> wave, ADSR, filter, LFO, and amp-scale setters/getters added since this doc
+> was last fully synced. Treat `arp_core.h` as the source of truth.
 
 ### `sequencer_core.h` (AMY bridge)
 
@@ -341,8 +349,9 @@ neither the menu nor the graph editor is up.
 | `MY_BUTTON_3` single-click | Toggle menu overlay (or cycle to Filter editor while ADSR is open) |
 | `MY_BUTTON_0` long-press | Global play/pause (shared with sequencer) |
 
-Cursor index space (`display_arp.h`): `0=ENABLE, 1=MODE, 2=OCT, 3=RATE,
-4=GATE, 5..12 = slots 0..7`.
+Cursor index space (`display_arp.h`): `0=ENABLE, 1=MODE, 2=OCT, 3=RATE, 4=GATE,
+5=SOURCE, 6=WAVE, 7=GLIDE (portamento), 8..15 = slots 0..7`. GLIDE shares the
+row-2 right-hand readout slot with SOURCE/WAVE/patch — see `display_arp.c`.
 
 ### Seq/Arp isolation (`main.c`)
 

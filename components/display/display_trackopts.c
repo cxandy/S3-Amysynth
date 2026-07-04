@@ -61,7 +61,7 @@ void display_trackopts_draw_frame(u8g2_t *u8g2, const trackopts_view_t *view)
     to_draw_title_val(u8g2, tx, tbuf, view && view->cursor == TO_ROW_TRACK);
     u8g2_DrawHLine(u8g2, 0, 10, 128);
 
-    if (view == NULL) { u8g2_SendBuffer(u8g2); return; }
+    if (view == NULL) { return; }
 
     /* Content rows, indexed relative to TO_ROW_REPEAT: 0=Repeat 1=Mute 2=Solo
      * 3=Chord 4=Root 5=Type. Drum layers stop at Solo (3 rows); melodic
@@ -124,6 +124,4 @@ void display_trackopts_draw_frame(u8g2_t *u8g2, const trackopts_view_t *view)
     if (last < content_count) {
         u8g2_DrawTriangle(u8g2, 120, 60, 128, 60, 124, 64);
     }
-
-    u8g2_SendBuffer(u8g2);
 }

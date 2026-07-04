@@ -17,7 +17,6 @@ void display_seq_draw_frame(u8g2_t *u8g2, const display_seq_state_t *state, uint
     /* Nothing to draw until at least one layer exists. */
     if (state->num_layers == 0) {
         u8g2_ClearBuffer(u8g2);
-        u8g2_SendBuffer(u8g2);
         return;
     }
 
@@ -167,7 +166,5 @@ void display_seq_draw_frame(u8g2_t *u8g2, const display_seq_state_t *state, uint
             u8g2_DrawStr(u8g2, (uint8_t)(bx + 2), (uint8_t)(by + 9), pname);
         }
     }
-
-    u8g2_SendBuffer(u8g2);
 }
 

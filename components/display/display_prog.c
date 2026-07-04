@@ -32,7 +32,6 @@ void display_prog_draw_frame(u8g2_t *u8g2, const prog_view_t *view)
     if (view == NULL || view->count == 0) {
         u8g2_SetFont(u8g2, u8g2_font_5x7_tf);
         u8g2_DrawStr(u8g2, 8, 38, "No entries");
-        u8g2_SendBuffer(u8g2);
         return;
     }
 
@@ -97,6 +96,4 @@ void display_prog_draw_frame(u8g2_t *u8g2, const prog_view_t *view)
     const char *hint = "+:B2 -:B1";
     uint8_t hint_x = (uint8_t)(128 - u8g2_GetStrWidth(u8g2, hint) - 2);
     u8g2_DrawStr(u8g2, hint_x, 63, hint);
-
-    u8g2_SendBuffer(u8g2);
 }

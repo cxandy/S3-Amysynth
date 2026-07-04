@@ -185,7 +185,6 @@ void filter_graph_draw(u8g2_t *u8g2, const filter_graph_t *fg)
         u8g2_SetFont(u8g2, u8g2_font_5x7_tr);
         uint8_t ow = (uint8_t)u8g2_GetStrWidth(u8g2, "OFF");
         u8g2_DrawStr(u8g2, (uint8_t)((FG_PLOT_W - ow) / 2), (uint8_t)(y_mid - 2), "OFF");
-        u8g2_SendBuffer(u8g2);
         return;
     }
 
@@ -229,6 +228,4 @@ void filter_graph_draw(u8g2_t *u8g2, const filter_graph_t *fg)
     u8g2_SetDrawColor(u8g2, 2);   /* XOR: inverts whatever is there */
     u8g2_DrawVLine(u8g2, cx, FG_PLOT_Y0, FG_PLOT_H - 1);
     u8g2_SetDrawColor(u8g2, 1);
-
-    u8g2_SendBuffer(u8g2);
 }

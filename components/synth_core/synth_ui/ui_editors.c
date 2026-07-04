@@ -1071,7 +1071,6 @@ void synth_ui_graph_view_draw(u8g2_t *u8g2)
     u8g2_SetDrawColor(u8g2, 1);
     graph_draw_topbar(u8g2);
     graph_popup_draw(u8g2, &s_graph_popup);
-    u8g2_SendBuffer(u8g2);
 }
 
 void synth_ui_filter_view_draw(u8g2_t *u8g2)
@@ -1079,7 +1078,6 @@ void synth_ui_filter_view_draw(u8g2_t *u8g2)
     u8g2_ClearBuffer(u8g2);
     u8g2_SetDrawColor(u8g2, 1);
     filter_graph_draw(u8g2, &s_fgraph);
-    u8g2_SendBuffer(u8g2);
 }
 
 void synth_ui_lfo_view_draw(u8g2_t *u8g2)
@@ -1087,5 +1085,4 @@ void synth_ui_lfo_view_draw(u8g2_t *u8g2)
     u8g2_ClearBuffer(u8g2);
     u8g2_SetDrawColor(u8g2, 1);
     lfo_view_draw(u8g2, &s_lfo_view);
-    u8g2_SendBuffer(u8g2);
 }

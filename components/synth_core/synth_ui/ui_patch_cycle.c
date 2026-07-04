@@ -39,23 +39,33 @@ static const uint16_t s_melodic_patch_cycle[] = {
     270, /* Wavetable: SINE2SAW.WAV */
     271, /* Wavetable: VIRAL.WAV    */
 #endif
+#if CONFIG_SYNTH_CUSTOM_FM
     272, /* FM Bass (6-op ALGO) */
     273, /* FM E.Piano (6-op ALGO) */
     274, /* FM Bell (6-op ALGO) */
     275, /* FM Lead (6-op ALGO) */
     276, /* FM Custom — opens the FM edit screen (Menu > Screen: FM) */
+#endif
 };
 #define SEQ_RUNTIME_PATCH_COUNT ((int)(sizeof(s_melodic_patch_cycle) / sizeof(s_melodic_patch_cycle[0])))
 #endif
 
 /* Full-range browse: Juno 0..127, DX7 128..255, piano 256, waves 257..263, bass
- * 264..266, wavetable banks 267..271 (AMY_WAVETABLE only), FM/ALGO 272..276.
+ * 264..266, wavetable banks 267..271 (AMY_WAVETABLE only), FM/ALGO 272..276
+ * (SYNTH_CUSTOM_FM only).
  * Melodic-only: arp/drone independently clamp below SEQ_PATCH_WAVE_MAX in
  * their own configure paths, so this shared upper bound reaching into
  * bass/wavetable/FM territory is a no-op for them (same as it already was for
- * the bass range). FM is always compiled in, so it — not the
- * conditionally-compiled wavetable range — is always the true ceiling. */
+ * the bass range). The ceiling tracks whichever optional range is compiled in:
+ * FM (276) when SYNTH_CUSTOM_FM, else the wavetable top (271) when
+ * AMY_WAVETABLE, else the bass top (266). */
+#if CONFIG_SYNTH_CUSTOM_FM
 #define SEQ_PATCH_FULL_MAX SEQ_PATCH_ROUTABLE_MAX
+#elif CONFIG_AMY_WAVETABLE
+#define SEQ_PATCH_FULL_MAX SEQ_PATCH_WAVETABLE_MAX
+#else
+#define SEQ_PATCH_FULL_MAX SEQ_PATCH_BASS_MAX
+#endif
 
 /* Domain descriptor for melodic, arp, and drone patch cycling.
  * Full-range mode walks 0..SEQ_PATCH_FULL_MAX; curated mode steps the

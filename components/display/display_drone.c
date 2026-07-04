@@ -19,7 +19,6 @@ void display_drone_draw_frame(u8g2_t *u8g2, const drone_view_t *view)
     u8g2_DrawHLine(u8g2, 0, 10, 128);
 
     if (view == NULL || view->count == 0) {
-        u8g2_SendBuffer(u8g2);
         return;
     }
 
@@ -67,8 +66,6 @@ void display_drone_draw_frame(u8g2_t *u8g2, const drone_view_t *view)
     if (last < view->count) {
         u8g2_DrawTriangle(u8g2, 120, 60, 128, 60, 124, 64);
     }
-
-    u8g2_SendBuffer(u8g2);
 }
 
 /* ── Drone visualiser overlay ───────────────────────────────────────────────
@@ -221,6 +218,4 @@ void display_drone_vis_draw(u8g2_t *u8g2, const drone_vis_t *vis)
             }
         }
     }
-
-    u8g2_SendBuffer(u8g2);
 }

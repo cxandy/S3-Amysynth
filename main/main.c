@@ -450,23 +450,9 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
             }
             return;
         }
-        /* Step Trig editor: long-press toggles it open/closed for the step
-         * currently under the sequencer grid cursor. Only reachable here
-         * (plain sequencer screen, edit_mode, no other overlay) since every
-         * arp/drone/prog/trackopts isolation block above already intercepts
-         * MY_BUTTON_2 and returns before this point. */
-        if (event == BUTTON_LONG_PRESS_START) {
-            if (synth_ui_stepedit_is_active()) {
-                synth_ui_stepedit_close();
-            } else if (!synth_ui_menu_is_active()) {
-                s_drum_select_held = false;
-                synth_ui_set_drum_select_mode(false);
-                synth_ui_stepedit_open();
-            }
-            return;
-        }
         if (synth_ui_stepedit_is_active()) {
-            /* Suppress drum-select hold while the popup owns the encoder. */
+            /* Suppress drum-select hold while the popup owns the encoder.
+             * (Step Trig editor open/close now lives on MY_BUTTON_3.) */
             return;
         }
         if (event == BUTTON_PRESS_DOWN) {
@@ -482,7 +468,10 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
     // MY_BUTTON_3: while any editor (ADSR/filter/LFO) is open, single-click
     // cycles to the next editor. While the ADSR graph editor specifically is
     // open, long-press instead switches between its EG0 (amp) and EG1
-    // (typically filter) breakpoint sets. Outside editors it is the menu toggle.
+    // (typically filter) breakpoint sets. Step Trig editor: long-press opens
+    // it, single-click closes it (moved off MY_BUTTON_2 so it no longer
+    // fires accidentally while holding MY_BUTTON_2 to transpose). Outside
+    // all of that it is the menu toggle.
     if (button_id == MY_BUTTON_3) {
         if (synth_ui_graph_is_active() || synth_ui_filter_is_active()
                                        || synth_ui_lfo_is_active()) {
@@ -490,6 +479,18 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
                 synth_ui_cycle_editor();
             } else if (event == BUTTON_LONG_PRESS_START && synth_ui_graph_is_active()) {
                 synth_ui_graph_toggle_eg_index();
+            }
+            return;
+        }
+        if (synth_ui_stepedit_is_active()) {
+            if (event == BUTTON_SINGLE_CLICK) {
+                synth_ui_stepedit_close();
+            }
+            return;
+        }
+        if (event == BUTTON_LONG_PRESS_START) {
+            if (!synth_ui_menu_is_active()) {
+                synth_ui_stepedit_open();
             }
             return;
         }
@@ -584,6 +585,7 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
             }
             return;
         }
+#if CONFIG_SYNTH_CUSTOM_FM
         /* FM screen: encoder-click toggles edit on the focused row. */
         if (synth_ui_fm_is_active()) {
             if (event == BUTTON_PRESS_DOWN) {
@@ -591,6 +593,7 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
             }
             return;
         }
+#endif
         if (event == BUTTON_LONG_PRESS_START) {
             synth_ui_graph_open_envelope();
             return;
@@ -728,9 +731,11 @@ static void encoder_task(void *pvParameters)
             } else if (synth_ui_trackopts_is_active()) {
                 // Track Options screen: encoder scrolls rows / edits focused value.
                 synth_ui_trackopts_handle_encoder((int)steps);
+#if CONFIG_SYNTH_CUSTOM_FM
             } else if (synth_ui_fm_is_active()) {
                 // FM screen: encoder scrolls rows / edits focused value.
                 synth_ui_fm_handle_encoder((int)steps);
+#endif
             } else {
                 synth_ui_handle_encoder(steps);
             }

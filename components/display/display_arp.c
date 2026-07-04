@@ -26,7 +26,6 @@ void display_arp_draw_frame(u8g2_t *u8g2, const arp_view_t *view)
     u8g2_SetDrawColor(u8g2, 1);
 
     if (view == NULL) {
-        u8g2_SendBuffer(u8g2);
         return;
     }
 
@@ -137,6 +136,4 @@ void display_arp_draw_frame(u8g2_t *u8g2, const arp_view_t *view)
         u8g2_DrawRFrame(u8g2, bx, by, (uint8_t)(nw + 4), 13, 2);
         u8g2_DrawStr(u8g2, (uint8_t)(bx + 2), (uint8_t)(by + 9), view->patch_name);
     }
-
-    u8g2_SendBuffer(u8g2);
 }

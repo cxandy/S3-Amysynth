@@ -40,7 +40,7 @@ void display_stepedit_draw_frame(u8g2_t *u8g2, const stepedit_view_t *view)
     u8g2_SetDrawColor(u8g2, 1);
     u8g2_SetFont(u8g2, u8g2_font_6x10_tf);
 
-    if (view == NULL) { u8g2_SendBuffer(u8g2); return; }
+    if (view == NULL) { return; }
 
     char title[24];
     snprintf(title, sizeof(title), "STEP L%u T%u S%02u",
@@ -72,6 +72,4 @@ void display_stepedit_draw_frame(u8g2_t *u8g2, const stepedit_view_t *view)
         snprintf(val, sizeof(val), "%u", (unsigned)view->cond_param);
         se_draw_row(u8g2, y, " Every", val, view->field_cursor == SE_FIELD_PARAM);
     }
-
-    u8g2_SendBuffer(u8g2);
 }

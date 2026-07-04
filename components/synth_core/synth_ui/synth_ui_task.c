@@ -141,8 +141,10 @@ static void synth_ui_task(void *pvParameters)
                 view = V_PROG;  sig = prog_view_signature();
             } else if (seq_state.ui_mode == UI_MODE_TRACKOPTS) {
                 view = V_TRACKOPTS; sig = trackopts_view_signature();
+#if CONFIG_SYNTH_CUSTOM_FM
             } else if (seq_state.ui_mode == UI_MODE_FM) {
                 view = V_FM;    sig = fm_view_signature();
+#endif
             } else {
                 view = V_SEQ;   sig = seq_view_signature();
             }
@@ -225,23 +227,29 @@ static void synth_ui_task(void *pvParameters)
                         display_stepedit_draw_frame(s_u8g2, &sv);
                         break;
                     }
+#if CONFIG_SYNTH_CUSTOM_FM
                     case V_FM: {
                         menu_view_t fv;
                         fm_build_view(&fv);
                         display_menu_draw_frame_titled(s_u8g2, "FM ALGO", &fv);
                         break;
                     }
+#endif
                     default:
                         display_seq_draw_frame(s_u8g2, &seq_state, seq_get_bpm());
                         break;
                 }
-                /* Persistent button-hint strip: drawn and flushed as a second,
-                 * small pass on top of whatever the view above just sent, so
-                 * no per-screen renderer needs to know about it. */
+                /* Persistent button-hint strip: composited into the buffer on
+                 * top of whatever the view above just drew, so no per-screen
+                 * renderer needs to know about it. Every screen's draw_frame
+                 * now only fills the buffer -- it no longer sends -- so this
+                 * is the single physical transfer per redraw. Sending twice
+                 * (once without the hint, once with) used to make the hint
+                 * strip visibly flicker on every redraw, in every UI state. */
                 if (synth_ui_hint_visible()) {
                     display_hint_draw(s_u8g2, synth_ui_hint_text());
-                    u8g2_SendBuffer(s_u8g2);
                 }
+                u8g2_SendBuffer(s_u8g2);
                 last_sig = sig;
                 last_view = view;
                 s_force_redraw = false;
@@ -270,7 +278,9 @@ void synth_ui_init(u8g2_t *u8g2)
     SEQ_HEAP_CHECK("ui_init: after arp_core_init");
     drone_core_init();
     SEQ_HEAP_CHECK("ui_init: after drone_core_init");
+#if CONFIG_SYNTH_CUSTOM_FM
     fm_voice_default(&s_fm_voice);
+#endif
     sample_rec_init();
     SEQ_HEAP_CHECK("ui_init: after sample_rec_init");
 

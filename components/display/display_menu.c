@@ -25,7 +25,6 @@ void display_menu_draw_frame_titled(u8g2_t *u8g2, const char *title,
     u8g2_DrawHLine(u8g2, 0, 10, 128);
 
     if (view == NULL || view->count == 0) {
-        u8g2_SendBuffer(u8g2);
         return;
     }
 
@@ -77,6 +76,4 @@ void display_menu_draw_frame_titled(u8g2_t *u8g2, const char *title,
     if (last < view->count) {
         u8g2_DrawTriangle(u8g2, 120, 60, 128, 60, 124, 64);
     }
-
-    u8g2_SendBuffer(u8g2);
 }

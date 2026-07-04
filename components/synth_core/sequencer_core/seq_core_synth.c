@@ -323,12 +323,14 @@ void sequencer_configure_synth(uint8_t layer_idx)
             bass_preset_configure_track(layer->synth_id[t],
                                                   layer->patch,
                                                   layer->num_voices);
+#if CONFIG_SYNTH_CUSTOM_FM
         } else if (is_fm_patch) {
             if (layer->patch == SEQ_PATCH_FM_CUSTOM) {
                 fm_voice_configure_track(layer->synth_id[t], layer->num_voices, &s_fm_voice);
             } else {
                 fm_preset_configure_track(layer->synth_id[t], layer->patch, layer->num_voices);
             }
+#endif
         } else {
             amy_send_patch(layer->synth_id[t], layer->patch,
                            layer->num_voices, layer->synth_flags);
@@ -402,6 +404,7 @@ void sequencer_core_set_layer_patch(uint8_t layer_idx, uint16_t patch_number)
 
 /* ── Live FM voice edits ──────────────────────────────────────────────────── */
 
+#if CONFIG_SYNTH_CUSTOM_FM
 void sequencer_core_fm_voice_changed(void)
 {
     for (uint8_t i = 0; i < s_num_layers; i++) {
@@ -413,6 +416,7 @@ void sequencer_core_fm_voice_changed(void)
         }
     }
 }
+#endif
 
 /* ── Drum per-track patch (curated Juno list) ────────────────────────────── */
 

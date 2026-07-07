@@ -142,7 +142,7 @@ void amy_clear_event(amy_event *e) {
     AMY_UNSET(e->eg_type[0]);
     AMY_UNSET(e->eg_type[1]);
     AMY_UNSET(e->reset_osc);
-    AMY_UNSET(e->note_source);
+    AMY_UNSET(e->note_source_channel);
     for (int i = 0; i < MAX_ALGO_OPS; ++i) {
         AMY_UNSET(e->algo_source[i]);
     }
@@ -228,17 +228,13 @@ bool amy_parsing_from_sysex = false;
 // given a wire message string play / schedule the event directly (WIRE API)
 void amy_add_message(char *message) {
     peek_stack("add_message");
-    amy_event e; // = amy_default_event();
-    // Parse the wire string into an event
-    int length = strlen(message);
-    char *remains = message;
-    while(length > 0) {
+    amy_event e;
+    size_t pos = 0;
+    do {
         amy_clear_event(&e);
-	int pos = amy_parse_message(remains, length, &e);
-	amy_add_event(&e);
-	remains += pos;
-	length -= pos;
-    }
+        pos = yield_event_from_message(message, &e, pos);
+        if (pos > 0)  amy_add_event(&e);
+    } while(pos > 0);
 }
 
 // Like amy_add_message but marks the message as coming from an external
@@ -250,12 +246,28 @@ void amy_add_message_from_sysex(char *message) {
 }
 
 // given an event play / schedule the event directly (C API)
+// diverts sequeuncer events, and handles special-case reset.
 void amy_add_event(amy_event *e) {
     peek_stack("add_event");
-    // amy_process_event snarfs scheduler events and (with bizarre specificity) patch reset events, for others it makes sure e->time is set, then marks as EVENT_SCHEDULED
-    amy_process_event(e);
-    // Do not "play" events that are not sent directly to the AMY synthesizer, e.g. sequencer events or stored patches
-    if(e->status == EVENT_SCHEDULED) {
+    // was amy_process_event
+    if(AMY_IS_SET(e->sequence[SEQUENCE_TICK]) || AMY_IS_SET(e->sequence[SEQUENCE_PERIOD]) || AMY_IS_SET(e->sequence[SEQUENCE_TAG])) {
+        uint8_t added = sequencer_add_event(e);
+        (void)added; // we don't need to do anything with this info at this time
+        e->status = EVENT_SEQUENCE;
+    } else if (AMY_IS_SET(e->reset_osc) && (e->reset_osc & RESET_PATCH) && AMY_IS_SET(e->patch_number)) {
+        // We're resetting just one patch, do it now.  But RESET_PATCH with no patch_number should propagate to deltas.
+        patches_reset_patch(e->patch_number);
+        AMY_UNSET(e->reset_osc);
+    } else {
+        // if time is set, play then
+        // if time and latency is set, play in time + latency
+        // if time is not set, play now
+        // if time is not set + latency is set, play in latency
+        uint32_t playback_time = amy_sysclock();
+        if(AMY_IS_SET(e->time)) playback_time = e->time;
+        playback_time += amy_global.latency_ms;
+        e->time = playback_time;
+        e->status = EVENT_SCHEDULED;
         amy_event_to_deltas_queue(e, 0, &amy_global.delta_queue);
     }
 }
@@ -263,12 +275,24 @@ void amy_add_event(amy_event *e) {
 // defined in midi_mappings.c
 extern void juno_filter_midi_handler(uint8_t * bytes, uint16_t len, uint8_t is_sysex);
 #ifdef __EMSCRIPTEN__
+#ifdef GAMMA9001
+// The Gamma9001 drums.bin blob, linked into the wasm (build/drums_bin.c).
+extern const int16_t gamma9001_pcm_data[];
+#endif
+
+static void amy_web_setup_gamma9001() {
+#ifdef GAMMA9001
+    amy_set_gamma9001_pcm(gamma9001_pcm_data);
+#endif
+}
+
 void amy_start_web() {
     // a shim for web AMY, as it's annoying to build structs in js
     amy_config_t amy_config = amy_default_config();
     amy_config.midi = AMY_MIDI_IS_WEBMIDI;
     amy_config.features.default_synths = 1;
     amy_config.features.startup_bleep = 1;
+    amy_web_setup_gamma9001();
     amy_start(amy_config);
 }
 
@@ -277,6 +301,7 @@ void amy_start_web_no_synths() {
     amy_config_t amy_config = amy_default_config();
     amy_config.midi = AMY_MIDI_IS_WEBMIDI;
     amy_config.features.default_synths = 0;
+    amy_web_setup_gamma9001();
     amy_start(amy_config);
 }
 #endif
@@ -286,8 +311,8 @@ void amy_default_synths() {
     // Configure several default synthesizers for "out of box" playability.
 
     // sine wave "bleeper" on ch 0 (not a MIDI channel)
+    // synth 0 sinewave.
     amy_event e = amy_default_event();
-    // osc=0 sinewave.
     e.synth = 0;
     e.num_voices = 1;
     e.oscs_per_voice = 1;
@@ -296,28 +321,29 @@ void amy_default_synths() {
 
     // GM drum synth on channel 10
     e = amy_default_event();
-    e.synth = 10;
+    e.synth = AMY_MIDI_CHANNEL_DRUMS;  // 10
     e.num_voices = 6;
-    e.oscs_per_voice = 1;
-    e.wave = PCM;
-    e.amp_coefs[COEF_CONST] = 5.0;  // MIDI drums need to be louder to match juno patches.
-    // Flag to perform note -> drum PCM patch translation.
-    e.synth_flags = _SYNTH_FLAGS_MIDI_DRUMS | _SYNTH_FLAGS_IGNORE_NOTE_OFFS;
+#ifdef GAMMA9001
+    e.patch_number = 384;  // Gamma9001 drum kit 0 (baked TR-808 bank); kits 1+ at 385+ via PC bank MSB 3
+#else
+    e.patch_number = 258;  // Set up in headers.py to use midi_note_cmd to match some midi note events to PCM samples
+#endif
+    e.synth_flags = SYNTH_FLAGS_NOTES_VIA_MIDI | SYNTH_FLAGS_IGNORE_NOTE_OFFS;  // Ensure note events go via midi_note_cmd
     amy_add_event(&e);
 
     // DX7 6 note poly on channel 2
     e = amy_default_event();
+    e.synth = 2;
     e.num_voices = 6;
     e.patch_number = 128;
-    e.synth = 2;
     amy_add_event(&e);
 
     // Juno 6 poly on channel 1
     // Define this last so if we release it, the oscs aren't fragmented.
     e = amy_default_event();
+    e.synth = 1;
     e.num_voices = 6;
     e.patch_number = 0;
-    e.synth = 1;
     amy_add_event(&e);
     // Add some MIDI CCs for the Juno (defined in midi_mappings.c).
     amy_global.config.amy_external_midi_input_hook = juno_filter_midi_handler;

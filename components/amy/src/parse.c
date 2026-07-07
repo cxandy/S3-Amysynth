@@ -448,7 +448,7 @@ int amy_parse_synth_layer_message(char *message, amy_event *e) {
     else if (cmd == 'f')  e->synth_flags = atoi(message);
     else if (cmd == 'g')  skip_chars = cv_trigger_from_message(message, e->synth, skip_chars);
     else if (cmd == 'm')  e->grab_midi_notes = atoi(message);
-    else if (cmd == 'M')  e->note_source = atoi(message);  // To mark MIDI-in notes.
+    else if (cmd == 'M')  e->note_source_channel = atoi(message);  // To mark MIDI-in notes.
     else if (cmd == 'n')  e->oscs_per_voice = atoi(message);
     else if (cmd == 'p')  e->pedal = atoi(message);
     else if (cmd == 't')  e->to_synth = atoi(message);
@@ -620,6 +620,15 @@ uint16_t amy_parse_transfer_layer_message(char *message) {
         else sequencer_midi_stop();
         return 1;
     }
+    else if (cmd == 'C') {
+        // zC: external MIDI clock sync. zC1 makes the sequencer follow incoming
+        // MIDI realtime clock/start/stop (0xF8/0xFA/0xFC); zC0 (the default)
+        // ignores them and uses the internal clock. Same switch as the C API's
+        // amy_external_midi_sync(), reachable over the wire so hosts that only
+        // speak the wire protocol (web builds, sysex) can flip it.
+        amy_external_midi_sync(atoi(message) ? 1 : 0);
+        return 1;
+    }
     else fprintf(stderr, "Unrecognized transfer-level command '%s'\n", message - 1);
     return 0;
 }
@@ -637,10 +646,18 @@ int _next_alpha(char *s) {
 }
 
 
+size_t yield_event_from_message(char *message, amy_event *e, size_t pos) {
+    // Parse the wire string into an event
+    if (message[pos] == '\0')  pos = 0;  // Hit end of string
+    else pos += amy_parse_message(message + pos, e);
+    return pos;
+}
+
 
 // given a string return a parsed event
-int amy_parse_message(char * message, int length, amy_event *e) {
+int amy_parse_message(char * message, amy_event *e) {
     peek_stack("parse_message");
+    int length = strlen(message);
     char cmd = '\0';
     uint16_t pos = 0;
 
@@ -706,7 +723,7 @@ int amy_parse_message(char * message, int length, amy_event *e) {
             /* i is used by alles for sync index -- but only for sync messages -- ok to use here but test */
             case 'i': pos += amy_parse_synth_layer_message(arg, e); break;  // Skip over second cmd letter, if any, or entire MIDI CC code string.
             case 'I': e->ratio = atoff(arg); break;
-            case 'j': e->tempo = atof(arg); break;
+            case 'j': e->tempo = atoff(arg); break;
             /* J available */
             // chorus.level
             case 'k': if(AMY_HAS_CHORUS) {
@@ -732,7 +749,7 @@ int amy_parse_message(char * message, int length, amy_event *e) {
                 e->echo_filter_coef = echo_params[4];
             }
             break;
-            case 'n': e->midi_note=atof(arg); break;
+            case 'n': e->midi_note=atoff(arg); break;
             case 'N': e->latency_ms = atoi(arg);  break;
             case 'o': e->algorithm=atoi(arg); break;
             case 'O': parse_algo_source(arg, e->algo_source); break;

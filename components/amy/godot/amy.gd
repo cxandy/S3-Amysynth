@@ -174,18 +174,22 @@ func send(params: Dictionary = {}) -> void:
 ## Build an AMY wire message from a dictionary without sending it.
 ## Returns the wire string (e.g. "v0w0f440l1").
 func message(params: Dictionary) -> String:
-	var wire: String = ""
+	# Order keys by _KW_PRIORITY before building the wire string, mirroring the
+	# Python/JS APIs -- most importantly so 'patch_string' is emitted last, since
+	# it consumes everything to the end of the message.
+	var keys: Array = []
 	for key: Variant in params:
-		var key_str: String = str(key)
-		if not _KW_MAP.has(key_str):
-			push_warning("AMY: unknown parameter '%s'" % key_str)
+		if not _KW_MAP.has(str(key)):
+			push_warning("AMY: unknown parameter '%s'" % str(key))
 			continue
-		var mapping: Variant = _KW_MAP[key_str]
-		var m: Array = mapping as Array
-		var code: String = str(m[0])
-		var type: String = str(m[1])
-		var val: Variant = params[key]
-		wire += code + _format_value(val, type)
+		keys.append(key)
+	keys.sort_custom(func(a, b): return int(_KW_PRIORITY.get(str(a), 0)) < int(_KW_PRIORITY.get(str(b), 0)))
+	var wire: String = ""
+	for key: Variant in keys:
+		var mapping: Array = _KW_MAP[str(key)] as Array
+		var code: String = str(mapping[0])
+		var type: String = str(mapping[1])
+		wire += code + _format_value(params[key], type)
 	return wire
 
 ## Send a raw AMY wire-protocol string.
@@ -258,50 +262,143 @@ func _format_ctrl(val: Variant) -> String:
 	return str(val)
 
 # ============================================================
-#  Parameter → wire-code mapping (matches AMY Python API)
+#  Parameter -> wire-code mapping (matches AMY Python API)
+#
+#  GENERATED from amy/__init__.py _KW_MAP_LIST by scripts/gen_amy_gd_api.py.
+#  Do not edit _KW_MAP / _KW_PRIORITY by hand -- run `make godot-api`.
 # ============================================================
+# BEGIN GENERATED - scripts/gen_amy_gd_api.py
 var _KW_MAP: Dictionary = {
-	"osc":              ["v", "I"],
-	"wave":             ["w", "I"],
-	"note":             ["n", "F"],
-	"vel":              ["l", "F"],
-	"amp":              ["a", "C"],
-	"freq":             ["f", "C"],
-	"duty":             ["d", "C"],
-	"feedback":         ["b", "F"],
-	"time":             ["t", "I"],
-	"reset":            ["S", "I"],
-	"phase":            ["P", "F"],
-	"pan":              ["Q", "C"],
-	"client":           ["g", "I"],
-	"volume":           ["V", "F"],
-	"pitch_bend":       ["s", "F"],
-	"filter_freq":      ["F", "C"],
-	"resonance":        ["R", "F"],
-	"bp0":              ["A", "L"],
-	"bp1":              ["B", "L"],
-	"eg0_type":         ["T", "I"],
-	"eg1_type":         ["X", "I"],
-	"debug":            ["D", "I"],
-	"chained_osc":      ["c", "I"],
-	"mod_source":       ["L", "I"],
-	"eq":               ["x", "L"],
-	"filter_type":      ["G", "I"],
-	"ratio":            ["I", "F"],
-	"latency_ms":       ["N", "I"],
-	"algo_source":      ["O", "L"],
-	"algorithm":        ["o", "I"],
-	"chorus":           ["k", "L"],
-	"reverb":           ["h", "L"],
-	"echo":             ["M", "L"],
-	"patch":            ["K", "I"],
-	"voices":           ["r", "L"],
-	"external_channel": ["W", "I"],
-	"portamento":       ["m", "I"],
-	"sequence":         ["H", "L"],
-	"tempo":            ["j", "F"],
-	"synth":            ["i", "I"],
-	"num_voices":       ["iv", "I"],
-	"preset":           ["p", "I"],
-	"num_partials":     ["p", "I"],
+	"osc":                 ["v", "I"],
+	"wave":                ["w", "I"],
+	"note":                ["n", "F"],
+	"vel":                 ["l", "F"],
+	"amp":                 ["a", "C"],
+	"freq":                ["f", "C"],
+	"duty":                ["d", "C"],
+	"feedback":            ["b", "F"],
+	"time":                ["t", "I"],
+	"reset":               ["S", "I"],
+	"phase":               ["P", "F"],
+	"pan":                 ["Q", "C"],
+	"client":              ["g", "I"],
+	"volume":              ["V", "L"],
+	"pitch_bend":          ["s", "F"],
+	"filter_freq":         ["F", "C"],
+	"resonance":           ["R", "F"],
+	"bp0":                 ["A", "L"],
+	"bp1":                 ["B", "L"],
+	"eg0":                 ["A", "L"],
+	"eg1":                 ["B", "L"],
+	"eg0_type":            ["T", "I"],
+	"eg1_type":            ["X", "I"],
+	"debug":               ["D", "I"],
+	"chained_osc":         ["c", "I"],
+	"mod_source":          ["L", "I"],
+	"eq":                  ["x", "L"],
+	"filter_type":         ["G", "I"],
+	"ratio":               ["I", "F"],
+	"latency_ms":          ["N", "I"],
+	"algo_source":         ["O", "L"],
+	"load_sample":         ["z", "L"],
+	"transfer_file":       ["zT", "L"],
+	"disk_sample":         ["zF", "L"],
+	"algorithm":           ["o", "I"],
+	"chorus":              ["k", "L"],
+	"reverb":              ["h", "L"],
+	"echo":                ["M", "L"],
+	"patch":               ["K", "I"],
+	"voices":              ["r", "L"],
+	"external_channel":    ["W", "I"],
+	"portamento":          ["m", "I"],
+	"sequence":            ["H", "L"],
+	"tempo":               ["j", "F"],
+	"sequencer_run":       ["zY", "I"],
+	"external_midi_sync":  ["zC", "I"],
+	"synth":               ["i", "I"],
+	"pedal":               ["ip", "I"],
+	"synth_flags":         ["if", "I"],
+	"num_voices":          ["iv", "I"],
+	"oscs_per_voice":      ["in", "I"],
+	"to_synth":            ["it", "I"],
+	"grab_midi_notes":     ["im", "I"],
+	"note_source_channel": ["iM", "I"],
+	"synth_delay":         ["id", "I"],
+	"preset":              ["p", "I"],
+	"num_partials":        ["p", "I"],
+	"start_sample":        ["zS", "L"],
+	"stop_sample":         ["zO", "I"],
+	"bus":                 ["y", "I"],
+	"midi_cc":             ["ic", "L"],
+	"midi_note_cmd":       ["io", "L"],
+	"cv_trigger":          ["ig", "L"],
+	"patch_string":        ["u", "S"],
 }
+
+var _KW_PRIORITY: Dictionary = {
+	"osc": 0,
+	"wave": 1,
+	"note": 2,
+	"vel": 3,
+	"amp": 4,
+	"freq": 5,
+	"duty": 6,
+	"feedback": 7,
+	"time": 8,
+	"reset": 9,
+	"phase": 10,
+	"pan": 11,
+	"client": 12,
+	"volume": 13,
+	"pitch_bend": 14,
+	"filter_freq": 15,
+	"resonance": 16,
+	"bp0": 17,
+	"bp1": 18,
+	"eg0": 19,
+	"eg1": 20,
+	"eg0_type": 21,
+	"eg1_type": 22,
+	"debug": 23,
+	"chained_osc": 24,
+	"mod_source": 25,
+	"eq": 26,
+	"filter_type": 27,
+	"ratio": 28,
+	"latency_ms": 29,
+	"algo_source": 30,
+	"load_sample": 31,
+	"transfer_file": 32,
+	"disk_sample": 33,
+	"algorithm": 34,
+	"chorus": 35,
+	"reverb": 36,
+	"echo": 37,
+	"patch": 38,
+	"voices": 39,
+	"external_channel": 40,
+	"portamento": 41,
+	"sequence": 42,
+	"tempo": 43,
+	"sequencer_run": 44,
+	"external_midi_sync": 45,
+	"synth": 46,
+	"pedal": 47,
+	"synth_flags": 48,
+	"num_voices": 49,
+	"oscs_per_voice": 50,
+	"to_synth": 51,
+	"grab_midi_notes": 52,
+	"note_source_channel": 53,
+	"synth_delay": 54,
+	"preset": 55,
+	"num_partials": 56,
+	"start_sample": 57,
+	"stop_sample": 58,
+	"bus": 59,
+	"midi_cc": 60,
+	"midi_note_cmd": 61,
+	"cv_trigger": 62,
+	"patch_string": 63,
+}
+# END GENERATED

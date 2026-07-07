@@ -11,10 +11,13 @@
 static const char *TAG = "synth_ui";
 
 #if !CONFIG_SEQ_PATCH_BROWSE_FULL_RANGE
-/* Runtime patch cycling shortlist: intentionally small and musical.
- * Values map to AMY built-ins (Juno/DX7/piano). Used only when the browse mode
- * is "preselected"; the full-range mode walks 0..SEQ_PATCH_FULL_MAX instead. */
-static const uint16_t s_melodic_patch_cycle[] = {
+/* THE shared patch catalog: one curated, musical shortlist for every cycling
+ * consumer (melodic, arp, drone). Used only when the browse mode is
+ * "preselected"; the full-range mode walks 0..SEQ_PATCH_FULL_MAX instead.
+ * Consumers that cannot play an entry EXCLUDE it via their domain's
+ * `excluded` predicate (see patch_cycle.h) — new patches added here (or new
+ * ranges under SEQ_PATCH_FULL_MAX) reach every consumer automatically. */
+static const uint16_t s_patch_catalog[] = {
     138, /* DX7 E.PIANO 1 */
     135, /* DX7 PIANO 1 */
     141, /* DX7 SYN-LEAD 1 */
@@ -47,58 +50,30 @@ static const uint16_t s_melodic_patch_cycle[] = {
     276, /* FM Custom — opens the FM edit screen (Menu > Screen: FM) */
 #endif
 };
-#define SEQ_RUNTIME_PATCH_COUNT ((int)(sizeof(s_melodic_patch_cycle) / sizeof(s_melodic_patch_cycle[0])))
+#define SEQ_RUNTIME_PATCH_COUNT ((int)(sizeof(s_patch_catalog) / sizeof(s_patch_catalog[0])))
 #endif
 
-/* Full-range browse: Juno 0..127, DX7 128..255, piano 256, waves 257..263, bass
- * 264..266, wavetable banks 267..271 (AMY_WAVETABLE only), FM/ALGO 272..276
- * (SYNTH_CUSTOM_FM only).
- * Melodic-only: arp/drone independently clamp below SEQ_PATCH_WAVE_MAX in
- * their own configure paths, so this shared upper bound reaching into
- * bass/wavetable/FM territory is a no-op for them (same as it already was for
- * the bass range). The ceiling tracks whichever optional range is compiled in:
- * FM (276) when SYNTH_CUSTOM_FM, else the wavetable top (271) when
- * AMY_WAVETABLE, else the bass top (266). */
-#if CONFIG_SYNTH_CUSTOM_FM
-#define SEQ_PATCH_FULL_MAX SEQ_PATCH_ROUTABLE_MAX
-#elif CONFIG_AMY_WAVETABLE
-#define SEQ_PATCH_FULL_MAX SEQ_PATCH_WAVETABLE_MAX
-#else
-#define SEQ_PATCH_FULL_MAX SEQ_PATCH_BASS_MAX
-#endif
-
-/* Domain descriptor for melodic, arp, and drone patch cycling.
- * Full-range mode walks 0..SEQ_PATCH_FULL_MAX; curated mode steps the
- * shortlist above.  Shared by all three non-drum wrappers. */
+/* Full-range browse walks 0..SEQ_PATCH_FULL_MAX (sequencer_core.h — the
+ * compile-aware ceiling shared with the apply-path clamps): Juno 0..127,
+ * DX7 128..255, piano 256, waves 257..263, bass 264..266, wavetable banks
+ * 267..271 (AMY_WAVETABLE only), FM/ALGO 272..276 (SYNTH_CUSTOM_FM only). */
 #if CONFIG_SEQ_PATCH_BROWSE_FULL_RANGE
-static const patch_domain_t s_melodic_domain = {
-    .list = NULL, .count = 0, .full_max = SEQ_PATCH_FULL_MAX
-};
+#define PATCH_DOMAIN_CATALOG .list = NULL, .count = 0, .full_max = SEQ_PATCH_FULL_MAX
 #else
-static const patch_domain_t s_melodic_domain = {
-    .list = s_melodic_patch_cycle, .count = SEQ_RUNTIME_PATCH_COUNT,
-    .full_max = SEQ_PATCH_FULL_MAX
-};
+#define PATCH_DOMAIN_CATALOG .list = s_patch_catalog, \
+    .count = SEQ_RUNTIME_PATCH_COUNT, .full_max = SEQ_PATCH_FULL_MAX
 #endif
 
-#if CONFIG_AMY_WAVETABLE
-/* Drone-specific domain: the shared s_melodic_domain (list or full-range) both
- * pass through NOISE(262)/KS(263)/bass(264-266), which drone_set_patch() snaps
- * back down to TRIANGLE (its excitation model doesn't support them) — that
- * snap-back would make 267-271 unreachable by cycling forward from TRIANGLE,
- * since the domain always re-offers the same excluded value next. A list-mode
- * domain that skips the gap keeps drone cycling monotonic in both browse
- * modes. */
-static const uint16_t s_drone_patch_cycle[] = {
-    138, 135, 141, 151, 7, 104, 256,   /* same curated shortlist as melodic  */
-    257, 258, 259, 260, 261,           /* SINE..TRIANGLE (drone excludes NOISE/KS) */
-    267, 268, 269, 270, 271,           /* wavetable banks */
-};
-#define SEQ_DRONE_PATCH_COUNT ((int)(sizeof(s_drone_patch_cycle) / sizeof(s_drone_patch_cycle[0])))
+/* Melodic and arp play everything in the catalog. */
+static const patch_domain_t s_melodic_domain = { PATCH_DOMAIN_CATALOG };
+
+/* Drone: same catalog, minus what its excitation model can't play
+ * (NOISE/KS/bass/FM — see drone_patch_excluded() in drone_core.c). The
+ * predicate is skipped during stepping, so cycling stays monotonic in both
+ * browse modes and never trips drone_set_patch()'s snap-back. */
 static const patch_domain_t s_drone_domain = {
-    .list = s_drone_patch_cycle, .count = SEQ_DRONE_PATCH_COUNT, .full_max = 0
+    PATCH_DOMAIN_CATALOG, .excluded = drone_patch_excluded
 };
-#endif
 
 void synth_ui_cycle_melodic_patch(int delta)
 {
@@ -197,11 +172,7 @@ void synth_ui_drone_cycle_patch(int delta)
 {
     if (delta == 0) return;
     int dir = (delta > 0) ? 1 : -1;
-#if CONFIG_AMY_WAVETABLE
     uint16_t next = patch_domain_step(&s_drone_domain, drone_get_patch(), dir);
-#else
-    uint16_t next = patch_domain_step(&s_melodic_domain, drone_get_patch(), dir);
-#endif
     drone_set_patch(next);
 
     const char *name = patch_name_for(next);

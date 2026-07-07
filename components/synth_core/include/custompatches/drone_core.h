@@ -102,6 +102,13 @@ void drone_set_amp_peak(float c);         /* 0.0..1.0 on-beat level (linear)    
 void drone_set_amp_duck(float m);         /* 0.0..1.0 duck depth (0=flat,1=-40dB) */
 void drone_set_rate(drone_rate_t rate);   /* stutter LFO note division            */
 void drone_set_patch(uint16_t patch);     /* PATCH-mode preset                    */
+
+/* The drone's explicit opt-out from the shared patch catalog: true for the
+ * ranges its excitation model can't play (NOISE, KS, bass presets, FM voices
+ * — anything past its wavetable/raw-wave ceiling). Feeds the drone cycling
+ * domain's `excluded` predicate (ui_patch_cycle.c) and drone_set_patch()'s
+ * snap-back, so the exclusion list lives in exactly one place. */
+bool drone_patch_excluded(uint16_t patch);
 void drone_set_sub_enabled(bool on);      /* sub drone on/off                     */
 void drone_set_sub_interval(int8_t st);   /* sub interval, semitones (e.g. -12)   */
 void drone_set_sweep_lo(float hz);        /* filter sweep low cutoff              */

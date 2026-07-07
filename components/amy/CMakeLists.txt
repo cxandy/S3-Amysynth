@@ -32,6 +32,15 @@ if(CONFIG_AMY_WAVETABLE)
     target_compile_definitions(${COMPONENT_LIB} PUBLIC AMY_WAVETABLE)
 endif()
 
+# Gamma TR-808 PCM bank (Kconfig: AMY_PCM_GAMMA808). Maps to upstream's
+# GAMMA9001 switch: amy.c includes pcm_gamma808.h instead of pcm_tiny.h,
+# patches.h picks the matching patch-258 drum map, and pcm.c/amy.h compile
+# the (inert until fed a blob) gamma9001 streaming hooks. PUBLIC so consumers
+# that include amy.h see the same amy_set_gamma9001_pcm() declaration.
+if(CONFIG_AMY_PCM_GAMMA808)
+    target_compile_definitions(${COMPONENT_LIB} PUBLIC GAMMA9001)
+endif()
+
 # Keep the same compile flag for amy.c (relax strict-aliasing warnings)
 set(AMY_CORE_C "${CMAKE_CURRENT_LIST_DIR}/src/amy.c")
 if(EXISTS ${AMY_CORE_C})

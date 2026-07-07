@@ -1,11 +1,12 @@
 # AMY Local Edits
 
 Edits applied on top of the upstream `shorepine/amy` submodule.
-Upstream commit: `2516477` (v1.2.12, 2026-06-24).
+Upstream commit: `1e23c70` (v1.2.31, 2026-07-07).
 
 All edits are marked `// LOCAL EDIT` in the source. ESP32-S3-specific edits are
 permanent (upstream has no concept of IRAM/DRAM placement or FreeRTOS task
-signatures); the two bug fixes below were PRd upstream and are no longer here.
+signatures); the fixes listed under "Dropped" were merged upstream and are no
+longer carried here.
 
 ```mermaid
 flowchart TD
@@ -14,6 +15,7 @@ flowchart TD
 
     Submodule -.diff baseline only.-> Active
 
+    Active --> SR["48 kHz sample rate on ESP<br/>src/amy.h"]
     Active --> FP["Kconfig-gated fixed-point toggle<br/>src/amy.h, src/amy_fixedpoint.h"]
     Active --> ATTR["IRAM_ATTR / DRAM_ATTR macros<br/>src/amy.h"]
     Active --> LUT["Clipping LUT DRAM placement<br/>src/clipping_lookup_table.h"]
@@ -30,8 +32,19 @@ flowchart TD
 |----|-------------|
 | [#740](https://github.com/shorepine/amy/pull/740) + [#743](https://github.com/shorepine/amy/pull/743) | `chained_osc` NULL guard in `render_osc_wave` (amy.c) |
 | [#744](https://github.com/shorepine/amy/pull/744) | `init_stereo_reverb()` → `bool` return + OOM crash safety (delay.h, delay.c, amy.h, amy.c, api.c) |
+| [#787](https://github.com/shorepine/amy/pull/787) (merged as [#809](https://github.com/shorepine/amy/pull/809), v1.2.24) | Reverb `LPF()` state passed by pointer - feedback crossover lowpass now actually filters (delay.c) |
+| [#790](https://github.com/shorepine/amy/pull/790) (merged as [#811](https://github.com/shorepine/amy/pull/811), v1.2.26) | Reverb delay-line state hoisted into loop locals (delay.c) |
+| upstream `8ade0b1` | `MUL5A_SS` / `MUL6A_SS` float-mode fallbacks (amy_fixedpoint.h) |
 
 ## Active local edits
+
+### `src/amy.h` — 48 kHz sample rate on ESP
+
+`AMY_SAMPLE_RATE` forced to 48000 in the `ESP_PLATFORM` branch (upstream's
+generic fallback is 44100). Must match `CONFIG_UAC_SAMPLE_RATE`; a mismatch
+detunes/distorts USB audio. Any re-vendor silently reverts this - after every
+AMY update, verify `grep AMY_SAMPLE_RATE src/amy.h` shows the ESP branch at
+48000.
 
 ### `src/amy.h` — Kconfig-gated fixed-point toggle
 
@@ -42,25 +55,22 @@ guard. Enabled via menuconfig: **AMY Synthesizer → Use fixed-point arithmetic*
 The ESP32-S3 LX7 FPU makes float equal-or-faster; fixed-point was designed for
 RP2040. The option is preserved for comparison or future portability needs.
 
-### `src/amy_fixedpoint.h` — float-mode fallbacks and `ldexpf` SHIFTL/SHIFTR
+### `src/amy_fixedpoint.h` — `ldexpf` SHIFTL/SHIFTR
 
-Two edits to the `#ifndef AMY_USE_FIXEDPOINT` (float mode) section:
+One edit to the `#ifndef AMY_USE_FIXEDPOINT` (float mode) section (the former
+`MUL5A_SS`/`MUL6A_SS` fallback edit was added upstream in `8ade0b1`):
 
-1. **`MUL5A_SS` / `MUL6A_SS` float fallbacks** — upstream defines these only in
-   the fixed-point path; `oscillators.c` uses them unconditionally so the float
-   build fails without them. Added `(a) * (b)` fallbacks.
-
-2. **`SHIFTL` / `SHIFTR` use `ldexpf` instead of `exp2f`** — the original float
-   macros were `(s) * exp2f(b)`. When `b` is a runtime variable (e.g.
-   `exp2_lut()` integer part), `exp2f(runtime_int)` cannot be constant-folded
-   and emits a transcendental libcall. `ldexpf(s, b)` is the correct primitive
-   for ×2^n scaling and is never worse. **Caveat (verified by objdump):** on
-   this Xtensa LX7 toolchain GCC does *not* lower `ldexpf` (or `floorf`) to the
-   hardware `FLOOR.S`/exponent ops — both remain `call8` libcalls. So this is a
-   correctness/clarity win and a marginal speedup at most, NOT the fix for
-   float-mode CPU cost. Float mode is dominated by per-sample `floorf` libcalls
-   in `INT_OF_S` / `S_FRAC_OF_S` / `P_WRAPPED_SUM` (see note below); fixed-point
-   remains the product mode on this target.
+**`SHIFTL` / `SHIFTR` use `ldexpf` instead of `exp2f`** — the original float
+macros were `(s) * exp2f(b)`. When `b` is a runtime variable (e.g.
+`exp2_lut()` integer part), `exp2f(runtime_int)` cannot be constant-folded
+and emits a transcendental libcall. `ldexpf(s, b)` is the correct primitive
+for ×2^n scaling and is never worse. **Caveat (verified by objdump):** on
+this Xtensa LX7 toolchain GCC does *not* lower `ldexpf` (or `floorf`) to the
+hardware `FLOOR.S`/exponent ops — both remain `call8` libcalls. So this is a
+correctness/clarity win and a marginal speedup at most, NOT the fix for
+float-mode CPU cost. Float mode is dominated by per-sample `floorf` libcalls
+in `INT_OF_S` / `S_FRAC_OF_S` / `P_WRAPPED_SUM` (see note below); fixed-point
+remains the product mode on this target.
 
 ### `src/amy.h` — IRAM_ATTR / DRAM_ATTR macros
 
@@ -226,8 +236,28 @@ built-in 64-cycle tables × 16384 samples × 2 bytes), **zero DIRAM/IRAM/PSRAM**
 `pcm[]` array (`pcm.c:77`), never RAM-copied. Verified via `idf.py size`
 before/after on an otherwise-identical build.
 
+### `Kconfig` + `CMakeLists.txt` — Gamma TR-808 PCM bank flag
+
+Same pattern as `AMY_WAVETABLE` above — no vendored source is modified.
+Kconfig option `AMY_PCM_GAMMA808` (default **y**) defines upstream's own
+`GAMMA9001` compile-time switch (introduced in v1.2.31's Gamma9001 work),
+which selects:
+
+- `amy.c`: ROM PCM bank = `pcm_gamma808.h` (19 full-length TR-808 samples)
+  instead of the legacy 11-sample `pcm_tiny.h`;
+- `patches.h`: the patch-258 "MIDI drums" string matching that bank's map;
+- `pcm.c`/`amy.h`: the gamma9001 streaming hooks (`amy_set_gamma9001_pcm()`
+  + presets at `GAMMA9001_PRESET_BASE`+, NULL-guarded and inert until a blob
+  is provided, e.g. mmapped from a flash partition).
+
+PCM preset numbering differs between banks; the sequencer drum defaults in
+`components/synth_core/sequencer_core/seq_core_synth.c` follow
+`CONFIG_AMY_PCM_GAMMA808`. Wavetable presets are unaffected (addressed via
+`pcm_wavetable_base`). Cost ≈ +268 KB flash `.rodata` (XIP-cached, never
+RAM-copied); zero DRAM/PSRAM/IRAM.
+
 ## Deferred / needs porting
 
 | Edit | Status |
 |------|--------|
-| Block-processed ESP32 stereo reverb (`delay.c`, `#ifdef ESP_PLATFORM`) | **Not applied.** Upstream changed `stereo_reverb()` to take `reverb_params_t *rev` (all delay state inside struct); the block-processed optimization needs adapting to the new API before it can be reapplied. |
+| Block-processed ESP32 stereo reverb (`delay.c`, `#ifdef ESP_PLATFORM`) | **Not applied.** Upstream changed `stereo_reverb()` to take `reverb_params_t *rev` (all delay state inside struct); the block-processed optimization needs adapting to the new API before it can be reapplied. The locals-caching optimization (now upstream via #811) recovers part of the same win on the new API; re-evaluate whether full block processing is still worth it after hardware measurement. |

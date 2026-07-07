@@ -69,6 +69,29 @@ config AMY_WAVETABLE
         LUT renderer and adds no new hot-path code of its own. Safe to
         leave on; disable only under severe flash pressure.
 
+config AMY_PCM_GAMMA808
+    bool "Use the Gamma TR-808 PCM bank (defines GAMMA9001)"
+    default y
+    help
+        Selects AMY's gamma808 ROM PCM bank (pcm_gamma808.h: 19 full-length
+        TR-808 samples - 3 bass drums, 3 snares, open/closed hats, clap,
+        claves, congas, cowbell, shaker, rimshot, toms, cymbal) instead of
+        the legacy 11-sample pcm_tiny set. Also switches patch 258
+        ("MIDI drums") to the map matching this bank and compiles in the
+        gamma9001 streaming hooks (presets GAMMA9001_PRESET_BASE+ resolve
+        from a raw int16 blob once amy_set_gamma9001_pcm() is called, e.g.
+        mmapped from a flash partition; NULL-guarded and inert until then).
+
+        Implemented via upstream's own GAMMA9001 compile-time switch - no
+        vendored source is modified by this option.
+
+        PCM preset numbering differs between the banks (e.g. tiny kick=[1]
+        vs gamma BD3=[2]); sequencer drum defaults follow this option.
+        Wavetable presets are unaffected (addressed via pcm_wavetable_base).
+
+        Measured cost: ~+268 KB flash .rodata (const sample data, XIP-cached,
+        never RAM-copied). Zero internal DRAM, PSRAM, or IRAM impact.
+
 config AMY_PROFILE_INTERVAL_MS
     int "Profiler dump interval (ms)"
     depends on !AMY_PROFILE_OFF

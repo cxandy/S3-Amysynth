@@ -35,20 +35,19 @@ void prog_build_view(prog_view_t *out)
     }
 }
 
-uint32_t prog_view_signature(void)
+uint32_t prog_view_signature(prog_view_t *out)
 {
     uint32_t h = FNV1A_OFFSET;
-    prog_view_t v;
-    prog_build_view(&v);
-    h = fnv1a_bytes(h, &v.enabled,       sizeof(v.enabled));
-    h = fnv1a_bytes(h, &v.count,         sizeof(v.count));
-    h = fnv1a_bytes(h, &v.current_entry, sizeof(v.current_entry));
-    h = fnv1a_bytes(h, &v.cursor,        sizeof(v.cursor));
-    h = fnv1a_bytes(h, &v.editing,       sizeof(v.editing));
-    h = fnv1a_bytes(h, &v.edit_field,    sizeof(v.edit_field));
-    h = fnv1a_bytes(h, &v.bars_in_current, sizeof(v.bars_in_current));
-    for (uint8_t i = 0; i < v.count; i++) {
-        h = fnv1a_bytes(h, &v.entries[i], sizeof(v.entries[i]));
+    prog_build_view(out);
+    h = fnv1a_bytes(h, &out->enabled,       sizeof(out->enabled));
+    h = fnv1a_bytes(h, &out->count,         sizeof(out->count));
+    h = fnv1a_bytes(h, &out->current_entry, sizeof(out->current_entry));
+    h = fnv1a_bytes(h, &out->cursor,        sizeof(out->cursor));
+    h = fnv1a_bytes(h, &out->editing,       sizeof(out->editing));
+    h = fnv1a_bytes(h, &out->edit_field,    sizeof(out->edit_field));
+    h = fnv1a_bytes(h, &out->bars_in_current, sizeof(out->bars_in_current));
+    for (uint8_t i = 0; i < out->count; i++) {
+        h = fnv1a_bytes(h, &out->entries[i], sizeof(out->entries[i]));
     }
     return h;
 }

@@ -193,13 +193,25 @@ void filter_graph_draw(u8g2_t *u8g2, const filter_graph_t *fg)
     float Q  = norm_to_q(fg->resonance_norm);
     const uint8_t baseline_y = (uint8_t)(FG_PLOT_Y0 + FG_PLOT_H - 1);
 
-    /* py[i]: Y pixel for each log-spaced frequency sample. */
+    /* py[i]: Y pixel for each log-spaced frequency sample. The sample
+     * frequencies depend only on the compile-time Hz range, so they are
+     * computed once and reused across redraws (this runs continuously while
+     * the cutoff encoder is being turned). */
+    static float s_curve_hz[FG_NPTS];
+    static bool  s_curve_hz_init = false;
+    if (!s_curve_hz_init) {
+        for (int i = 0; i < FG_NPTS; i++) {
+            float t = (float)i / (float)(FG_NPTS - 1);
+            s_curve_hz[i] = FGRAPH_CUTOFF_HZ_MIN *
+                            powf(FGRAPH_CUTOFF_HZ_MAX / FGRAPH_CUTOFF_HZ_MIN, t);
+        }
+        s_curve_hz_init = true;
+    }
     uint8_t px[FG_NPTS];
     uint8_t py[FG_NPTS];
     for (int i = 0; i < FG_NPTS; i++) {
         float t = (float)i / (float)(FG_NPTS - 1);
-        float f = FGRAPH_CUTOFF_HZ_MIN *
-                  powf(FGRAPH_CUTOFF_HZ_MAX / FGRAPH_CUTOFF_HZ_MIN, t);
+        float f = s_curve_hz[i];
         float mag = filter_display_mag(fg->filter_type, f, fc, Q);
         px[i] = (uint8_t)(t * (float)(FG_PLOT_W - 1));
         /* Y: top of plot = high magnitude; bottom = silence. */

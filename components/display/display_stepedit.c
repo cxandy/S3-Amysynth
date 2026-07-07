@@ -1,9 +1,11 @@
 #include "display_stepedit.h"
 #include <stdio.h>
 
+/* Yellow header (rows 0..15) carries the STEP title; the up-to-4 fixed fields
+ * fill the blue region starting at y=24 so no row crosses the 16px seam. */
 #define SE_TITLE_Y   8
-#define SE_ROW_H     11
-#define SE_FIRST_ROW 22
+#define SE_ROW_H     10
+#define SE_FIRST_ROW 24
 
 static const char *se_cond_name(uint8_t cond_type)
 {
@@ -47,7 +49,7 @@ void display_stepedit_draw_frame(u8g2_t *u8g2, const stepedit_view_t *view)
              (unsigned)(view->layer_idx + 1), (unsigned)(view->track_idx + 1),
              (unsigned)(view->step_idx + 1));
     u8g2_DrawStr(u8g2, 2, SE_TITLE_Y, title);
-    u8g2_DrawHLine(u8g2, 0, 10, 128);
+    u8g2_DrawHLine(u8g2, 0, 15, 128);
 
     uint8_t y = SE_FIRST_ROW;
     char val[8];

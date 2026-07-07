@@ -96,13 +96,13 @@ void lfo_view_draw(u8g2_t *u8g2, const lfo_view_t *v)
     }
     u8g2_DrawStr(u8g2, 1, 9, hdr);
     u8g2_DrawStr(u8g2, 100, 9, l->enabled ? "ON" : "--");
-    u8g2_DrawHLine(u8g2, 0, 11, 128);
+    u8g2_DrawHLine(u8g2, 0, 15, 128);
 
     /* ── Parameter column labels ── */
     u8g2_SetFont(u8g2, u8g2_font_5x7_tr);
     static const char *labels[5] = {"TGT","WAV","RTE","DEP","EN"};
     for (int i = 0; i < 5; i++) {
-        u8g2_DrawStr(u8g2, COL_X[i], 21, labels[i]);
+        u8g2_DrawStr(u8g2, COL_X[i], 22, labels[i]);
     }
 
     /* ── Parameter values with cursor highlight ── */

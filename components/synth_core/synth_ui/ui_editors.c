@@ -77,6 +77,16 @@ static bool  s_graph_env_dirty = false; /* set only when user moves an ADSR poin
  * repurposes MY_BUTTON_1 for enable/disable, so scope is set there or in LFO. */
 static bool s_editor_apply_all = false;
 
+/* log(1 + GRAPH_LONG_SQUASH), the constant normaliser of the long-range
+ * squash curve — hoisted so the mapping helpers below don't recompute it on
+ * every call. */
+static float graph_log1p_squash(void)
+{
+    static float s_val = 0.0f;
+    if (s_val == 0.0f) s_val = logf(1.0f + GRAPH_LONG_SQUASH);
+    return s_val;
+}
+
 /* Normalised X (0..1) -> milliseconds, range/curve aware. */
 static uint32_t graph_x_to_ms(float x)
 {
@@ -88,7 +98,7 @@ static uint32_t graph_x_to_ms(float x)
     /* Long view: expand the squashed display X back to a linear time fraction.
      * Display compresses with log1p(k*t)/log1p(k); invert it here. */
     float k = GRAPH_LONG_SQUASH;
-    float t = (expf(x * logf(1.0f + k)) - 1.0f) / k;   /* 0..1 linear time */
+    float t = (expf(x * graph_log1p_squash()) - 1.0f) / k;   /* 0..1 linear time */
     return (uint32_t)(t * (float)GRAPH_RANGE_LONG_MS + 0.5f);
 }
 
@@ -104,7 +114,7 @@ static float graph_ms_to_x(uint32_t ms)
     if (t < 0.0f) t = 0.0f;
     if (t > 1.0f) t = 1.0f;
     /* Compress: more pixels to small t, fewer to the long tail. */
-    return logf(1.0f + k * t) / logf(1.0f + k);
+    return logf(1.0f + k * t) / graph_log1p_squash();
 }
 
 /* Yellow top-bar height on the dual-colour panel: rows 0..15 render yellow and

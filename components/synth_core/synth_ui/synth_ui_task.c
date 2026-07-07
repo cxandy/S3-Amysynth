@@ -121,29 +121,39 @@ static void synth_ui_task(void *pvParameters)
             bool graph = synth_ui_graph_is_active();
             int view;
             uint32_t sig;
+            /* One view is active per frame; the signature call builds it here
+             * and the draw switch below reuses it — never build twice. */
+            union {
+                menu_view_t      menu;   /* V_MENU and V_FM */
+                arp_view_t       arp;
+                drone_view_t     drone;
+                prog_view_t      prog;
+                trackopts_view_t trackopts;
+                stepedit_view_t  stepedit;
+            } vw;
             if (s_filter_active) {
                 view = V_FILTER; sig = filter_view_signature();
             } else if (s_lfo_active) {
                 view = V_LFO;    sig = lfo_view_signature();
             } else if (synth_ui_stepedit_is_active()) {
-                view = V_STEPEDIT; sig = stepedit_view_signature();
+                view = V_STEPEDIT; sig = stepedit_view_signature(&vw.stepedit);
             } else if (graph) {
                 view = V_GRAPH; sig = graph_view_signature();
             } else if (seq_state.menu_open) {
-                view = V_MENU;  sig = menu_view_signature();
+                view = V_MENU;  sig = menu_view_signature(&vw.menu);
             } else if (seq_state.ui_mode == UI_MODE_ARP) {
-                view = V_ARP;   sig = arp_view_signature();
+                view = V_ARP;   sig = arp_view_signature(&vw.arp);
             } else if (seq_state.ui_mode == UI_MODE_DRONE && s_drone_vis_open) {
-                view = V_DRONE_VIS; sig = drone_view_signature(); /* vis params change → redraw */
+                view = V_DRONE_VIS; sig = drone_view_signature(&vw.drone); /* vis params change → redraw */
             } else if (seq_state.ui_mode == UI_MODE_DRONE) {
-                view = V_DRONE; sig = drone_view_signature();
+                view = V_DRONE; sig = drone_view_signature(&vw.drone);
             } else if (seq_state.ui_mode == UI_MODE_PROG) {
-                view = V_PROG;  sig = prog_view_signature();
+                view = V_PROG;  sig = prog_view_signature(&vw.prog);
             } else if (seq_state.ui_mode == UI_MODE_TRACKOPTS) {
-                view = V_TRACKOPTS; sig = trackopts_view_signature();
+                view = V_TRACKOPTS; sig = trackopts_view_signature(&vw.trackopts);
 #if CONFIG_SYNTH_CUSTOM_FM
             } else if (seq_state.ui_mode == UI_MODE_FM) {
-                view = V_FM;    sig = fm_view_signature();
+                view = V_FM;    sig = fm_view_signature(&vw.menu);
 #endif
             } else {
                 view = V_SEQ;   sig = seq_view_signature();
@@ -161,24 +171,15 @@ static void synth_ui_task(void *pvParameters)
                     case V_GRAPH:
                         synth_ui_graph_view_draw(s_u8g2);
                         break;
-                    case V_MENU: {
-                        menu_view_t mv;
-                        menu_build_view(&mv);
-                        display_menu_draw_frame(s_u8g2, &mv);
+                    case V_MENU:
+                        display_menu_draw_frame(s_u8g2, &vw.menu);
                         break;
-                    }
-                    case V_ARP: {
-                        arp_view_t av;
-                        arp_build_view(&av);
-                        display_arp_draw_frame(s_u8g2, &av);
+                    case V_ARP:
+                        display_arp_draw_frame(s_u8g2, &vw.arp);
                         break;
-                    }
-                    case V_DRONE: {
-                        drone_view_t dv;
-                        drone_build_view(&dv);
-                        display_drone_draw_frame(s_u8g2, &dv);
+                    case V_DRONE:
+                        display_drone_draw_frame(s_u8g2, &vw.drone);
                         break;
-                    }
                     case V_DRONE_VIS: {
                         const float SWEEP_MIN = 100.0f, SWEEP_MAX = 8000.0f;
                         float span = SWEEP_MAX - SWEEP_MIN;
@@ -209,31 +210,19 @@ static void synth_ui_task(void *pvParameters)
                         display_drone_vis_draw(s_u8g2, &dvis);
                         break;
                     }
-                    case V_PROG: {
-                        prog_view_t pv;
-                        prog_build_view(&pv);
-                        display_prog_draw_frame(s_u8g2, &pv);
+                    case V_PROG:
+                        display_prog_draw_frame(s_u8g2, &vw.prog);
                         break;
-                    }
-                    case V_TRACKOPTS: {
-                        trackopts_view_t tv;
-                        trackopts_build_view(&tv);
-                        display_trackopts_draw_frame(s_u8g2, &tv);
+                    case V_TRACKOPTS:
+                        display_trackopts_draw_frame(s_u8g2, &vw.trackopts);
                         break;
-                    }
-                    case V_STEPEDIT: {
-                        stepedit_view_t sv;
-                        stepedit_build_view(&sv);
-                        display_stepedit_draw_frame(s_u8g2, &sv);
+                    case V_STEPEDIT:
+                        display_stepedit_draw_frame(s_u8g2, &vw.stepedit);
                         break;
-                    }
 #if CONFIG_SYNTH_CUSTOM_FM
-                    case V_FM: {
-                        menu_view_t fv;
-                        fm_build_view(&fv);
-                        display_menu_draw_frame_titled(s_u8g2, "FM ALGO", &fv);
+                    case V_FM:
+                        display_menu_draw_frame_titled(s_u8g2, "FM ALGO", &vw.menu);
                         break;
-                    }
 #endif
                     default:
                         display_seq_draw_frame(s_u8g2, &seq_state, seq_get_bpm());

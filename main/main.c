@@ -76,6 +76,12 @@ static volatile bool s_drum_select_held = false;
 
 static QueueHandle_t s_button_queue = NULL;
 
+// Every button event is queued to button_task (a press produces up to three
+// consumed events: PRESS_DOWN, PRESS_UP, SINGLE_CLICK/LONG_PRESS_START across
+// five buttons), so the queue must absorb a short burst of simultaneous
+// presses. Overflow drops the event (send with zero timeout).
+#define BUTTON_QUEUE_DEPTH 16
+
 typedef struct {
     my_button_id_t id;
     button_event_t event;
@@ -272,35 +278,51 @@ static void amy_usb_render_task(void *arg) {
         }
     }
 }
-// Button event callback: routes my_buttons events to sequencer UI actions
+static void dispatch_button_event(my_button_id_t button_id, button_event_t event);
+
+// Drains the button queue and runs the full per-screen dispatch in task
+// context. iot_button delivers events on the esp_timer task — the same task
+// that runs the 500 µs sequencer tick callback — so the heavy editor/screen
+// branches must not execute there: a long handler would delay sequencer ticks,
+// and the esp_timer stack (CONFIG_ESP_TIMER_TASK_STACK_SIZE) is not budgeted
+// for them. The callback below only enqueues; all handling lands here.
 static void button_handler_task(void *pvParameters)
 {
     (void)pvParameters;
     button_msg_t msg;
     for (;;) {
         if (xQueueReceive(s_button_queue, &msg, portMAX_DELAY) == pdTRUE) {
-            switch (msg.id) {
-                case MY_BUTTON_0:
-                    if (msg.event == BUTTON_SINGLE_CLICK) {
-                        synth_ui_cycle_active_layer();
-                    } else if (msg.event == BUTTON_LONG_PRESS_START) {
-                        synth_ui_toggle_playing();
-                    }
-                    break;
-                case MY_BUTTON_ENC:
-                    synth_ui_handle_button();
-                    break;
-                default:
-                    break;
-            }
+            dispatch_button_event(msg.id, msg.event);
         }
     }
 }
 
+// Thin enqueue shim running on the esp_timer task (iot_button's dispatch
+// context). Filters to the event types the dispatcher consumes and posts to
+// button_task. Inline fallback only when the queue never got created — never
+// on a full queue, since handling one event ahead of already-queued ones
+// would reorder presses (a drop is less harmful than reordering).
 static void main_button_event_cb(my_button_id_t button_id, button_event_t event, void *user_data)
 {
     (void)user_data;
 
+    if (event != BUTTON_PRESS_DOWN && event != BUTTON_PRESS_UP &&
+        event != BUTTON_SINGLE_CLICK && event != BUTTON_LONG_PRESS_START) {
+        return;
+    }
+
+    if (s_button_queue != NULL) {
+        button_msg_t msg = { .id = button_id, .event = event };
+        (void)xQueueSend(s_button_queue, &msg, 0);
+    } else {
+        dispatch_button_event(button_id, event);
+    }
+}
+
+// Full button → sequencer/UI action dispatch. Runs on button_task (or inline
+// on the esp_timer task only if queue creation failed at startup).
+static void dispatch_button_event(my_button_id_t button_id, button_event_t event)
+{
     // MY_BUTTON_1 is the patch-select hold button, repurposed per editor:
     //   filter editor  → enabled on/off toggle (single press)
     //   ADSR/LFO editor → layer-wide vs track-only commit scope toggle
@@ -618,14 +640,10 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
 
     /* MY_BUTTON_0: short press = cycle active layer, long press = play/stop */
     if (button_id == MY_BUTTON_0) {
-        if (event == BUTTON_SINGLE_CLICK || event == BUTTON_LONG_PRESS_START) {
-            if (s_button_queue != NULL) {
-                button_msg_t msg = { .id = button_id, .event = event };
-                (void)xQueueSend(s_button_queue, &msg, 0);
-            } else {
-                if (event == BUTTON_SINGLE_CLICK)      synth_ui_cycle_active_layer();
-                else if (event == BUTTON_LONG_PRESS_START) synth_ui_toggle_playing();
-            }
+        if (event == BUTTON_SINGLE_CLICK) {
+            synth_ui_cycle_active_layer();
+        } else if (event == BUTTON_LONG_PRESS_START) {
+            synth_ui_toggle_playing();
         }
         return;
     }
@@ -633,17 +651,12 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
     /* All other buttons respond to PRESS_DOWN */
     if (event != BUTTON_PRESS_DOWN) return;
 
-    if (s_button_queue != NULL) {
-        button_msg_t msg = { .id = button_id, .event = event };
-        (void)xQueueSend(s_button_queue, &msg, 0);
-    } else {
-        switch (button_id) {
-            case MY_BUTTON_ENC:
-                synth_ui_handle_button();
-                break;
-            default:
-                break;
-        }
+    switch (button_id) {
+        case MY_BUTTON_ENC:
+            synth_ui_handle_button();
+            break;
+        default:
+            break;
     }
 }
 
@@ -760,14 +773,14 @@ static void encoder_init_task(void *pvParameters)
     esp_err_t err = rotary_encoder_new_with_config(&enc_cfg, &enc);
     ESP_LOGI(TAG, "[encoder_init] rotary_encoder_new_with_config returned %d", err);
     if (err == ESP_OK && enc) {
-        // Increase encoder task stack to avoid stack overflow when handling
-        // amy_event-heavy operations (sequencer toggles create several
-        // amy_event/delta conversions on the stack).
+        // 4096: the encoder chain (synth_ui cycle/adjust → sequencer_core →
+        // amy_helpers) keeps no amy_event on the stack — sends go through
+        // amy_helpers' mutex-guarded static scratch event.
         // Pin to Core 0 so the encoder poll never migrates onto Core 1 and
         // jitters the audio DSP now running there.
         xTaskCreatePinnedToCore(encoder_task,
              "encoder_task",
-             8192,
+             4096,
              enc,
              5,
               NULL,
@@ -978,13 +991,16 @@ void app_main(void)
 
     // Initialize push buttons (GPIO17, GPIO18, GPIO8, GPIO42)
     ESP_LOGI(TAG, "[startup] before my_buttons_init");
-    s_button_queue = xQueueCreate(8, sizeof(button_msg_t));
+    s_button_queue = xQueueCreate(BUTTON_QUEUE_DEPTH, sizeof(button_msg_t));
     if (s_button_queue == NULL) {
         ESP_LOGW(TAG, "Button queue creation failed; callbacks will run inline");
     } else {
+        // 4096: carries the full dispatch_button_event chain (synth_ui_* /
+        // sequencer_core_* setters). amy_event never lives on a task stack —
+        // all AMY sends go through amy_helpers' static scratch event.
         if (xTaskCreatePinnedToCore(button_handler_task,
              "button_task",
-             8192,
+             4096,
              NULL,
               5,
               NULL,

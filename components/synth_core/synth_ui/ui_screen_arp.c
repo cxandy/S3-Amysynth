@@ -61,29 +61,29 @@ void arp_build_view(arp_view_t *out)
     out->patch_name   = patch_name_for(out->patch);
 }
 
-/* Signature of the arp screen. */
-[[gnu::pure]] uint32_t arp_view_signature(void)
+/* Signature of the arp screen. Builds the view into *out so the caller can
+ * draw from it without a second build. */
+uint32_t arp_view_signature(arp_view_t *out)
 {
     uint32_t h = FNV1A_OFFSET;
-    arp_view_t v;
-    arp_build_view(&v);
-    h = fnv1a_bytes(h, &v.enabled, sizeof(v.enabled));
-    h = fnv1a_bytes(h, &v.octaves, sizeof(v.octaves));
-    h = fnv1a_bytes(h, &v.gate_pct, sizeof(v.gate_pct));
-    h = fnv1a_bytes(h, &v.cursor, sizeof(v.cursor));
-    h = fnv1a_bytes(h, &v.editing, sizeof(v.editing));
-    h = fnv1a_bytes(h, &v.patch, sizeof(v.patch));
-    h = fnv1a_bytes(h, &v.patch_select, sizeof(v.patch_select));
-    h = fnv1a_bytes(h, &v.wave_mode, sizeof(v.wave_mode));
-    h = fnv1a_bytes(h, &v.portamento_ms, sizeof(v.portamento_ms));
-    h = fnv1a_bytes(h, v.rate_str, 4);
-    h = fnv1a_bytes(h, v.mode_str, 4);
-    if (v.source_str) h = fnv1a_bytes(h, v.source_str, 4);
-    if (v.wave_str)   h = fnv1a_bytes(h, v.wave_str,   4);
+    arp_build_view(out);
+    h = fnv1a_bytes(h, &out->enabled, sizeof(out->enabled));
+    h = fnv1a_bytes(h, &out->octaves, sizeof(out->octaves));
+    h = fnv1a_bytes(h, &out->gate_pct, sizeof(out->gate_pct));
+    h = fnv1a_bytes(h, &out->cursor, sizeof(out->cursor));
+    h = fnv1a_bytes(h, &out->editing, sizeof(out->editing));
+    h = fnv1a_bytes(h, &out->patch, sizeof(out->patch));
+    h = fnv1a_bytes(h, &out->patch_select, sizeof(out->patch_select));
+    h = fnv1a_bytes(h, &out->wave_mode, sizeof(out->wave_mode));
+    h = fnv1a_bytes(h, &out->portamento_ms, sizeof(out->portamento_ms));
+    h = fnv1a_bytes(h, out->rate_str, 4);
+    h = fnv1a_bytes(h, out->mode_str, 4);
+    if (out->source_str) h = fnv1a_bytes(h, out->source_str, 4);
+    if (out->wave_str)   h = fnv1a_bytes(h, out->wave_str,   4);
     for (uint8_t i = 0; i < ARP_VIEW_SLOTS; i++) {
-        h = fnv1a_bytes(h, &v.slot_active[i], sizeof(v.slot_active[i]));
-        h = fnv1a_bytes(h, &v.slot_rest[i],   sizeof(v.slot_rest[i]));
-        h = fnv1a_bytes(h, v.slot_name[i], sizeof(v.slot_name[i]));
+        h = fnv1a_bytes(h, &out->slot_active[i], sizeof(out->slot_active[i]));
+        h = fnv1a_bytes(h, &out->slot_rest[i],   sizeof(out->slot_rest[i]));
+        h = fnv1a_bytes(h, out->slot_name[i], sizeof(out->slot_name[i]));
     }
     return h;
 }

@@ -203,6 +203,19 @@ config SEQ_MELODIC_AMY_NATIVE_LFO
 		does not support them (same limitation as the arp).
 		Disable to revert all melodic LFO to the software accumulator.
 
+config SYNTH_CUSTOM_FM
+	bool "Custom FM/DX7 6-operator voices (WIP)"
+	default n
+	help
+		Compiles in the custom DX7-style 6-operator FM/ALGO melodic voices:
+		the fixed FM presets (FM Bass/E.Piano/Bell/Lead), the live-editable
+		FM Custom voice, plus the "Screen: FM" menu entry and its editor.
+
+		Work in progress and off by default. When disabled, none of the FM
+		voice code, presets, or editor screen is built; the FM patch numbers
+		(272-276) are dropped from the runtime patch browser; and the FM menu
+		entry is hidden.
+
 comment "Arpeggiator"
 
 config SEQ_ARP_DEFAULT_ENABLED

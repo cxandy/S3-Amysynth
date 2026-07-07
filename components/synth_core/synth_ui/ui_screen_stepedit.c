@@ -123,9 +123,8 @@ void stepedit_build_view(stepedit_view_t *out)
     out->field_cursor = s_se_field;
 }
 
-uint32_t stepedit_view_signature(void)
+uint32_t stepedit_view_signature(stepedit_view_t *out)
 {
-    stepedit_view_t v;
-    stepedit_build_view(&v);
-    return fnv1a_bytes(FNV1A_OFFSET, &v, sizeof(v));
+    stepedit_build_view(out);
+    return fnv1a_bytes(FNV1A_OFFSET, out, sizeof(*out));
 }

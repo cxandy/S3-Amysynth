@@ -108,16 +108,15 @@ void fm_build_view(menu_view_t *out)
     out->editing = s_fm_editing;
 }
 
-uint32_t fm_view_signature(void)
+uint32_t fm_view_signature(menu_view_t *out)
 {
     uint32_t h = FNV1A_OFFSET;
-    menu_view_t v;
-    fm_build_view(&v);
-    h = fnv1a_bytes(h, &v.cursor, sizeof(v.cursor));
-    h = fnv1a_bytes(h, &v.editing, sizeof(v.editing));
-    for (uint8_t i = 0; i < v.count; i++) {
-        h = fnv1a_bytes(h, v.items[i].label, sizeof(v.items[i].label));
-        h = fnv1a_bytes(h, v.items[i].value, sizeof(v.items[i].value));
+    fm_build_view(out);
+    h = fnv1a_bytes(h, &out->cursor, sizeof(out->cursor));
+    h = fnv1a_bytes(h, &out->editing, sizeof(out->editing));
+    for (uint8_t i = 0; i < out->count; i++) {
+        h = fnv1a_bytes(h, out->items[i].label, sizeof(out->items[i].label));
+        h = fnv1a_bytes(h, out->items[i].value, sizeof(out->items[i].value));
     }
     return h;
 }

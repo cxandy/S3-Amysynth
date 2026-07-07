@@ -53,24 +53,23 @@ void trackopts_build_view(trackopts_view_t *out)
     out->chord_type = ct;
 }
 
-uint32_t trackopts_view_signature(void)
+uint32_t trackopts_view_signature(trackopts_view_t *out)
 {
     uint32_t h = FNV1A_OFFSET;
-    trackopts_view_t v;
-    trackopts_build_view(&v);
-    h = fnv1a_bytes(h, &v.layer_idx,   sizeof(v.layer_idx));
-    h = fnv1a_bytes(h, &v.track_idx,   sizeof(v.track_idx));
-    h = fnv1a_bytes(h, &v.layer_count, sizeof(v.layer_count));
-    h = fnv1a_bytes(h, &v.track_count, sizeof(v.track_count));
-    h = fnv1a_bytes(h, &v.melodic,     sizeof(v.melodic));
-    h = fnv1a_bytes(h, &v.repeat_rate, sizeof(v.repeat_rate));
-    h = fnv1a_bytes(h, &v.track_mute,  sizeof(v.track_mute));
-    h = fnv1a_bytes(h, &v.track_solo,  sizeof(v.track_solo));
-    h = fnv1a_bytes(h, &v.chord_mode,  sizeof(v.chord_mode));
-    h = fnv1a_bytes(h, &v.chord_root,  sizeof(v.chord_root));
-    h = fnv1a_bytes(h, &v.chord_type,  sizeof(v.chord_type));
-    h = fnv1a_bytes(h, &v.cursor,      sizeof(v.cursor));
-    h = fnv1a_bytes(h, &v.editing,     sizeof(v.editing));
+    trackopts_build_view(out);
+    h = fnv1a_bytes(h, &out->layer_idx,   sizeof(out->layer_idx));
+    h = fnv1a_bytes(h, &out->track_idx,   sizeof(out->track_idx));
+    h = fnv1a_bytes(h, &out->layer_count, sizeof(out->layer_count));
+    h = fnv1a_bytes(h, &out->track_count, sizeof(out->track_count));
+    h = fnv1a_bytes(h, &out->melodic,     sizeof(out->melodic));
+    h = fnv1a_bytes(h, &out->repeat_rate, sizeof(out->repeat_rate));
+    h = fnv1a_bytes(h, &out->track_mute,  sizeof(out->track_mute));
+    h = fnv1a_bytes(h, &out->track_solo,  sizeof(out->track_solo));
+    h = fnv1a_bytes(h, &out->chord_mode,  sizeof(out->chord_mode));
+    h = fnv1a_bytes(h, &out->chord_root,  sizeof(out->chord_root));
+    h = fnv1a_bytes(h, &out->chord_type,  sizeof(out->chord_type));
+    h = fnv1a_bytes(h, &out->cursor,      sizeof(out->cursor));
+    h = fnv1a_bytes(h, &out->editing,     sizeof(out->editing));
     return h;
 }
 

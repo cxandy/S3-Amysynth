@@ -1,10 +1,13 @@
 #include "display_prog.h"
 #include <stdio.h>
 
+/* Yellow header (rows 0..15) holds the title + ON/OFF toggle; entries fill the
+ * blue region below the 16px seam. 3 roomy rows (25/37/49); the bottom status
+ * line at y=63 is safe because PROG has no bottom hint strip. */
 #define PROG_TITLE_Y    8
-#define PROG_ROW_H      10
-#define PROG_FIRST_ROW  20
-#define PROG_VIS_ROWS   4
+#define PROG_ROW_H      12
+#define PROG_FIRST_ROW  25
+#define PROG_VIS_ROWS   3
 
 void display_prog_draw_frame(u8g2_t *u8g2, const prog_view_t *view)
 {
@@ -27,7 +30,7 @@ void display_prog_draw_frame(u8g2_t *u8g2, const prog_view_t *view)
     } else {
         u8g2_DrawStr(u8g2, en_x, PROG_TITLE_Y, en_str);
     }
-    u8g2_DrawHLine(u8g2, 0, 10, 128);
+    u8g2_DrawHLine(u8g2, 0, 15, 128);
 
     if (view == NULL || view->count == 0) {
         u8g2_SetFont(u8g2, u8g2_font_5x7_tf);

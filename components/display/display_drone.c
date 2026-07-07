@@ -1,12 +1,13 @@
 #include "display_drone.h"
 #include <stdio.h>
 
-/* Layout mirrors the menu overlay: a title bar then up to 5 visible rows,
- * scrolling to keep the cursor in view. 128x64 OLED. */
+/* Layout mirrors the menu overlay: a yellow header bar (rows 0..15) with the
+ * title, then up to 3 roomy rows in the blue region below the 16px seam.
+ * 128x64 OLED. */
 #define DRONE_TITLE_Y    8
-#define DRONE_ROW_H      10
-#define DRONE_FIRST_ROW  20
-#define DRONE_VIS_ROWS   4
+#define DRONE_ROW_H      12
+#define DRONE_FIRST_ROW  25
+#define DRONE_VIS_ROWS   3
 
 void display_drone_draw_frame(u8g2_t *u8g2, const drone_view_t *view)
 {
@@ -16,7 +17,7 @@ void display_drone_draw_frame(u8g2_t *u8g2, const drone_view_t *view)
     /* Title bar. */
     u8g2_SetFont(u8g2, u8g2_font_6x10_tf);
     u8g2_DrawStr(u8g2, 2, DRONE_TITLE_Y, "DRONE");
-    u8g2_DrawHLine(u8g2, 0, 10, 128);
+    u8g2_DrawHLine(u8g2, 0, 15, 128);
 
     if (view == NULL || view->count == 0) {
         return;
@@ -59,26 +60,29 @@ void display_drone_draw_frame(u8g2_t *u8g2, const drone_view_t *view)
         }
     }
 
-    /* Scroll affordances. */
+    /* Scroll-position arrows in the yellow header (right side) — kept clear of
+     * the yellow/blue seam and the bottom hint strip. ▲ above, ▼ below. */
     if (first > 0) {
-        u8g2_DrawTriangle(u8g2, 124, 14, 120, 18, 128, 18);
+        u8g2_DrawTriangle(u8g2, 112, 2, 108, 8, 116, 8);
     }
     if (last < view->count) {
-        u8g2_DrawTriangle(u8g2, 120, 60, 128, 60, 124, 64);
+        u8g2_DrawTriangle(u8g2, 118, 2, 126, 2, 122, 8);
     }
 }
 
 /* ── Drone visualiser overlay ───────────────────────────────────────────────
  *
- * 128×64 layout:
+ * 128×64 layout (dual-colour panel: rows 0..15 yellow, 16..63 blue). The
+ * drone-vis screen has no bottom hint strip, so the blue region runs to row 63.
+ * Every section sits below the 16px seam; the Q needle rises at most to row 16.
  *
- *  Y  0- 8  Title "DRONE VIS"   +   rate + sweep speed right-aligned
- *  Y  9     Divider line
- *           [Q needle 0–5px above the sweep bar at its midpoint]
- *  Y 11-24  SWEEP  [lo────▓▓▓▓▓▓▓────hi]   filled=range, notch=mid
- *  Y 27-40  AMP    [░░░░|████████|░░░░░]   floor|active range|headroom
+ *  Y  0- 8  Title "DRONE VIS"   +   rate + sweep speed right-aligned  (yellow)
+ *  Y 15     Divider line on the yellow/blue seam
+ *           [Q needle 0–5px above the sweep bar at its midpoint, top ≥ row 16]
+ *  Y 21-28  SWEEP  [lo────▓▓▓▓▓▓▓────hi]   filled=range, notch=mid
+ *  Y 34-41  AMP    [░░░░|████████|░░░░░]   floor|active range|headroom
  *                         ↑DC centre tick;  "!" at right if clip
- *  Y 43-62  PAT    8 step squares; gate fill height per active step
+ *  Y 45-60  PAT    8 step squares; gate fill height per active step
  */
 
 /* Clamp a float to [0,1] without pulling in math.h. */
@@ -114,7 +118,7 @@ void display_drone_vis_draw(u8g2_t *u8g2, const drone_vis_t *vis)
         u8g2_SetFont(u8g2, u8g2_font_6x10_tf);
     }
 
-    u8g2_DrawHLine(u8g2, 0, 9, 128);
+    u8g2_DrawHLine(u8g2, 0, 15, 128);
 
     /* ── Shared bar geometry ── */
     const uint8_t BAR_X = 38;
@@ -125,9 +129,9 @@ void display_drone_vis_draw(u8g2_t *u8g2, const drone_vis_t *vis)
 
     /* ── SWEEP section ── */
     {
-        const uint8_t BY = 13;   /* top of sweep bar */
+        const uint8_t BY = 21;   /* top of sweep bar (needle rises to row 16) */
 
-        u8g2_DrawStr(u8g2, 0, 20, "SWEEP");
+        u8g2_DrawStr(u8g2, 0, 28, "SWEEP");
         u8g2_DrawFrame(u8g2, BAR_X, BY, BAR_W, BAR_H);
 
         float lo = vis_clamp01(vis->sweep_lo_norm);
@@ -160,10 +164,10 @@ void display_drone_vis_draw(u8g2_t *u8g2, const drone_vis_t *vis)
 
     /* ── AMP section ── */
     {
-        const uint8_t BY = 26;   /* top of amp bar */
+        const uint8_t BY = 34;   /* top of amp bar */
 
         if (vis->wave_mode) {
-            u8g2_DrawStr(u8g2, 0, 33, "AMP");
+            u8g2_DrawStr(u8g2, 0, 41, "AMP");
             u8g2_DrawFrame(u8g2, BAR_X, BY, BAR_W, BAR_H);
 
             float fl = vis_clamp01(vis->amp_floor_norm);
@@ -186,20 +190,20 @@ void display_drone_vis_draw(u8g2_t *u8g2, const drone_vis_t *vis)
 
             /* Clip warning: "!" just right of the bar when ceiling hits 1.0 */
             if (vis->amp_ceil_norm >= 0.99f) {
-                u8g2_DrawStr(u8g2, (uint8_t)(BAR_X + BAR_W + 2), 33, "!");
+                u8g2_DrawStr(u8g2, (uint8_t)(BAR_X + BAR_W + 2), 41, "!");
             }
         } else {
-            u8g2_DrawStr(u8g2, 0, 33, "AMP  [PATCH]");
+            u8g2_DrawStr(u8g2, 0, 41, "AMP  [PATCH]");
         }
     }
 
     /* ── PATTERN section ── */
     {
-        u8g2_DrawStr(u8g2, 0, 43, "PAT");
+        u8g2_DrawStr(u8g2, 0, 55, "PAT");
 
         const uint8_t SQ_W  = 10;
-        const uint8_t SQ_H  = 14;
-        const uint8_t SQ_Y  = 47;
+        const uint8_t SQ_H  = 16;
+        const uint8_t SQ_Y  = 45;
         const uint8_t SQ_X0 = BAR_X;
 
         for (uint8_t s = 0; s < 8; s++) {

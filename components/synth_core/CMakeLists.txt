@@ -1,3 +1,14 @@
+# Custom DX7-style FM/ALGO voices are a WIP feature, gated off by default
+# (CONFIG_SYNTH_CUSTOM_FM). When disabled, none of the FM voice/preset/editor
+# code is compiled; all reference sites are guarded by #if CONFIG_SYNTH_CUSTOM_FM.
+set(fm_srcs)
+if(CONFIG_SYNTH_CUSTOM_FM)
+    list(APPEND fm_srcs
+        "custompatches/fm_voice.c"
+        "custompatches/fm_presets.c"
+        "synth_ui/ui_screen_fm.c")
+endif()
+
 idf_component_register(SRCS "amy_helpers.c" "amy_fx.c" "arp_core.c" "quantizer.c" "graph_popup_amy.c"
                             "synth_ui/synth_ui_state.c"
                             "synth_ui/synth_ui_task.c"
@@ -10,7 +21,6 @@ idf_component_register(SRCS "amy_helpers.c" "amy_fx.c" "arp_core.c" "quantizer.c
                             "synth_ui/ui_screen_prog.c"
                             "synth_ui/ui_screen_trackopts.c"
                             "synth_ui/ui_screen_stepedit.c"
-                            "synth_ui/ui_screen_fm.c"
                             "sequencer_core/seq_core_state.c"
                             "sequencer_core/seq_core_engine.c"
                             "sequencer_core/seq_core_synth.c"
@@ -20,9 +30,8 @@ idf_component_register(SRCS "amy_helpers.c" "amy_fx.c" "arp_core.c" "quantizer.c
                             "sequencer_core/seq_core_trig.c"
                             "custompatches/drone_core.c"
                             "custompatches/bass_presets.c"
-                            "custompatches/fm_voice.c"
-                            "custompatches/fm_presets.c"
                             "custompatches/sample_rec.c"
+                            ${fm_srcs}
                        INCLUDE_DIRS "include"
                        PRIV_INCLUDE_DIRS "."
                        REQUIRES u8g2 display amy

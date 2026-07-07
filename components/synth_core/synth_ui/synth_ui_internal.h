@@ -39,18 +39,21 @@ extern uint8_t           s_to_track;       /* owner: ui_screen_trackopts.c; menu
 void     ui_note_name(uint8_t midi_note, char buf[4]);
 void     sync_layer_to_core(uint8_t li);
 
-/* ─── View signatures (each defined in its screen/editor file) ────────── */
+/* ─── View signatures (each defined in its screen/editor file) ──────────
+ * The view-struct screens build the view once and return it through `out`
+ * alongside the hash, so the task's draw switch reuses it instead of
+ * running the whole snprintf build a second time in the same frame. */
 uint32_t seq_view_signature(void);
 uint32_t graph_view_signature(void);
 uint32_t filter_view_signature(void);
 uint32_t lfo_view_signature(void);
-uint32_t arp_view_signature(void);
-uint32_t menu_view_signature(void);
-uint32_t drone_view_signature(void);
-uint32_t prog_view_signature(void);
-uint32_t trackopts_view_signature(void);
-uint32_t stepedit_view_signature(void);
-uint32_t fm_view_signature(void);
+uint32_t arp_view_signature(arp_view_t *out);
+uint32_t menu_view_signature(menu_view_t *out);
+uint32_t drone_view_signature(drone_view_t *out);
+uint32_t prog_view_signature(prog_view_t *out);
+uint32_t trackopts_view_signature(trackopts_view_t *out);
+uint32_t stepedit_view_signature(stepedit_view_t *out);
+uint32_t fm_view_signature(menu_view_t *out);
 
 /* ─── Build-view helpers called from synth_ui_task draw switch ────────── */
 void     drone_build_view(drone_view_t *out);

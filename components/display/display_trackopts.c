@@ -2,9 +2,9 @@
 #include <stdio.h>
 
 #define TO_TITLE_Y    8
-#define TO_ROW_H      11
-#define TO_FIRST_ROW  22
-#define TO_VIS_ROWS   4    /* content rows visible at once (rows 22/33/44/55) */
+#define TO_ROW_H      12
+#define TO_FIRST_ROW  25
+#define TO_VIS_ROWS   3    /* roomy rows below the 16px yellow seam (25/37/49) */
 
 /* Draw one "label : value" row, inverting the value when this row is the
  * selected+editing target, or boxing the whole row when merely selected. */
@@ -59,7 +59,7 @@ void display_trackopts_draw_frame(u8g2_t *u8g2, const trackopts_view_t *view)
     to_draw_title_val(u8g2, lx, lbuf, view && view->cursor == TO_ROW_LAYER);
     uint8_t tx = (uint8_t)(lx + u8g2_GetStrWidth(u8g2, lbuf) + 4);
     to_draw_title_val(u8g2, tx, tbuf, view && view->cursor == TO_ROW_TRACK);
-    u8g2_DrawHLine(u8g2, 0, 10, 128);
+    u8g2_DrawHLine(u8g2, 0, 15, 128);
 
     if (view == NULL) { return; }
 
@@ -117,11 +117,12 @@ void display_trackopts_draw_frame(u8g2_t *u8g2, const trackopts_view_t *view)
         }
     }
 
-    /* Scroll affordances, same shape as the drone screen. */
+    /* Scroll-position arrows in the yellow header (right side), clear of the
+     * L/T title values and the yellow/blue seam. ▲ above, ▼ below. */
     if (first > 0) {
-        u8g2_DrawTriangle(u8g2, 124, 14, 120, 18, 128, 18);
+        u8g2_DrawTriangle(u8g2, 112, 2, 108, 8, 116, 8);
     }
     if (last < content_count) {
-        u8g2_DrawTriangle(u8g2, 120, 60, 128, 60, 124, 64);
+        u8g2_DrawTriangle(u8g2, 118, 2, 126, 2, 122, 8);
     }
 }

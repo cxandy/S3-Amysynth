@@ -1,12 +1,14 @@
 #include "display_menu.h"
 #include <string.h>
 
-/* Layout: a title bar then up to 5 visible rows, scrolling to keep the cursor
- * in view. 128x64 OLED. */
+/* Layout: a yellow header bar (rows 0..15 on the dual-colour panel) holding the
+ * title, then up to 3 roomy rows in the blue region below. The first row starts
+ * far enough down that neither its text nor its selection highlight ever crosses
+ * the 16px yellow/blue seam. 128x64 OLED. */
 #define MENU_TITLE_Y    8
-#define MENU_ROW_H      11
-#define MENU_FIRST_ROW  16
-#define MENU_VIS_ROWS   4
+#define MENU_ROW_H      12
+#define MENU_FIRST_ROW  25
+#define MENU_VIS_ROWS   3
 
 void display_menu_draw_frame(u8g2_t *u8g2, const menu_view_t *view)
 {
@@ -22,7 +24,7 @@ void display_menu_draw_frame_titled(u8g2_t *u8g2, const char *title,
     /* Title bar. */
     u8g2_SetFont(u8g2, u8g2_font_6x10_tf);
     u8g2_DrawStr(u8g2, 2, MENU_TITLE_Y, title ? title : "MENU");
-    u8g2_DrawHLine(u8g2, 0, 10, 128);
+    u8g2_DrawHLine(u8g2, 0, 15, 128);
 
     if (view == NULL || view->count == 0) {
         return;
@@ -69,11 +71,14 @@ void display_menu_draw_frame_titled(u8g2_t *u8g2, const char *title,
         }
     }
 
-    /* Scroll affordances: little arrows when there is more above/below. */
+    /* Scroll-position arrows, drawn inside the yellow header (right side) so they
+     * never straddle the yellow/blue seam or collide with the bottom hint strip
+     * (the old down-arrow at y=60 was silently overwritten by it). ▲ = items
+     * above the window, ▼ = items below. */
     if (first > 0) {
-        u8g2_DrawTriangle(u8g2, 124, 14, 120, 18, 128, 18);
+        u8g2_DrawTriangle(u8g2, 112, 2, 108, 8, 116, 8);
     }
     if (last < view->count) {
-        u8g2_DrawTriangle(u8g2, 120, 60, 128, 60, 124, 64);
+        u8g2_DrawTriangle(u8g2, 118, 2, 126, 2, 122, 8);
     }
 }

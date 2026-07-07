@@ -45,13 +45,16 @@ void display_arp_draw_frame(u8g2_t *u8g2, const arp_view_t *view)
     draw_field(u8g2, 96, 8, buf,
                view->cursor == ARP_CUR_OCT, view->editing);
 
-    /* ── Macro row 2: RATE | GATE ── */
+    /* ── Macro row 2: RATE | GATE ──
+     * Row 1 (baseline 8) sits in the yellow header as an ARP/MODE/OCT status
+     * strip; this second control row drops to baseline 25 so it clears the 16px
+     * yellow/blue seam (text and cursor frames stay wholly in the blue region). */
     snprintf(buf, sizeof(buf), "RATE:%s", view->rate_str ? view->rate_str : "?");
-    draw_field(u8g2, 2, 20, buf,
+    draw_field(u8g2, 2, 25, buf,
                view->cursor == ARP_CUR_RATE, view->editing);
 
     snprintf(buf, sizeof(buf), "GATE:%u%%", (unsigned)view->gate_pct);
-    draw_field(u8g2, 56, 20, buf,
+    draw_field(u8g2, 56, 25, buf,
                view->cursor == ARP_CUR_GATE, view->editing);
 
     /* Right area of row 2: SOURCE cursor, WAVE cursor, GLIDE cursor, or the
@@ -80,17 +83,17 @@ void display_arp_draw_frame(u8g2_t *u8g2, const arp_view_t *view)
         uint8_t rw = (uint8_t)u8g2_GetStrWidth(u8g2, rbuf);
         uint8_t rx = (rw < 126u) ? (uint8_t)(126u - rw) : 0u;
         if (sel_src || sel_wave || sel_porta) {
-            draw_field(u8g2, rx, 20, rbuf, true, view->editing);
+            draw_field(u8g2, rx, 25, rbuf, true, view->editing);
         } else if (!view->wave_mode && view->patch_select) {
-            u8g2_DrawRFrame(u8g2, (uint8_t)(rx - 2), 12,
+            u8g2_DrawRFrame(u8g2, (uint8_t)(rx - 2), 17,
                             (uint8_t)(rw + 4), 11, 1);
-            u8g2_DrawStr(u8g2, rx, 20, rbuf);
+            u8g2_DrawStr(u8g2, rx, 25, rbuf);
         } else {
-            u8g2_DrawStr(u8g2, rx, 20, rbuf);
+            u8g2_DrawStr(u8g2, rx, 25, rbuf);
         }
     }
 
-    u8g2_DrawHLine(u8g2, 0, 26, 128);
+    u8g2_DrawHLine(u8g2, 0, 28, 128);
 
     /* ── Note slots: two rows of 4 cells ── */
     const uint8_t cell_w = 30;

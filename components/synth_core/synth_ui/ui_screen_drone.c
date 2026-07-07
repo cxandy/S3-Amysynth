@@ -316,18 +316,18 @@ void synth_ui_drone_handle_button(void)
     s_force_redraw = true;
 }
 
-/* Signature of the drone screen (everything the renderer reads). */
-uint32_t drone_view_signature(void)
+/* Signature of the drone screen (everything the renderer reads). Builds the
+ * view into *out so the caller can draw from it without a second build. */
+uint32_t drone_view_signature(drone_view_t *out)
 {
     uint32_t h = FNV1A_OFFSET;
-    drone_view_t v;
-    drone_build_view(&v);
-    h = fnv1a_bytes(h, &v.cursor, sizeof(v.cursor));
-    h = fnv1a_bytes(h, &v.editing, sizeof(v.editing));
-    h = fnv1a_bytes(h, &v.count, sizeof(v.count));
-    for (uint8_t i = 0; i < v.count; i++) {
-        h = fnv1a_bytes(h, v.rows[i].label, sizeof(v.rows[i].label));
-        h = fnv1a_bytes(h, v.rows[i].value, sizeof(v.rows[i].value));
+    drone_build_view(out);
+    h = fnv1a_bytes(h, &out->cursor, sizeof(out->cursor));
+    h = fnv1a_bytes(h, &out->editing, sizeof(out->editing));
+    h = fnv1a_bytes(h, &out->count, sizeof(out->count));
+    for (uint8_t i = 0; i < out->count; i++) {
+        h = fnv1a_bytes(h, out->rows[i].label, sizeof(out->rows[i].label));
+        h = fnv1a_bytes(h, out->rows[i].value, sizeof(out->rows[i].value));
     }
     return h;
 }

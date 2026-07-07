@@ -140,6 +140,25 @@ void synth_ui_cycle_drum_patch(int delta)
     if (track >= SEQ_TRACKS) return;
 
     int dir = (delta > 0) ? 1 : -1;
+
+    /* PCM engine: the control browses the ROM drum samples instead of the
+     * curated SYNTH patch list (which stays stored for the next engine
+     * switch). Mirror + name lookup use the PCM preset table. */
+    if (sequencer_core_get_drum_engine() == SEQ_DRUM_PCM) {
+        uint16_t preset = sequencer_core_cycle_drum_pcm_preset(li, track, dir);
+        seq_state.layers[li].track_pcm_preset[track] = preset;
+
+        const char *pcm_name = pcm_preset_name_for(preset);
+        if (pcm_name) {
+            ESP_LOGI(TAG, "drum PCM preset cycle L%u t%u -> %u (%s)",
+                     li, track, (unsigned)preset, pcm_name);
+        } else {
+            ESP_LOGI(TAG, "drum PCM preset cycle L%u t%u -> %u",
+                     li, track, (unsigned)preset);
+        }
+        return;
+    }
+
     uint16_t applied = sequencer_core_cycle_drum_patch(li, track, dir);
 
     /* Keep the UI mirror in sync (track_patch[] drives the label). */

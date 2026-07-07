@@ -156,6 +156,16 @@ void     sequencer_core_set_drum_pcm_preset(uint8_t layer_idx, uint8_t track,
                                             uint16_t preset_number);
 uint16_t sequencer_core_get_drum_pcm_preset(uint8_t layer_idx, uint8_t track);
 
+/* Step one drum track's PCM preset dir (+/-1) through the compiled-in ROM
+ * bank (0 .. pcm_wavetable_base-1, i.e. the drum samples only — wavetable and
+ * runtime memory presets excluded), wrapping at the ends. A track currently
+ * on a memory preset (sample_rec override, numbered above the ROM map) steps
+ * back onto the ROM bank at the near end. Live-reloads the track's osc when
+ * the PCM engine is active. Returns the newly-applied preset, or 0 for
+ * non-drum/out-of-range layers. */
+uint16_t sequencer_core_cycle_drum_pcm_preset(uint8_t layer_idx, uint8_t track,
+                                              int dir);
+
 /* ── Per-row melodic ADSR envelope (runtime-editable) ──
  * Scoped per row (per track); each row has its own AMY synth, so its envelope
  * is fully independent. See seq_env_t in display_seq.h for the extension path

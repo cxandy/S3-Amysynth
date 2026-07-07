@@ -33,14 +33,26 @@ static const patch_domain_t s_drum_domain = {
     .list = SEQ_DRUM_PATCH_LIST, .count = SEQ_DRUM_PATCH_COUNT, .full_max = 0
 };
 
-/* Built-in 808 PCM sample indices (from amy/src/pcm_tiny.h pcm_map[]) used by
- * PCM drum mode, one per track: kick, snare, closed-hat, clap. */
+/* Built-in 808 PCM sample indices used by PCM drum mode, one per track:
+ * kick, snare, closed-hat, clap. The compiled-in ROM bank (and with it the
+ * preset numbering) follows CONFIG_AMY_PCM_GAMMA808: the gamma808 TR-808
+ * bank (amy/src/pcm_gamma808.h pcm_map[]) vs the legacy tiny set
+ * (amy/src/pcm_tiny.h pcm_map[]). */
+#if CONFIG_AMY_PCM_GAMMA808
+static const int16_t SEQ_DRUM_PCM_PRESET[SEQ_TRACKS] = {
+    2,    /* track 0: [2] TR-808 Bass Drum 3 (punchy) */
+    12,   /* track 1: [12] TR-808 Snare 1     */
+    9,    /* track 2: [9] TR-808 HiHat Closed */
+    3,    /* track 3: [3] TR-808 Clap         */
+};
+#else
 static const int16_t SEQ_DRUM_PCM_PRESET[SEQ_TRACKS] = {
     1,    /* track 0: [1] 808-KIK 4-D    */
     2,    /* track 1: [2] 808-SNR 4-D    */
     6,    /* track 2: [6] 808-C-HAT1-D   */
     9,    /* track 3: [9] 808-DRYCLP-D   */
 };
+#endif
 
 /* Per-layer, per-track PCM preset override. Defaults (lazily) to
  * SEQ_DRUM_PCM_PRESET; sequencer_core_set_drum_pcm_preset() is the only way
@@ -520,6 +532,31 @@ void sequencer_core_set_drum_pcm_preset(uint8_t layer_idx, uint8_t track,
     }
     ESP_LOGI(TAG, "drum L%u track %u PCM preset -> %u",
              layer_idx, track, (unsigned)preset_number);
+}
+
+uint16_t sequencer_core_cycle_drum_pcm_preset(uint8_t layer_idx, uint8_t track,
+                                              int dir)
+{
+    if (layer_idx >= s_num_layers || track >= SEQ_TRACKS) return 0;
+    if (s_layers[layer_idx].type != SEQ_LAYER_DRUM) return 0;
+
+    /* ROM drum samples only: pcm_wavetable_base is the first non-drum map
+     * entry in the compiled-in bank (gamma808: 19, pcm_tiny: 11) regardless
+     * of whether wavetables are compiled in. Memory presets (sample_rec
+     * overrides) sit above the ROM map; stepping from one re-enters the ROM
+     * bank at the near end. */
+    uint16_t bound = pcm_wavetable_base;
+    if (bound == 0) return 0;
+
+    uint16_t cur = drum_pcm_preset_for(layer_idx, track);
+    uint16_t next;
+    if (cur >= bound) {
+        next = (dir > 0) ? 0 : (uint16_t)(bound - 1);
+    } else {
+        next = (uint16_t)((cur + (uint16_t)bound + (dir > 0 ? 1 : -1)) % bound);
+    }
+    sequencer_core_set_drum_pcm_preset(layer_idx, track, next);
+    return next;
 }
 
 uint16_t sequencer_core_get_drum_pcm_preset(uint8_t layer_idx, uint8_t track)

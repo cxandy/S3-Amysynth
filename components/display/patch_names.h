@@ -32,6 +32,12 @@ extern "C" {
  * for the lifetime of the program (points into a const table). */
 const char *patch_name_for(uint16_t patch);
 
+/* Returns a static name for a PCM ROM drum preset, or NULL if out of range
+ * (wavetable entries and runtime memory presets have no names — callers show
+ * the bare number). The table matches the compiled-in ROM bank: gamma808
+ * (CONFIG_AMY_PCM_GAMMA808) or the legacy pcm_tiny set. */
+const char *pcm_preset_name_for(uint16_t preset);
+
 #else  /* names compiled out */
 
 /* No name table linked; callers fall back to showing the bare number. The
@@ -39,6 +45,12 @@ const char *patch_name_for(uint16_t patch);
 static inline const char *patch_name_for(uint16_t patch)
 {
     (void)patch;
+    return (const char *)0;
+}
+
+static inline const char *pcm_preset_name_for(uint16_t preset)
+{
+    (void)preset;
     return (const char *)0;
 }
 

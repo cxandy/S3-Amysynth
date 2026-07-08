@@ -178,6 +178,11 @@ static void trig_schedule_ratchets(uint8_t layer_idx, const seq_layer_t *layer,
 void sequencer_core_service_tick(void)
 {
     if (!s_playing) return;
+    /* A structural s_layers edit (delete_layer's compaction) is in flight on
+     * another task; skip this tick rather than read a half-shifted table. The
+     * engine tolerates skipped ticks (trig_reset_all runs after the edit), so a
+     * dropped tick here is inaudible. */
+    if (s_layers_mutating) return;
     uint32_t now_ticks = sequencer_ticks();
 
     for (uint8_t li = 0; li < s_num_layers; li++) {

@@ -68,6 +68,7 @@ extern uint8_t        s_num_layers;
 extern bool           s_playing;
 extern uint8_t        s_next_melodic_synth;
 extern uint16_t       s_melodic_patch;
+extern volatile bool  s_layers_mutating;   /* guards delete_layer's compaction vs. the tick */
 
 /* Owned by seq_core_engine.c */
 extern uint8_t        s_cached_step[];

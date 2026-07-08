@@ -4,6 +4,10 @@
 seq_layer_t s_layers[MAX_LAYERS];
 uint8_t     s_num_layers   = 0;
 bool        s_playing      = true;
+/* Guards sequencer_core_delete_layer()'s ~4 KB s_layers compaction against the
+ * Core-0 esp_timer sequencer tick, which reads s_layers[] live. Set true around
+ * the structural edit; the tick early-returns while it is set. */
+volatile bool s_layers_mutating = false;
 uint16_t    s_melodic_patch = SEQ_MEL_PATCH;
 /* Running allocator for per-row melodic synth slots. Each melodic layer claims
  * a contiguous block of SEQ_TRACKS slots starting here; reset in core_init. */
@@ -182,6 +186,10 @@ bool sequencer_core_delete_layer(uint8_t layer_idx)
         amy_helpers_event_send(e);
     }
 
+    /* Raise the mutation guard so the Core-0 sequencer tick early-returns
+     * instead of reading s_layers[] mid-memmove. The tick tolerates skipped
+     * ticks (trig state is reset wholesale below), so this is inaudible. */
+    s_layers_mutating = true;
     /* Compact all parallel arrays by shifting survivors down by one slot. */
     uint8_t tail = (uint8_t)(s_num_layers - layer_idx - 1);
     if (tail > 0) {
@@ -205,6 +213,8 @@ bool sequencer_core_delete_layer(uint8_t layer_idx)
                 tail * sizeof(s_lfo_rnd[0]));
     }
     s_num_layers--;
+    /* Table is fully compacted and the count updated; drop the guard. */
+    s_layers_mutating = false;
     sequencer_core_trig_reset_all();  /* see rationale in sequencer_core_add_layer() */
 
     /* Resync all surviving layers so their note tags re-register correctly. */

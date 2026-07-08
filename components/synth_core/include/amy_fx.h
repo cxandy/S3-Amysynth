@@ -12,6 +12,13 @@ extern "C" {
  * AMY exposes no getters, so we keep our own copy for menu display.
  * All pushes go through the shared amy_helpers mutex (amy_event is ~800 B;
  * never allocate it on a task stack). */
+
+/* Sentinel for the extended FX params below. While a field holds this value
+ * its fx_push_* leaves the matching amy_event field at AMY_UNSET, so AMY keeps
+ * its own factory default and the mix is unchanged until the user edits that
+ * param. Chosen out of every valid range (incl. negative echo tone). */
+#define FX_PARAM_UNSET  INT16_MIN
+
 typedef struct {
     int8_t  eq_low_db;     /* -15..+15 dB */
     int8_t  eq_mid_db;
@@ -19,6 +26,18 @@ typedef struct {
     uint8_t echo_level;    /* 0..100 -> 0..1 */
     uint8_t chorus_level;  /* 0..100 -> 0..1 */
     uint8_t reverb_level;  /* 0..100 -> 0..1 */
+    /* Extended global-FX params. Each holds FX_PARAM_UNSET until the user
+     * dials it in; while unset the matching amy_event field is left at its
+     * AMY_UNSET default, so AMY keeps its own boot value. Percent fields map
+     * /100 to AMY's 0..1 float; others as noted. */
+    int16_t echo_delay_ms;   /* 0..743 ms;   unset -> AMY 500 ms          */
+    int16_t echo_feedback;   /* 0..99 (%);   unset -> AMY 0 (one repeat)  */
+    int16_t echo_tone;       /* -99..99 (% filter coef); unset -> AMY 0   */
+    int16_t reverb_liveness; /* 0..100 (%);  unset -> AMY 0.85            */
+    int16_t reverb_damping;  /* 0..100 (%);  unset -> AMY 0.5             */
+    int16_t reverb_xover_hz; /* 500..8000 Hz; unset -> AMY 3000 Hz        */
+    int16_t chorus_rate;     /* centi-Hz (0.01 Hz); unset -> AMY 0.5 Hz   */
+    int16_t chorus_depth;    /* 0..100 (%);  unset -> AMY 0.5             */
     /* When false, loading a synth patch must NOT change the global FX: every
      * AMY built-in Juno patch string ends with `x<eq>k<chorus>` commands that
      * write the single global EQ/chorus (amy_global.*), so without this guard a

@@ -29,7 +29,10 @@ static const char *hint_b1(void)
 
 /* MY_BUTTON_2: the per-screen isolation guards (arp/prog/trackopts/drone) are
  * checked before the generic filter-suppress / graph-amp-mode / pitch-hold
- * fallback in main.c, in that exact order -- reproduced here unchanged. */
+ * fallback in main.c, in that exact order -- reproduced here unchanged. While
+ * the Step Trig editor is open main.c:475-479 suppresses the drum-select hold
+ * (button 2 is a no-op; editor open/close moved to MY_BUTTON_3), so the strip
+ * shows the blank "-" no-op state, matching filter/arp/drone. */
 static const char *hint_b2(void)
 {
     if (synth_ui_arp_is_active())       return "-";
@@ -37,21 +40,26 @@ static const char *hint_b2(void)
     if (synth_ui_trackopts_is_active()) return "DelLy";
     if (synth_ui_drone_is_active())     return "-";
     if (synth_ui_filter_is_active())    return "-";
-    if (synth_ui_stepedit_is_active())  return "Close";
+    if (synth_ui_stepedit_is_active())  return "-";
     if (synth_ui_graph_is_active())     return "Amp";
     return "Pitch";
 }
 
-/* MY_BUTTON_3: editor-cycle vs. menu-toggle. While the ADSR graph editor
- * specifically is open, long-press also toggles its EG0/EG1 breakpoint set
- * (main.c) — collapsed into "Next" below like every other button's long-press
- * nuance, since this hint shows one dominant label per button, not every
- * gesture length. */
+/* MY_BUTTON_3: editor-cycle vs. Step-Trig-close vs. menu-toggle, in the exact
+ * priority order main.c dispatches (main.c:497-522). While the ADSR graph
+ * editor specifically is open, long-press also toggles its EG0/EG1 breakpoint
+ * set (main.c) — collapsed into "Next" below like every other button's
+ * long-press nuance, since this hint shows one dominant label per button, not
+ * every gesture length. While the Step Trig editor is open (and no ADSR/filter/
+ * LFO editor is), single-click closes it (main.c:507-511), so show "Close". */
 static const char *hint_b3(void)
 {
     if (synth_ui_graph_is_active() || synth_ui_filter_is_active()
                                     || synth_ui_lfo_is_active()) {
         return "Next";
+    }
+    if (synth_ui_stepedit_is_active()) {
+        return "Close";
     }
     return "Menu";
 }

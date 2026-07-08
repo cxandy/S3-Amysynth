@@ -189,14 +189,26 @@ void sequencer_emit_step(uint8_t layer_idx, uint8_t track, uint8_t step)
     }
     uint32_t tag_on     = seq_tag_on(layer_idx, track, step);
     uint32_t tag_off    = seq_tag_off(layer_idx, track, step);
-    /* +1 so tick 0 stays reserved (AMY treats tick 0 specially as "clear"). */
-    uint32_t tick_on    = (uint32_t)(1 + step * SEQ_TICKS_PER_STEP);
+    /* +1 so tick 0 stays reserved (AMY treats tick 0 specially as "clear").
+     * Per-step micro-timing (patch-06): fold the signed step_nudge into the
+     * note-on tick only. Default 0 leaves the on-grid tick byte-identical. A
+     * negative nudge on an early step can land before the bar origin, so wrap
+     * it into the tail of the loop window (musically a late "drag"). tick_off
+     * is derived from tick_on below, so the gate length is preserved. */
+    int32_t  tick_on_s  = (int32_t)(1 + step * SEQ_TICKS_PER_STEP)
+                        + (int32_t)layer->step_nudge[track][step];
+    while (tick_on_s < 1) tick_on_s += (int32_t)period;
+    uint32_t tick_on    = (uint32_t)tick_on_s % period;
+    if (tick_on == 0) tick_on = 1;
     /* Note-off wraps within the full period (not just bar_ticks) so a note at
      * repeat_rate=2 whose gate spills past bar_ticks still fires correctly. */
     uint32_t tick_off   = (tick_on + gate) % period;
     float note_velocity = sequencer_step_velocity(layer, track, step);
     /* Apply per-track amplitude trim (default 1.0; set by graph editor amp mode). */
     note_velocity *= layer->amp_scale[track];
+    /* Per-step velocity offset (patch-06): signed percentage points, default 0. */
+    note_velocity += (float)layer->step_velocity_adj[track][step] * 0.01f;
+    if (note_velocity < 0.0f) note_velocity = 0.0f;
     if (note_velocity > 1.0f) note_velocity = 1.0f;
     if (tick_off == 0) tick_off = 1; /* avoid the reserved tick 0 */
 

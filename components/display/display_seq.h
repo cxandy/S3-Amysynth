@@ -193,6 +193,16 @@ typedef struct {
     uint8_t  step_ratchet[SEQ_TRACKS][SEQ_MAX_STEPS];    /* 1..SEQ_MAX_RATCHET sub-hits    */
     uint8_t  step_cond_type[SEQ_TRACKS][SEQ_MAX_STEPS];  /* seq_step_cond_type_t           */
     uint8_t  step_cond_param[SEQ_TRACKS][SEQ_MAX_STEPS]; /* FILL: loop divisor 2..8        */
+
+    /* ── Per-step micro-timing / velocity / ratchet taper (patch-06) ──
+     * All three default to 0, which is each field's neutral value: 0 nudge =
+     * on-grid, 0 velocity offset = unchanged, 0 taper = flat ratchet. The
+     * memset(0) in sequencer_core_add_layer therefore yields byte-identical
+     * behaviour with NO explicit init — unlike step_prob/step_ratchet, whose
+     * neutral values are 100/1 and must be initialised there. */
+    int8_t   step_nudge[SEQ_TRACKS][SEQ_MAX_STEPS];        /* signed ticks, +-SEQ_STEP_NUDGE_MAX; plain-step only */
+    int8_t   step_velocity_adj[SEQ_TRACKS][SEQ_MAX_STEPS]; /* signed percentage points added to velocity (0=none) */
+    int8_t   step_ratchet_taper[SEQ_TRACKS][SEQ_MAX_STEPS];/* %-per-sub-hit velocity decay across a ratchet (0=flat) */
 } seq_layer_t;
 
 /* ── Global sequencer display/UI state ── */

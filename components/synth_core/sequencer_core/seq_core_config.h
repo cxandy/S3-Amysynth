@@ -40,6 +40,12 @@
 /* A musical bar = 16 steps. Fixed regardless of layer length so the bar
  * counter and repeat-rate are independent of which layers are active. */
 #define SEQ_TICKS_PER_BAR     (16u * SEQ_TICKS_PER_STEP)
+/* Per-step micro-timing (swing/humanize) range in sequencer ticks, folded in
+ * only at step->absolute-tick conversion in sequencer_emit_step(). +-6 ticks
+ * is half a step (SEQ_TICKS_PER_STEP=12) — a strong but musical push/drag, and
+ * safely below the smallest loop period (16*12=192). Chosen range, NOT a
+ * hardware-confirmed spec; the future step_nudge setter clamps to +-this. */
+#define SEQ_STEP_NUDGE_MAX    6
 /* Drum gate: fraction of a step the note is held before its note-off. Now that
  * drums are real Juno patches (note-offs honored), this controls choke vs. ring;
  * the patch's own release tail still plays out after note-off. Tunable via

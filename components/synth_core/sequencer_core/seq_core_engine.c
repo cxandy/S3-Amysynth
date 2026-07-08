@@ -56,6 +56,22 @@ static inline uint32_t seq_preview_off_tag(uint8_t layer, uint8_t track)
     return seq_preview_tag(layer, track) + (uint32_t)(MAX_LAYERS * SEQ_TRACKS);
 }
 
+/* Swing / shuffle: delay ODD 16th-steps by swing_pct% of one step so the
+ * off-beats land late, giving a shuffled groove. Even steps (the on-beats) are
+ * untouched. Pure function of the step index + the layer's swing_pct, so the
+ * emitted schedule stays beat-locked and tempo-independent (it is expressed in
+ * ticks, exactly like the drone stutter-grid swing in drone_core.c). Integer
+ * math only — this runs on the Core-0 emit path, never in render/ISR.
+ * swing_pct==0 (the memset-zero default) returns 0 => bit-identical to the
+ * pre-swing schedule. swing_pct is clamped to SEQ_SWING_MAX (<100) so the
+ * result is always a fraction of one step and never crosses the next step. */
+static inline uint32_t sequencer_step_swing_offset(const seq_layer_t *layer,
+                                                   uint8_t step)
+{
+    if ((step & 1u) == 0u || layer->swing_pct == 0) return 0;
+    return ((uint32_t)SEQ_TICKS_PER_STEP * (uint32_t)layer->swing_pct) / 100u;
+}
+
 float sequencer_step_velocity(const seq_layer_t *layer,
                               uint8_t track, uint8_t step)
 {
@@ -189,8 +205,12 @@ void sequencer_emit_step(uint8_t layer_idx, uint8_t track, uint8_t step)
     }
     uint32_t tag_on     = seq_tag_on(layer_idx, track, step);
     uint32_t tag_off    = seq_tag_off(layer_idx, track, step);
-    /* +1 so tick 0 stays reserved (AMY treats tick 0 specially as "clear"). */
-    uint32_t tick_on    = (uint32_t)(1 + step * SEQ_TICKS_PER_STEP);
+    /* +1 so tick 0 stays reserved (AMY treats tick 0 specially as "clear").
+     * Swing shifts odd steps later; even steps are unchanged (offset 0). The
+     * note-off below is derived from tick_on, so it drags along by the same
+     * offset — no separate swing edit is needed on the note-off. */
+    uint32_t tick_on    = (uint32_t)(1 + step * SEQ_TICKS_PER_STEP)
+                          + sequencer_step_swing_offset(layer, step);
     /* Note-off wraps within the full period (not just bar_ticks) so a note at
      * repeat_rate=2 whose gate spills past bar_ticks still fires correctly. */
     uint32_t tick_off   = (tick_on + gate) % period;
@@ -462,6 +482,30 @@ seq_repeat_rate_t sequencer_core_get_track_repeat_rate(uint8_t layer_idx,
         case 8: return SEQ_REPEAT_8;
         default: return SEQ_REPEAT_1;
     }
+}
+
+/* ── Per-layer swing ─────────────────────────────────────────────────────
+ * Swing is a whole-layer feel control (not per-track): every odd step across
+ * all tracks shifts by the same fraction, so the layer grooves as a unit.
+ * Re-emit the entire layer so AMY re-schedules every step at its swung tick.
+ *
+ * TODO(ui): no UI wiring yet — this ships engine + public API only. A layer-
+ * level menu item (swing is per-layer, not per-track) should call these from
+ * the TrackOpts/UI dispatch once someone is in that screen code. */
+void sequencer_core_set_layer_swing(uint8_t layer_idx, uint8_t swing_pct)
+{
+    if (layer_idx >= s_num_layers) return;
+    seq_layer_t *layer = &s_layers[layer_idx];
+    uint8_t clamped = (uint8_t)SEQ_CLAMP_U8((int)swing_pct, 0, SEQ_SWING_MAX);
+    if (layer->swing_pct == clamped) return;
+    layer->swing_pct = clamped;
+    sequencer_resync_layer(layer_idx);
+}
+
+uint8_t sequencer_core_get_layer_swing(uint8_t layer_idx)
+{
+    if (layer_idx >= s_num_layers) return 0;
+    return s_layers[layer_idx].swing_pct;
 }
 
 void sequencer_core_set_track_mute(uint8_t layer_idx, uint8_t track, bool mute)

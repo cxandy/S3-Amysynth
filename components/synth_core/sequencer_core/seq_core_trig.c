@@ -204,11 +204,23 @@ void sequencer_core_service_tick(void)
             } else {
                 fire = trig_eval_condition(li, layer, tr, cur_step)
                     && trig_roll_probability(layer->step_prob[tr][cur_step]);
+                /* Per-track repeat_rate: the plain emit path repeats its
+                 * note-on tag every bar_ticks*rr (seq_core_engine.c:177-179),
+                 * so a plain step only sounds on the 0th bar of each rr-bar
+                 * window: (now_ticks/bar_ticks) % rr == 0. Gate the decorated
+                 * one-shot's output the same way so SEQ_REPEAT_N behaves
+                 * identically for decorated and plain steps. Like the mute/solo
+                 * gate below this only silences output — condition/probability
+                 * state keeps evaluating every bar so the track's rhythmic
+                 * position stays seamless. */
+                uint32_t rr = (layer->repeat_rate[tr] >= SEQ_REPEAT_2)
+                              ? (uint32_t)layer->repeat_rate[tr] : 1u;
+                bool rr_bar = ((now_ticks / bar_ticks) % rr) == 0;
                 /* Mute/solo silences output only — condition/probability state
                  * (fire, s_track_last_played below) keeps evaluating normally
                  * so a track resumes its rhythmic position seamlessly when
                  * unmuted rather than freezing while muted. */
-                if (fire && sequencer_track_audible(layer, tr)) {
+                if (fire && rr_bar && sequencer_track_audible(layer, tr)) {
                     trig_schedule_ratchets(li, layer, tr, cur_step, now_ticks);
                 }
             }

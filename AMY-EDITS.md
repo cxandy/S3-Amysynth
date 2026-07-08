@@ -23,6 +23,7 @@ flowchart TD
     Active --> HOT["IRAM hot-path annotations<br/>src/envelope.c<br/>src/filters.c<br/>src/log2_exp2.c<br/>src/oscillators.c"]
     Active --> TASK["IDF 6.0 task-signature fixes<br/>src/i2s.c, src/amy_midi.c"]
     Active --> SEQ["SEQ_LOCK + active-tag O(1) scan<br/>src/sequencer.c"]
+    Active --> CLK["Integer sysclock + us-domain tick compare<br/>src/api.c, src/sequencer.c"]
     Active --> PROF["COARSE profiler mode<br/>src/amy.h, src/amy.c"]
 ```
 
@@ -177,6 +178,51 @@ Two related improvements:
    dense list of only the tags that currently have deltas: the tick is now
    O(active events) regardless of tag magnitude. `s_tag_slot[tag]` → position in
    the dense list (or -1) enables O(1) removal via swap-with-last.
+
+### `src/api.c` + `src/sequencer.c` — Integer sample clock + µs-domain tick compare
+
+**Upstream-PR candidate** (universal 32-bit bugs, not target-specific). Three
+related fixes to the sample-slaved clock and the sequencer timing path
+(PR draft: `docs/pr-draft-sysclock-integer-clock.md`):
+
+1. **`amy_sysclock()` integer math** (`src/api.c`): the float version
+   `(uint32_t)((total_blocks * AMY_BLOCK_SIZE / (float)AMY_SAMPLE_RATE) * 1000)`
+   had two correctness bugs, verified by host-side test:
+   - the u32 samples-domain multiply wraps at 2^32 samples = **24.85 h at
+     48 kHz** (the comment claims 49.7 days); at 25 h uptime the clock reads
+     ~8.7 min and the sequencer re-fires ~25 h of absolute-tick events;
+   - the 24-bit float mantissa quantizes the clock as uptime grows — by 12 h
+     it advances in **8 ms jumps** (true block step 5.33 ms), lumping
+     everything slaved to it (sequencer → arp/drone/song ticks).
+   Replaced with `(uint32_t)(((uint64_t)total_blocks * (AMY_BLOCK_SIZE *
+   1000u)) / AMY_SAMPLE_RATE)` — exact (0 mismatches vs a 128-bit reference
+   over the full u32 range, sampled), monotonic, true 49.7-day u32-ms wrap.
+   Costs one `__udivdi3` per call on 32-bit (u64 divide by constant is not
+   strength-reduced there); a call-free 48 kHz/256 specialization
+   (`total_blocks*5 + total_blocks/3`) exists if that ever matters, but the
+   portable form is kept to match the upstream PR and minimize re-vendor
+   drift.
+
+2. **µs-domain tick compare** (`src/sequencer.c`,
+   `sequencer_check_and_fill()`): the old loop condition
+   `amy_sysclock() >= (uint32_t)(next_amy_tick_us / 1000L)` paid a
+   `__udivdi3` **and** a second `amy_sysclock()` per check, every 500 µs
+   timer callback. Now compares the already-computed `now_us` against
+   `next_amy_tick_us` directly. Behavior delta: tick deadlines are no longer
+   rounded down to the ms boundary, so a tick can fire up to 1 ms later
+   (never earlier) on the 500 µs callback grid; accumulated tick rate is
+   unchanged.
+
+3. **`sequencer_recompute()` float-only** (`src/sequencer.c`): unsuffixed
+   `1000000.0` / `60.0` literals promoted the tempo math to software-emulated
+   double (`__extendsfdf2/__divdf3/__muldf3/__fixunsdfsi`). Rewritten as the
+   equivalent single-divide `60000000.0f / (tempo * PPQ)`. Cold path (tempo
+   changes only) — hygiene, not a hot-path win.
+
+Net effect on the 2 kHz Core-0 timer callback: 77 → 53 insns, calls column
+`__divsf3, __udivdi3` → one `__udivdi3` (the sysclock divide), float
+conversion traffic gone. Origin: asmdiff ELF-mode sweep
+(`2026-07-07-codegen-hotspots-handoff.md`).
 
 ### `src/amy.h` + `src/amy.c` — COARSE profiler mode
 

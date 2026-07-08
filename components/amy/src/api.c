@@ -212,8 +212,15 @@ output_sample_type * amy_simple_fill_buffer() {
 
 // on all platforms, sysclock is based on total samples played, using audio out (i2s or etc) as system clock
 uint32_t amy_sysclock() {
-    // Time is returned in integer milliseconds.  uint32_t rollover is 49.7 days.
-    return (uint32_t)((amy_global.total_blocks * AMY_BLOCK_SIZE / (float)AMY_SAMPLE_RATE) * 1000);
+    // LOCAL EDIT (S3-Amysynth): integer math. The float version had two bugs:
+    // the u32 samples-domain multiply (total_blocks * AMY_BLOCK_SIZE) wrapped
+    // at 2^32 samples (~24.9 h at 48 kHz, not the intended 49.7 days), and the
+    // 24-bit float mantissa quantized the clock as uptime grew (~2.7 ms steps
+    // after 12 h), making everything slaved to it - the sequencer above all -
+    // audibly lumpy. Integer math is exact and wraps like a plain u32
+    // millisecond counter (2^32 ms = 49.7 days). Upstream-PR candidate.
+    // Time is returned in integer milliseconds.
+    return (uint32_t)(((uint64_t)amy_global.total_blocks * (AMY_BLOCK_SIZE * 1000u)) / AMY_SAMPLE_RATE);
 }
 
 

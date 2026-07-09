@@ -287,6 +287,19 @@ void    sequencer_core_get_step_cond(uint8_t layer_idx, uint8_t track,
                                      uint8_t step, seq_step_cond_type_t *type,
                                      uint8_t *param);
 
+/* ── Per-step note transform + quantize bypass (OP-Z step-component subset) ──
+ * A step with transform==SEQ_STEP_TRANSFORM_NONE is unchanged (plain path). Any
+ * other mode offsets the emitted pitch per fire and routes the step through the
+ * decorated one-shot scheduler. quant_bypass rides on the transform: when set,
+ * the transformed pitch skips the scale/chord snap and plays chromatically;
+ * with NONE it has no effect. The setter clamps and re-emits the step. */
+void    sequencer_core_set_step_transform(uint8_t layer_idx, uint8_t track,
+                                          uint8_t step, seq_step_transform_t mode,
+                                          bool quant_bypass);
+void    sequencer_core_get_step_transform(uint8_t layer_idx, uint8_t track,
+                                          uint8_t step, seq_step_transform_t *mode,
+                                          bool *quant_bypass);
+
 /* Evaluate one AMY sequencer tick's worth of decorated-step bookkeeping:
  * detects step-boundary crossings per layer and, for any step that is
  * "decorated" (see above), rolls its conditional trig + probability and

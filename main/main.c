@@ -773,14 +773,22 @@ static void encoder_init_task(void *pvParameters)
     esp_err_t err = rotary_encoder_new_with_config(&enc_cfg, &enc);
     ESP_LOGI(TAG, "[encoder_init] rotary_encoder_new_with_config returned %d", err);
     if (err == ESP_OK && enc) {
-        // 4096: the encoder chain (synth_ui cycle/adjust → sequencer_core →
-        // amy_helpers) keeps no amy_event on the stack — sends go through
-        // amy_helpers' mutex-guarded static scratch event.
+        // 8192: the patch-toggle gesture (MY_BUTTON_1 held + encoder turn)
+        // runs the AMY patch-string parse INLINE on this task stack —
+        // synth_ui_cycle_*_patch → amy_send_patch → patches_load_patch →
+        // parse_patch_string_to_queue, whose amy_event frame (~828 B) plus the
+        // nested amy_parse_message buffers drive peak usage to ~3.3-3.6 KB.
+        // A 4096 stack could not absorb that inline frame plus an ISR frame
+        // landing at the peak, causing intermittent patch-toggle stack
+        // overflow (regression from the 8192->4096 trim in 4258556). Restored
+        // to 8192 (~8 KB DRAM back, the amount the trim reclaimed). The
+        // DRAM-preserving alternative is to port the amy_ingest pump task so
+        // the parse runs on its own stack instead of the caller's.
         // Pin to Core 0 so the encoder poll never migrates onto Core 1 and
         // jitters the audio DSP now running there.
         xTaskCreatePinnedToCore(encoder_task,
              "encoder_task",
-             4096,
+             8192,
              enc,
              5,
               NULL,
@@ -995,12 +1003,17 @@ void app_main(void)
     if (s_button_queue == NULL) {
         ESP_LOGW(TAG, "Button queue creation failed; callbacks will run inline");
     } else {
-        // 4096: carries the full dispatch_button_event chain (synth_ui_* /
-        // sequencer_core_* setters). amy_event never lives on a task stack —
-        // all AMY sends go through amy_helpers' static scratch event.
+        // 8192: carries the full dispatch_button_event chain (synth_ui_* /
+        // sequencer_core_* setters), which shares the patch-toggle parse path
+        // that runs amy_parse_message's ~3.4 KB frame INLINE on the caller
+        // stack. A 4096 stack could not absorb that inline frame plus an ISR
+        // frame, giving this task the same intermittent stack-overflow exposure
+        // as encoder_task (regression from the 8192->4096 trim in 4258556).
+        // Restored to 8192 (~8 KB DRAM back). Longer-term DRAM-preserving fix:
+        // port the amy_ingest pump task to offload the parse onto its own stack.
         if (xTaskCreatePinnedToCore(button_handler_task,
              "button_task",
-             4096,
+             8192,
              NULL,
               5,
               NULL,

@@ -38,6 +38,14 @@ static void melodic_configure_native_lfo_track(const seq_layer_t *layer, uint8_t
         e->synth      = synth;
         e->osc        = 0;
         e->mod_source = 1;
+        /* Clear every target's mod coef before selecting one so a prior target
+         * (e.g. AMP, which rides AMY's convex dB-amp COEF_MOD path) cannot
+         * persist across a target switch and rail the output — re-sending the
+         * same voice count does not reset the osc pool. */
+        e->filter_freq_coefs[COEF_MOD] = 0.0f;
+        e->amp_coefs[COEF_MOD]         = 0.0f;
+        e->freq_coefs[COEF_MOD]        = 0.0f;
+        e->duty_coefs[COEF_MOD]        = 0.0f;
         switch (lfo->target) {
             case LFO_TARGET_FILTER: e->filter_freq_coefs[COEF_MOD] = d * VOICE_LFO_DEPTH_FILTER; break;
             case LFO_TARGET_AMP:    e->amp_coefs[COEF_MOD]         = d * VOICE_LFO_DEPTH_AMP;    break;
@@ -67,6 +75,7 @@ static void melodic_configure_native_lfo_track(const seq_layer_t *layer, uint8_t
         e->filter_freq_coefs[COEF_MOD] = 0.0f;
         e->amp_coefs[COEF_MOD]         = 0.0f;
         e->freq_coefs[COEF_MOD]        = 0.0f;
+        e->duty_coefs[COEF_MOD]        = 0.0f;
         amy_helpers_event_send(e);
 
         e = amy_helpers_event_begin();

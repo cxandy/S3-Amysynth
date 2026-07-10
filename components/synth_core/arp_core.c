@@ -226,6 +226,15 @@ static void arp_configure_wave_synth(void)
     e->amp_coefs[COEF_EG0]    = 1.0f;
     if (lfo_on) {
         e->mod_source = 1;
+        /* Clear every target's mod coef before selecting one: re-sending the
+         * same voice count does NOT reset the osc pool (see above), so a prior
+         * target's COEF_MOD would otherwise persist and keep modulating. The
+         * stale-AMP case is the worst: amp COEF_MOD rides AMY's convex dB
+         * combine path, so a leftover coef ramps the output to a DC rail. */
+        e->filter_freq_coefs[COEF_MOD] = 0.0f;
+        e->amp_coefs[COEF_MOD]         = 0.0f;
+        e->freq_coefs[COEF_MOD]        = 0.0f;
+        e->duty_coefs[COEF_MOD]        = 0.0f;
         float d = s_arp.lfo.depth / 100.0f;
         switch (s_arp.lfo.target) {
             case LFO_TARGET_FILTER: e->filter_freq_coefs[COEF_MOD] = d * VOICE_LFO_DEPTH_FILTER; break;

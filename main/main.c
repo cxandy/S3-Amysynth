@@ -905,14 +905,10 @@ void app_main(void)
     ESP_ERROR_CHECK(usb_audio_init());
     HEAP_CHECK("after usb_audio_init");
 
+    /* synth_ui_init adds the boot layers (drum + first melodic) itself,
+     * single-threaded on this task's stack, before the UI task starts. */
     synth_ui_init(s_u8g2);
     HEAP_CHECK("after synth_ui_init");
-    /* Request the first melodic layer (DX7, 16 steps). synth_ui_task is the
-     * single applier for structural layer edits and it is already running at
-     * this point, so the add is deferred to its next frame rather than
-     * mutating the layer table from app_main concurrently. */
-    synth_ui_request_add_layer();
-    HEAP_CHECK("after request_add_layer melodic");
     ESP_LOGI(TAG, "[startup] after amy_start");
     
     TaskHandle_t amy_render_task_handle = NULL;

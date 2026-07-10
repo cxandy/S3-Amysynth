@@ -202,6 +202,17 @@ void synth_ui_init(u8g2_t *u8g2)
     sequencer_core_set_playing(true);
     SEQ_HEAP_CHECK("ui_init: after set_playing");
 
+    /* First melodic layer (default patch, 16 steps). Added HERE, before the
+     * UI task exists, for two reasons: (1) the patch-string load runs
+     * amy_parse_message's ~3.4 KB frame inline on the caller's stack, which
+     * does not fit the 4096-byte seq_ui stack the deferred-add drain runs on
+     * (the known Add-Layer overflow - deferring this add wedged boot holding
+     * s_event_mutex + amy_queue_lock); (2) running single-threaded before the
+     * applier task is registered satisfies the single-applier contract with
+     * no cross-task handoff. */
+    synth_ui_add_layer(SEQ_LAYER_MELODIC, SEQ_STEPS);
+    SEQ_HEAP_CHECK("ui_init: after add_layer(melodic)");
+
     /* Pin to Core 0: the OLED refresh does blocking I2C and is not latency
      * critical, so keep it off Core 1 where the AMY DSP now runs. */
     TaskHandle_t ui_task = NULL;

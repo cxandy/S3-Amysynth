@@ -50,6 +50,52 @@ static inline uint8_t trig_rand_pct(void)
     return (uint8_t)(x % 100u);
 }
 
+/* Semitone span shared by every non-NONE transform mode: RANDOM offsets by
+ * +/-SEQ_STEP_TRANSFORM_SPAN, RAMP walks 0..SEQ_STEP_TRANSFORM_SPAN across
+ * successive layer loops then wraps. Fixed (no per-step param array) to keep
+ * the OP-Z step-component subset minimal; one octave reads musically once the
+ * result is re-snapped to the scale. */
+#define SEQ_STEP_TRANSFORM_SPAN 12
+
+/* Per-step pitch transform (spec 20 §3.1). Offsets the step's authored note per
+ * fire, then re-snaps the result to the active chord/scale via the same engine
+ * resolve the plain per-track path uses — unless step_quant_bypass is set, in
+ * which case the transformed note is only bounds-clamped and emitted
+ * chromatically (spec 20 §3.2). SEQ_STEP_TRANSFORM_NONE returns `base`
+ * unchanged (this helper is only reached for decorated steps anyway). All
+ * integer math: no float, no lock, safe on the Core-0 service-tick task. */
+static uint8_t trig_transform_note(uint8_t layer_idx, const seq_layer_t *layer,
+                                   uint8_t track, uint8_t step, uint8_t base)
+{
+    int offset;
+    switch ((seq_step_transform_t)layer->step_transform[track][step]) {
+        case SEQ_STEP_TRANSFORM_RANDOM:
+            offset = (int)(trig_rand_pct() % (2u * SEQ_STEP_TRANSFORM_SPAN + 1u))
+                     - SEQ_STEP_TRANSFORM_SPAN;
+            break;
+        case SEQ_STEP_TRANSFORM_RAMP_UP:
+            offset = (int)(s_layer_loop_count[layer_idx]
+                           % (SEQ_STEP_TRANSFORM_SPAN + 1u));
+            break;
+        case SEQ_STEP_TRANSFORM_RAMP_DOWN:
+            offset = -(int)(s_layer_loop_count[layer_idx]
+                            % (SEQ_STEP_TRANSFORM_SPAN + 1u));
+            break;
+        case SEQ_STEP_TRANSFORM_NONE:
+        default:
+            return base;
+    }
+
+    int transformed = (int)base + offset;
+    if (transformed < 0)   transformed = 0;
+    if (transformed > 127) transformed = 127;
+
+    if (layer->step_quant_bypass[track][step]) {
+        return sequencer_clamp_layer_note(layer, (uint8_t)transformed);
+    }
+    return sequencer_resolve_track_note(layer, (uint8_t)transformed);
+}
+
 /* ── Ratchet tag formula ──────────────────────────────────────────────────
  * Statically assigned per (layer, track, ratchet-slot) — never pooled/shared
  * across tracks — so a slow ratchet group can never overwrite another
@@ -76,7 +122,8 @@ bool sequencer_core_step_is_decorated(const seq_layer_t *layer, uint8_t track, u
     if (track >= SEQ_TRACKS || step >= SEQ_MAX_STEPS) return false;
     return layer->step_prob[track][step]      != 100
         || layer->step_ratchet[track][step]   != 1
-        || layer->step_cond_type[track][step] != (uint8_t)SEQ_STEP_COND_NONE;
+        || layer->step_cond_type[track][step] != (uint8_t)SEQ_STEP_COND_NONE
+        || layer->step_transform[track][step] != (uint8_t)SEQ_STEP_TRANSFORM_NONE;
 }
 
 void sequencer_core_trig_reset(uint8_t layer_idx)
@@ -148,27 +195,41 @@ static void trig_schedule_ratchets(uint8_t layer_idx, const seq_layer_t *layer,
     uint16_t gate;
     if (n == 1) {
         sub_ticks = SEQ_TICKS_PER_STEP;
-        gate = (layer->type == SEQ_LAYER_DRUM) ? SEQ_GATE_DRUM : SEQ_GATE_MELODIC;
-        if (layer->type == SEQ_LAYER_MELODIC && (step % 2) == 1 && gate > 2) {
-            gate -= 2;
-        }
+        gate = seq_step_gate(layer, step);
     } else {
         sub_ticks = SEQ_TICKS_PER_STEP / n;
         if (sub_ticks < 2) sub_ticks = 2;
         gate = (uint16_t)(sub_ticks - 1);
     }
 
-    float velocity = sequencer_step_velocity(layer, track, step) * layer->amp_scale[track];
+    float velocity = sequencer_step_velocity(layer, track, step) * layer->vp[track].amp_trim;
+    /* Per-step velocity offset (patch-06): signed percentage points, default 0.
+     * Applied here as well as the plain path so decorated steps match. */
+    velocity += (float)layer->step_velocity_adj[track][step] * 0.01f;
+    if (velocity < 0.0f) velocity = 0.0f;
     if (velocity > 1.0f) velocity = 1.0f;
-    uint8_t note  = layer->step_note[track][step];
+    /* Single per-fire pitch source for both ratchet sub-hits and the plain
+     * decorated (n==1) path: apply any per-step note transform here so every
+     * sub-hit of one fire shares the same transformed pitch. */
+    uint8_t note  = trig_transform_note(layer_idx, layer, track, step,
+                                        layer->step_note[track][step]);
     uint8_t synth = layer->synth_id[track];
 
+    /* Ratchet velocity taper (patch-06): sub-hit k is scaled by (1 - taper*k%).
+     * Default 0 = flat (every sub-hit at full velocity — the historical
+     * behaviour). Positive taper decays toward the tail; negative ramps up.
+     * k==0 is always full velocity. */
+    int8_t taper = layer->step_ratchet_taper[track][step];
     for (uint8_t k = 0; k < n; k++) {
+        float scale = 1.0f - (float)taper * 0.01f * (float)k;
+        if (scale < 0.0f) scale = 0.0f;
+        if (scale > 1.0f) scale = 1.0f;
+        float v = velocity * scale;
         uint32_t tick_on  = now_ticks + 1u + (uint32_t)k * sub_ticks;
         uint32_t tick_off = tick_on + gate;
-        amy_send_note_sched(synth, (float)note, velocity,
+        amy_helpers_note_send(synth, (float)note, v,
                             ratchet_on_tag(layer_idx, track, k), tick_on, 0);
-        amy_send_note_sched(synth, (float)note, 0.0f,
+        amy_helpers_note_send(synth, (float)note, 0.0f,
                             ratchet_off_tag(layer_idx, track, k), tick_off, 0);
     }
 }
@@ -178,13 +239,20 @@ static void trig_schedule_ratchets(uint8_t layer_idx, const seq_layer_t *layer,
 void sequencer_core_service_tick(void)
 {
     if (!s_playing) return;
+    /* A structural s_layers edit (delete_layer's compaction) is in flight on
+     * another task; skip this tick rather than read a half-shifted table. The
+     * engine tolerates skipped ticks (trig_reset_all runs after the edit), so a
+     * dropped tick here is inaudible. */
+    if (s_layers_mutating) return;
     uint32_t now_ticks = sequencer_ticks();
 
     for (uint8_t li = 0; li < s_num_layers; li++) {
         seq_layer_t *layer = &s_layers[li];
+        /* bar_ticks stays local for the repeat-rate bar-window math below;
+         * the step derivation itself goes through the shared helper. */
         uint32_t bar_ticks = (uint32_t)layer->num_steps * SEQ_TICKS_PER_STEP;
         if (bar_ticks == 0) continue;
-        uint8_t cur_step = (uint8_t)((now_ticks % bar_ticks) / SEQ_TICKS_PER_STEP);
+        uint8_t cur_step = seq_playhead_step(layer, now_ticks);
         if (cur_step == s_layer_last_step[li]) continue;  /* still mid-step: O(1) exit */
 
         if (cur_step == 0 && s_layer_last_step[li] != 0xFF) {
@@ -204,11 +272,23 @@ void sequencer_core_service_tick(void)
             } else {
                 fire = trig_eval_condition(li, layer, tr, cur_step)
                     && trig_roll_probability(layer->step_prob[tr][cur_step]);
+                /* Per-track repeat_rate: the plain emit path repeats its
+                 * note-on tag every bar_ticks*rr (seq_core_engine.c:177-179),
+                 * so a plain step only sounds on the 0th bar of each rr-bar
+                 * window: (now_ticks/bar_ticks) % rr == 0. Gate the decorated
+                 * one-shot's output the same way so SEQ_REPEAT_N behaves
+                 * identically for decorated and plain steps. Like the mute/solo
+                 * gate below this only silences output — condition/probability
+                 * state keeps evaluating every bar so the track's rhythmic
+                 * position stays seamless. */
+                uint32_t rr = (layer->repeat_rate[tr] >= SEQ_REPEAT_2)
+                              ? (uint32_t)layer->repeat_rate[tr] : 1u;
+                bool rr_bar = ((now_ticks / bar_ticks) % rr) == 0;
                 /* Mute/solo silences output only — condition/probability state
                  * (fire, s_track_last_played below) keeps evaluating normally
                  * so a track resumes its rhythmic position seamlessly when
                  * unmuted rather than freezing while muted. */
-                if (fire && sequencer_track_audible(layer, tr)) {
+                if (fire && rr_bar && sequencer_track_audible(layer, tr)) {
                     trig_schedule_ratchets(li, layer, tr, cur_step, now_ticks);
                 }
             }
@@ -285,4 +365,38 @@ void sequencer_core_get_step_cond(uint8_t layer_idx, uint8_t track, uint8_t step
     }
     if (type)  *type  = t;
     if (param) *param = p;
+}
+
+/* ── Per-step note transform + quantize bypass (spec 20 §3.1/§3.2) ─────────
+ * Both re-emit the step so sequencer_emit_step() re-resolves plain-vs-decorated
+ * (a non-NONE transform forces the decorated one-shot path). The quantize
+ * bypass is a rider on the transform: it only alters output while a transform
+ * is active (with NONE, the base note is already snapped and uniform per
+ * track, so there is nothing to un-snap). */
+void sequencer_core_set_step_transform(uint8_t layer_idx, uint8_t track, uint8_t step,
+                                       seq_step_transform_t mode, bool quant_bypass)
+{
+    if (layer_idx >= s_num_layers) return;
+    seq_layer_t *layer = &s_layers[layer_idx];
+    if (track >= layer->num_tracks || step >= layer->num_steps) return;
+    if ((uint8_t)mode >= SEQ_STEP_TRANSFORM_COUNT) mode = SEQ_STEP_TRANSFORM_NONE;
+    layer->step_transform[track][step]    = (uint8_t)mode;
+    layer->step_quant_bypass[track][step] = quant_bypass ? 1u : 0u;
+    sequencer_emit_step(layer_idx, track, step);
+}
+
+void sequencer_core_get_step_transform(uint8_t layer_idx, uint8_t track, uint8_t step,
+                                       seq_step_transform_t *mode, bool *quant_bypass)
+{
+    seq_step_transform_t m = SEQ_STEP_TRANSFORM_NONE;
+    bool q = false;
+    if (layer_idx < s_num_layers) {
+        const seq_layer_t *layer = &s_layers[layer_idx];
+        if (track < layer->num_tracks && step < layer->num_steps) {
+            m = (seq_step_transform_t)layer->step_transform[track][step];
+            q = layer->step_quant_bypass[track][step] != 0;
+        }
+    }
+    if (mode)         *mode         = m;
+    if (quant_bypass) *quant_bypass = q;
 }

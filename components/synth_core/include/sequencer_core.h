@@ -3,8 +3,10 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "sdkconfig.h"     /* CONFIG_* gates on the virtual patch ranges below */
-#include "display_seq.h"   /* seq_layer_type_t, seq_layer_t, SEQ_* defines */
+#include "seq_model.h"     /* seq_layer_type_t, seq_layer_t, SEQ_* defines */
 #include "chord_types.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h" /* TaskHandle_t — layers-applier registration below */
 
 #ifdef __cplusplus
 extern "C" {
@@ -181,7 +183,7 @@ uint16_t sequencer_core_cycle_drum_pcm_preset(uint8_t layer_idx, uint8_t track,
 
 /* ── Per-row melodic ADSR envelope (runtime-editable) ──
  * Scoped per row (per track); each row has its own AMY synth, so its envelope
- * is fully independent. See seq_env_t in display_seq.h for the extension path
+ * is fully independent. See seq_env_t in seq_model.h for the extension path
  * to per-step. get returns false for non-melodic/out-of-range. set clamps,
  * stores, and pushes the envelope to that row's own synth. */
 bool sequencer_core_get_melodic_envelope(uint8_t layer_idx, uint8_t track,
@@ -244,13 +246,25 @@ uint8_t sequencer_core_get_current_step(uint8_t layer_idx);
 
 /* ── Layer management ── */
 
+/* Single-applier contract for structural s_layers edits: after boot-time init,
+ * every add_layer/delete_layer call must run on ONE task (synth_ui_task, which
+ * drains the UI's deferred add/delete requests) — the same discipline
+ * s_prog_apply_pending uses for chord edits. Other contexts request the edit
+ * via synth_ui_request_add_layer()/synth_ui_request_delete_to_layer() instead
+ * of calling these directly. Register the applier task here so debug builds
+ * can assert the contract; until a handle is registered (single-threaded
+ * boot init) the assert is skipped. */
+void             sequencer_core_set_layers_applier(TaskHandle_t applier);
+
 /* Add a new layer. Returns the new layer index (0..MAX_LAYERS-1), or
- * 0xFF if the layer table is full. Configures the AMY synth immediately. */
+ * 0xFF if the layer table is full. Configures the AMY synth immediately.
+ * Structural edit — applier-task only (see above). */
 uint8_t          sequencer_core_add_layer(seq_layer_type_t type, uint8_t num_steps);
 /* Delete a melodic layer by index. Returns false if the layer is the drum
  * layer (idx 0), the only remaining layer, or out of range. Cancels all
  * scheduled tags for all layers, frees the deleted layer's AMY oscillator
- * slots, compacts the layer array, and resyncs surviving layers if playing. */
+ * slots, compacts the layer array, and resyncs surviving layers if playing.
+ * Structural edit — applier-task only (see above). */
 bool             sequencer_core_delete_layer(uint8_t layer_idx);
 uint8_t          sequencer_core_get_num_layers(void);
 seq_layer_type_t sequencer_core_get_layer_type(uint8_t layer_idx);
@@ -286,6 +300,19 @@ void    sequencer_core_set_step_cond(uint8_t layer_idx, uint8_t track,
 void    sequencer_core_get_step_cond(uint8_t layer_idx, uint8_t track,
                                      uint8_t step, seq_step_cond_type_t *type,
                                      uint8_t *param);
+
+/* ── Per-step note transform + quantize bypass (OP-Z step-component subset) ──
+ * A step with transform==SEQ_STEP_TRANSFORM_NONE is unchanged (plain path). Any
+ * other mode offsets the emitted pitch per fire and routes the step through the
+ * decorated one-shot scheduler. quant_bypass rides on the transform: when set,
+ * the transformed pitch skips the scale/chord snap and plays chromatically;
+ * with NONE it has no effect. The setter clamps and re-emits the step. */
+void    sequencer_core_set_step_transform(uint8_t layer_idx, uint8_t track,
+                                          uint8_t step, seq_step_transform_t mode,
+                                          bool quant_bypass);
+void    sequencer_core_get_step_transform(uint8_t layer_idx, uint8_t track,
+                                          uint8_t step, seq_step_transform_t *mode,
+                                          bool *quant_bypass);
 
 /* Evaluate one AMY sequencer tick's worth of decorated-step bookkeeping:
  * detects step-boundary crossings per layer and, for any step that is
@@ -354,6 +381,14 @@ void              sequencer_core_set_track_repeat_rate(uint8_t layer_idx,
                                                        seq_repeat_rate_t rate);
 seq_repeat_rate_t sequencer_core_get_track_repeat_rate(uint8_t layer_idx,
                                                        uint8_t track);
+
+/* ── Per-layer swing / shuffle ────────────────────────────────────────────
+ * Delays odd 16th-steps by swing_pct% of one step (0..SEQ_SWING_MAX). Whole
+ * layer, all tracks. 0 = straight (default). Re-emits the layer immediately so
+ * AMY re-schedules every step at its swung tick. Mirrors the drone swing model
+ * (drone_set_swing). Engine + API only for now; no UI wiring yet. */
+void    sequencer_core_set_layer_swing(uint8_t layer_idx, uint8_t swing_pct);
+uint8_t sequencer_core_get_layer_swing(uint8_t layer_idx);
 
 /* ── Per-track mute / solo ────────────────────────────────────────────────
  * Scoped per layer: solo only compares against the other tracks of the SAME

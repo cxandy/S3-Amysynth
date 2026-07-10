@@ -20,6 +20,7 @@
 #include "quantizer.h"     /* quantizer_chord_intervals() */
 #include "amy.h"
 #include "amy_helpers.h"
+#include "voice_config.h"  /* voice_env_apply_ks_noise_floor */
 #include "sdkconfig.h"
 #include "esp_log.h"
 
@@ -146,18 +147,31 @@ typedef struct {
     float          last_blip_cutoff; /* to avoid redundant cutoff re-sends    */
     /* sweep phase, advanced each service tick (0..2pi) */
     float          last_lfo_hz; /* to avoid redundant LFO re-sends   */
-    seq_env_t      env;         /* runtime-editable ADSR (graph editor) */
-    bool           env_authored;/* true once the user commits a custom env */
-    seq_env_t      env1;        /* second envelope (EG1) — see drone_core.h */
-    bool           env1_authored;/* true once the user commits a custom EG1 */
-    float          amp_trim;    /* per-target amplitude trim (default 1.0, 0..1);
-                                   multiplied into amp_peak in s_amp_peak_lin() to give
-                                   the effective on-beat level. Set via the graph editor
-                                   amp mode (MY_BUTTON_2). MUST be init'd to 1.0f in
-                                   drone_core_init — memset zeroes it. */
+    voice_params_t vp;          /* shared voice params. The drone uses env (graph
+                                   editor ADSR), env1 (EG1 timing storage), their
+                                   authored flags, and amp_trim (multiplied into
+                                   amp_peak in s_amp_peak_lin() for the effective
+                                   on-beat level; graph editor amp mode,
+                                   MY_BUTTON_2). vp.filter/vp.lfo are unused: the
+                                   drone's sweep filter and stutter gate are its
+                                   own concepts. Defaults via
+                                   voice_params_init_defaults in drone_core_init. */
 } drone_state_t;
 
 static drone_state_t s_d;
+
+/* Schedule-affecting setters mark the drone dirty instead of rebuilding
+ * inline; drone_core_service() (once per UI frame) does a single rebuild when
+ * dirty, so an encoder spin through waves/params collapses to one rebuild +
+ * one burst of AMY event-mutex traffic per frame instead of one per detent.
+ * Mirrors the arp's s_arp_dirty discipline. Setters run on Core-0 input tasks
+ * and the drain runs on the Core-0 synth_ui_task — single-core, one-way flag,
+ * so the volatile is for compiler ordering, not cross-core synchronization.
+ * Enable, chord, and root-note changes stay synchronous: enabling must sound
+ * NOW, and chord/root must note-off the OLD voicing before state changes or
+ * voices stick. */
+static volatile bool s_d_dirty = false;
+static inline void drone_mark_dirty(void) { s_d_dirty = true; }
 
 /* ── Peak/Duck dB amp helpers ──────────────────────────────────────────────
  * These are the SINGLE source of truth for the engine math.  Both
@@ -181,7 +195,7 @@ static inline float s_amp_peak_lin(void)
     /* amp_trim is a per-target volume trim (0..1, default 1.0) set by the graph
      * editor amp mode. Fold it into amp_peak here so all callers automatically
      * pick up the trimmed level (single source of truth rule applies). */
-    float v = s_d.amp_peak * s_d.amp_trim;
+    float v = s_d.amp_peak * s_d.vp.amp_trim;
     if (v < 0.0f) v = 0.0f;
     if (v > 1.0f) v = 1.0f;
     return v;
@@ -254,17 +268,28 @@ static void drone_configure_wave_synth(uint8_t synth, uint8_t voices, uint16_t w
     float m          = s_amp_m();
     float const_sent = s_amp_const_sent();
 
-    /* Build-your-own synth: N voices, 2 oscs/voice, no patch. */
-    amy_event *e = amy_helpers_event_begin();
-    e->synth          = synth;
-    e->num_voices     = voices;
-    e->oscs_per_voice = DRONE_OSCS_PER_VC;
-    amy_helpers_event_send(e);
+    /* Shared skeleton: pool (build-your-own synth: N voices, 2 oscs/voice, no
+     * patch) + osc0 NOTE-following carrier (COEF_NOTE=1) so each voice plays
+     * its own chord note. Velocity does not scale amp (osc0_amp_vel=0); EG0
+     * multiplies the whole amp, so the ADSR envelope shapes the drone
+     * swell/fade *around* the LFO stutter. */
+    voice_wave_cfg_t cfg = {
+        .synth                = synth,
+        .num_voices           = voices,
+        .oscs_per_voice       = DRONE_OSCS_PER_VC,
+        .wave                 = wave,
+        .osc0_amp_const       = const_sent,
+        .osc0_amp_vel         = 0.0f,
+        .ks_feedback_authored = false,   /* fixed 0.9 KS default */
+        .ks_feedback_q        = 0.0f,
+        .wt_preset            = wt_preset,
+    };
+    voice_build_wave(&cfg);
 
     /* osc1 = PULSE LFO. Absolute Hz (note-follow off), full const amp.
      * The PULSE duty IS the gate length: 0.5 = 50/50 square (legacy), lower =
      * a shorter "on" fraction per subdivision = a tighter percussive chop. */
-    e = amy_helpers_event_begin();
+    amy_event *e = amy_helpers_event_begin();
     e->synth                 = synth;
     e->osc                   = 1;
     e->wave                  = PULSE;
@@ -276,21 +301,13 @@ static void drone_configure_wave_synth(uint8_t synth, uint8_t voices, uint16_t w
     e->amp_coefs[COEF_EG0]   = 0.0f;
     amy_helpers_event_send(e);
 
-    /* osc0 = carrier. NOTE-following pitch (COEF_NOTE=1) so each voice plays its
-     * own chord note; amp = const + mod(=osc1) gated, EG0 envelope; LPF24. */
+    /* osc0 drone specializations: amp = const + mod(=osc1) stutter gate, and
+     * the LPF24 sweep filter. Sent after osc1 so mod_source always points at
+     * a configured gate oscillator. */
     e = amy_helpers_event_begin();
     e->synth                  = synth;
     e->osc                    = 0;
-    e->wave                   = wave;
-    if (wave == KS) e->feedback = 0.9f;
-    if (wt_preset >= 0) e->preset = wt_preset;
-    e->freq_coefs[COEF_NOTE]  = 1.0f;    /* follow the voice's note pitch */
-    e->amp_coefs[COEF_CONST]  = const_sent;
     e->amp_coefs[COEF_MOD]    = m;
-    e->amp_coefs[COEF_VEL]    = 0.0f;    /* velocity does not scale amp      */
-    /* EG0 multiplies the whole amp (combine_controls_mult), so the ADSR
-     * envelope shapes the drone swell/fade *around* the LFO stutter. */
-    e->amp_coefs[COEF_EG0]    = 1.0f;
     e->mod_source             = 1;       /* osc1 of this voice (base-osc rel) */
     e->filter_type            = FILTER_LPF24;
     e->filter_freq_coefs[COEF_CONST] = s_d.sweep_hi;
@@ -367,11 +384,13 @@ static void drone_rebuild(void)
     }
     /* Re-impose the user's custom ADSR if authored (rebuild/patch resets the
      * synth oscs). Deferred authority, matching the melodic + arp behaviour. */
-    if (s_d.env_authored) {
-        seq_env_t env_to_push = s_d.env;
-        if (s_d.wave == KS || s_d.wave == NOISE) {
-            env_to_push.attack_ms = 2;  /* KS/NOISE: onset transient suppressed by attack ramp */
-        }
+    if (s_d.vp.env_authored) {
+        seq_env_t env_to_push = s_d.vp.env;
+        /* Attack-floor only (is_ks=false): the drone never zeroes KS sustain,
+         * and KS/NOISE are excluded from its wave cycle anyway — this guards
+         * stale persisted values without changing the envelope shape. */
+        voice_env_apply_ks_noise_floor(&env_to_push, false,
+                                       s_d.wave == KS || s_d.wave == NOISE);
         sequencer_core_push_envelope(DRONE_SYNTH_MAIN, &env_to_push);
         if (s_d.sub_enabled) {
             sequencer_core_push_envelope(DRONE_SYNTH_SUB, &env_to_push);
@@ -380,10 +399,10 @@ static void drone_rebuild(void)
     /* Second envelope (EG1): only pushed when authored — nothing in the
      * drone's own WAVE/PATCH setup above routes a coef to COEF_EG1, so this
      * is a no-op unless the loaded PATCH-mode instrument already does. */
-    if (s_d.env1_authored) {
-        sequencer_core_push_envelope_eg1(DRONE_SYNTH_MAIN, 0, &s_d.env1);
+    if (s_d.vp.env1_authored) {
+        sequencer_core_push_envelope_eg1(DRONE_SYNTH_MAIN, 0, &s_d.vp.env1);
         if (s_d.sub_enabled) {
-            sequencer_core_push_envelope_eg1(DRONE_SYNTH_SUB, 0, &s_d.env1);
+            sequencer_core_push_envelope_eg1(DRONE_SYNTH_SUB, 0, &s_d.vp.env1);
         }
     }
     s_d.last_lfo_hz = drone_lfo_hz();
@@ -441,6 +460,7 @@ void drone_core_init(void)
     amy_helpers_init();
 
     memset(&s_d, 0, sizeof(s_d));
+    voice_params_init_defaults(&s_d.vp);   /* unauthored, amp trim at unity */
     s_d.enabled      = false;
     s_d.source       = DRONE_SRC_WAVE;
     s_d.wave         = SAW_DOWN;
@@ -449,7 +469,6 @@ void drone_core_init(void)
     s_d.resonance    = 1.5f;
     s_d.amp_peak     = 0.5f;     /* on-beat level (linear; 0.5 = -6 dB)   */
     s_d.amp_duck     = 0.5f;     /* duck depth knob (0.5 -> 20 dB duck)   */
-    s_d.amp_trim     = 1.0f;     /* unity trim; memset zeroes it so must be explicit */
     s_d.rate         = DRONE_RATE_1_16;
     s_d.patch        = 25;
     s_d.sub_enabled  = true;
@@ -465,24 +484,22 @@ void drone_core_init(void)
     /* Default ADSR: slow swell suited to a drone. Not authored until the user
      * commits in the graph editor (the raw wave plays at full sustain otherwise,
      * since an unauthored env is not pushed and EG0 holds at 1.0 on a held note). */
-    s_d.env.attack_ms   = 200;
-    s_d.env.decay_ms    = 300;
-    s_d.env.sustain_pct = 100;
-    s_d.env.release_ms  = 600;
-    s_d.env.eg_type     = 0;   /* ENVELOPE_NORMAL */
-    s_d.env_authored    = false;
+    s_d.vp.env.attack_ms   = 200;
+    s_d.vp.env.decay_ms    = 300;
+    s_d.vp.env.sustain_pct = 100;
+    s_d.vp.env.release_ms  = 600;
+    s_d.vp.env.eg_type     = 0;   /* ENVELOPE_NORMAL */
     /* Second envelope (EG1): not routed to anything by the drone's own WAVE
      * patches (its filter movement already comes from the independent
      * sweep_lo/sweep_hi + BPM-synced service tick below, layering a second
      * envelope-driven cutoff shift on top would double-modulate the same
      * parameter). Kept purely as timing storage for a PATCH-mode drone whose
      * loaded AMY patch already routes its own bp1. */
-    s_d.env1.attack_ms   = 15;
-    s_d.env1.decay_ms    = 400;
-    s_d.env1.sustain_pct = 25;
-    s_d.env1.release_ms  = 400;
-    s_d.env1.eg_type     = 0;   /* ENVELOPE_NORMAL */
-    s_d.env1_authored    = false;
+    s_d.vp.env1.attack_ms   = 15;
+    s_d.vp.env1.decay_ms    = 400;
+    s_d.vp.env1.sustain_pct = 25;
+    s_d.vp.env1.release_ms  = 400;
+    s_d.vp.env1.eg_type     = 0;   /* ENVELOPE_NORMAL */
 
     drone_rebuild();
     ESP_LOGI(TAG, "drone_core initialized (synths %u/%u)",
@@ -491,6 +508,17 @@ void drone_core_init(void)
 
 void drone_core_service(void)
 {
+    /* Drain the coalesced rebuild BEFORE the enabled gate: a param changed
+     * while the drone is off must still rebuild (cheap synth reconfig only;
+     * drone_apply_enabled() is what actually sounds notes) so the change is
+     * live on the next enable. Drained before the LFO-hz tracking below so a
+     * rebuild and the tempo push land in the right order within the frame. */
+    if (s_d_dirty) {
+        s_d_dirty = false;
+        drone_rebuild();
+        if (s_d.enabled) drone_apply_enabled();
+    }
+
     if (!s_d.enabled) return;
 
     /* Keep the LFO locked to tempo: re-send osc1 freq if the BPM changed the
@@ -600,8 +628,7 @@ void drone_set_source(drone_source_t src)
     if (src != DRONE_SRC_WAVE && src != DRONE_SRC_PATCH) return;
     if (s_d.source == src) return;
     s_d.source = src;
-    drone_rebuild();
-    if (s_d.enabled) drone_apply_enabled();
+    drone_mark_dirty();
 }
 
 void drone_set_wave(uint16_t amy_wave)
@@ -611,10 +638,7 @@ void drone_set_wave(uint16_t amy_wave)
     if (amy_wave == NOISE || amy_wave == KS) amy_wave = SAW_DOWN;
     if (s_d.wave == amy_wave) return;
     s_d.wave = amy_wave;
-    if (s_d.source == DRONE_SRC_WAVE) {
-        drone_rebuild();
-        if (s_d.enabled) drone_apply_enabled();
-    }
+    if (s_d.source == DRONE_SRC_WAVE) drone_mark_dirty();
 }
 
 void drone_set_chord(chord_type_t chord)
@@ -678,10 +702,7 @@ void drone_set_amp_peak(float c)
     c = SEQ_CLAMP_F32(c, 0.0f, 1.0f);
     if (fabsf(s_d.amp_peak - c) < 0.001f) return;
     s_d.amp_peak = c;
-    if (s_d.source == DRONE_SRC_WAVE) {
-        drone_rebuild();
-        if (s_d.enabled) drone_apply_enabled();
-    }
+    if (s_d.source == DRONE_SRC_WAVE) drone_mark_dirty();
 }
 
 void drone_set_amp_duck(float m)
@@ -690,10 +711,7 @@ void drone_set_amp_duck(float m)
     m = SEQ_CLAMP_F32(m, 0.0f, 1.0f);
     if (fabsf(s_d.amp_duck - m) < 0.001f) return;
     s_d.amp_duck = m;
-    if (s_d.source == DRONE_SRC_WAVE) {
-        drone_rebuild();
-        if (s_d.enabled) drone_apply_enabled();
-    }
+    if (s_d.source == DRONE_SRC_WAVE) drone_mark_dirty();
 }
 
 void drone_set_rate(drone_rate_t rate)
@@ -725,10 +743,7 @@ void drone_set_patch(uint16_t patch)
     if (drone_patch_excluded(patch)) patch = SEQ_PATCH_TRIANGLE;
     if (s_d.patch == patch) return;
     s_d.patch = patch;
-    if (s_d.source == DRONE_SRC_PATCH) {
-        drone_rebuild();
-        if (s_d.enabled) drone_apply_enabled();
-    }
+    if (s_d.source == DRONE_SRC_PATCH) drone_mark_dirty();
 }
 
 void drone_set_sub_enabled(bool on)
@@ -736,9 +751,10 @@ void drone_set_sub_enabled(bool on)
     if (s_d.sub_enabled == on) return;
     s_d.sub_enabled = on;
     if (on) {
-        drone_rebuild();
-        if (s_d.enabled) drone_apply_enabled();
+        drone_mark_dirty();
     } else {
+        /* Note-off stays synchronous: the sounding sub voice must release now,
+         * not a frame later (same rule as the chord/root note-offs). */
         int sub_midi = SEQ_CLAMP_INT((int)s_d.root_note + (int)s_d.sub_interval, 12, 108);
         drone_note(DRONE_SYNTH_SUB, false, (float)sub_midi);
     }
@@ -749,10 +765,7 @@ void drone_set_sub_interval(int8_t st)
     int v = SEQ_CLAMP_INT((int)st, -36, 0);
     if (s_d.sub_interval == (int8_t)v) return;
     s_d.sub_interval = (int8_t)v;
-    if (s_d.sub_enabled) {
-        drone_rebuild();
-        if (s_d.enabled) drone_apply_enabled();
-    }
+    if (s_d.sub_enabled) drone_mark_dirty();
 }
 
 void drone_set_sweep_lo(float hz)
@@ -819,46 +832,46 @@ void drone_set_pattern(drone_pattern_t p)
 
 void drone_get_envelope(seq_env_t *out)
 {
-    if (out) *out = s_d.env;
+    if (out) *out = s_d.vp.env;
 }
 
 void drone_set_envelope(const seq_env_t *env)
 {
     if (!env) return;
-    s_d.env = *env;
-    if (s_d.env.attack_ms < 2) s_d.env.attack_ms = 2;  /* 2 ms floor */
-    s_d.env_authored = true;
-    seq_env_t env_to_push = s_d.env;
-    if (s_d.wave == KS || s_d.wave == NOISE) {
-        env_to_push.attack_ms = 2;  /* KS/NOISE: onset transient suppressed by attack ramp */
-    }
+    s_d.vp.env = *env;
+    if (s_d.vp.env.attack_ms < 2) s_d.vp.env.attack_ms = 2;  /* 2 ms floor */
+    s_d.vp.env_authored = true;
+    seq_env_t env_to_push = s_d.vp.env;
+    /* Attack-floor only, matching drone_rebuild(): no KS sustain zeroing. */
+    voice_env_apply_ks_noise_floor(&env_to_push, false,
+                                   s_d.wave == KS || s_d.wave == NOISE);
     sequencer_core_push_envelope(DRONE_SYNTH_MAIN, &env_to_push);
     if (s_d.sub_enabled) {
         sequencer_core_push_envelope(DRONE_SYNTH_SUB, &env_to_push);
     }
     ESP_LOGI(TAG, "drone env -> A%u D%u S%u%% R%u",
-             (unsigned)s_d.env.attack_ms, (unsigned)s_d.env.decay_ms,
-             (unsigned)s_d.env.sustain_pct, (unsigned)s_d.env.release_ms);
+             (unsigned)s_d.vp.env.attack_ms, (unsigned)s_d.vp.env.decay_ms,
+             (unsigned)s_d.vp.env.sustain_pct, (unsigned)s_d.vp.env.release_ms);
 }
 
 void drone_get_envelope2(seq_env_t *out)
 {
-    if (out) *out = s_d.env1;
+    if (out) *out = s_d.vp.env1;
 }
 
 void drone_set_envelope2(const seq_env_t *env)
 {
     if (!env) return;
-    s_d.env1 = *env;
-    if (s_d.env1.attack_ms < 2) s_d.env1.attack_ms = 2;  /* 2 ms floor */
-    s_d.env1_authored = true;
-    sequencer_core_push_envelope_eg1(DRONE_SYNTH_MAIN, 0, &s_d.env1);
+    s_d.vp.env1 = *env;
+    if (s_d.vp.env1.attack_ms < 2) s_d.vp.env1.attack_ms = 2;  /* 2 ms floor */
+    s_d.vp.env1_authored = true;
+    sequencer_core_push_envelope_eg1(DRONE_SYNTH_MAIN, 0, &s_d.vp.env1);
     if (s_d.sub_enabled) {
-        sequencer_core_push_envelope_eg1(DRONE_SYNTH_SUB, 0, &s_d.env1);
+        sequencer_core_push_envelope_eg1(DRONE_SYNTH_SUB, 0, &s_d.vp.env1);
     }
     ESP_LOGI(TAG, "drone env1 -> A%u D%u S%u%% R%u",
-             (unsigned)s_d.env1.attack_ms, (unsigned)s_d.env1.decay_ms,
-             (unsigned)s_d.env1.sustain_pct, (unsigned)s_d.env1.release_ms);
+             (unsigned)s_d.vp.env1.attack_ms, (unsigned)s_d.vp.env1.decay_ms,
+             (unsigned)s_d.vp.env1.sustain_pct, (unsigned)s_d.vp.env1.release_ms);
 }
 
 /* ── Getters ── */
@@ -929,14 +942,11 @@ void drone_set_amp_trim(float v)
 {
     if (v < 0.0f) v = 0.0f;
     if (v > 1.0f) v = 1.0f;
-    if (fabsf(s_d.amp_trim - v) < 0.001f) return;
-    s_d.amp_trim = v;
+    if (fabsf(s_d.vp.amp_trim - v) < 0.001f) return;
+    s_d.vp.amp_trim = v;
     /* s_amp_peak_lin() is called by drone_configure_wave_synth() via drone_rebuild(),
-     * so a rebuild picks up the new effective peak immediately. */
-    if (s_d.source == DRONE_SRC_WAVE) {
-        drone_rebuild();
-        if (s_d.enabled) drone_apply_enabled();
-    }
+     * so the coalesced rebuild picks up the new effective peak. */
+    if (s_d.source == DRONE_SRC_WAVE) drone_mark_dirty();
 }
 
-float drone_get_amp_trim(void) { return s_d.amp_trim; }
+float drone_get_amp_trim(void) { return s_d.vp.amp_trim; }

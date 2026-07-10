@@ -29,6 +29,17 @@ fx_state_t s_fx = {
     .echo_level          = CONFIG_SEQ_FX_DEFAULT_ECHO,
     .chorus_level        = CONFIG_SEQ_FX_DEFAULT_CHORUS,
     .reverb_level        = CONFIG_SEQ_FX_DEFAULT_REVERB,
+    /* Extended params start UNSET so AMY keeps its factory character until the
+     * user edits them. This is load-bearing: designated-init would otherwise
+     * zero these, and 0 liveness/damping would silently mangle the reverb. */
+    .echo_delay_ms   = FX_PARAM_UNSET,
+    .echo_feedback   = FX_PARAM_UNSET,
+    .echo_tone       = FX_PARAM_UNSET,
+    .reverb_liveness = FX_PARAM_UNSET,
+    .reverb_damping  = FX_PARAM_UNSET,
+    .reverb_xover_hz = FX_PARAM_UNSET,
+    .chorus_rate     = FX_PARAM_UNSET,
+    .chorus_depth    = FX_PARAM_UNSET,
     .presets_alter_global = false,
 };
 
@@ -51,6 +62,14 @@ void fx_push_echo(void)
 {
     amy_event *e = amy_helpers_event_begin();
     e->echo_level = (float)s_fx.echo_level / 100.0f;
+    /* Only touch sub-params the user has set; unset ones stay AMY_UNSET in the
+     * event so config_echo keeps the bus's current value. */
+    if (s_fx.echo_delay_ms != FX_PARAM_UNSET)
+        e->echo_delay_ms   = (float)s_fx.echo_delay_ms;
+    if (s_fx.echo_feedback != FX_PARAM_UNSET)
+        e->echo_feedback   = (float)s_fx.echo_feedback / 100.0f;
+    if (s_fx.echo_tone != FX_PARAM_UNSET)
+        e->echo_filter_coef = (float)s_fx.echo_tone / 100.0f;
     amy_helpers_event_send(e);
 }
 
@@ -58,6 +77,10 @@ void fx_push_chorus(void)
 {
     amy_event *e = amy_helpers_event_begin();
     e->chorus_level = (float)s_fx.chorus_level / 100.0f;
+    if (s_fx.chorus_rate != FX_PARAM_UNSET)
+        e->chorus_lfo_freq = (float)s_fx.chorus_rate / 100.0f;   /* centi-Hz -> Hz */
+    if (s_fx.chorus_depth != FX_PARAM_UNSET)
+        e->chorus_depth    = (float)s_fx.chorus_depth / 100.0f;
     amy_helpers_event_send(e);
 }
 
@@ -65,6 +88,12 @@ void fx_push_reverb(void)
 {
     amy_event *e = amy_helpers_event_begin();
     e->reverb_level = (float)s_fx.reverb_level / 100.0f;
+    if (s_fx.reverb_liveness != FX_PARAM_UNSET)
+        e->reverb_liveness = (float)s_fx.reverb_liveness / 100.0f;
+    if (s_fx.reverb_damping != FX_PARAM_UNSET)
+        e->reverb_damping  = (float)s_fx.reverb_damping / 100.0f;
+    if (s_fx.reverb_xover_hz != FX_PARAM_UNSET)
+        e->reverb_xover_hz = (float)s_fx.reverb_xover_hz;
     amy_helpers_event_send(e);
 }
 

@@ -9,13 +9,15 @@ if(CONFIG_SYNTH_CUSTOM_FM)
         "synth_ui/ui_screen_fm.c")
 endif()
 
-idf_component_register(SRCS "amy_helpers.c" "amy_fx.c" "arp_core.c" "quantizer.c" "graph_popup_amy.c"
+idf_component_register(SRCS "amy_helpers.c" "amy_fx.c" "arp_core.c" "quantizer.c" "graph_popup_amy.c" "voice_config.c"
                             "synth_ui/synth_ui_state.c"
                             "synth_ui/synth_ui_task.c"
                             "synth_ui/synth_ui_hint.c"
+                            "synth_ui/ui_view_resolve.c"
                             "synth_ui/ui_editors.c"
                             "synth_ui/ui_patch_cycle.c"
                             "synth_ui/ui_screen_menu.c"
+                            "synth_ui/ui_screen_fxmenu.c"
                             "synth_ui/ui_screen_arp.c"
                             "synth_ui/ui_screen_drone.c"
                             "synth_ui/ui_screen_prog.c"
@@ -32,7 +34,7 @@ idf_component_register(SRCS "amy_helpers.c" "amy_fx.c" "arp_core.c" "quantizer.c
                             "custompatches/bass_presets.c"
                             "custompatches/sample_rec.c"
                             ${fm_srcs}
-                       INCLUDE_DIRS "include"
+                       INCLUDE_DIRS "include" "sequencer_core"
                        PRIV_INCLUDE_DIRS "."
                        REQUIRES u8g2 display amy
                        PRIV_REQUIRES g_clamp)
@@ -40,9 +42,11 @@ target_compile_options(${COMPONENT_LIB} PRIVATE "-Wstack-usage=1024")
 set_source_files_properties(
     "${CMAKE_CURRENT_LIST_DIR}/synth_ui/synth_ui_state.c"
     "${CMAKE_CURRENT_LIST_DIR}/synth_ui/synth_ui_task.c"
+    "${CMAKE_CURRENT_LIST_DIR}/synth_ui/ui_view_resolve.c"
     "${CMAKE_CURRENT_LIST_DIR}/synth_ui/ui_editors.c"
     "${CMAKE_CURRENT_LIST_DIR}/synth_ui/ui_patch_cycle.c"
     "${CMAKE_CURRENT_LIST_DIR}/synth_ui/ui_screen_menu.c"
+    "${CMAKE_CURRENT_LIST_DIR}/synth_ui/ui_screen_fxmenu.c"
     "${CMAKE_CURRENT_LIST_DIR}/synth_ui/ui_screen_arp.c"
     "${CMAKE_CURRENT_LIST_DIR}/synth_ui/ui_screen_drone.c"
     "${CMAKE_CURRENT_LIST_DIR}/synth_ui/ui_screen_prog.c"

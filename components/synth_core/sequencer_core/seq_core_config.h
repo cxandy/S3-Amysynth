@@ -37,9 +37,20 @@
 
 /* ── Timing ──────────────────────────────────────────────────────────── */
 #define SEQ_TICKS_PER_STEP    (AMY_SEQUENCER_PPQ / 4)
+/* Max swing (shuffle): percent of one step by which odd 16ths are delayed.
+ * Mirrors the drone's DRONE_SWING_MAX. Stays < 100 so a swung note-on never
+ * crosses into the next step's slot. Musician mapping: the Digitakt 50-80%
+ * scalar corresponds to 0-60 here (50% = straight = 0). 66 is the ceiling. */
+#define SEQ_SWING_MAX         66
 /* A musical bar = 16 steps. Fixed regardless of layer length so the bar
  * counter and repeat-rate are independent of which layers are active. */
 #define SEQ_TICKS_PER_BAR     (16u * SEQ_TICKS_PER_STEP)
+/* Per-step micro-timing (swing/humanize) range in sequencer ticks, folded in
+ * only at step->absolute-tick conversion in sequencer_emit_step(). +-6 ticks
+ * is half a step (SEQ_TICKS_PER_STEP=12) — a strong but musical push/drag, and
+ * safely below the smallest loop period (16*12=192). Chosen range, NOT a
+ * hardware-confirmed spec; the future step_nudge setter clamps to +-this. */
+#define SEQ_STEP_NUDGE_MAX    6
 /* Drum gate: fraction of a step the note is held before its note-off. Now that
  * drums are real Juno patches (note-offs honored), this controls choke vs. ring;
  * the patch's own release tail still plays out after note-off. Tunable via
@@ -53,6 +64,15 @@
 #define SEQ_MIN_BPM           40
 #define SEQ_MAX_BPM           300
 /* SEQ_DEFAULT_BPM is declared in sequencer_core.h (shared with synth_ui). */
+
+/* ── Drum layer slot ─────────────────────────────────────────────────────
+ * Layer slot 0 is always the drum layer and is permanent; other layers are
+ * melodic and deletable. This is an invariant, not a preference — several
+ * paths assume s_layers[SEQ_DRUM_LAYER_IDX].type == SEQ_LAYER_DRUM.
+ * Deliberately NOT coupled to the SEQ_LAYER_DRUM enum value (which also
+ * happens to be 0): one is a slot index, the other a type tag; keeping them
+ * distinct constants avoids a silent alias if the enum is ever renumbered. */
+#define SEQ_DRUM_LAYER_IDX    0u
 
 /* ── Drum synth slots ────────────────────────────────────────────────────
  * Drums are now a per-track Juno-patch layer: each of the 4 tracks loads its

@@ -2,7 +2,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
-#include "display_seq.h"   /* seq_env_t */
+#include "seq_model.h"     /* seq_env_t */
 
 #ifdef __cplusplus
 extern "C" {

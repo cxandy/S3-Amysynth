@@ -1,0 +1,77 @@
+#pragma once
+
+/* Shared voice-config layer — extraction target for backlog item 14.
+ * Phase 0 lands only the leaf utilities and canonical constants; the
+ * builder/LFO topology (voice_build_wave / voice_apply_native_lfo /
+ * voice_params_t) follows in HW-A/B-gated phases (see
+ * specs/spec-14-shared-voice-config.md). */
+
+#include "seq_model.h"     /* seq_env_t, lfo_wave_t */
+#include <stdbool.h>
+#include <stdint.h>
+
+/* Canonical LFO-target depth scalars. Single source of truth, was duplicated
+ * across arp_core.c and seq_core_editors.c. */
+#define VOICE_LFO_DEPTH_FILTER 3.0f
+#define VOICE_LFO_DEPTH_AMP    0.5f
+#define VOICE_LFO_DEPTH_PITCH  1.0f
+#define VOICE_LFO_DEPTH_SCAN   0.5f
+#define VOICE_LFO_DEPTH_PAN    0.5f  /* swing around the 0.5 center baseline */
+
+/* Reset a voice_params_t (defined in seq_model.h) to its defaults: everything
+ * zeroed/unauthored, amp_trim at unity. The single place the trim gets its
+ * non-zero default — kills the "must re-set to 1.0 after memset" footgun that
+ * was re-documented per engine. */
+void voice_params_init_defaults(voice_params_t *vp);
+
+/* lfo_wave_t -> AMY wave constant. RANDOM maps to NOISE: compute_mod_noise
+ * is a native sample-and-hold (redraws only when the carrier phasor wraps),
+ * replacing the 20 Hz software lfo_next_rand() poll. */
+uint16_t voice_lfo_wave_to_amy(lfo_wave_t wave);
+
+/* KS/NOISE onset-transient attack floor (2 ms); KS also zeroes sustain. */
+void voice_env_apply_ks_noise_floor(seq_env_t *env, bool is_ks, bool is_noise);
+
+/* ── Shared WAVE-voice skeleton ──────────────────────────────────────────
+ * The canonical "N voices, osc0 = note-following carrier" build used by the
+ * arp, the drone, and the melodic sequencer. voice_build_wave() sends two
+ * events: the pool definition and the osc0 skeleton. It deliberately does
+ * NOT touch osc1, envelopes, filters, or mod routing — each engine layers
+ * its own specialization (native LFO carrier, PULSE stutter gate, sweep
+ * filter) on top as follow-up deltas.
+ *
+ * AMY does not reset the osc pool when the same num_voices/oscs_per_voice
+ * is re-sent, so rebuilding through this function never glitches held
+ * voices; that same property is why per-target COEF_MOD state must be
+ * cleared explicitly on reconfigure (see voice_apply_native_lfo). */
+typedef struct {
+    uint8_t  synth;
+    uint8_t  num_voices;
+    uint8_t  oscs_per_voice;       /* 2 when osc1 is reserved as a carrier */
+    uint16_t wave;                 /* AMY wave constant for osc0           */
+    float    osc0_amp_const;       /* arp/melodic 1.0; drone const_sent    */
+    float    osc0_amp_vel;         /* arp/melodic 1.0; drone 0.0           */
+    bool     ks_feedback_authored; /* authored Q drives KS string decay    */
+    float    ks_feedback_q;        /* seq_filter_t resonance when authored */
+    int16_t  wt_preset;            /* >=0 => e->preset (WAVETABLE); else -1 */
+} voice_wave_cfg_t;
+
+/* Core-0 / UI-task only; pushes through amy_helpers (never amy_queue_lock). */
+void voice_build_wave(const voice_wave_cfg_t *cfg);
+
+/* Apply the AMY-native mod-source LFO routing for one synth built by
+ * voice_build_wave() with oscs_per_voice=2: osc0 gets mod_source=1 plus the
+ * selected target's COEF_MOD depth, osc1 becomes the LFO carrier at the
+ * BPM-synced rate. Pass lfo=NULL (or a disabled lfo) to deactivate: the mod
+ * coupling is cleared and the carrier silenced.
+ *
+ * Idempotent and state-clean: every target's COEF_MOD is cleared before the
+ * selected one is set, because re-sending the same voice count does not reset
+ * the osc pool — a prior target's coef would otherwise persist and keep
+ * modulating (the stale-AMP case rides AMY's convex dB combine path and ramps
+ * the output to a DC rail).
+ *
+ * Core-0 / UI-task only; pushes through amy_helpers (never amy_queue_lock).
+ * This is the function a future per-step p-lock caller uses from the tick
+ * engine. */
+void voice_apply_native_lfo(uint8_t synth, const seq_lfo_t *lfo, uint16_t bpm);

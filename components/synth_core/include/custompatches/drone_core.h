@@ -2,7 +2,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
-#include "display_seq.h"   /* seq_env_t */
+#include "seq_model.h"     /* seq_env_t */
 #include "chord_types.h"   /* chord_type_t, chord_type_name() */
 #include "quantizer.h"     /* quantizer_chord_intervals() */
 

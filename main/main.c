@@ -15,6 +15,7 @@
 #include "rotary_encoder.h"
 #include "synth_ui.h"
 #include "sequencer_core.h"
+#include "amy_helpers.h"   /* amy_helpers_set_render_task */
 #include "custompatches/sample_rec.h"
 #include "usb_audio.h"
 #include "esp_timer.h"
@@ -457,25 +458,31 @@ static void dispatch_button_event(my_button_id_t button_id, button_event_t event
         }
     }
 
+    /* Below the mode-screen isolation guards, the overlay-editor buttons all
+     * dispatch on the single precedence resolver instead of re-deriving "which
+     * overlay is on top" ad hoc. Resolving once here also removes the former
+     * MY_BUTTON_3 stepedit-vs-graph skew (S1): every button now agrees with the
+     * draw switch about the active view. */
+    ui_view_id_t v = synth_ui_active_view();
+
     // MY_BUTTON_2 is normally the pitch-edit hold button (transpose the selected
     // track via the encoder). While the graph editor is open it toggles amp-edit
     // mode so the encoder adjusts the target's amplitude trim instead of ADSR
     // points. Time-range is now auto-switched; MY_BUTTON_2 is freed for this use.
     if (button_id == MY_BUTTON_2) {
-        if (synth_ui_filter_is_active()) {
-            /* Suppress drum-select hold so the latch never gets stuck. */
-            return;
-        }
-        if (synth_ui_graph_is_active()) {
-            if (event == BUTTON_PRESS_DOWN) {
-                synth_ui_graph_toggle_amp_mode();
-            }
-            return;
-        }
-        if (synth_ui_stepedit_is_active()) {
-            /* Suppress drum-select hold while the popup owns the encoder.
-             * (Step Trig editor open/close now lives on MY_BUTTON_3.) */
-            return;
+        switch (v) {
+            case UI_VIEW_FILTER:
+                /* Suppress drum-select hold so the latch never gets stuck. */
+                return;
+            case UI_VIEW_GRAPH:
+                if (event == BUTTON_PRESS_DOWN) synth_ui_graph_toggle_amp_mode();
+                return;
+            case UI_VIEW_STEPEDIT:
+                /* Suppress drum-select hold while the popup owns the encoder.
+                 * (Step Trig editor open/close now lives on MY_BUTTON_3.) */
+                return;
+            default:
+                break;
         }
         if (event == BUTTON_PRESS_DOWN) {
             s_drum_select_held = true;
@@ -495,22 +502,26 @@ static void dispatch_button_event(my_button_id_t button_id, button_event_t event
     // fires accidentally while holding MY_BUTTON_2 to transpose). Outside
     // all of that it is the menu toggle.
     if (button_id == MY_BUTTON_3) {
-        if (synth_ui_graph_is_active() || synth_ui_filter_is_active()
-                                       || synth_ui_lfo_is_active()) {
+        /* STEPEDIT outranks GRAPH in the canonical order, so resolving via v
+         * fixes the former skew where this block checked graph/filter/lfo
+         * before stepedit — input now matches what the OLED draws. */
+        if (v == UI_VIEW_GRAPH || v == UI_VIEW_FILTER || v == UI_VIEW_LFO) {
             if (event == BUTTON_SINGLE_CLICK) {
                 synth_ui_cycle_editor();
-            } else if (event == BUTTON_LONG_PRESS_START && synth_ui_graph_is_active()) {
+            } else if (event == BUTTON_LONG_PRESS_START && v == UI_VIEW_GRAPH) {
                 synth_ui_graph_toggle_eg_index();
             }
             return;
         }
-        if (synth_ui_stepedit_is_active()) {
+        if (v == UI_VIEW_STEPEDIT) {
             if (event == BUTTON_SINGLE_CLICK) {
                 synth_ui_stepedit_close();
             }
             return;
         }
         if (event == BUTTON_LONG_PRESS_START) {
+            /* stepedit_open() self-gates to the sequencer screen (Phase 1), so
+             * a long-press on any other screen is a harmless no-op. */
             if (!synth_ui_menu_is_active()) {
                 synth_ui_stepedit_open();
             }
@@ -527,95 +538,54 @@ static void dispatch_button_event(my_button_id_t button_id, button_event_t event
      * - short press (editor open)  toggles select<->adjust, or confirms in VIEW
      * Remove this block to revert the integration. */
     if (button_id == MY_BUTTON_ENC) {
-        if (synth_ui_filter_is_active()) {
-            /* Long-press commits + closes; short-press cycles cursor. */
-            if (event == BUTTON_LONG_PRESS_START) {
-                synth_ui_filter_close_commit();
-            } else if (event == BUTTON_PRESS_DOWN) {
-                synth_ui_filter_handle_button(false);
-            }
-            return;
-        }
-        if (synth_ui_lfo_is_active()) {
-            if (event == BUTTON_LONG_PRESS_START) {
-                synth_ui_lfo_close_commit();
-            } else if (event == BUTTON_PRESS_DOWN) {
-                synth_ui_lfo_handle_button(false);
-            }
-            return;
-        }
-        /* Step Trig editor: short press cycles the focused field, long press
-         * closes it (symmetric with the filter/LFO/graph editors above). */
-        if (synth_ui_stepedit_is_active()) {
-            if (event == BUTTON_LONG_PRESS_START) {
-                synth_ui_stepedit_close();
-            } else if (event == BUTTON_PRESS_DOWN) {
-                synth_ui_stepedit_handle_button();
-            }
-            return;
-        }
-        if (synth_ui_graph_is_active()) {
-            /* Long-press closes the editor and COMMITS, symmetric with the
-             * long-press that opens it. Short-press toggles select<->adjust.
-             * (Discard-on-close stays on MY_BUTTON_0 long-press below.) */
-            if (event == BUTTON_LONG_PRESS_START) {
-                synth_ui_graph_close_commit(); /* long = commit + close */
-            } else if (event == BUTTON_PRESS_DOWN) {
-                synth_ui_graph_handle_button(false); /* short press */
-            }
-            return;
-        }
-        /* Menu overlay captures the encoder push (enter/exit editing, or run an
-         * action item). Highest priority below the graph editor. */
-        if (synth_ui_menu_is_active()) {
-            if (event == BUTTON_PRESS_DOWN) {
-                synth_ui_menu_handle_button();
-            }
-            return;
-        }
-        /* Arp screen: short press toggles edit on the focused field/slot; long
-         * press opens the ADSR editor bound to the arp envelope. */
-        if (synth_ui_arp_is_active()) {
-            if (event == BUTTON_LONG_PRESS_START) {
-                synth_ui_graph_open_envelope();
-            } else if (event == BUTTON_PRESS_DOWN) {
-                synth_ui_arp_handle_button();
-            }
-            return;
-        }
-        /* Drone screen: short press toggles edit on the focused row; long press
-         * opens the ADSR editor bound to the drone envelope. */
-        if (synth_ui_drone_is_active()) {
-            if (event == BUTTON_LONG_PRESS_START) {
-                synth_ui_graph_open_envelope();
-            } else if (event == BUTTON_PRESS_DOWN) {
-                synth_ui_drone_handle_button();
-            }
-            return;
-        }
-        /* Prog screen: encoder-click navigates cursor / confirms edits. */
-        if (synth_ui_prog_is_active()) {
-            if (event == BUTTON_PRESS_DOWN) {
-                synth_ui_prog_handle_button();
-            }
-            return;
-        }
-        /* Track Options screen: encoder-click toggles edit on the focused row. */
-        if (synth_ui_trackopts_is_active()) {
-            if (event == BUTTON_PRESS_DOWN) {
-                synth_ui_trackopts_handle_button();
-            }
-            return;
-        }
+        /* Encoder-push is a clean per-view dispatch — the old cascade was
+         * already in canonical order, so this is a direct lift onto v. For the
+         * editors long-press commits/closes and short-press cycles; the mode
+         * screens edit their focused row (long-press on arp/drone opens the
+         * bound ADSR editor). */
+        switch (v) {
+            case UI_VIEW_FILTER:
+                if (event == BUTTON_LONG_PRESS_START) synth_ui_filter_close_commit();
+                else if (event == BUTTON_PRESS_DOWN)  synth_ui_filter_handle_button(false);
+                return;
+            case UI_VIEW_LFO:
+                if (event == BUTTON_LONG_PRESS_START) synth_ui_lfo_close_commit();
+                else if (event == BUTTON_PRESS_DOWN)  synth_ui_lfo_handle_button(false);
+                return;
+            case UI_VIEW_STEPEDIT:
+                if (event == BUTTON_LONG_PRESS_START) synth_ui_stepedit_close();
+                else if (event == BUTTON_PRESS_DOWN)  synth_ui_stepedit_handle_button();
+                return;
+            case UI_VIEW_GRAPH:
+                if (event == BUTTON_LONG_PRESS_START) synth_ui_graph_close_commit();
+                else if (event == BUTTON_PRESS_DOWN)  synth_ui_graph_handle_button(false);
+                return;
+            case UI_VIEW_MENU:
+                if (event == BUTTON_PRESS_DOWN) synth_ui_menu_handle_button();
+                return;
+            case UI_VIEW_ARP:
+                if (event == BUTTON_LONG_PRESS_START) synth_ui_graph_open_envelope();
+                else if (event == BUTTON_PRESS_DOWN)  synth_ui_arp_handle_button();
+                return;
+            case UI_VIEW_DRONE:
+            case UI_VIEW_DRONE_VIS:
+                if (event == BUTTON_LONG_PRESS_START) synth_ui_graph_open_envelope();
+                else if (event == BUTTON_PRESS_DOWN)  synth_ui_drone_handle_button();
+                return;
+            case UI_VIEW_PROG:
+                if (event == BUTTON_PRESS_DOWN) synth_ui_prog_handle_button();
+                return;
+            case UI_VIEW_TRACKOPTS:
+                if (event == BUTTON_PRESS_DOWN) synth_ui_trackopts_handle_button();
+                return;
 #if CONFIG_SYNTH_CUSTOM_FM
-        /* FM screen: encoder-click toggles edit on the focused row. */
-        if (synth_ui_fm_is_active()) {
-            if (event == BUTTON_PRESS_DOWN) {
-                synth_ui_fm_handle_button();
-            }
-            return;
-        }
+            case UI_VIEW_FM:
+                if (event == BUTTON_PRESS_DOWN) synth_ui_fm_handle_button();
+                return;
 #endif
+            default:  /* UI_VIEW_SEQ */
+                break;
+        }
         if (event == BUTTON_LONG_PRESS_START) {
             synth_ui_graph_open_envelope();
             return;
@@ -625,15 +595,11 @@ static void dispatch_button_event(my_button_id_t button_id, button_event_t event
 
     /* MY_BUTTON_0 long press cancels whichever overlay editor is open. */
     if (button_id == MY_BUTTON_0 &&
-        (synth_ui_graph_is_active() || synth_ui_filter_is_active()
-                                    || synth_ui_lfo_is_active())) {
+        (v == UI_VIEW_GRAPH || v == UI_VIEW_FILTER || v == UI_VIEW_LFO)) {
         if (event == BUTTON_LONG_PRESS_START) {
-            if (synth_ui_filter_is_active())
-                synth_ui_filter_handle_button(true); /* long = cancel */
-            else if (synth_ui_lfo_is_active())
-                synth_ui_lfo_handle_button(true);
-            else
-                synth_ui_graph_handle_button(true);
+            if (v == UI_VIEW_FILTER)      synth_ui_filter_handle_button(true); /* long = cancel */
+            else if (v == UI_VIEW_LFO)    synth_ui_lfo_handle_button(true);
+            else                          synth_ui_graph_handle_button(true);
         }
         return;
     }
@@ -683,32 +649,20 @@ static void encoder_task(void *pvParameters)
             enc_accum %= 2;
             if (steps == 0) goto next_poll;
 
-            /* filter editor: highest priority encoder consumer. */
-            if (synth_ui_filter_handle_encoder(steps)) {
-                goto next_poll;
-            }
-
-            /* LFO editor: scrolls cursor or adjusts selected field. */
-            if (synth_ui_lfo_handle_encoder(steps)) {
-                goto next_poll;
-            }
-
-            /* Step Trig editor: adjusts the focused field (prob/ratchet/cond/param)
-             * for the currently-selected sequencer grid step. */
-            if (synth_ui_stepedit_handle_encoder(steps)) {
-                goto next_poll;
-            }
-
-            /* graph pop-up: when open, the encoder drives the curve editor and
-             * normal sequencer routing is skipped. Remove this branch to revert. */
-            if (synth_ui_graph_handle_encoder(steps)) {
-                goto next_poll;
-            }
-
-            // Menu overlay captures the encoder (scroll items, or change the
-            // value of the entered item). Highest priority below the graph.
-            if (synth_ui_menu_handle_encoder(steps)) {
-                goto next_poll;
+            /* One precedence resolver drives both input routers and the draw
+             * switch, so input and the OLED can never target different views.
+             * The five overlays (canonical order FILTER>LFO>STEPEDIT>GRAPH>MENU)
+             * capture the encoder outright; below them the mode screens are
+             * dispatched by resolved view, with the patch-hold / drum-select
+             * modifiers taking over exactly as before. */
+            ui_view_id_t v = synth_ui_active_view();
+            switch (v) {
+                case UI_VIEW_FILTER:   synth_ui_filter_handle_encoder(steps);   goto next_poll;
+                case UI_VIEW_LFO:      synth_ui_lfo_handle_encoder(steps);      goto next_poll;
+                case UI_VIEW_STEPEDIT: synth_ui_stepedit_handle_encoder(steps); goto next_poll;
+                case UI_VIEW_GRAPH:    synth_ui_graph_handle_encoder(steps);    goto next_poll;
+                case UI_VIEW_MENU:     synth_ui_menu_handle_encoder(steps);     goto next_poll;
+                default:               break;  /* fall through to the mode-tail */
             }
 
             if (s_patch_held) {
@@ -718,9 +672,9 @@ static void encoder_task(void *pvParameters)
                 // patch: the melodic layer's shared patch, or — for a drum
                 // layer — the SELECTED drum track's own patch (drums are
                 // per-track Juno patches now).
-                if (synth_ui_drone_is_active()) {
+                if (v == UI_VIEW_DRONE || v == UI_VIEW_DRONE_VIS) {
                     synth_ui_drone_cycle_patch((int)steps);
-                } else if (synth_ui_arp_is_active()) {
+                } else if (v == UI_VIEW_ARP) {
                     synth_ui_arp_cycle_patch((int)steps);
                 } else if (sequencer_core_get_layer_type(seq_get_active_layer_idx())
                            == SEQ_LAYER_DRUM) {
@@ -728,24 +682,24 @@ static void encoder_task(void *pvParameters)
                 } else {
                     synth_ui_cycle_melodic_patch((int)steps);
                 }
-            } else if (synth_ui_drone_is_active()) {
+            } else if (v == UI_VIEW_DRONE || v == UI_VIEW_DRONE_VIS) {
                 // Drone screen: encoder moves the cursor / edits the focused row.
                 synth_ui_drone_handle_encoder(steps);
             } else if (s_drum_select_held) {
                 // Pitch-edit mode: hold MY_BUTTON_2 + turn encoder edits the
                 // selected track's pitch (works for both drum and melodic).
                 synth_ui_adjust_track_note((int)steps);
-            } else if (synth_ui_arp_is_active()) {
+            } else if (v == UI_VIEW_ARP) {
                 // Arp screen: encoder moves the cursor / edits the focused field.
                 synth_ui_arp_handle_encoder(steps);
-            } else if (synth_ui_prog_is_active()) {
+            } else if (v == UI_VIEW_PROG) {
                 // Prog screen: encoder scrolls cursor / edits the focused entry field.
                 synth_ui_prog_handle_encoder((int)steps);
-            } else if (synth_ui_trackopts_is_active()) {
+            } else if (v == UI_VIEW_TRACKOPTS) {
                 // Track Options screen: encoder scrolls rows / edits focused value.
                 synth_ui_trackopts_handle_encoder((int)steps);
 #if CONFIG_SYNTH_CUSTOM_FM
-            } else if (synth_ui_fm_is_active()) {
+            } else if (v == UI_VIEW_FM) {
                 // FM screen: encoder scrolls rows / edits focused value.
                 synth_ui_fm_handle_encoder((int)steps);
 #endif
@@ -773,14 +727,22 @@ static void encoder_init_task(void *pvParameters)
     esp_err_t err = rotary_encoder_new_with_config(&enc_cfg, &enc);
     ESP_LOGI(TAG, "[encoder_init] rotary_encoder_new_with_config returned %d", err);
     if (err == ESP_OK && enc) {
-        // 4096: the encoder chain (synth_ui cycle/adjust → sequencer_core →
-        // amy_helpers) keeps no amy_event on the stack — sends go through
-        // amy_helpers' mutex-guarded static scratch event.
+        // 8192: the patch-toggle gesture (MY_BUTTON_1 held + encoder turn)
+        // runs the AMY patch-string parse INLINE on this task stack —
+        // synth_ui_cycle_*_patch → amy_send_patch → patches_load_patch →
+        // parse_patch_string_to_queue, whose amy_event frame (~828 B) plus the
+        // nested amy_parse_message buffers drive peak usage to ~3.3-3.6 KB.
+        // A 4096 stack could not absorb that inline frame plus an ISR frame
+        // landing at the peak, causing intermittent patch-toggle stack
+        // overflow (regression from the 8192->4096 trim in 4258556). Restored
+        // to 8192 (~8 KB DRAM back, the amount the trim reclaimed). The
+        // DRAM-preserving alternative is to port the amy_ingest pump task so
+        // the parse runs on its own stack instead of the caller's.
         // Pin to Core 0 so the encoder poll never migrates onto Core 1 and
         // jitters the audio DSP now running there.
         xTaskCreatePinnedToCore(encoder_task,
              "encoder_task",
-             4096,
+             8192,
              enc,
              5,
               NULL,
@@ -943,11 +905,10 @@ void app_main(void)
     ESP_ERROR_CHECK(usb_audio_init());
     HEAP_CHECK("after usb_audio_init");
 
+    /* synth_ui_init adds the boot layers (drum + first melodic) itself,
+     * single-threaded on this task's stack, before the UI task starts. */
     synth_ui_init(s_u8g2);
     HEAP_CHECK("after synth_ui_init");
-    /* Add the first melodic layer (DX7, 16 steps). */
-    synth_ui_add_layer(SEQ_LAYER_MELODIC, SEQ_STEPS);
-    HEAP_CHECK("after add_layer melodic");
     ESP_LOGI(TAG, "[startup] after amy_start");
     
     TaskHandle_t amy_render_task_handle = NULL;
@@ -986,6 +947,8 @@ void app_main(void)
     if (render_task_ok != pdPASS) {
         ESP_LOGE(TAG, "amy_render task create failed (%ld)", (long)render_task_ok);
     }
+    /* Debug builds assert no ingress helper runs on the render body. */
+    amy_helpers_set_render_task(amy_render_task_handle);
 
     ESP_LOGI(TAG, "AMY + USB Audio ready (48 kHz stereo to PC)");
 
@@ -995,12 +958,17 @@ void app_main(void)
     if (s_button_queue == NULL) {
         ESP_LOGW(TAG, "Button queue creation failed; callbacks will run inline");
     } else {
-        // 4096: carries the full dispatch_button_event chain (synth_ui_* /
-        // sequencer_core_* setters). amy_event never lives on a task stack —
-        // all AMY sends go through amy_helpers' static scratch event.
+        // 8192: carries the full dispatch_button_event chain (synth_ui_* /
+        // sequencer_core_* setters), which shares the patch-toggle parse path
+        // that runs amy_parse_message's ~3.4 KB frame INLINE on the caller
+        // stack. A 4096 stack could not absorb that inline frame plus an ISR
+        // frame, giving this task the same intermittent stack-overflow exposure
+        // as encoder_task (regression from the 8192->4096 trim in 4258556).
+        // Restored to 8192 (~8 KB DRAM back). Longer-term DRAM-preserving fix:
+        // port the amy_ingest pump task to offload the parse onto its own stack.
         if (xTaskCreatePinnedToCore(button_handler_task,
              "button_task",
-             4096,
+             8192,
              NULL,
               5,
               NULL,

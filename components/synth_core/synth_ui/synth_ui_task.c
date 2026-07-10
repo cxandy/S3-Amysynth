@@ -63,7 +63,7 @@ static void synth_ui_task(void *pvParameters)
     const TickType_t delay = pdMS_TO_TICKS(50); /* 20 Hz */
     uint32_t last_sig = 0;
     /* Which top-level view was rendered last frame; a change forces a redraw. */
-    enum { V_SEQ, V_ARP, V_MENU, V_GRAPH, V_FILTER, V_LFO, V_DRONE, V_DRONE_VIS, V_PROG, V_TRACKOPTS, V_STEPEDIT, V_FM } last_view = V_SEQ;
+    ui_view_id_t last_view = UI_VIEW_SEQ;
     for (;;) {
         /* Coalesced arp re-emit: setters mark the arp dirty; we perform at most
          * one full re-emit per frame here, collapsing fast encoder edits. */
@@ -98,14 +98,18 @@ static void synth_ui_task(void *pvParameters)
                     s_graph_layer = (uint8_t)(seq_state.num_layers - 1);
                 if (s_to_layer >= seq_state.num_layers)
                     s_to_layer = (uint8_t)(seq_state.num_layers - 1);
+                /* Drop the Step Trig overlay: after compaction its cached
+                 * (layer,track,step) may point at a different layer's steps. */
+                synth_ui_stepedit_close();
                 ESP_LOGI(TAG_TASK, "UI delete layer %u (%u layers remain)",
                          del_idx, seq_state.num_layers);
             }
         }
 
-        /* Drain deferred layer-add request (runs in synth_ui_task, 4096-byte
-         * stack; safe for the heavy memset + patch-string parse that would
-         * overflow the esp_timer task's 3584-byte stack). */
+        /* Drain deferred layer-add request (runs in synth_ui_task, 8192-byte
+         * stack — sized for the patch-string parse's ~3.4 KB inline frame,
+         * which would overflow the esp_timer task's 3584-byte stack and
+         * overflowed this task's former 4096 too). */
         if (s_layer_add_pending) {
             s_layer_add_pending = false;
             /* Re-check cap; num_layers may have changed since flag was set. */
@@ -117,117 +121,19 @@ static void synth_ui_task(void *pvParameters)
         seq_state.current_step =
             sequencer_core_get_current_step(seq_state.active_layer_idx);
         if (s_u8g2) {
-            /* Precedence: filter editor > graph editor > menu overlay > arp/drone screen > seq. */
-            bool graph = synth_ui_graph_is_active();
-            int view;
-            uint32_t sig;
-            /* One view is active per frame; the signature call builds it here
-             * and the draw switch below reuses it — never build twice. */
-            union {
-                menu_view_t      menu;   /* V_MENU and V_FM */
-                arp_view_t       arp;
-                drone_view_t     drone;
-                prog_view_t      prog;
-                trackopts_view_t trackopts;
-                stepedit_view_t  stepedit;
-            } vw;
-            if (s_filter_active) {
-                view = V_FILTER; sig = filter_view_signature();
-            } else if (s_lfo_active) {
-                view = V_LFO;    sig = lfo_view_signature();
-            } else if (synth_ui_stepedit_is_active()) {
-                view = V_STEPEDIT; sig = stepedit_view_signature(&vw.stepedit);
-            } else if (graph) {
-                view = V_GRAPH; sig = graph_view_signature();
-            } else if (seq_state.menu_open) {
-                view = V_MENU;  sig = menu_view_signature(&vw.menu);
-            } else if (seq_state.ui_mode == UI_MODE_ARP) {
-                view = V_ARP;   sig = arp_view_signature(&vw.arp);
-            } else if (seq_state.ui_mode == UI_MODE_DRONE && s_drone_vis_open) {
-                view = V_DRONE_VIS; sig = drone_view_signature(&vw.drone); /* vis params change → redraw */
-            } else if (seq_state.ui_mode == UI_MODE_DRONE) {
-                view = V_DRONE; sig = drone_view_signature(&vw.drone);
-            } else if (seq_state.ui_mode == UI_MODE_PROG) {
-                view = V_PROG;  sig = prog_view_signature(&vw.prog);
-            } else if (seq_state.ui_mode == UI_MODE_TRACKOPTS) {
-                view = V_TRACKOPTS; sig = trackopts_view_signature(&vw.trackopts);
-#if CONFIG_SYNTH_CUSTOM_FM
-            } else if (seq_state.ui_mode == UI_MODE_FM) {
-                view = V_FM;    sig = fm_view_signature(&vw.menu);
-#endif
-            } else {
-                view = V_SEQ;   sig = seq_view_signature();
-            }
+            /* The whole screen/overlay precedence now lives in one place,
+             * synth_ui_active_view(); this task renders whatever it resolves.
+             * signature() builds the active view into vw and returns the FNV
+             * render-gate hash, and the draw below reuses vw — never built
+             * twice. Adding a view is a one-row change in ui_view_table[]. */
+            ui_view_id_t view = synth_ui_active_view();
+            const ui_view_desc_t *desc = &ui_view_table[view];
+            ui_view_vw_t vw;
+            uint32_t sig = desc->signature(&vw);
             bool force = s_force_redraw || (view != last_view);
 
             if (force || sig != last_sig) {
-                switch (view) {
-                    case V_FILTER:
-                        synth_ui_filter_view_draw(s_u8g2);
-                        break;
-                    case V_LFO:
-                        synth_ui_lfo_view_draw(s_u8g2);
-                        break;
-                    case V_GRAPH:
-                        synth_ui_graph_view_draw(s_u8g2);
-                        break;
-                    case V_MENU:
-                        display_menu_draw_frame(s_u8g2, &vw.menu);
-                        break;
-                    case V_ARP:
-                        display_arp_draw_frame(s_u8g2, &vw.arp);
-                        break;
-                    case V_DRONE:
-                        display_drone_draw_frame(s_u8g2, &vw.drone);
-                        break;
-                    case V_DRONE_VIS: {
-                        const float SWEEP_MIN = 100.0f, SWEEP_MAX = 8000.0f;
-                        float span = SWEEP_MAX - SWEEP_MIN;
-                        float c = drone_get_amp_peak();
-                        float m = drone_get_amp_duck();
-                        float fl, cl;
-                        drone_get_amp_levels_norm(&fl, &cl);
-                        drone_vis_t dvis = {
-                            .sweep_lo_norm  = (drone_get_sweep_lo() - SWEEP_MIN) / span,
-                            .sweep_hi_norm  = (drone_get_sweep_hi() - SWEEP_MIN) / span,
-                            .amp_const      = c,
-                            .amp_mod        = m,
-                            .amp_floor_norm = fl,
-                            .amp_ceil_norm  = cl,
-                            .resonance      = drone_get_resonance(),
-                            .rate_idx       = (uint8_t)drone_get_rate(),
-                            .sweep_bars     = drone_get_sweep_bars(),
-                            .pattern_mask   = (uint8_t)0xFF, /* filled below */
-                            .gate_len       = drone_get_gate_len(),
-                            .wave_mode      = (drone_get_source() == DRONE_SRC_WAVE),
-                        };
-                        static const uint8_t pat_masks[] = {
-                            0xFF, 0x55, 0xAA, 0x5B, 0x51
-                        };
-                        drone_pattern_t pat = drone_get_pattern();
-                        if ((size_t)pat < sizeof(pat_masks))
-                            dvis.pattern_mask = pat_masks[pat];
-                        display_drone_vis_draw(s_u8g2, &dvis);
-                        break;
-                    }
-                    case V_PROG:
-                        display_prog_draw_frame(s_u8g2, &vw.prog);
-                        break;
-                    case V_TRACKOPTS:
-                        display_trackopts_draw_frame(s_u8g2, &vw.trackopts);
-                        break;
-                    case V_STEPEDIT:
-                        display_stepedit_draw_frame(s_u8g2, &vw.stepedit);
-                        break;
-#if CONFIG_SYNTH_CUSTOM_FM
-                    case V_FM:
-                        display_menu_draw_frame_titled(s_u8g2, "FM ALGO", &vw.menu);
-                        break;
-#endif
-                    default:
-                        display_seq_draw_frame(s_u8g2, &seq_state, seq_get_bpm());
-                        break;
-                }
+                desc->draw(s_u8g2, &vw);
                 /* Persistent button-hint strip: composited into the buffer on
                  * top of whatever the view above just drew, so no per-screen
                  * renderer needs to know about it. Every screen's draw_frame
@@ -297,9 +203,30 @@ void synth_ui_init(u8g2_t *u8g2)
     sequencer_core_set_playing(true);
     SEQ_HEAP_CHECK("ui_init: after set_playing");
 
+    /* First melodic layer (default patch, 16 steps). Added HERE, before the
+     * UI task exists: running single-threaded on the main task's stack, before
+     * the applier task is registered, satisfies the single-applier contract
+     * with no cross-task handoff. (Deferring this add into the seq_ui drain
+     * once wedged boot when the patch-string parse overflowed the task's
+     * former 4096-byte stack while holding s_event_mutex + amy_queue_lock;
+     * the stack is 8192 now, but boot-time work has no reason to defer.) */
+    synth_ui_add_layer(SEQ_LAYER_MELODIC, SEQ_STEPS);
+    SEQ_HEAP_CHECK("ui_init: after add_layer(melodic)");
+
     /* Pin to Core 0: the OLED refresh does blocking I2C and is not latency
-     * critical, so keep it off Core 1 where the AMY DSP now runs. */
-    xTaskCreatePinnedToCore(synth_ui_task, "seq_ui", 4096, NULL, 5, NULL, 0);
+     * critical, so keep it off Core 1 where the AMY DSP now runs.
+     * 8192 stack: the deferred Add-Layer drain runs a patch-string load whose
+     * amy_parse_message frame is ~3.4 KB inline on this stack; 4096 could not
+     * absorb it (same intermittent overflow class as encoder/button tasks,
+     * which were restored to 8192 for the same reason). DRAM-preserving
+     * alternative remains the amy_ingest pump task. */
+    TaskHandle_t ui_task = NULL;
+    xTaskCreatePinnedToCore(synth_ui_task, "seq_ui", 8192, NULL, 5, &ui_task, 0);
+    /* From here on this task is the single applier for structural s_layers
+     * edits (it drains s_layer_add_pending/s_layer_delete_pending); debug
+     * builds assert any add/delete_layer from another task. Other contexts
+     * use synth_ui_request_add_layer()/synth_ui_request_delete_to_layer(). */
+    sequencer_core_set_layers_applier(ui_task);
     ESP_LOGI(TAG_TASK, "Sequencer UI + Core initialized");
 }
 
@@ -349,7 +276,7 @@ uint8_t synth_ui_add_layer(seq_layer_type_t type, uint8_t num_steps)
 
 /* Request a melodic layer add. Sets a pending flag consumed by synth_ui_task
  * on its next frame, so the heavy work (memset + patch-string parse) runs on
- * the 4096-byte task stack rather than the 3584-byte esp_timer task stack.
+ * that task's 8192-byte stack rather than the 3584-byte esp_timer task stack.
  * Safe to call from any Core-0 context (esp_timer cb, button handler, etc.). */
 void synth_ui_request_add_layer(void)
 {
@@ -374,6 +301,9 @@ void synth_ui_request_delete_to_layer(void)
 void synth_ui_cycle_active_layer(void)
 {
     if (seq_state.num_layers <= 1) return;
+    /* Close the Step Trig overlay before the cursor moves: it edits the
+     * (layer,track,step) under the old cursor, which is about to change. */
+    synth_ui_stepedit_close();
     seq_state.active_layer_idx =
         (uint8_t)((seq_state.active_layer_idx + 1) % seq_state.num_layers);
     seq_state.selected_track = 0;

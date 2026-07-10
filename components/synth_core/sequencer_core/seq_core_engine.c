@@ -56,6 +56,22 @@ static inline uint32_t seq_preview_off_tag(uint8_t layer, uint8_t track)
     return seq_preview_tag(layer, track) + (uint32_t)(MAX_LAYERS * SEQ_TRACKS);
 }
 
+/* Swing / shuffle: delay ODD 16th-steps by swing_pct% of one step so the
+ * off-beats land late, giving a shuffled groove. Even steps (the on-beats) are
+ * untouched. Pure function of the step index + the layer's swing_pct, so the
+ * emitted schedule stays beat-locked and tempo-independent (it is expressed in
+ * ticks, exactly like the drone stutter-grid swing in drone_core.c). Integer
+ * math only — this runs on the Core-0 emit path, never in render/ISR.
+ * swing_pct==0 (the memset-zero default) returns 0 => bit-identical to the
+ * pre-swing schedule. swing_pct is clamped to SEQ_SWING_MAX (<100) so the
+ * result is always a fraction of one step and never crosses the next step. */
+static inline uint32_t sequencer_step_swing_offset(const seq_layer_t *layer,
+                                                   uint8_t step)
+{
+    if ((step & 1u) == 0u || layer->swing_pct == 0) return 0;
+    return ((uint32_t)SEQ_TICKS_PER_STEP * (uint32_t)layer->swing_pct) / 100u;
+}
+
 float sequencer_step_velocity(const seq_layer_t *layer,
                               uint8_t track, uint8_t step)
 {
@@ -118,7 +134,7 @@ bool sequencer_track_audible(const seq_layer_t *layer, uint8_t track)
     return !layer->mute[track];
 }
 
-static uint8_t sequencer_clamp_layer_note(const seq_layer_t *layer, uint8_t note)
+uint8_t sequencer_clamp_layer_note(const seq_layer_t *layer, uint8_t note)
 {
     if (layer->type == SEQ_LAYER_DRUM) {
         return SEQ_CLAMP_U8(note, SEQ_MIDI_NOTE_MIN, SEQ_MIDI_NOTE_MAX);
@@ -127,8 +143,8 @@ static uint8_t sequencer_clamp_layer_note(const seq_layer_t *layer, uint8_t note
     }
 }
 
-static uint8_t sequencer_resolve_track_note(const seq_layer_t *layer,
-                                            uint8_t source_note)
+uint8_t sequencer_resolve_track_note(const seq_layer_t *layer,
+                                     uint8_t source_note)
 {
     if (layer->type != SEQ_LAYER_MELODIC) {
         return sequencer_clamp_layer_note(layer, source_note);
@@ -177,26 +193,34 @@ void sequencer_emit_step(uint8_t layer_idx, uint8_t track, uint8_t step)
     uint32_t rr         = (layer->repeat_rate[track] >= SEQ_REPEAT_2)
                           ? (uint32_t)layer->repeat_rate[track] : 1u;
     uint32_t period     = bar_ticks * rr;
-    /* How long the note is held: drums are short/percussive, melodic longer. */
-    uint8_t  gate       = (layer->type == SEQ_LAYER_DRUM)
-                          ? SEQ_GATE_DRUM : SEQ_GATE_MELODIC;
-    /* Melodic groove: shorten the off-beat 8ths a touch so accented downbeats
-     * feel longer/legato while the in-between notes are slightly detached. We
-     * only ever shorten (never lengthen past SEQ_GATE_MELODIC) so the note-off
-     * always lands before the next step's note-on and never cuts it off. */
-    if (layer->type == SEQ_LAYER_MELODIC && (step % 2) == 1 && gate > 2) {
-        gate -= 2;
-    }
+    /* Plain-trig note-hold incl. the melodic off-beat groove shortening;
+     * shared with the ratchet n==1 path (seq_core_trig.c) via seq_step_gate. */
+    uint8_t  gate       = (uint8_t)seq_step_gate(layer, step);
     uint32_t tag_on     = seq_tag_on(layer_idx, track, step);
     uint32_t tag_off    = seq_tag_off(layer_idx, track, step);
-    /* +1 so tick 0 stays reserved (AMY treats tick 0 specially as "clear"). */
-    uint32_t tick_on    = (uint32_t)(1 + step * SEQ_TICKS_PER_STEP);
+    /* +1 so tick 0 stays reserved (AMY treats tick 0 specially as "clear").
+     * Two per-step timing offsets fold into the note-on tick: swing shifts odd
+     * steps later, and micro-timing (patch-06) adds the signed per-step nudge on
+     * top. Both are added into tick_on only; tick_off is derived from it below,
+     * so gate length is preserved. A negative nudge on an early step can land
+     * before the bar origin, so the combined value is wrapped into the tail of
+     * the loop window (a late "drag"). Defaults (swing 0, nudge 0) leave the
+     * on-grid tick byte-identical. */
+    int32_t  tick_on_s  = (int32_t)(1 + step * SEQ_TICKS_PER_STEP)
+                        + (int32_t)sequencer_step_swing_offset(layer, step)
+                        + (int32_t)layer->step_nudge[track][step];
+    while (tick_on_s < 1) tick_on_s += (int32_t)period;
+    uint32_t tick_on    = (uint32_t)tick_on_s % period;
+    if (tick_on == 0) tick_on = 1;
     /* Note-off wraps within the full period (not just bar_ticks) so a note at
      * repeat_rate=2 whose gate spills past bar_ticks still fires correctly. */
     uint32_t tick_off   = (tick_on + gate) % period;
     float note_velocity = sequencer_step_velocity(layer, track, step);
     /* Apply per-track amplitude trim (default 1.0; set by graph editor amp mode). */
-    note_velocity *= layer->amp_scale[track];
+    note_velocity *= layer->vp[track].amp_trim;
+    /* Per-step velocity offset (patch-06): signed percentage points, default 0. */
+    note_velocity += (float)layer->step_velocity_adj[track][step] * 0.01f;
+    if (note_velocity < 0.0f) note_velocity = 0.0f;
     if (note_velocity > 1.0f) note_velocity = 1.0f;
     if (tick_off == 0) tick_off = 1; /* avoid the reserved tick 0 */
 
@@ -217,9 +241,9 @@ void sequencer_emit_step(uint8_t layer_idx, uint8_t track, uint8_t step)
     /* Both drum and melodic layers now have one synth slot per track. */
     uint8_t synth = layer->synth_id[track];
 
-    amy_send_note_sched(synth, layer->step_note[track][step], note_velocity,
+    amy_helpers_note_send(synth, layer->step_note[track][step], note_velocity,
                         tag_on, tick_on, period);
-    amy_send_note_sched(synth, layer->step_note[track][step], 0.0f,
+    amy_helpers_note_send(synth, layer->step_note[track][step], 0.0f,
                         tag_off, tick_off, period);
 }
 
@@ -287,9 +311,9 @@ static void sequencer_refresh_track_note(uint8_t layer_idx, uint8_t track,
     /* One-shot preview: fires a few ticks from now using the same tag slot.
      * Rapid scrolling overwrites the slot so only the last change is heard. */
     uint32_t fire_tick = sequencer_ticks() + SEQ_PREVIEW_DELAY_TICKS;
-    amy_send_note_sched(layer->synth_id[track], resolved_note, 1.0f,
+    amy_helpers_note_send(layer->synth_id[track], resolved_note, 1.0f,
                         seq_preview_tag(layer_idx, track), fire_tick, 0);
-    amy_send_note_sched(layer->synth_id[track], resolved_note, 0.0f,
+    amy_helpers_note_send(layer->synth_id[track], resolved_note, 0.0f,
                         seq_preview_off_tag(layer_idx, track),
                         fire_tick + SEQ_GATE_MELODIC, 0);
 
@@ -329,9 +353,7 @@ uint8_t sequencer_core_get_current_step(uint8_t layer_idx)
     if (layer_idx >= s_num_layers) return 0;
     if (!s_playing) return s_cached_step[layer_idx];
     seq_layer_t *layer = &s_layers[layer_idx];
-    uint32_t bar_ticks = (uint32_t)layer->num_steps * SEQ_TICKS_PER_STEP;
-    s_cached_step[layer_idx] =
-        (uint8_t)((sequencer_ticks() % bar_ticks) / SEQ_TICKS_PER_STEP);
+    s_cached_step[layer_idx] = seq_playhead_step(layer, sequencer_ticks());
     return s_cached_step[layer_idx];
 }
 
@@ -359,9 +381,7 @@ void sequencer_core_set_playing(bool p)
         /* Freeze display positions before clearing scheduled events. */
         for (uint8_t i = 0; i < s_num_layers; i++) {
             seq_layer_t *layer = &s_layers[i];
-            uint32_t bar_ticks = (uint32_t)layer->num_steps * SEQ_TICKS_PER_STEP;
-            s_cached_step[i] =
-                (uint8_t)((sequencer_ticks() % bar_ticks) / SEQ_TICKS_PER_STEP);
+            s_cached_step[i] = seq_playhead_step(layer, sequencer_ticks());
             sequencer_clear_layer_tags(i);
             /* Bug-1.1-style fix, same rationale as arp_core_clear_all() above:
              * decorated steps' one-shot ratchet tags are not touched by
@@ -427,9 +447,9 @@ void sequencer_core_arp_emit_note(uint32_t tag_base, uint8_t midi_note,
     if (tick_off == 0) tick_off = 1; /* tick 0 is reserved (clear) */
     if (tick_on  == 0) tick_on  = 1;
 
-    amy_send_note_sched(SEQ_ARP_SYNTH, midi_note, velocity,
+    amy_helpers_note_send(SEQ_ARP_SYNTH, midi_note, velocity,
                         tag_base, tick_on, period);
-    amy_send_note_sched(SEQ_ARP_SYNTH, midi_note, 0.0f,
+    amy_helpers_note_send(SEQ_ARP_SYNTH, midi_note, 0.0f,
                         tag_base + 1, tick_off, period);
 }
 
@@ -462,6 +482,30 @@ seq_repeat_rate_t sequencer_core_get_track_repeat_rate(uint8_t layer_idx,
         case 8: return SEQ_REPEAT_8;
         default: return SEQ_REPEAT_1;
     }
+}
+
+/* ── Per-layer swing ─────────────────────────────────────────────────────
+ * Swing is a whole-layer feel control (not per-track): every odd step across
+ * all tracks shifts by the same fraction, so the layer grooves as a unit.
+ * Re-emit the entire layer so AMY re-schedules every step at its swung tick.
+ *
+ * TODO(ui): no UI wiring yet — this ships engine + public API only. A layer-
+ * level menu item (swing is per-layer, not per-track) should call these from
+ * the TrackOpts/UI dispatch once someone is in that screen code. */
+void sequencer_core_set_layer_swing(uint8_t layer_idx, uint8_t swing_pct)
+{
+    if (layer_idx >= s_num_layers) return;
+    seq_layer_t *layer = &s_layers[layer_idx];
+    uint8_t clamped = (uint8_t)SEQ_CLAMP_U8((int)swing_pct, 0, SEQ_SWING_MAX);
+    if (layer->swing_pct == clamped) return;
+    layer->swing_pct = clamped;
+    sequencer_resync_layer(layer_idx);
+}
+
+uint8_t sequencer_core_get_layer_swing(uint8_t layer_idx)
+{
+    if (layer_idx >= s_num_layers) return 0;
+    return s_layers[layer_idx].swing_pct;
 }
 
 void sequencer_core_set_track_mute(uint8_t layer_idx, uint8_t track, bool mute)

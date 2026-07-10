@@ -43,6 +43,34 @@ static const char * const TAG = "seq_core";
 /* ── External dependency ─────────────────────────────────────────────── */
 extern uint32_t sequencer_ticks(void);
 
+/* ── Shared step math (single owners; see architecture/sequencer-core.md §3.1,§3.3) ── */
+
+/* Which step the playhead sits on for `layer` at `ticks`: position within the
+ * bar divided by ticks-per-step. Returns 0 for an empty (num_steps == 0) layer;
+ * callers that must SKIP such a layer keep their own num_steps guard. */
+static inline uint8_t seq_playhead_step(const seq_layer_t *layer, uint32_t ticks)
+{
+    uint32_t bar_ticks = (uint32_t)layer->num_steps * SEQ_TICKS_PER_STEP;
+    if (bar_ticks == 0) return 0;
+    return (uint8_t)((ticks % bar_ticks) / SEQ_TICKS_PER_STEP);
+}
+
+/* Note-hold in ticks for the plain (non-subdivided) trig of `step`: drums are
+ * short/percussive, melodic longer, with off-beat 8ths shortened a touch so
+ * accented downbeats feel legato while in-between notes detach. Only ever
+ * shortens (never past SEQ_GATE_MELODIC) so the note-off always lands before the
+ * next step's note-on. Shared by sequencer_emit_step() and the ratchet n==1
+ * path so the two can never drift. */
+static inline uint16_t seq_step_gate(const seq_layer_t *layer, uint8_t step)
+{
+    uint16_t gate = (layer->type == SEQ_LAYER_DRUM) ? SEQ_GATE_DRUM
+                                                    : SEQ_GATE_MELODIC;
+    if (layer->type == SEQ_LAYER_MELODIC && (step % 2) == 1 && gate > 2) {
+        gate -= 2;
+    }
+    return gate;
+}
+
 /* ── Private types ───────────────────────────────────────────────────── */
 
 /* Global chord progression (internal representation) */
@@ -67,7 +95,15 @@ extern seq_layer_t    s_layers[];
 extern uint8_t        s_num_layers;
 extern bool           s_playing;
 extern uint8_t        s_next_melodic_synth;
+/* Global melodic patch DEFAULT — not an authoritative global. Two writers with
+ * different scopes: sequencer_core_set_melodic_patch() writes it as the global
+ * selection and fans it out to every melodic layer, and
+ * sequencer_core_set_layer_patch() writes it as a consistency side-effect of
+ * setting ONE layer's patch (so the display fallback tracks the last-touched
+ * layer). Readers must treat s_layers[i].patch as the per-layer source of
+ * truth; this is only the seed for new layers plus the display fallback. */
 extern uint16_t       s_melodic_patch;
+extern volatile bool  s_layers_mutating;   /* guards delete_layer's compaction vs. the tick */
 
 /* Owned by seq_core_engine.c */
 extern uint8_t        s_cached_step[];
@@ -136,6 +172,14 @@ float sequencer_step_velocity(const seq_layer_t *layer, uint8_t track, uint8_t s
 /* From seq_core_engine.c — shared with seq_core_trig.c so the decorated-step
  * ratchet path respects mute/solo the same way the plain periodic path does. */
 bool sequencer_track_audible(const seq_layer_t *layer, uint8_t track);
+
+/* From seq_core_engine.c — shared with seq_core_trig.c so the per-step
+ * note-transform can re-clamp to the layer's note bounds and re-snap a
+ * transformed pitch through the exact same chord/scale quantizer the plain
+ * per-track resolve uses (spec 20 §3.1/§3.2). resolve applies the scale/chord
+ * snap; clamp only bounds the note (used when step_quant_bypass is set). */
+uint8_t sequencer_clamp_layer_note(const seq_layer_t *layer, uint8_t note);
+uint8_t sequencer_resolve_track_note(const seq_layer_t *layer, uint8_t source_note);
 
 /* From seq_core_trig.c — per-step probability/ratchet/conditional-trig engine.
  * sequencer_core_step_is_decorated() is consulted by sequencer_emit_step()

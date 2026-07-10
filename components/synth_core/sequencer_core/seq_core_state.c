@@ -1,9 +1,40 @@
 #include "sequencer_core/seq_core_internal.h"
+#include "voice_config.h"
+#include <assert.h>
 
 /* ── State definitions — owns the core layer table and play state ─── */
 seq_layer_t s_layers[MAX_LAYERS];
 uint8_t     s_num_layers   = 0;
 bool        s_playing      = true;
+/* Guards sequencer_core_delete_layer()'s ~4 KB s_layers compaction against the
+ * Core-0 esp_timer sequencer tick, which reads s_layers[] live. Set true around
+ * the structural edit; the tick early-returns while it is set. */
+volatile bool s_layers_mutating = false;
+
+/* Single-applier enforcement for structural s_layers edits (add/delete): after
+ * boot init registers the applier (synth_ui_task, which drains the deferred
+ * add/delete requests), debug builds assert every structural edit runs on that
+ * task. This is the durable form of the s_layers_mutating tick guard above —
+ * the guard fences the one concurrent READER (the esp_timer tick); this pins
+ * all WRITERS to one task by construction, the same discipline
+ * s_prog_apply_pending uses for chord edits (seq_core_progression.c). */
+static TaskHandle_t s_layers_applier = NULL;
+
+void sequencer_core_set_layers_applier(TaskHandle_t applier)
+{
+    s_layers_applier = applier;
+}
+
+/* Skipped until a handle is registered, so single-threaded boot init passes. */
+static inline void seq_assert_layers_applier(void)
+{
+#if !defined(NDEBUG)
+    configASSERT(s_layers_applier == NULL ||
+                 xTaskGetCurrentTaskHandle() == s_layers_applier);
+#endif
+}
+/* Default seed + display fallback, NOT an authoritative global — dual-writer
+ * contract documented at the declaration in seq_core_internal.h. */
 uint16_t    s_melodic_patch = SEQ_MEL_PATCH;
 /* Running allocator for per-row melodic synth slots. Each melodic layer claims
  * a contiguous block of SEQ_TRACKS slots starting here; reset in core_init. */
@@ -55,6 +86,7 @@ void sequencer_core_init(void)
 
 uint8_t sequencer_core_add_layer(seq_layer_type_t type, uint8_t num_steps)
 {
+    seq_assert_layers_applier();
     if (s_num_layers >= MAX_LAYERS) {
         ESP_LOGW(TAG, "sequencer_core_add_layer: max layers (%d) reached", MAX_LAYERS);
         return 0xFF;
@@ -66,6 +98,12 @@ uint8_t sequencer_core_add_layer(seq_layer_type_t type, uint8_t num_steps)
     uint8_t idx = s_num_layers;
     seq_layer_t *layer = &s_layers[idx];
     memset(layer, 0, sizeof(seq_layer_t));
+
+    /* Per-row voice params: zeroed/unauthored with amp_trim at unity — the
+     * single defaults source, so no field here needs post-memset repair. */
+    for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
+        voice_params_init_defaults(&layer->vp[t]);
+    }
 
     layer->type       = type;
     layer->num_steps  = (num_steps == SEQ_MAX_STEPS) ? SEQ_MAX_STEPS : SEQ_STEPS;
@@ -123,18 +161,18 @@ uint8_t sequencer_core_add_layer(seq_layer_type_t type, uint8_t num_steps)
             for (uint8_t s = 0; s < SEQ_MAX_STEPS; s++) {
                 layer->step_note[t][s] = mel_notes[t];
             }
-            layer->env[t]  = seq_default_melodic_env();
-            layer->env1[t] = seq_default_melodic_env1();
+            layer->vp[t].env  = seq_default_melodic_env();
+            layer->vp[t].env1 = seq_default_melodic_env1();
         }
     }
 
-    /* amp_scale defaults to 1.0 (unity); memset in add_layer zeroes it, so
-     * explicit init here is required to avoid silencing all tracks. Same
-     * rationale for step_prob (0% would silence every step) and step_ratchet
-     * (0 sub-hits would fire nothing); step_cond_type/param default correctly
-     * to the zeroed SEQ_STEP_COND_NONE/0 and need no explicit init. */
+    /* step_prob (0% would silence every step) and step_ratchet (0 sub-hits
+     * would fire nothing) need explicit non-zero defaults; step_cond_type/
+     * param and the per-step transform/quant-bypass arrays default correctly
+     * to their zeroed no-op (SEQ_STEP_COND_NONE / SEQ_STEP_TRANSFORM_NONE /
+     * no bypass) and need no explicit init. The per-row amp trim got its
+     * unity default in voice_params_init_defaults() above. */
     for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
-        layer->amp_scale[t] = 1.0f;
         for (uint8_t s = 0; s < SEQ_MAX_STEPS; s++) {
             layer->step_prob[t][s]    = 100;
             layer->step_ratchet[t][s] = 1;
@@ -146,6 +184,10 @@ uint8_t sequencer_core_add_layer(seq_layer_type_t type, uint8_t num_steps)
     CORE_HEAP_CHECK("add_layer: after configure_synth");
     /* Layer is fully initialised: now expose it to the tick path. */
     s_num_layers++;
+    /* Construction-time check of the permanent-drum-layer invariant: slot 0
+     * is the drum layer (created first at boot) and every later add lands
+     * above it. Verified once here rather than trusted throughout. */
+    assert(s_layers[SEQ_DRUM_LAYER_IDX].type == SEQ_LAYER_DRUM);
     /* Runtime trig bookkeeping (loop counters / last-played / last-step-seen)
      * is indexed by layer slot, not layer identity; a wholesale reset here
      * (rather than trying to shift it in lockstep with the new layer) is
@@ -159,8 +201,9 @@ uint8_t sequencer_core_add_layer(seq_layer_type_t type, uint8_t num_steps)
 
 bool sequencer_core_delete_layer(uint8_t layer_idx)
 {
+    seq_assert_layers_applier();
     if (s_num_layers <= 1) return false;                  /* must keep at least 1 */
-    if (layer_idx == 0)   return false;                   /* drum layer is permanent */
+    if (layer_idx == SEQ_DRUM_LAYER_IDX) return false;    /* drum layer is permanent */
     if (layer_idx >= s_num_layers) return false;
     if (s_layers[layer_idx].type == SEQ_LAYER_DRUM) return false;
 
@@ -182,6 +225,10 @@ bool sequencer_core_delete_layer(uint8_t layer_idx)
         amy_helpers_event_send(e);
     }
 
+    /* Raise the mutation guard so the Core-0 sequencer tick early-returns
+     * instead of reading s_layers[] mid-memmove. The tick tolerates skipped
+     * ticks (trig state is reset wholesale below), so this is inaudible. */
+    s_layers_mutating = true;
     /* Compact all parallel arrays by shifting survivors down by one slot. */
     uint8_t tail = (uint8_t)(s_num_layers - layer_idx - 1);
     if (tail > 0) {
@@ -205,6 +252,8 @@ bool sequencer_core_delete_layer(uint8_t layer_idx)
                 tail * sizeof(s_lfo_rnd[0]));
     }
     s_num_layers--;
+    /* Table is fully compacted and the count updated; drop the guard. */
+    s_layers_mutating = false;
     sequencer_core_trig_reset_all();  /* see rationale in sequencer_core_add_layer() */
 
     /* Resync all surviving layers so their note tags re-register correctly. */

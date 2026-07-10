@@ -55,6 +55,34 @@ uint32_t trackopts_view_signature(trackopts_view_t *out);
 uint32_t stepedit_view_signature(stepedit_view_t *out);
 uint32_t fm_view_signature(menu_view_t *out);
 
+/* ─── View descriptor table (draw + hint), defined in ui_view_resolve.c ──
+ * One scratch union holds whichever view struct the active screen builds;
+ * signature() fills it and returns the FNV hash, draw() reuses it. The table
+ * is indexed by synth_ui_active_view() so the draw switch and the hint strip
+ * share the single precedence resolver instead of re-deriving it. */
+typedef union {
+    menu_view_t      menu;       /* MENU and FM */
+    arp_view_t       arp;
+    drone_view_t     drone;      /* DRONE and DRONE_VIS */
+    prog_view_t      prog;
+    trackopts_view_t trackopts;
+    stepedit_view_t  stepedit;
+} ui_view_vw_t;
+
+typedef struct {
+    const char *name;
+    uint32_t  (*signature)(ui_view_vw_t *vw);   /* builds vw, returns FNV hash */
+    void      (*draw)(u8g2_t *g, ui_view_vw_t *vw);
+    /* Button-hint labels. A NULL static label means "compute dynamically",
+     * in which case the matching *_fn is called (only LFO/GRAPH b1 and LFO b2
+     * depend on state the view id does not carry). b3 is always static. */
+    const char *b1, *b2, *b3;
+    const char *(*b1_fn)(void);
+    const char *(*b2_fn)(void);
+} ui_view_desc_t;
+
+extern const ui_view_desc_t ui_view_table[UI_VIEW_COUNT];
+
 /* ─── Build-view helpers called from synth_ui_task draw switch ────────── */
 void     drone_build_view(drone_view_t *out);
 void     prog_build_view(prog_view_t *out);
@@ -63,6 +91,15 @@ void     menu_build_view(menu_view_t *out);
 void     arp_build_view(arp_view_t *out);
 void     stepedit_build_view(stepedit_view_t *out);
 void     fm_build_view(menu_view_t *out);
+
+/* ─── Global-FX submenu page (item model in ui_screen_fxmenu.c; the page
+ *     state and input routing live in ui_screen_menu.c) ────────────────── */
+const menu_item_view_t *fx_menu_build_items(void);
+uint8_t  fx_menu_item_count(void);
+bool     fx_menu_item_is_value(uint8_t idx);
+bool     fx_menu_item_is_back(uint8_t idx);
+void     fx_menu_edit_value(uint8_t idx, int delta);
+const char *menu_page_title(void);   /* header-bar title for the active page */
 
 /* ─── Draw wrappers (encapsulate private s_fgraph/s_lfo_view/s_graph_popup) */
 void     synth_ui_graph_view_draw(u8g2_t *u8g2);

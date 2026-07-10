@@ -2,6 +2,7 @@
 #include "sequencer_core.h"
 #include "custompatches/fm_voice.h"  /* s_fm_voice + fm_voice_push_live (FM_CUSTOM) */
 #include "amy_helpers.h"   /* amy_helpers_event_begin/send — for WAVE mode osc config */
+#include "voice_config.h"  /* canonical LFO depth scalars + shared wave map */
 #include "quantizer.h"
 #include "seq_clamp.h"
 #include "sdkconfig.h"
@@ -92,19 +93,12 @@ typedef struct {
     uint16_t     patch;
     arp_source_t source;         /* WAVE or PATCH (default PATCH)               */
     uint16_t     wave;           /* AMY waveform used when source==ARP_SRC_WAVE */
-    seq_env_t    env;            /* runtime-editable ADSR (shared graph editor) */
-    bool         env_authored;   /* true once the user commits a custom env      */
-    seq_env_t    env1;           /* second envelope (EG1) — see arp_core.h        */
-    bool         env1_authored;  /* true once the user commits a custom EG1       */
-    seq_filter_t filter;         /* runtime-editable filter (shared filter editor) */
-    bool         filter_authored;/* true once the user commits a custom filter    */
-    seq_lfo_t    lfo;            /* AMY native LFO — WAVE mode only               */
-    bool         lfo_authored;   /* true once the user commits an LFO             */
-    float        amp_scale;      /* per-target amplitude trim (default 1.0, 0..1);
-                                    scaled into note velocity at emit time. Set via
-                                    the graph editor amp mode (MY_BUTTON_2). MUST be
-                                    initialised to 1.0f in arp_core_init — memset
-                                    zeroes it. */
+    voice_params_t vp;           /* shared voice params: env (graph editor), EG1,
+                                    filter, native LFO (WAVE mode only) — each with
+                                    its deferred-authority flag — plus the amp trim
+                                    scaled into note velocity at emit time (graph
+                                    editor amp mode, MY_BUTTON_2). Defaults via
+                                    voice_params_init_defaults in arp_core_init. */
     uint16_t     portamento_ms;  /* glide time between note pitches, 0=off. Default
                                     0 from memset matches AMY's own reset value, so
                                     no explicit init needed in arp_core_init. */
@@ -177,25 +171,12 @@ void arp_core_clear_all(void)
 
 /* ── Source configuration helpers ────────────────────────────────────── */
 
-/* Map lfo_wave_t → AMY wave constant. */
-static uint16_t arp_lfo_wave_to_amy(lfo_wave_t wave)
-{
-    switch (wave) {
-        case LFO_WAVE_SINE:     return SINE;
-        case LFO_WAVE_TRIANGLE: return TRIANGLE;
-        case LFO_WAVE_SAW_UP:   return SAW_UP;
-        case LFO_WAVE_SAW_DOWN: return SAW_DOWN;
-        case LFO_WAVE_SQUARE:   return PULSE;
-        default:                return SINE;   /* LFO_WAVE_RANDOM → SINE fallback */
-    }
-}
-
 /* Configure the arp's AMY synth slot as a bare oscillator (WAVE mode).
  *
- * One osc per voice — no patch, no LFO carrier.  Pitch follows the MIDI note
- * delivered by sequencer_core_arp_emit_note() (COEF_NOTE=1).  Amplitude is
+ * Shared 2-osc skeleton (voice_build_wave): osc0 pitch follows the MIDI note
+ * delivered by sequencer_core_arp_emit_note() (COEF_NOTE=1), amplitude is
  * velocity-scaled + EG0-gated so the shared ADSR editor and custom envelopes
- * work exactly as they do in PATCH mode.
+ * work exactly as they do in PATCH mode; osc1 is the native LFO carrier.
  *
  * The caller is responsible for pushing an EG0 envelope afterwards (arp_rebuild
  * always does this in WAVE mode so even the default env is applied). */
@@ -204,75 +185,41 @@ static void arp_configure_wave_synth(void)
     uint8_t synth  = sequencer_core_arp_synth();
     uint8_t voices = sequencer_core_arp_voices();
 
-    /* Define the synth pool: N voices, 2 oscs each.  Osc 1 is the AMY-native
-     * LFO carrier; it is dormant (amp=0) when no LFO is authored.  Always
-     * allocating 2 oscs avoids a pool reset when the LFO is toggled later. */
-    amy_event *e = amy_helpers_event_begin();
-    e->synth          = synth;
-    e->num_voices     = voices;
-    e->oscs_per_voice = 2;
-    amy_helpers_event_send(e);
+    /* Shared skeleton: pool (2 oscs/voice — osc 1 is the AMY-native LFO
+     * carrier, dormant when no LFO is authored; always allocating it avoids a
+     * pool reset when the LFO is toggled later) + osc0 note-following carrier
+     * with velocity + EG0 amplitude. */
+    voice_wave_cfg_t cfg = {
+        .synth                = synth,
+        .num_voices           = voices,
+        .oscs_per_voice       = 2,
+        .wave                 = s_arp.wave,
+        .osc0_amp_const       = 1.0f,
+        .osc0_amp_vel         = 1.0f,
+        .ks_feedback_authored = s_arp.vp.filter_authored,
+        .ks_feedback_q        = s_arp.vp.filter.resonance,
+        .wt_preset            = -1,
+    };
+    voice_build_wave(&cfg);
 
-    /* osc 0: user-chosen waveform, note-following pitch, velocity + EG0 amplitude.
-     * When LFO is active, mod_source=1 (voice-local — AMY adds base_osc offset,
-     * so it resolves to osc 1 within each voice) plus the COEF_MOD depth for the
-     * chosen target. */
-    bool lfo_on = s_arp.lfo_authored && s_arp.lfo.enabled;
-    e = amy_helpers_event_begin();
-    e->synth                  = synth;
-    e->osc                    = 0;
-    e->wave                   = s_arp.wave;
-    if (s_arp.wave == KS) {
-        /* Authored Q drives KS string decay once the user has dialed it;
-         * otherwise keep the prior fixed default until they touch Q. */
-        e->feedback = s_arp.filter_authored
-            ? sequencer_core_ks_feedback_from_q(s_arp.filter.resonance)
-            : 0.9f;
-    }
-    e->freq_coefs[COEF_NOTE]  = 1.0f;
-    e->amp_coefs[COEF_CONST]  = 1.0f;
-    e->amp_coefs[COEF_VEL]    = 1.0f;
-    e->amp_coefs[COEF_EG0]    = 1.0f;
-    if (lfo_on) {
-        e->mod_source = 1;
-        float d = s_arp.lfo.depth / 100.0f;
-        switch (s_arp.lfo.target) {
-            case LFO_TARGET_FILTER: e->filter_freq_coefs[COEF_MOD] = d * 3.0f; break;
-            case LFO_TARGET_AMP:    e->amp_coefs[COEF_MOD]         = d * 0.5f; break;
-            case LFO_TARGET_PITCH:  e->freq_coefs[COEF_MOD]        = d * 1.0f; break;
-            case LFO_TARGET_SCAN:   e->duty_coefs[COEF_MOD]        = d * 0.5f; break;
-            default: break;
-        }
-    }
-    /* Plucky amp (EG0 above) / slower independent filter sweep (EG1): only
-     * wired once the user has authored+enabled a filter, so a stock arp
-     * voice with no filter is unaffected. arp_rebuild() pushes valid EG1
-     * breakpoints alongside this so the coef never reads a stuck 1.0 (AMY
+    /* Plucky amp (EG0 in the skeleton) / slower independent filter sweep
+     * (EG1): only wired once the user has authored+enabled a filter, so a
+     * stock arp voice with no filter is unaffected. arp_rebuild() pushes valid
+     * EG1 breakpoints alongside this so the coef never reads a stuck 1.0 (AMY
      * treats a never-configured breakpoint set as a permanent unity gate). */
-    if (s_arp.filter_authored && s_arp.filter.enabled) {
+    if (s_arp.vp.filter_authored && s_arp.vp.filter.enabled) {
+        amy_event *e = amy_helpers_event_begin();
+        e->synth = synth;
+        e->osc   = 0;
         e->filter_freq_coefs[COEF_EG1] = ARP_FILTER_EG1_DEPTH_OCT;
+        amy_helpers_event_send(e);
     }
-    amy_helpers_event_send(e);
 
-    /* osc 1: LFO carrier — no pitch tracking, no velocity, no envelope.
-     * amp_coefs[COEF_CONST]=1 when active so AMY computes mod_value each block;
-     * amp_coefs[COEF_CONST]=0 when disabled (dormant, renders nothing). */
-    e = amy_helpers_event_begin();
-    e->synth = synth;
-    e->osc   = 1;
-    if (lfo_on) {
-        e->wave                   = (uint16_t)arp_lfo_wave_to_amy(s_arp.lfo.wave);
-        e->freq_coefs[COEF_CONST] = lfo_rate_to_hz(s_arp.lfo.rate,
-                                                         sequencer_core_get_bpm());
-        e->freq_coefs[COEF_NOTE]  = 0.0f;   /* no pitch tracking */
-        e->freq_coefs[COEF_BEND]  = 0.0f;   /* no pitch bend     */
-        e->amp_coefs[COEF_CONST]  = 1.0f;   /* active            */
-        e->amp_coefs[COEF_VEL]    = 0.0f;   /* no velocity scale */
-        e->amp_coefs[COEF_EG0]    = 0.0f;   /* no envelope decay */
-    } else {
-        e->amp_coefs[COEF_CONST]  = 0.0f;   /* dormant           */
-    }
-    amy_helpers_event_send(e);
+    /* Native LFO routing (shared applier): active => osc0 mod coupling +
+     * osc1 carrier; inactive => coupling cleared, carrier dormant. */
+    bool lfo_on = s_arp.vp.lfo_authored && s_arp.vp.lfo.enabled;
+    voice_apply_native_lfo(synth, lfo_on ? &s_arp.vp.lfo : NULL,
+                           sequencer_core_get_bpm());
 }
 
 /* Recompute and push the LFO carrier frequency at the current BPM.
@@ -282,13 +229,13 @@ static void arp_configure_wave_synth(void)
  * from the UI task, which is safe. */
 void arp_core_refresh_lfo_freq(void)
 {
-    if (!s_arp.lfo_authored || !s_arp.lfo.enabled || s_arp.source != ARP_SRC_WAVE)
+    if (!s_arp.vp.lfo_authored || !s_arp.vp.lfo.enabled || s_arp.source != ARP_SRC_WAVE)
         return;
 
     amy_event *e = amy_helpers_event_begin();
     e->synth                  = sequencer_core_arp_synth();
     e->osc                    = 1;
-    e->freq_coefs[COEF_CONST] = lfo_rate_to_hz(s_arp.lfo.rate,
+    e->freq_coefs[COEF_CONST] = lfo_rate_to_hz(s_arp.vp.lfo.rate,
                                                      sequencer_core_get_bpm());
     amy_helpers_event_send(e);
 }
@@ -312,30 +259,24 @@ static void arp_rebuild(void)
         arp_configure_wave_synth();
         /* WAVE mode has no patch envelope; always push the arp's env (authored
          * or default) so EG0 breakpoints are valid and notes decay correctly. */
-        seq_env_t env_to_push = s_arp.env;
-        if (s_arp.wave == KS) {
-            /* KS: onset transient suppressed by attack ramp; the string body is
-             * carried by the KS feedback decay, not by a held amplitude level. */
-            env_to_push.attack_ms   = 2;
-            env_to_push.sustain_pct = 0;
-        } else if (s_arp.wave == NOISE) {
-            env_to_push.attack_ms = 2;  /* NOISE: onset transient suppressed by attack ramp */
-        }
+        seq_env_t env_to_push = s_arp.vp.env;
+        voice_env_apply_ks_noise_floor(&env_to_push,
+                                       s_arp.wave == KS, s_arp.wave == NOISE);
         sequencer_core_push_envelope(sequencer_core_arp_synth(), &env_to_push);
     } else {
         sequencer_core_arp_configure(s_arp.patch, sequencer_core_arp_voices(),
-                                     s_arp.filter_authored, s_arp.filter.resonance);
+                                     s_arp.vp.filter_authored, s_arp.vp.filter.resonance);
         /* Raw wave/wavetable patches have no built-in EG0; always push the
          * envelope so notes decay. Juno/DX7 patch strings AND the bass/FM
          * presets carry their own envelopes (they're part of the preset's
          * character): only push over those when the user has authored one. */
-        if (sequencer_core_is_wave_patch(s_arp.patch) || s_arp.env_authored) {
-            sequencer_core_push_envelope(sequencer_core_arp_synth(), &s_arp.env);
+        if (sequencer_core_is_wave_patch(s_arp.patch) || s_arp.vp.env_authored) {
+            sequencer_core_push_envelope(sequencer_core_arp_synth(), &s_arp.vp.env);
         }
     }
     /* Filter re-apply is source-agnostic: both WAVE and PATCH respect it. */
-    if (s_arp.filter_authored) {
-        sequencer_core_push_filter(sequencer_core_arp_synth(), &s_arp.filter,
+    if (s_arp.vp.filter_authored) {
+        sequencer_core_push_filter(sequencer_core_arp_synth(), &s_arp.vp.filter,
                                    s_arp.wave == KS);
     }
     /* EG1 (independent second envelope): push whenever the user has authored
@@ -344,9 +285,9 @@ static void arp_rebuild(void)
      * no authored EG1 is left alone — if the loaded patch already routes its
      * own bp1, its own patch-string values keep driving it. */
     bool wave_filter_eg1 = (s_arp.source == ARP_SRC_WAVE) &&
-                           s_arp.filter_authored && s_arp.filter.enabled;
-    if (s_arp.env1_authored || wave_filter_eg1) {
-        sequencer_core_push_envelope_eg1(sequencer_core_arp_synth(), 0, &s_arp.env1);
+                           s_arp.vp.filter_authored && s_arp.vp.filter.enabled;
+    if (s_arp.vp.env1_authored || wave_filter_eg1) {
+        sequencer_core_push_envelope_eg1(sequencer_core_arp_synth(), 0, &s_arp.vp.env1);
     }
     /* Any reconfigure above (patch load or WAVE pool re-init) resets AMY's
      * per-osc portamento_alpha to 0 — reassert regardless of source. */
@@ -358,6 +299,7 @@ static void arp_rebuild(void)
 void arp_core_init(void)
 {
     memset(&s_arp, 0, sizeof(s_arp));
+    voice_params_init_defaults(&s_arp.vp);   /* unauthored, amp trim at unity */
     s_arp.enabled     = CONFIG_SEQ_ARP_DEFAULT_ENABLED;
     s_arp.dir         = ARP_UP;
     s_arp.octaves     = CONFIG_SEQ_ARP_DEFAULT_OCTAVES;
@@ -370,36 +312,28 @@ void arp_core_init(void)
     s_arp.wave        = ARP_DEFAULT_WAVE;   /* SAW_DOWN — sensible WAVE default  */
     /* Default ADSR mirrors the melodic compile-time defaults; not authored until
      * the user commits in the graph editor (patch's own env wins until then). */
-s_arp.env.attack_ms   = 4;    // Tiny curve to prevent an aggressive digital click
-s_arp.env.decay_ms    = 250;  // Medium-short decay allows the note body to breathe
-s_arp.env.sustain_pct = 30;   // Low sustain keeps the sequence energetic but audible if held
-s_arp.env.release_ms  = 200;  // Controlled tail that fills space without causing a muddy low-end
-    s_arp.env.eg_type     = 0;   /* ENVELOPE_NORMAL */
-    s_arp.env_authored      = false;
+    s_arp.vp.env.attack_ms   = 4;    /* tiny curve to prevent a digital click  */
+    s_arp.vp.env.decay_ms    = 250;  /* medium-short decay lets the body breathe */
+    s_arp.vp.env.sustain_pct = 30;   /* low sustain keeps the sequence energetic */
+    s_arp.vp.env.release_ms  = 200;  /* controlled tail, no muddy low-end       */
+    s_arp.vp.env.eg_type     = 0;    /* ENVELOPE_NORMAL */
     /* Second envelope (EG1): slower than the amp env above — the classic
      * "plucky amp decay, slower filter tail" shape once the filter is
      * authored+enabled in WAVE mode (see arp_configure_wave_synth()). */
-    s_arp.env1.attack_ms   = 15;
-    s_arp.env1.decay_ms    = 400;
-    s_arp.env1.sustain_pct = 20;
-    s_arp.env1.release_ms  = 300;
-    s_arp.env1.eg_type     = 0;   /* ENVELOPE_NORMAL */
-    s_arp.env1_authored    = false;
-    /* Default filter: bypass (not authored; patch's filter wins until user commits). */
-    s_arp.filter.filter_type = 0;   /* SEQ_FILTER_NONE */
-    s_arp.filter.cutoff_hz   = 800.0f;
-    s_arp.filter.resonance   = 1.0f;
-    s_arp.filter.enabled     = false;
-    s_arp.filter_authored    = false;
-    /* Default LFO: disabled, not authored (bypass until user commits). */
-    s_arp.lfo.enabled = false;
-    s_arp.lfo.mode    = LFO_MODE_FREE;
-    s_arp.lfo.wave    = LFO_WAVE_SINE;
-    s_arp.lfo.rate    = LFO_RATE_1BAR;
-    s_arp.lfo.depth   = 50;
-    s_arp.lfo.target  = LFO_TARGET_FILTER;
-    s_arp.lfo_authored = false;
-    s_arp.amp_scale          = 1.0f; /* unity; memset zeroes, so explicit init */
+    s_arp.vp.env1.attack_ms   = 15;
+    s_arp.vp.env1.decay_ms    = 400;
+    s_arp.vp.env1.sustain_pct = 20;
+    s_arp.vp.env1.release_ms  = 300;
+    s_arp.vp.env1.eg_type     = 0;   /* ENVELOPE_NORMAL */
+    /* Default filter: bypass (unauthored; patch's filter wins until commit). */
+    s_arp.vp.filter.filter_type = 0;   /* SEQ_FILTER_NONE */
+    s_arp.vp.filter.cutoff_hz   = 800.0f;
+    s_arp.vp.filter.resonance   = 1.0f;
+    /* Default LFO: disabled (bypass until the user commits). */
+    s_arp.vp.lfo.wave   = LFO_WAVE_SINE;
+    s_arp.vp.lfo.rate   = LFO_RATE_1BAR;
+    s_arp.vp.lfo.depth  = 50;
+    s_arp.vp.lfo.target = LFO_TARGET_FILTER;
     if (s_arp.octaves < 1) s_arp.octaves = 1;
     if (s_arp.octaves > ARP_OCT_MAX) s_arp.octaves = ARP_OCT_MAX;
     if (s_arp.scale_index >= quantizer_scale_count()) s_arp.scale_index = 0;
@@ -439,7 +373,7 @@ void arp_core_refresh(void)
         uint8_t  step_i   = 0;
 
         /* Apply per-target amp trim; clamp so velocity stays ≤1 (AMY cap). */
-        float arp_vel = 0.9f * s_arp.amp_scale;
+        float arp_vel = 0.9f * s_arp.vp.amp_trim;
         if (arp_vel > 1.0f) arp_vel = 1.0f;
 
         for (uint8_t oct = 0; oct < s_arp.octaves; oct++) {
@@ -480,7 +414,7 @@ void arp_core_refresh(void)
     uint32_t tag_base = sequencer_core_arp_tag_base();
 
     /* Apply per-target amp trim for UP/DOWN modes. */
-    float arp_vel = 0.9f * s_arp.amp_scale;
+    float arp_vel = 0.9f * s_arp.vp.amp_trim;
     if (arp_vel > 1.0f) arp_vel = 1.0f;
 
     for (uint8_t i = 0; i < steps; i++) {
@@ -587,70 +521,70 @@ void arp_core_fm_voice_changed(void)
 
 void arp_get_envelope(seq_env_t *out)
 {
-    if (out) *out = s_arp.env;
+    if (out) *out = s_arp.vp.env;
 }
 
 void arp_set_envelope(const seq_env_t *env)
 {
     if (!env) return;
-    s_arp.env = *env;
-    if (s_arp.env.attack_ms < 2) s_arp.env.attack_ms = 2;  /* 2 ms floor */
-    s_arp.env_authored = true;
-    sequencer_core_push_envelope(sequencer_core_arp_synth(), &s_arp.env);
+    s_arp.vp.env = *env;
+    if (s_arp.vp.env.attack_ms < 2) s_arp.vp.env.attack_ms = 2;  /* 2 ms floor */
+    s_arp.vp.env_authored = true;
+    sequencer_core_push_envelope(sequencer_core_arp_synth(), &s_arp.vp.env);
     ESP_LOGI(TAG, "arp env -> A%u D%u S%u%% R%u",
-             (unsigned)s_arp.env.attack_ms, (unsigned)s_arp.env.decay_ms,
-             (unsigned)s_arp.env.sustain_pct, (unsigned)s_arp.env.release_ms);
+             (unsigned)s_arp.vp.env.attack_ms, (unsigned)s_arp.vp.env.decay_ms,
+             (unsigned)s_arp.vp.env.sustain_pct, (unsigned)s_arp.vp.env.release_ms);
 }
 
 void arp_get_envelope2(seq_env_t *out)
 {
-    if (out) *out = s_arp.env1;
+    if (out) *out = s_arp.vp.env1;
 }
 
 void arp_set_envelope2(const seq_env_t *env)
 {
     if (!env) return;
-    s_arp.env1 = *env;
-    if (s_arp.env1.attack_ms < 2) s_arp.env1.attack_ms = 2;  /* 2 ms floor */
-    s_arp.env1_authored = true;
-    sequencer_core_push_envelope_eg1(sequencer_core_arp_synth(), 0, &s_arp.env1);
+    s_arp.vp.env1 = *env;
+    if (s_arp.vp.env1.attack_ms < 2) s_arp.vp.env1.attack_ms = 2;  /* 2 ms floor */
+    s_arp.vp.env1_authored = true;
+    sequencer_core_push_envelope_eg1(sequencer_core_arp_synth(), 0, &s_arp.vp.env1);
     ESP_LOGI(TAG, "arp env1 -> A%u D%u S%u%% R%u",
-             (unsigned)s_arp.env1.attack_ms, (unsigned)s_arp.env1.decay_ms,
-             (unsigned)s_arp.env1.sustain_pct, (unsigned)s_arp.env1.release_ms);
+             (unsigned)s_arp.vp.env1.attack_ms, (unsigned)s_arp.vp.env1.decay_ms,
+             (unsigned)s_arp.vp.env1.sustain_pct, (unsigned)s_arp.vp.env1.release_ms);
 }
 
 void arp_get_filter(seq_filter_t *out)
 {
-    if (out) *out = s_arp.filter;
+    if (out) *out = s_arp.vp.filter;
 }
 
 void arp_set_filter(const seq_filter_t *f)
 {
     if (!f) return;
-    s_arp.filter = *f;
-    s_arp.filter_authored = true;
-    sequencer_core_push_filter(sequencer_core_arp_synth(), &s_arp.filter,
+    s_arp.vp.filter = *f;
+    s_arp.vp.filter_authored = true;
+    sequencer_core_push_filter(sequencer_core_arp_synth(), &s_arp.vp.filter,
                                s_arp.wave == KS);
     ESP_LOGI(TAG, "arp filter -> type%u %.0fHz Q%.2f en=%d",
-             s_arp.filter.filter_type, (double)s_arp.filter.cutoff_hz,
-             (double)s_arp.filter.resonance, s_arp.filter.enabled);
+             s_arp.vp.filter.filter_type, (double)s_arp.vp.filter.cutoff_hz,
+             (double)s_arp.vp.filter.resonance, s_arp.vp.filter.enabled);
 }
 
 void arp_get_lfo(seq_lfo_t *out)
 {
-    if (out) *out = s_arp.lfo;
+    if (out) *out = s_arp.vp.lfo;
 }
 
 void arp_set_lfo(const seq_lfo_t *lfo)
 {
     if (!lfo) return;
-    s_arp.lfo = *lfo;
+    s_arp.vp.lfo = *lfo;
     /* Only mark authored and rebuild in WAVE mode: PATCH mode stores the config
      * for later but does not activate the native LFO (patches own their osc
      * layout).  Setting lfo_authored while in PATCH mode causes ghost-activation
      * when the user subsequently switches to WAVE mode. */
     if (s_arp.source == ARP_SRC_WAVE) {
-        s_arp.lfo_authored = true;
+        s_arp.vp.lfo_authored = true;
         arp_rebuild();
     }
     ESP_LOGI(TAG, "arp LFO -> en=%d wave=%u rate=%u depth=%u tgt=%u",
@@ -756,12 +690,12 @@ void arp_set_amp_scale(float v)
 {
     if (v < 0.0f) v = 0.0f;
     if (v > 1.0f) v = 1.0f;
-    if (fabsf(s_arp.amp_scale - v) < 0.001f) return;
-    s_arp.amp_scale = v;
+    if (fabsf(s_arp.vp.amp_trim - v) < 0.001f) return;
+    s_arp.vp.amp_trim = v;
     arp_mark_dirty();   /* coalesced re-emit on next arp_core_service() */
 }
 
-float arp_get_amp_scale(void) { return s_arp.amp_scale; }
+float arp_get_amp_scale(void) { return s_arp.vp.amp_trim; }
 
 /* ── Portamento / glide ──────────────────────────────────────────────────── */
 

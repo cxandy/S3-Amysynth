@@ -2,6 +2,14 @@
 #include "amy.h"            /* wave constants, COEF_* indices */
 #include "amy_helpers.h"    /* shared scratch-event begin/send */
 #include "sequencer_core.h" /* sequencer_core_ks_feedback_from_q */
+#include <string.h>
+
+void voice_params_init_defaults(voice_params_t *vp)
+{
+    if (!vp) return;
+    memset(vp, 0, sizeof(*vp));
+    vp->amp_trim = 1.0f;   /* unity — the one non-zero default */
+}
 
 uint16_t voice_lfo_wave_to_amy(lfo_wave_t wave)
 {

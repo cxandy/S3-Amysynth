@@ -68,8 +68,8 @@ void sequencer_core_set_bpm(uint16_t new_bpm)
     sequencer_push_tempo(s_bpm);
     for (int li = 0; li < s_num_layers; li++) {
         for (int tr = 0; tr < SEQ_TRACKS; tr++) {
-            if (s_layers[li].lfo_authored[tr] && s_layers[li].lfo[tr].enabled)
-                s_lfo_hz[li][tr] = lfo_rate_to_hz(s_layers[li].lfo[tr].rate, s_bpm);
+            if (s_layers[li].vp[tr].lfo_authored && s_layers[li].vp[tr].lfo.enabled)
+                s_lfo_hz[li][tr] = lfo_rate_to_hz(s_layers[li].vp[tr].lfo.rate, s_bpm);
         }
     }
     /* Sync the arp WAVE-mode LFO carrier to the new BPM (no-op when not active). */

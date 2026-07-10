@@ -202,7 +202,7 @@ static void trig_schedule_ratchets(uint8_t layer_idx, const seq_layer_t *layer,
         gate = (uint16_t)(sub_ticks - 1);
     }
 
-    float velocity = sequencer_step_velocity(layer, track, step) * layer->amp_scale[track];
+    float velocity = sequencer_step_velocity(layer, track, step) * layer->vp[track].amp_trim;
     /* Per-step velocity offset (patch-06): signed percentage points, default 0.
      * Applied here as well as the plain path so decorated steps match. */
     velocity += (float)layer->step_velocity_adj[track][step] * 0.01f;

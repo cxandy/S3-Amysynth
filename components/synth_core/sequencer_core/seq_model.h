@@ -133,10 +133,10 @@ typedef struct {
 
 /* ── ADSR envelope (one AMY EG0 breakpoint set) ──
  * Stored as concrete ms/percent so it survives patch changes and can be edited
- * at runtime by the graph UI. Currently scoped PER ROW (per track); the storage
- * array in seq_layer_t is env[SEQ_TRACKS]. To extend to per-step later, widen
- * that array to env[SEQ_TRACKS][SEQ_MAX_STEPS] and update the single accessor
- * seq_layer_env() in sequencer_core.c — no other call site changes. */
+ * at runtime by the graph UI. Currently scoped PER ROW (per track) inside
+ * seq_layer_t's voice_params_t block. To extend to per-step later, widen the
+ * storage and update the single accessor seq_layer_env() — no other call site
+ * changes. */
 typedef struct {
     uint32_t attack_ms;
     uint32_t decay_ms;
@@ -144,6 +144,26 @@ typedef struct {
     uint32_t release_ms;
     uint8_t  eg_type;       /* AMY ENVELOPE_* (NORMAL/LINEAR/DX7/TRUE_EXP)   */
 } seq_env_t;
+
+/* ── Per-voice parameter block (shared voice-config layer) ──
+ * One block embedded by every engine's state: the melodic layers (per track,
+ * below), the arp (s_arp), and the drone (s_d). Bundles the runtime-editable
+ * env/EG1/filter/LFO with their deferred-authority flags ("patch owns it
+ * until the user commits, then our copy wins") and the per-target output
+ * trim. Initialise with voice_params_init_defaults() (voice_config.h) — the
+ * single place amp_trim gets its non-zero unity default, so a memset-zeroed
+ * block never ships a silent voice. */
+typedef struct {
+    seq_env_t    env;             /* ADSR (EG0)                             */
+    seq_env_t    env1;            /* second envelope (EG1)                  */
+    seq_filter_t filter;
+    seq_lfo_t    lfo;
+    bool         env_authored;
+    bool         env1_authored;
+    bool         filter_authored;
+    bool         lfo_authored;
+    float        amp_trim;        /* output trim 0..1, unity default        */
+} voice_params_t;
 
 /* ── Per-layer data (display + audio shared) ── */
 typedef struct {
@@ -153,25 +173,16 @@ typedef struct {
     bool     grid[SEQ_TRACKS][SEQ_MAX_STEPS];        /* step on/off state      */
     uint8_t  step_note[SEQ_TRACKS][SEQ_MAX_STEPS];   /* per-step MIDI pitch    */
     uint8_t  track_base_note[SEQ_TRACKS];            /* current base note      */
-    seq_env_t    env[SEQ_TRACKS];                    /* per-row ADSR envelope (EG0) */
-    bool         env_authored[SEQ_TRACKS]; /* row's env overrides the patch only
-                                              after the user commits in the graph
-                                              editor; until then the patch's own
-                                              envelope wins (deferred authority)  */
-    seq_env_t    env1[SEQ_TRACKS];         /* per-row second envelope (EG1) — the
-                                              independent generator AMY already
-                                              exposes; typically routed to the
-                                              filter by whichever patch/coef setup
-                                              targets COEF_EG1 (bass presets do;
-                                              many stock Juno/DX7 patch strings
-                                              already route their own filter
-                                              through bp1) */
-    bool         env1_authored[SEQ_TRACKS]; /* deferred authority, mirrors env_authored */
-    seq_filter_t filter[SEQ_TRACKS];          /* per-row filter (bypass by default) */
-    bool         filter_authored[SEQ_TRACKS]; /* filter overrides patch only after
-                                                 the user commits in the filter editor */
-    seq_lfo_t lfo[SEQ_TRACKS];
-    bool      lfo_authored[SEQ_TRACKS];
+    voice_params_t vp[SEQ_TRACKS];       /* per-row voice parameters: ADSR (EG0),
+                                            EG1 (typically routed to the filter by
+                                            whichever patch/coef setup targets
+                                            COEF_EG1), filter (bypass by default),
+                                            LFO — each with its deferred-authority
+                                            flag — plus the per-track output trim
+                                            folded into step velocity at emit
+                                            time. Initialise each row with
+                                            voice_params_init_defaults() in
+                                            sequencer_core_add_layer.            */
     uint8_t   repeat_rate[SEQ_TRACKS];   /* SEQ_REPEAT_* — fires every N bars */
     bool      mute[SEQ_TRACKS];          /* true = track produces no note-ons */
     bool      solo[SEQ_TRACKS];          /* true = only soloed tracks in this
@@ -202,11 +213,6 @@ typedef struct {
     uint32_t synth_flags;            /* shared flags across the layer's rows  */
     uint8_t  num_voices;             /* per-synth voice count                 */
     uint8_t  step_page;                              /* display page 0|1 (32-step) */
-    float    amp_scale[SEQ_TRACKS];  /* per-track output amplitude trim (default 1.0,
-                                        range 0..1); multiplied into step velocity at
-                                        note-emit time. Adjusted via graph editor amp
-                                        mode (MY_BUTTON_2). MUST be initialised to 1.0f
-                                        in sequencer_core_add_layer — memset zeroes it. */
 
     /* ── Per-step probability / ratchet / conditional trig ──
      * A step with prob==100 && ratchet==1 && cond_type==NONE is "plain" and

@@ -1,4 +1,5 @@
 #include "sequencer_core/seq_core_internal.h"
+#include "voice_config.h"
 #include <assert.h>
 
 /* ── State definitions — owns the core layer table and play state ─── */
@@ -98,6 +99,12 @@ uint8_t sequencer_core_add_layer(seq_layer_type_t type, uint8_t num_steps)
     seq_layer_t *layer = &s_layers[idx];
     memset(layer, 0, sizeof(seq_layer_t));
 
+    /* Per-row voice params: zeroed/unauthored with amp_trim at unity — the
+     * single defaults source, so no field here needs post-memset repair. */
+    for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
+        voice_params_init_defaults(&layer->vp[t]);
+    }
+
     layer->type       = type;
     layer->num_steps  = (num_steps == SEQ_MAX_STEPS) ? SEQ_MAX_STEPS : SEQ_STEPS;
     layer->num_tracks = SEQ_TRACKS;
@@ -154,20 +161,18 @@ uint8_t sequencer_core_add_layer(seq_layer_type_t type, uint8_t num_steps)
             for (uint8_t s = 0; s < SEQ_MAX_STEPS; s++) {
                 layer->step_note[t][s] = mel_notes[t];
             }
-            layer->env[t]  = seq_default_melodic_env();
-            layer->env1[t] = seq_default_melodic_env1();
+            layer->vp[t].env  = seq_default_melodic_env();
+            layer->vp[t].env1 = seq_default_melodic_env1();
         }
     }
 
-    /* amp_scale defaults to 1.0 (unity); memset in add_layer zeroes it, so
-     * explicit init here is required to avoid silencing all tracks. Same
-     * rationale for step_prob (0% would silence every step) and step_ratchet
-     * (0 sub-hits would fire nothing); step_cond_type/param and the per-step
-     * transform/quant-bypass arrays default correctly to their zeroed no-op
-     * (SEQ_STEP_COND_NONE / SEQ_STEP_TRANSFORM_NONE / no bypass) and need no
-     * explicit init. */
+    /* step_prob (0% would silence every step) and step_ratchet (0 sub-hits
+     * would fire nothing) need explicit non-zero defaults; step_cond_type/
+     * param and the per-step transform/quant-bypass arrays default correctly
+     * to their zeroed no-op (SEQ_STEP_COND_NONE / SEQ_STEP_TRANSFORM_NONE /
+     * no bypass) and need no explicit init. The per-row amp trim got its
+     * unity default in voice_params_init_defaults() above. */
     for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
-        layer->amp_scale[t] = 1.0f;
         for (uint8_t s = 0; s < SEQ_MAX_STEPS; s++) {
             layer->step_prob[t][s]    = 100;
             layer->step_ratchet[t][s] = 1;

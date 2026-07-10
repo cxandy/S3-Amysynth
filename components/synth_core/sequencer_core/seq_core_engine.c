@@ -217,7 +217,7 @@ void sequencer_emit_step(uint8_t layer_idx, uint8_t track, uint8_t step)
     uint32_t tick_off   = (tick_on + gate) % period;
     float note_velocity = sequencer_step_velocity(layer, track, step);
     /* Apply per-track amplitude trim (default 1.0; set by graph editor amp mode). */
-    note_velocity *= layer->amp_scale[track];
+    note_velocity *= layer->vp[track].amp_trim;
     /* Per-step velocity offset (patch-06): signed percentage points, default 0. */
     note_velocity += (float)layer->step_velocity_adj[track][step] * 0.01f;
     if (note_velocity < 0.0f) note_velocity = 0.0f;

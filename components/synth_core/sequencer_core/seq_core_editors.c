@@ -27,7 +27,7 @@ static bool is_native_lfo_track(const seq_lfo_t *lfo)
  * COEF_MOD cleared) so the caller always reaches a consistent AMY state. */
 static void melodic_configure_native_lfo_track(const seq_layer_t *layer, uint8_t track)
 {
-    const seq_lfo_t *lfo = &layer->lfo[track];
+    const seq_lfo_t *lfo = &layer->vp[track].lfo;
     voice_apply_native_lfo(layer->synth_id[track],
                            is_native_lfo_track(lfo) ? lfo : NULL, s_bpm);
 }
@@ -88,7 +88,7 @@ void sequencer_core_set_melodic_envelope(uint8_t layer_idx, uint8_t track,
      * patch's own envelope. From now on patch changes re-impose this custom env
      * (until the user re-authors). Each row owns its own synth, so the push
      * affects only this row. */
-    layer->env_authored[track] = true;
+    layer->vp[track].env_authored = true;
     sequencer_configure_melodic_envelope_track(layer_idx, track);
     ESP_LOGI(TAG, "env L%u row%u -> A%u D%u S%u%% R%u (authored)",
              layer_idx, track, (unsigned)dst->attack_ms, (unsigned)dst->decay_ms,
@@ -136,7 +136,7 @@ void sequencer_core_set_melodic_envelope2(uint8_t layer_idx, uint8_t track,
     dst->release_ms  = SEQ_CLAMP_U32(env->release_ms, 0, 60000);
     dst->eg_type     = env->eg_type;
 
-    layer->env1_authored[track] = true;
+    layer->vp[track].env1_authored = true;
     sequencer_configure_melodic_envelope1_track(layer_idx, track);
     ESP_LOGI(TAG, "env1 L%u row%u -> A%u D%u S%u%% R%u (authored)",
              layer_idx, track, (unsigned)dst->attack_ms, (unsigned)dst->decay_ms,
@@ -159,7 +159,7 @@ float sequencer_core_ks_feedback_from_q(float q)
 void sequencer_configure_melodic_filter_track(uint8_t layer_idx, uint8_t track)
 {
     const seq_layer_t   *layer = &s_layers[layer_idx];
-    const seq_filter_t  *f     = &layer->filter[track];
+    const seq_filter_t  *f     = &layer->vp[track].filter;
     amy_event *e = amy_helpers_event_begin();
     e->synth       = layer->synth_id[track];
     if (f->enabled) {
@@ -198,7 +198,7 @@ bool sequencer_core_get_melodic_filter(uint8_t layer_idx, uint8_t track,
                                        seq_filter_t *out)
 {
     if (!out || layer_idx >= s_num_layers || track >= SEQ_TRACKS) return false;
-    *out = s_layers[layer_idx].filter[track];
+    *out = s_layers[layer_idx].vp[track].filter;
     return true;
 }
 
@@ -208,14 +208,14 @@ void sequencer_core_set_melodic_filter(uint8_t layer_idx, uint8_t track,
     if (!f || layer_idx >= s_num_layers || track >= SEQ_TRACKS) return;
     seq_layer_t *layer = &s_layers[layer_idx];
 
-    seq_filter_t *dst = &layer->filter[track];
+    seq_filter_t *dst = &layer->vp[track].filter;
     dst->filter_type = (f->filter_type < 5) ? f->filter_type : FILTER_NONE;
     dst->cutoff_hz   = SEQ_CLAMP_F32(f->cutoff_hz,  65.0f, 8000.0f);
     dst->resonance   = SEQ_CLAMP_F32(f->resonance,  0.51f, 8.0f);
     dst->enabled     = f->enabled;
     dst->filter_env_amount = SEQ_CLAMP_F32(f->filter_env_amount, 0.0f, 8.0f);
 
-    layer->filter_authored[track] = true;
+    layer->vp[track].filter_authored = true;
     sequencer_configure_melodic_filter_track(layer_idx, track);
     ESP_LOGI(TAG, "filter L%u row%u -> type%u %.0fHz Q%.2f (authored)",
              layer_idx, track, dst->filter_type,
@@ -247,9 +247,9 @@ void sequencer_core_set_melodic_lfo(uint8_t layer_idx, uint8_t track,
     if (!lfo || layer_idx >= s_num_layers || track >= SEQ_TRACKS) return;
     seq_layer_t *layer = &s_layers[layer_idx];
 
-    layer->lfo[track] = *lfo;
-    if (layer->lfo[track].depth > 100) layer->lfo[track].depth = 100;
-    layer->lfo_authored[track] = true;
+    layer->vp[track].lfo = *lfo;
+    if (layer->vp[track].lfo.depth > 100) layer->vp[track].lfo.depth = 100;
+    layer->vp[track].lfo_authored = true;
 
 #if CONFIG_SEQ_MELODIC_AMY_NATIVE_LFO
     bool is_wave = sequencer_core_is_wave_patch(layer->patch);
@@ -257,16 +257,16 @@ void sequencer_core_set_melodic_lfo(uint8_t layer_idx, uint8_t track,
         melodic_configure_native_lfo_track(layer, track);
         /* Restore static target value when disabled or on software-fallback path
          * (PAN/RANDOM): native clears COEF_MOD but doesn't push the neutral coef. */
-        if (!lfo->enabled || !is_native_lfo_track(&layer->lfo[track])) {
+        if (!lfo->enabled || !is_native_lfo_track(&layer->vp[track].lfo)) {
             if (lfo->target == LFO_TARGET_FILTER)
-                sequencer_core_push_filter(layer->synth_id[track], &layer->filter[track],
+                sequencer_core_push_filter(layer->synth_id[track], &layer->vp[track].filter,
                                            layer->patch == SEQ_PATCH_KS);
             else
                 lfo_push_target_neutral(layer->synth_id[track], lfo->target);
         }
         /* s_lfo_hz=0 for native tracks so the service loop skips them;
          * non-zero for PAN/RANDOM fallback so the service loop picks them up. */
-        s_lfo_hz[layer_idx][track] = (lfo->enabled && is_native_lfo_track(&layer->lfo[track]))
+        s_lfo_hz[layer_idx][track] = (lfo->enabled && is_native_lfo_track(&layer->vp[track].lfo))
                                      ? 0.0f
                                      : (lfo->enabled ? lfo_rate_to_hz(lfo->rate, s_bpm) : 0.0f);
         ESP_LOGI(TAG, "LFO L%u T%u %s %.2f Hz d=%u tgt=%u [native]",
@@ -279,7 +279,7 @@ void sequencer_core_set_melodic_lfo(uint8_t layer_idx, uint8_t track,
     /* Software path: non-wave patches, or native LFO disabled at compile time */
     if (!lfo->enabled) {
         if (lfo->target == LFO_TARGET_FILTER) {
-            sequencer_core_push_filter(layer->synth_id[track], &layer->filter[track],
+            sequencer_core_push_filter(layer->synth_id[track], &layer->vp[track].filter,
                                        layer->patch == SEQ_PATCH_KS);
         } else {
             lfo_push_target_neutral(layer->synth_id[track], lfo->target);
@@ -297,7 +297,7 @@ bool sequencer_core_get_melodic_lfo(uint8_t layer_idx, uint8_t track,
                                     seq_lfo_t *out)
 {
     if (!out || layer_idx >= s_num_layers || track >= SEQ_TRACKS) return false;
-    *out = s_layers[layer_idx].lfo[track];
+    *out = s_layers[layer_idx].vp[track].lfo;
     return true;
 }
 
@@ -306,8 +306,8 @@ void sequencer_core_lfo_service(void)
     const float DT = 0.05f; /* 20 Hz */
     for (int li = 0; li < s_num_layers; li++) {
         for (int tr = 0; tr < SEQ_TRACKS; tr++) {
-            if (!s_layers[li].lfo_authored[tr]) continue;
-            const seq_lfo_t *lfo = &s_layers[li].lfo[tr];
+            if (!s_layers[li].vp[tr].lfo_authored) continue;
+            const seq_lfo_t *lfo = &s_layers[li].vp[tr].lfo;
             if (!lfo->enabled) continue;
             float hz = s_lfo_hz[li][tr];
             if (hz <= 0.0f) continue;
@@ -341,9 +341,9 @@ void sequencer_core_lfo_service(void)
             e->synth = syn;
             switch (lfo->target) {
                 case LFO_TARGET_FILTER: {
-                    float base = (s_layers[li].filter[tr].enabled &&
-                                  s_layers[li].filter[tr].cutoff_hz > 0.0f)
-                                 ? s_layers[li].filter[tr].cutoff_hz : 1000.0f;
+                    float base = (s_layers[li].vp[tr].filter.enabled &&
+                                  s_layers[li].vp[tr].filter.cutoff_hz > 0.0f)
+                                 ? s_layers[li].vp[tr].filter.cutoff_hz : 1000.0f;
                     e->filter_freq_coefs[COEF_CONST] =
                         base * powf(2.0f, d * 3.0f * val);
                     break;
@@ -378,10 +378,10 @@ void sequencer_configure_melodic_lfo(uint8_t layer_idx)
     bool is_wave = sequencer_core_is_wave_patch(layer->patch);
     if (!is_wave) return;
     for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
-        if (!layer->lfo_authored[t]) continue;
+        if (!layer->vp[t].lfo_authored) continue;
         melodic_configure_native_lfo_track(layer, t);
         /* Keep s_lfo_hz in sync so the service loop skips native tracks */
-        const seq_lfo_t *lfo = &layer->lfo[t];
+        const seq_lfo_t *lfo = &layer->vp[t].lfo;
         s_lfo_hz[layer_idx][t] =
             (lfo->enabled && is_native_lfo_track(lfo))
             ? 0.0f
@@ -402,8 +402,8 @@ void melodic_lfo_refresh_native_freq(void)
         bool is_wave = sequencer_core_is_wave_patch(layer->patch);
         if (!is_wave) continue;
         for (int tr = 0; tr < SEQ_TRACKS; tr++) {
-            if (!layer->lfo_authored[tr]) continue;
-            const seq_lfo_t *lfo = &layer->lfo[tr];
+            if (!layer->vp[tr].lfo_authored) continue;
+            const seq_lfo_t *lfo = &layer->vp[tr].lfo;
             if (!is_native_lfo_track(lfo)) continue;
             amy_event *e = amy_helpers_event_begin();
             e->synth                  = layer->synth_id[tr];
@@ -430,7 +430,7 @@ void melodic_lfo_refresh_native_freq(void)
 float sequencer_core_get_melodic_amp_scale(uint8_t layer_idx, uint8_t track)
 {
     if (layer_idx >= s_num_layers || track >= SEQ_TRACKS) return 1.0f;
-    return s_layers[layer_idx].amp_scale[track];
+    return s_layers[layer_idx].vp[track].amp_trim;
 }
 
 void sequencer_core_set_melodic_amp_scale(uint8_t layer_idx, uint8_t track,
@@ -439,7 +439,7 @@ void sequencer_core_set_melodic_amp_scale(uint8_t layer_idx, uint8_t track,
     if (layer_idx >= s_num_layers || track >= SEQ_TRACKS) return;
     if (v < 0.0f) v = 0.0f;
     if (v > 1.0f) v = 1.0f;
-    s_layers[layer_idx].amp_scale[track] = v;
+    s_layers[layer_idx].vp[track].amp_trim = v;
     /* Re-emit all steps so the new amplitude takes effect immediately. */
     seq_layer_t *layer = &s_layers[layer_idx];
     for (uint8_t s = 0; s < layer->num_steps; s++)

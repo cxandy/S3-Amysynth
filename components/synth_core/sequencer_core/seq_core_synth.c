@@ -194,7 +194,7 @@ static void sequencer_configure_melodic_envelope(uint8_t layer_idx)
      * lands, regardless of authored state. */
     bool force_ks = (layer->patch == SEQ_PATCH_KS);
     for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
-        if (layer->env_authored[t] || force_ks) {
+        if (layer->vp[t].env_authored || force_ks) {
             sequencer_configure_melodic_envelope_track(layer_idx, t);
         }
     }
@@ -207,7 +207,7 @@ static void sequencer_configure_melodic_envelope1(uint8_t layer_idx)
 {
     const seq_layer_t *layer = &s_layers[layer_idx];
     for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
-        if (layer->env1_authored[t]) {
+        if (layer->vp[t].env1_authored) {
             sequencer_configure_melodic_envelope1_track(layer_idx, t);
         }
     }
@@ -218,7 +218,7 @@ static void sequencer_configure_melodic_filter(uint8_t layer_idx)
 {
     const seq_layer_t *layer = &s_layers[layer_idx];
     for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
-        if (layer->filter_authored[t]) {
+        if (layer->vp[t].filter_authored) {
             sequencer_configure_melodic_filter_track(layer_idx, t);
         }
     }
@@ -234,7 +234,7 @@ seq_env_t *seq_layer_env(uint8_t layer_idx, uint8_t track)
 {
     if (layer_idx >= s_num_layers) layer_idx = 0;
     if (track >= SEQ_TRACKS) track = 0;
-    return &s_layers[layer_idx].env[track];
+    return &s_layers[layer_idx].vp[track].env;
 }
 
 /* Second envelope (EG1) counterpart of seq_layer_env() above — same clamping,
@@ -243,7 +243,7 @@ seq_env_t *seq_layer_env1(uint8_t layer_idx, uint8_t track)
 {
     if (layer_idx >= s_num_layers) layer_idx = 0;
     if (track >= SEQ_TRACKS) track = 0;
-    return &s_layers[layer_idx].env1[track];
+    return &s_layers[layer_idx].vp[track].env1;
 }
 
 /* AMY events are emitted through the shared amy_helpers scratch buffer (see
@@ -370,8 +370,8 @@ void sequencer_configure_synth(uint8_t layer_idx)
                                         layer->patch,
                                         layer->num_voices,
                                         layer->synth_flags,
-                                        layer->filter_authored[t],
-                                        layer->filter[t].resonance);
+                                        layer->vp[t].filter_authored,
+                                        layer->vp[t].filter.resonance);
     }
     seq_flush_patch_fx(string_patch);
     sequencer_configure_melodic_envelope(layer_idx);

@@ -18,6 +18,12 @@
 #define VOICE_LFO_DEPTH_SCAN   0.5f
 #define VOICE_LFO_DEPTH_PAN    0.5f  /* swing around the 0.5 center baseline */
 
+/* Reset a voice_params_t (defined in seq_model.h) to its defaults: everything
+ * zeroed/unauthored, amp_trim at unity. The single place the trim gets its
+ * non-zero default — kills the "must re-set to 1.0 after memset" footgun that
+ * was re-documented per engine. */
+void voice_params_init_defaults(voice_params_t *vp);
+
 /* lfo_wave_t -> AMY wave constant. RANDOM maps to NOISE: compute_mod_noise
  * is a native sample-and-hold (redraws only when the carrier phasor wraps),
  * replacing the 20 Hz software lfo_next_rand() poll. */

@@ -191,6 +191,38 @@ void synth_ui_stepedit_close(void);
 bool synth_ui_stepedit_handle_encoder(long delta);
 bool synth_ui_stepedit_handle_button(void);
 
+/* ─── Canonical view precedence — the single source of truth ─────────────
+ * The "which screen/overlay is showing" decision used to be re-derived by a
+ * hand-copied precedence cascade in four places (draw switch, hint strip,
+ * and the two main.c input routers). ui_active_view() is now the ONLY place
+ * that precedence lives; every consumer resolves once and dispatches on the
+ * result, so input and draw can never disagree about the active view.
+ *
+ * Order (high → low): FILTER > LFO > STEPEDIT > GRAPH > MENU > mode-tail.
+ * The first five are the input-capturing overlays (UI_VIEW_IS_OVERLAY); the
+ * mode-tail is resolved from seq_state.ui_mode when no overlay is up. */
+typedef enum {
+    UI_VIEW_FILTER = 0,
+    UI_VIEW_LFO,
+    UI_VIEW_STEPEDIT,
+    UI_VIEW_GRAPH,
+    UI_VIEW_MENU,
+    UI_VIEW_ARP,
+    UI_VIEW_DRONE_VIS,
+    UI_VIEW_DRONE,
+    UI_VIEW_PROG,
+    UI_VIEW_TRACKOPTS,
+    UI_VIEW_FM,
+    UI_VIEW_SEQ,
+    UI_VIEW_COUNT
+} ui_view_id_t;
+
+/* True for the five leading overlays, which capture encoder/button input
+ * outright ahead of any mode screen. */
+#define UI_VIEW_IS_OVERLAY(v)  ((v) <= UI_VIEW_MENU)
+
+ui_view_id_t synth_ui_active_view(void);
+
 #ifdef __cplusplus
 }
 #endif

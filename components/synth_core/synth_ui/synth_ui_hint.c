@@ -3,72 +3,28 @@
 #include "synth_ui.h"
 #include <stdio.h>
 
-/* MY_BUTTON_1's top guard in main_button_event_cb (main.c) always resolves,
- * for any event, in this fixed order: filter enable/disable toggle >
- * envelope apply-scope toggle (ADSR/LFO editors, melodic tracks only) > PROG
- * entry delete > default patch-hold latch. Mirrors that order exactly using
- * the same getters main.c calls -- see synth_ui_toggle_editor_apply_scope()'s
- * "no-op in ARP/DRONE modes" contract (ui_editors.c) for the ui_mode check. */
-static const char *hint_b1(void)
+/* The button-hint strip reads its labels straight from the view descriptor
+ * table, indexed by the single precedence resolver (synth_ui_active_view()).
+ * This used to be three functions (hint_b1/b2/b3) that each re-walked the
+ * overlay precedence ladder by hand; the labels now live one row per view in
+ * ui_view_table[] (ui_view_resolve.c), so the hint strip can never disagree
+ * with the draw switch about which view is active. A NULL static label means
+ * the cell is dynamic — it depends on ui_mode, which the view id does not
+ * carry (only the two scope-capable editors' b1 and the LFO editor's b2) — and
+ * is filled by the row's b*_fn. */
+static const char *hint_cell(const char *label, const char *(*fn)(void))
 {
-    if (synth_ui_filter_is_active()) {
-        return "On/Off";
-    }
-    bool editor_open = synth_ui_graph_is_active() || synth_ui_lfo_is_active();
-    bool scope_capable = editor_open
-                       && seq_state.ui_mode != UI_MODE_ARP
-                       && seq_state.ui_mode != UI_MODE_DRONE;
-    if (scope_capable) {
-        return "Scope";
-    }
-    if (synth_ui_prog_is_active()) {
-        return "Del";
-    }
-    return "Patch";
-}
-
-/* MY_BUTTON_2: the per-screen isolation guards (arp/prog/trackopts/drone) are
- * checked before the generic filter-suppress / graph-amp-mode / pitch-hold
- * fallback in main.c, in that exact order -- reproduced here unchanged. While
- * the Step Trig editor is open main.c:475-479 suppresses the drum-select hold
- * (button 2 is a no-op; editor open/close moved to MY_BUTTON_3), so the strip
- * shows the blank "-" no-op state, matching filter/arp/drone. */
-static const char *hint_b2(void)
-{
-    if (synth_ui_arp_is_active())       return "-";
-    if (synth_ui_prog_is_active())      return "+Add";
-    if (synth_ui_trackopts_is_active()) return "DelLy";
-    if (synth_ui_drone_is_active())     return "-";
-    if (synth_ui_filter_is_active())    return "-";
-    if (synth_ui_stepedit_is_active())  return "-";
-    if (synth_ui_graph_is_active())     return "Amp";
-    return "Pitch";
-}
-
-/* MY_BUTTON_3: editor-cycle vs. Step-Trig-close vs. menu-toggle, in the exact
- * priority order main.c dispatches (main.c:497-522). While the ADSR graph
- * editor specifically is open, long-press also toggles its EG0/EG1 breakpoint
- * set (main.c) — collapsed into "Next" below like every other button's
- * long-press nuance, since this hint shows one dominant label per button, not
- * every gesture length. While the Step Trig editor is open (and no ADSR/filter/
- * LFO editor is), single-click closes it (main.c:507-511), so show "Close". */
-static const char *hint_b3(void)
-{
-    if (synth_ui_graph_is_active() || synth_ui_filter_is_active()
-                                    || synth_ui_lfo_is_active()) {
-        return "Next";
-    }
-    if (synth_ui_stepedit_is_active()) {
-        return "Close";
-    }
-    return "Menu";
+    return label ? label : fn();
 }
 
 const char *synth_ui_hint_text(void)
 {
+    const ui_view_desc_t *d = &ui_view_table[synth_ui_active_view()];
     static char buf[32];
     snprintf(buf, sizeof(buf), "1:%s 2:%s 3:%s",
-             hint_b1(), hint_b2(), hint_b3());
+             hint_cell(d->b1, d->b1_fn),
+             hint_cell(d->b2, d->b2_fn),
+             d->b3);  /* b3 is always a static label */
     return buf;
 }
 

@@ -195,10 +195,7 @@ static void trig_schedule_ratchets(uint8_t layer_idx, const seq_layer_t *layer,
     uint16_t gate;
     if (n == 1) {
         sub_ticks = SEQ_TICKS_PER_STEP;
-        gate = (layer->type == SEQ_LAYER_DRUM) ? SEQ_GATE_DRUM : SEQ_GATE_MELODIC;
-        if (layer->type == SEQ_LAYER_MELODIC && (step % 2) == 1 && gate > 2) {
-            gate -= 2;
-        }
+        gate = seq_step_gate(layer, step);
     } else {
         sub_ticks = SEQ_TICKS_PER_STEP / n;
         if (sub_ticks < 2) sub_ticks = 2;
@@ -251,9 +248,11 @@ void sequencer_core_service_tick(void)
 
     for (uint8_t li = 0; li < s_num_layers; li++) {
         seq_layer_t *layer = &s_layers[li];
+        /* bar_ticks stays local for the repeat-rate bar-window math below;
+         * the step derivation itself goes through the shared helper. */
         uint32_t bar_ticks = (uint32_t)layer->num_steps * SEQ_TICKS_PER_STEP;
         if (bar_ticks == 0) continue;
-        uint8_t cur_step = (uint8_t)((now_ticks % bar_ticks) / SEQ_TICKS_PER_STEP);
+        uint8_t cur_step = seq_playhead_step(layer, now_ticks);
         if (cur_step == s_layer_last_step[li]) continue;  /* still mid-step: O(1) exit */
 
         if (cur_step == 0 && s_layer_last_step[li] != 0xFF) {

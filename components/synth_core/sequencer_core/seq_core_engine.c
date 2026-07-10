@@ -193,16 +193,9 @@ void sequencer_emit_step(uint8_t layer_idx, uint8_t track, uint8_t step)
     uint32_t rr         = (layer->repeat_rate[track] >= SEQ_REPEAT_2)
                           ? (uint32_t)layer->repeat_rate[track] : 1u;
     uint32_t period     = bar_ticks * rr;
-    /* How long the note is held: drums are short/percussive, melodic longer. */
-    uint8_t  gate       = (layer->type == SEQ_LAYER_DRUM)
-                          ? SEQ_GATE_DRUM : SEQ_GATE_MELODIC;
-    /* Melodic groove: shorten the off-beat 8ths a touch so accented downbeats
-     * feel longer/legato while the in-between notes are slightly detached. We
-     * only ever shorten (never lengthen past SEQ_GATE_MELODIC) so the note-off
-     * always lands before the next step's note-on and never cuts it off. */
-    if (layer->type == SEQ_LAYER_MELODIC && (step % 2) == 1 && gate > 2) {
-        gate -= 2;
-    }
+    /* Plain-trig note-hold incl. the melodic off-beat groove shortening;
+     * shared with the ratchet n==1 path (seq_core_trig.c) via seq_step_gate. */
+    uint8_t  gate       = (uint8_t)seq_step_gate(layer, step);
     uint32_t tag_on     = seq_tag_on(layer_idx, track, step);
     uint32_t tag_off    = seq_tag_off(layer_idx, track, step);
     /* +1 so tick 0 stays reserved (AMY treats tick 0 specially as "clear").
@@ -360,9 +353,7 @@ uint8_t sequencer_core_get_current_step(uint8_t layer_idx)
     if (layer_idx >= s_num_layers) return 0;
     if (!s_playing) return s_cached_step[layer_idx];
     seq_layer_t *layer = &s_layers[layer_idx];
-    uint32_t bar_ticks = (uint32_t)layer->num_steps * SEQ_TICKS_PER_STEP;
-    s_cached_step[layer_idx] =
-        (uint8_t)((sequencer_ticks() % bar_ticks) / SEQ_TICKS_PER_STEP);
+    s_cached_step[layer_idx] = seq_playhead_step(layer, sequencer_ticks());
     return s_cached_step[layer_idx];
 }
 
@@ -390,9 +381,7 @@ void sequencer_core_set_playing(bool p)
         /* Freeze display positions before clearing scheduled events. */
         for (uint8_t i = 0; i < s_num_layers; i++) {
             seq_layer_t *layer = &s_layers[i];
-            uint32_t bar_ticks = (uint32_t)layer->num_steps * SEQ_TICKS_PER_STEP;
-            s_cached_step[i] =
-                (uint8_t)((sequencer_ticks() % bar_ticks) / SEQ_TICKS_PER_STEP);
+            s_cached_step[i] = seq_playhead_step(layer, sequencer_ticks());
             sequencer_clear_layer_tags(i);
             /* Bug-1.1-style fix, same rationale as arp_core_clear_all() above:
              * decorated steps' one-shot ratchet tags are not touched by

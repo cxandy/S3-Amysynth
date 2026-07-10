@@ -159,6 +159,19 @@ typedef struct {
 
 static drone_state_t s_d;
 
+/* Schedule-affecting setters mark the drone dirty instead of rebuilding
+ * inline; drone_core_service() (once per UI frame) does a single rebuild when
+ * dirty, so an encoder spin through waves/params collapses to one rebuild +
+ * one burst of AMY event-mutex traffic per frame instead of one per detent.
+ * Mirrors the arp's s_arp_dirty discipline. Setters run on Core-0 input tasks
+ * and the drain runs on the Core-0 synth_ui_task — single-core, one-way flag,
+ * so the volatile is for compiler ordering, not cross-core synchronization.
+ * Enable, chord, and root-note changes stay synchronous: enabling must sound
+ * NOW, and chord/root must note-off the OLD voicing before state changes or
+ * voices stick. */
+static volatile bool s_d_dirty = false;
+static inline void drone_mark_dirty(void) { s_d_dirty = true; }
+
 /* ── Peak/Duck dB amp helpers ──────────────────────────────────────────────
  * These are the SINGLE source of truth for the engine math.  Both
  * drone_configure_wave_synth() and drone_get_amp_levels_norm() call these
@@ -491,6 +504,17 @@ void drone_core_init(void)
 
 void drone_core_service(void)
 {
+    /* Drain the coalesced rebuild BEFORE the enabled gate: a param changed
+     * while the drone is off must still rebuild (cheap synth reconfig only;
+     * drone_apply_enabled() is what actually sounds notes) so the change is
+     * live on the next enable. Drained before the LFO-hz tracking below so a
+     * rebuild and the tempo push land in the right order within the frame. */
+    if (s_d_dirty) {
+        s_d_dirty = false;
+        drone_rebuild();
+        if (s_d.enabled) drone_apply_enabled();
+    }
+
     if (!s_d.enabled) return;
 
     /* Keep the LFO locked to tempo: re-send osc1 freq if the BPM changed the
@@ -600,8 +624,7 @@ void drone_set_source(drone_source_t src)
     if (src != DRONE_SRC_WAVE && src != DRONE_SRC_PATCH) return;
     if (s_d.source == src) return;
     s_d.source = src;
-    drone_rebuild();
-    if (s_d.enabled) drone_apply_enabled();
+    drone_mark_dirty();
 }
 
 void drone_set_wave(uint16_t amy_wave)
@@ -611,10 +634,7 @@ void drone_set_wave(uint16_t amy_wave)
     if (amy_wave == NOISE || amy_wave == KS) amy_wave = SAW_DOWN;
     if (s_d.wave == amy_wave) return;
     s_d.wave = amy_wave;
-    if (s_d.source == DRONE_SRC_WAVE) {
-        drone_rebuild();
-        if (s_d.enabled) drone_apply_enabled();
-    }
+    if (s_d.source == DRONE_SRC_WAVE) drone_mark_dirty();
 }
 
 void drone_set_chord(chord_type_t chord)
@@ -678,10 +698,7 @@ void drone_set_amp_peak(float c)
     c = SEQ_CLAMP_F32(c, 0.0f, 1.0f);
     if (fabsf(s_d.amp_peak - c) < 0.001f) return;
     s_d.amp_peak = c;
-    if (s_d.source == DRONE_SRC_WAVE) {
-        drone_rebuild();
-        if (s_d.enabled) drone_apply_enabled();
-    }
+    if (s_d.source == DRONE_SRC_WAVE) drone_mark_dirty();
 }
 
 void drone_set_amp_duck(float m)
@@ -690,10 +707,7 @@ void drone_set_amp_duck(float m)
     m = SEQ_CLAMP_F32(m, 0.0f, 1.0f);
     if (fabsf(s_d.amp_duck - m) < 0.001f) return;
     s_d.amp_duck = m;
-    if (s_d.source == DRONE_SRC_WAVE) {
-        drone_rebuild();
-        if (s_d.enabled) drone_apply_enabled();
-    }
+    if (s_d.source == DRONE_SRC_WAVE) drone_mark_dirty();
 }
 
 void drone_set_rate(drone_rate_t rate)
@@ -725,10 +739,7 @@ void drone_set_patch(uint16_t patch)
     if (drone_patch_excluded(patch)) patch = SEQ_PATCH_TRIANGLE;
     if (s_d.patch == patch) return;
     s_d.patch = patch;
-    if (s_d.source == DRONE_SRC_PATCH) {
-        drone_rebuild();
-        if (s_d.enabled) drone_apply_enabled();
-    }
+    if (s_d.source == DRONE_SRC_PATCH) drone_mark_dirty();
 }
 
 void drone_set_sub_enabled(bool on)
@@ -736,9 +747,10 @@ void drone_set_sub_enabled(bool on)
     if (s_d.sub_enabled == on) return;
     s_d.sub_enabled = on;
     if (on) {
-        drone_rebuild();
-        if (s_d.enabled) drone_apply_enabled();
+        drone_mark_dirty();
     } else {
+        /* Note-off stays synchronous: the sounding sub voice must release now,
+         * not a frame later (same rule as the chord/root note-offs). */
         int sub_midi = SEQ_CLAMP_INT((int)s_d.root_note + (int)s_d.sub_interval, 12, 108);
         drone_note(DRONE_SYNTH_SUB, false, (float)sub_midi);
     }
@@ -749,10 +761,7 @@ void drone_set_sub_interval(int8_t st)
     int v = SEQ_CLAMP_INT((int)st, -36, 0);
     if (s_d.sub_interval == (int8_t)v) return;
     s_d.sub_interval = (int8_t)v;
-    if (s_d.sub_enabled) {
-        drone_rebuild();
-        if (s_d.enabled) drone_apply_enabled();
-    }
+    if (s_d.sub_enabled) drone_mark_dirty();
 }
 
 void drone_set_sweep_lo(float hz)
@@ -932,11 +941,8 @@ void drone_set_amp_trim(float v)
     if (fabsf(s_d.amp_trim - v) < 0.001f) return;
     s_d.amp_trim = v;
     /* s_amp_peak_lin() is called by drone_configure_wave_synth() via drone_rebuild(),
-     * so a rebuild picks up the new effective peak immediately. */
-    if (s_d.source == DRONE_SRC_WAVE) {
-        drone_rebuild();
-        if (s_d.enabled) drone_apply_enabled();
-    }
+     * so the coalesced rebuild picks up the new effective peak. */
+    if (s_d.source == DRONE_SRC_WAVE) drone_mark_dirty();
 }
 
 float drone_get_amp_trim(void) { return s_d.amp_trim; }

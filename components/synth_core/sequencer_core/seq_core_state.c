@@ -8,6 +8,29 @@ bool        s_playing      = true;
  * Core-0 esp_timer sequencer tick, which reads s_layers[] live. Set true around
  * the structural edit; the tick early-returns while it is set. */
 volatile bool s_layers_mutating = false;
+
+/* Single-applier enforcement for structural s_layers edits (add/delete): after
+ * boot init registers the applier (synth_ui_task, which drains the deferred
+ * add/delete requests), debug builds assert every structural edit runs on that
+ * task. This is the durable form of the s_layers_mutating tick guard above —
+ * the guard fences the one concurrent READER (the esp_timer tick); this pins
+ * all WRITERS to one task by construction, the same discipline
+ * s_prog_apply_pending uses for chord edits (seq_core_progression.c). */
+static TaskHandle_t s_layers_applier = NULL;
+
+void sequencer_core_set_layers_applier(TaskHandle_t applier)
+{
+    s_layers_applier = applier;
+}
+
+/* Skipped until a handle is registered, so single-threaded boot init passes. */
+static inline void seq_assert_layers_applier(void)
+{
+#if !defined(NDEBUG)
+    configASSERT(s_layers_applier == NULL ||
+                 xTaskGetCurrentTaskHandle() == s_layers_applier);
+#endif
+}
 uint16_t    s_melodic_patch = SEQ_MEL_PATCH;
 /* Running allocator for per-row melodic synth slots. Each melodic layer claims
  * a contiguous block of SEQ_TRACKS slots starting here; reset in core_init. */
@@ -59,6 +82,7 @@ void sequencer_core_init(void)
 
 uint8_t sequencer_core_add_layer(seq_layer_type_t type, uint8_t num_steps)
 {
+    seq_assert_layers_applier();
     if (s_num_layers >= MAX_LAYERS) {
         ESP_LOGW(TAG, "sequencer_core_add_layer: max layers (%d) reached", MAX_LAYERS);
         return 0xFF;
@@ -165,6 +189,7 @@ uint8_t sequencer_core_add_layer(seq_layer_type_t type, uint8_t num_steps)
 
 bool sequencer_core_delete_layer(uint8_t layer_idx)
 {
+    seq_assert_layers_applier();
     if (s_num_layers <= 1) return false;                  /* must keep at least 1 */
     if (layer_idx == 0)   return false;                   /* drum layer is permanent */
     if (layer_idx >= s_num_layers) return false;

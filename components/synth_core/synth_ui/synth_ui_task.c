@@ -204,7 +204,13 @@ void synth_ui_init(u8g2_t *u8g2)
 
     /* Pin to Core 0: the OLED refresh does blocking I2C and is not latency
      * critical, so keep it off Core 1 where the AMY DSP now runs. */
-    xTaskCreatePinnedToCore(synth_ui_task, "seq_ui", 4096, NULL, 5, NULL, 0);
+    TaskHandle_t ui_task = NULL;
+    xTaskCreatePinnedToCore(synth_ui_task, "seq_ui", 4096, NULL, 5, &ui_task, 0);
+    /* From here on this task is the single applier for structural s_layers
+     * edits (it drains s_layer_add_pending/s_layer_delete_pending); debug
+     * builds assert any add/delete_layer from another task. Other contexts
+     * use synth_ui_request_add_layer()/synth_ui_request_delete_to_layer(). */
+    sequencer_core_set_layers_applier(ui_task);
     ESP_LOGI(TAG_TASK, "Sequencer UI + Core initialized");
 }
 

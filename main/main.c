@@ -906,9 +906,12 @@ void app_main(void)
 
     synth_ui_init(s_u8g2);
     HEAP_CHECK("after synth_ui_init");
-    /* Add the first melodic layer (DX7, 16 steps). */
-    synth_ui_add_layer(SEQ_LAYER_MELODIC, SEQ_STEPS);
-    HEAP_CHECK("after add_layer melodic");
+    /* Request the first melodic layer (DX7, 16 steps). synth_ui_task is the
+     * single applier for structural layer edits and it is already running at
+     * this point, so the add is deferred to its next frame rather than
+     * mutating the layer table from app_main concurrently. */
+    synth_ui_request_add_layer();
+    HEAP_CHECK("after request_add_layer melodic");
     ESP_LOGI(TAG, "[startup] after amy_start");
     
     TaskHandle_t amy_render_task_handle = NULL;

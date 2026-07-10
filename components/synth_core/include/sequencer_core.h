@@ -5,6 +5,8 @@
 #include "sdkconfig.h"     /* CONFIG_* gates on the virtual patch ranges below */
 #include "seq_model.h"     /* seq_layer_type_t, seq_layer_t, SEQ_* defines */
 #include "chord_types.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h" /* TaskHandle_t — layers-applier registration below */
 
 #ifdef __cplusplus
 extern "C" {
@@ -244,13 +246,25 @@ uint8_t sequencer_core_get_current_step(uint8_t layer_idx);
 
 /* ── Layer management ── */
 
+/* Single-applier contract for structural s_layers edits: after boot-time init,
+ * every add_layer/delete_layer call must run on ONE task (synth_ui_task, which
+ * drains the UI's deferred add/delete requests) — the same discipline
+ * s_prog_apply_pending uses for chord edits. Other contexts request the edit
+ * via synth_ui_request_add_layer()/synth_ui_request_delete_to_layer() instead
+ * of calling these directly. Register the applier task here so debug builds
+ * can assert the contract; until a handle is registered (single-threaded
+ * boot init) the assert is skipped. */
+void             sequencer_core_set_layers_applier(TaskHandle_t applier);
+
 /* Add a new layer. Returns the new layer index (0..MAX_LAYERS-1), or
- * 0xFF if the layer table is full. Configures the AMY synth immediately. */
+ * 0xFF if the layer table is full. Configures the AMY synth immediately.
+ * Structural edit — applier-task only (see above). */
 uint8_t          sequencer_core_add_layer(seq_layer_type_t type, uint8_t num_steps);
 /* Delete a melodic layer by index. Returns false if the layer is the drum
  * layer (idx 0), the only remaining layer, or out of range. Cancels all
  * scheduled tags for all layers, frees the deleted layer's AMY oscillator
- * slots, compacts the layer array, and resyncs surviving layers if playing. */
+ * slots, compacts the layer array, and resyncs surviving layers if playing.
+ * Structural edit — applier-task only (see above). */
 bool             sequencer_core_delete_layer(uint8_t layer_idx);
 uint8_t          sequencer_core_get_num_layers(void);
 seq_layer_type_t sequencer_core_get_layer_type(uint8_t layer_idx);

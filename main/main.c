@@ -15,6 +15,7 @@
 #include "rotary_encoder.h"
 #include "synth_ui.h"
 #include "sequencer_core.h"
+#include "amy_helpers.h"   /* amy_helpers_set_render_task */
 #include "custompatches/sample_rec.h"
 #include "usb_audio.h"
 #include "esp_timer.h"
@@ -950,6 +951,8 @@ void app_main(void)
     if (render_task_ok != pdPASS) {
         ESP_LOGE(TAG, "amy_render task create failed (%ld)", (long)render_task_ok);
     }
+    /* Debug builds assert no ingress helper runs on the render body. */
+    amy_helpers_set_render_task(amy_render_task_handle);
 
     ESP_LOGI(TAG, "AMY + USB Audio ready (48 kHz stereo to PC)");
 

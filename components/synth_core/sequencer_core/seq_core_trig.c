@@ -227,9 +227,9 @@ static void trig_schedule_ratchets(uint8_t layer_idx, const seq_layer_t *layer,
         float v = velocity * scale;
         uint32_t tick_on  = now_ticks + 1u + (uint32_t)k * sub_ticks;
         uint32_t tick_off = tick_on + gate;
-        amy_send_note_sched(synth, (float)note, v,
+        amy_helpers_note_send(synth, (float)note, v,
                             ratchet_on_tag(layer_idx, track, k), tick_on, 0);
-        amy_send_note_sched(synth, (float)note, 0.0f,
+        amy_helpers_note_send(synth, (float)note, 0.0f,
                             ratchet_off_tag(layer_idx, track, k), tick_off, 0);
     }
 }

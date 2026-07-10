@@ -241,9 +241,9 @@ void sequencer_emit_step(uint8_t layer_idx, uint8_t track, uint8_t step)
     /* Both drum and melodic layers now have one synth slot per track. */
     uint8_t synth = layer->synth_id[track];
 
-    amy_send_note_sched(synth, layer->step_note[track][step], note_velocity,
+    amy_helpers_note_send(synth, layer->step_note[track][step], note_velocity,
                         tag_on, tick_on, period);
-    amy_send_note_sched(synth, layer->step_note[track][step], 0.0f,
+    amy_helpers_note_send(synth, layer->step_note[track][step], 0.0f,
                         tag_off, tick_off, period);
 }
 
@@ -311,9 +311,9 @@ static void sequencer_refresh_track_note(uint8_t layer_idx, uint8_t track,
     /* One-shot preview: fires a few ticks from now using the same tag slot.
      * Rapid scrolling overwrites the slot so only the last change is heard. */
     uint32_t fire_tick = sequencer_ticks() + SEQ_PREVIEW_DELAY_TICKS;
-    amy_send_note_sched(layer->synth_id[track], resolved_note, 1.0f,
+    amy_helpers_note_send(layer->synth_id[track], resolved_note, 1.0f,
                         seq_preview_tag(layer_idx, track), fire_tick, 0);
-    amy_send_note_sched(layer->synth_id[track], resolved_note, 0.0f,
+    amy_helpers_note_send(layer->synth_id[track], resolved_note, 0.0f,
                         seq_preview_off_tag(layer_idx, track),
                         fire_tick + SEQ_GATE_MELODIC, 0);
 
@@ -447,9 +447,9 @@ void sequencer_core_arp_emit_note(uint32_t tag_base, uint8_t midi_note,
     if (tick_off == 0) tick_off = 1; /* tick 0 is reserved (clear) */
     if (tick_on  == 0) tick_on  = 1;
 
-    amy_send_note_sched(SEQ_ARP_SYNTH, midi_note, velocity,
+    amy_helpers_note_send(SEQ_ARP_SYNTH, midi_note, velocity,
                         tag_base, tick_on, period);
-    amy_send_note_sched(SEQ_ARP_SYNTH, midi_note, 0.0f,
+    amy_helpers_note_send(SEQ_ARP_SYNTH, midi_note, 0.0f,
                         tag_base + 1, tick_off, period);
 }
 

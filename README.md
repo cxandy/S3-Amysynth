@@ -4,16 +4,17 @@ A pocket-sized groovebox built on the ESP32-S3. Drums, melodic step
 sequences, an arpeggiator, and a tempo-locked stutter drone all play at
 once, synthesized on the chip in real time by the
 [AMY](https://github.com/shorepine/amy) engine - and the whole mix arrives
-in your DAW as a plain USB audio device you just arm and record. The entire
-control surface is one rotary encoder, four buttons, and a 128x64 OLED, and
+in your DAW as a plain USB UAC device, or direct I2S output (the only difference is what consumes the output buffer).
+The entire control surface is one rotary encoder, four buttons, and a 128x64 OLED, and
 everything is edited live: patterns, patches, envelopes, filters and LFOs
-change under your fingers while the music keeps running.
+change while the music keeps running.
 
 Nothing is precomputed and nothing streams down from the host. Every voice
 is rendered on-device, one 256-sample block every 5.3 ms, on a core budget
 that is already ~85-90% spoken for - which is what makes the firmware side
-of this project interesting. (The board also wires an I2S DAC for a future
-standalone mode; today USB is the output path.)
+of this project interesting. 
+
+> (The board also wires an I2S DAC for a future standalone mode; UAC is practical during development due to the 2 USB ports on many S3 boards - serial logs with runtime performance and diagnostics while using the device for a normal workflow.)
 
 ## Prototype Video
 
@@ -355,7 +356,7 @@ ADSR; the drone skips the LFO tab) instead of toggling the menu.
 | Screen: Drone | Stutter drone |
 | Screen: Prog | Chord progression editor |
 | Screen: TrackOpts | Per-track options (repeat rate, mute/solo, chord mode) |
-| Screen: FM | 6-op FM voice editor (only with `CONFIG_SYNTH_CUSTOM_FM`) |
+| Screen: FM - **Very WIP**| 6-op FM voice editor (only with `CONFIG_SYNTH_CUSTOM_FM`) |
 
 **Overlay render priority (highest first):** Step Trig popup > Filter editor >
 LFO editor > ADSR graph > Menu > Arp / Drone / Prog / TrackOpts / FM > Sequencer.
@@ -672,7 +673,9 @@ ROOT and CHORD rows, always.
 STUTTER / GATE rows are hidden and the LFO gate is inactive. The patch's own
 AMY oscillators drive the amplitude. Filter sweep and resonance still apply.
 
-**PEAK (drone) must stay above 0.** AMY skips zero amplitude coefficients
+**PEAK (drone) must stay above 0.** \
+**TODO: Setting this to 0 should not be possible**
+ AMY skips zero amplitude coefficients
 entirely. If PEAK hits exactly 0, the always-on carrier level is omitted from
 the amplitude combine and the level jumps. Keep PEAK above 0.0 for the intended
 gating behaviour.

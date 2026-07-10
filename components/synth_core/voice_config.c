@@ -57,3 +57,61 @@ void voice_build_wave(const voice_wave_cfg_t *cfg)
     e->amp_coefs[COEF_EG0]   = 1.0f;
     amy_helpers_event_send(e);
 }
+
+void voice_apply_native_lfo(uint8_t synth, const seq_lfo_t *lfo, uint16_t bpm)
+{
+    amy_event *e;
+
+    if (lfo && lfo->enabled) {
+        /* osc 0: wire mod_source to osc 1 (voice-local — AMY adds the base_osc
+         * offset, so it resolves within each voice) and set the COEF_MOD depth
+         * for the chosen target, clearing every sibling first. */
+        float d = (float)lfo->depth / 100.0f;
+        e = amy_helpers_event_begin();
+        e->synth      = synth;
+        e->osc        = 0;
+        e->mod_source = 1;
+        e->filter_freq_coefs[COEF_MOD] = 0.0f;
+        e->amp_coefs[COEF_MOD]         = 0.0f;
+        e->freq_coefs[COEF_MOD]        = 0.0f;
+        e->duty_coefs[COEF_MOD]        = 0.0f;
+        switch (lfo->target) {
+            case LFO_TARGET_FILTER: e->filter_freq_coefs[COEF_MOD] = d * VOICE_LFO_DEPTH_FILTER; break;
+            case LFO_TARGET_AMP:    e->amp_coefs[COEF_MOD]         = d * VOICE_LFO_DEPTH_AMP;    break;
+            case LFO_TARGET_PITCH:  e->freq_coefs[COEF_MOD]        = d * VOICE_LFO_DEPTH_PITCH;  break;
+            case LFO_TARGET_SCAN:   e->duty_coefs[COEF_MOD]        = d * VOICE_LFO_DEPTH_SCAN;   break;
+            default: break;
+        }
+        amy_helpers_event_send(e);
+
+        /* osc 1: BPM-synced carrier — no pitch tracking, no velocity, no
+         * envelope; amp CONST=1 so AMY computes a mod value every block. */
+        e = amy_helpers_event_begin();
+        e->synth                  = synth;
+        e->osc                    = 1;
+        e->wave                   = voice_lfo_wave_to_amy(lfo->wave);
+        e->freq_coefs[COEF_CONST] = lfo_rate_to_hz(lfo->rate, bpm);
+        e->freq_coefs[COEF_NOTE]  = 0.0f;
+        e->freq_coefs[COEF_BEND]  = 0.0f;
+        e->amp_coefs[COEF_CONST]  = 1.0f;
+        e->amp_coefs[COEF_VEL]    = 0.0f;
+        e->amp_coefs[COEF_EG0]    = 0.0f;
+        amy_helpers_event_send(e);
+    } else {
+        /* Disabled: clear the mod coupling, silence the carrier. */
+        e = amy_helpers_event_begin();
+        e->synth                       = synth;
+        e->osc                         = 0;
+        e->filter_freq_coefs[COEF_MOD] = 0.0f;
+        e->amp_coefs[COEF_MOD]         = 0.0f;
+        e->freq_coefs[COEF_MOD]        = 0.0f;
+        e->duty_coefs[COEF_MOD]        = 0.0f;
+        amy_helpers_event_send(e);
+
+        e = amy_helpers_event_begin();
+        e->synth                 = synth;
+        e->osc                   = 1;
+        e->amp_coefs[COEF_CONST] = 0.0f;  /* dormant */
+        amy_helpers_event_send(e);
+    }
+}

@@ -178,15 +178,12 @@ void arp_core_clear_all(void)
 
 /* ── Source configuration helpers ────────────────────────────────────── */
 
-/* Map lfo_wave_t → AMY wave constant (shared map in voice_config.c). */
-#define arp_lfo_wave_to_amy voice_lfo_wave_to_amy
-
 /* Configure the arp's AMY synth slot as a bare oscillator (WAVE mode).
  *
- * One osc per voice — no patch, no LFO carrier.  Pitch follows the MIDI note
- * delivered by sequencer_core_arp_emit_note() (COEF_NOTE=1).  Amplitude is
+ * Shared 2-osc skeleton (voice_build_wave): osc0 pitch follows the MIDI note
+ * delivered by sequencer_core_arp_emit_note() (COEF_NOTE=1), amplitude is
  * velocity-scaled + EG0-gated so the shared ADSR editor and custom envelopes
- * work exactly as they do in PATCH mode.
+ * work exactly as they do in PATCH mode; osc1 is the native LFO carrier.
  *
  * The caller is responsible for pushing an EG0 envelope afterwards (arp_rebuild
  * always does this in WAVE mode so even the default env is applied). */
@@ -212,67 +209,24 @@ static void arp_configure_wave_synth(void)
     };
     voice_build_wave(&cfg);
 
-    /* osc 0 arp specializations, layered on the skeleton:
-     * — native LFO coupling: mod_source=1 (voice-local — AMY adds base_osc
-     *   offset, so it resolves to osc 1 within each voice) plus the COEF_MOD
-     *   depth for the chosen target;
-     * — plucky amp (EG0) / slower independent filter sweep (EG1): only wired
-     *   once the user has authored+enabled a filter, so a stock arp voice with
-     *   no filter is unaffected. arp_rebuild() pushes valid EG1 breakpoints
-     *   alongside this so the coef never reads a stuck 1.0 (AMY treats a
-     *   never-configured breakpoint set as a permanent unity gate). */
-    bool lfo_on          = s_arp.lfo_authored && s_arp.lfo.enabled;
-    bool wave_filter_eg1 = s_arp.filter_authored && s_arp.filter.enabled;
-    amy_event *e;
-    if (lfo_on || wave_filter_eg1) {
-        e = amy_helpers_event_begin();
+    /* Plucky amp (EG0 in the skeleton) / slower independent filter sweep
+     * (EG1): only wired once the user has authored+enabled a filter, so a
+     * stock arp voice with no filter is unaffected. arp_rebuild() pushes valid
+     * EG1 breakpoints alongside this so the coef never reads a stuck 1.0 (AMY
+     * treats a never-configured breakpoint set as a permanent unity gate). */
+    if (s_arp.filter_authored && s_arp.filter.enabled) {
+        amy_event *e = amy_helpers_event_begin();
         e->synth = synth;
         e->osc   = 0;
-        if (lfo_on) {
-            e->mod_source = 1;
-            /* Clear every target's mod coef before selecting one: re-sending
-             * the same voice count does NOT reset the osc pool, so a prior
-             * target's COEF_MOD would otherwise persist and keep modulating.
-             * The stale-AMP case is the worst: amp COEF_MOD rides AMY's convex
-             * dB combine path, so a leftover coef ramps the output to a rail. */
-            e->filter_freq_coefs[COEF_MOD] = 0.0f;
-            e->amp_coefs[COEF_MOD]         = 0.0f;
-            e->freq_coefs[COEF_MOD]        = 0.0f;
-            e->duty_coefs[COEF_MOD]        = 0.0f;
-            float d = s_arp.lfo.depth / 100.0f;
-            switch (s_arp.lfo.target) {
-                case LFO_TARGET_FILTER: e->filter_freq_coefs[COEF_MOD] = d * VOICE_LFO_DEPTH_FILTER; break;
-                case LFO_TARGET_AMP:    e->amp_coefs[COEF_MOD]         = d * VOICE_LFO_DEPTH_AMP;    break;
-                case LFO_TARGET_PITCH:  e->freq_coefs[COEF_MOD]        = d * VOICE_LFO_DEPTH_PITCH;  break;
-                case LFO_TARGET_SCAN:   e->duty_coefs[COEF_MOD]        = d * VOICE_LFO_DEPTH_SCAN;   break;
-                default: break;
-            }
-        }
-        if (wave_filter_eg1) {
-            e->filter_freq_coefs[COEF_EG1] = ARP_FILTER_EG1_DEPTH_OCT;
-        }
+        e->filter_freq_coefs[COEF_EG1] = ARP_FILTER_EG1_DEPTH_OCT;
         amy_helpers_event_send(e);
     }
 
-    /* osc 1: LFO carrier — no pitch tracking, no velocity, no envelope.
-     * amp_coefs[COEF_CONST]=1 when active so AMY computes mod_value each block;
-     * amp_coefs[COEF_CONST]=0 when disabled (dormant, renders nothing). */
-    e = amy_helpers_event_begin();
-    e->synth = synth;
-    e->osc   = 1;
-    if (lfo_on) {
-        e->wave                   = (uint16_t)arp_lfo_wave_to_amy(s_arp.lfo.wave);
-        e->freq_coefs[COEF_CONST] = lfo_rate_to_hz(s_arp.lfo.rate,
-                                                         sequencer_core_get_bpm());
-        e->freq_coefs[COEF_NOTE]  = 0.0f;   /* no pitch tracking */
-        e->freq_coefs[COEF_BEND]  = 0.0f;   /* no pitch bend     */
-        e->amp_coefs[COEF_CONST]  = 1.0f;   /* active            */
-        e->amp_coefs[COEF_VEL]    = 0.0f;   /* no velocity scale */
-        e->amp_coefs[COEF_EG0]    = 0.0f;   /* no envelope decay */
-    } else {
-        e->amp_coefs[COEF_CONST]  = 0.0f;   /* dormant           */
-    }
-    amy_helpers_event_send(e);
+    /* Native LFO routing (shared applier): active => osc0 mod coupling +
+     * osc1 carrier; inactive => coupling cleared, carrier dormant. */
+    bool lfo_on = s_arp.lfo_authored && s_arp.lfo.enabled;
+    voice_apply_native_lfo(synth, lfo_on ? &s_arp.lfo : NULL,
+                           sequencer_core_get_bpm());
 }
 
 /* Recompute and push the LFO carrier frequency at the current BPM.

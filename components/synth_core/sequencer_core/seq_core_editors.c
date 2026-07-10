@@ -12,8 +12,6 @@ uint32_t s_lfo_rng_state = 0xDEADBEEFu;
 
 #if CONFIG_SEQ_MELODIC_AMY_NATIVE_LFO
 
-#define lfo_wave_to_amy voice_lfo_wave_to_amy
-
 /* True when the given authored track should use AMY native LFO.
  * Caller is responsible for ensuring the layer uses a wave patch. */
 static bool is_native_lfo_track(const seq_lfo_t *lfo)
@@ -28,62 +26,9 @@ static bool is_native_lfo_track(const seq_lfo_t *lfo)
  * COEF_MOD cleared) so the caller always reaches a consistent AMY state. */
 static void melodic_configure_native_lfo_track(const seq_layer_t *layer, uint8_t track)
 {
-    const seq_lfo_t *lfo   = &layer->lfo[track];
-    uint8_t          synth = layer->synth_id[track];
-
-    if (is_native_lfo_track(lfo)) {
-        float d = (float)lfo->depth / 100.0f;
-        /* osc 0: wire mod_source to osc 1 and set COEF_MOD depth */
-        amy_event *e = amy_helpers_event_begin();
-        e->synth      = synth;
-        e->osc        = 0;
-        e->mod_source = 1;
-        /* Clear every target's mod coef before selecting one so a prior target
-         * (e.g. AMP, which rides AMY's convex dB-amp COEF_MOD path) cannot
-         * persist across a target switch and rail the output — re-sending the
-         * same voice count does not reset the osc pool. */
-        e->filter_freq_coefs[COEF_MOD] = 0.0f;
-        e->amp_coefs[COEF_MOD]         = 0.0f;
-        e->freq_coefs[COEF_MOD]        = 0.0f;
-        e->duty_coefs[COEF_MOD]        = 0.0f;
-        switch (lfo->target) {
-            case LFO_TARGET_FILTER: e->filter_freq_coefs[COEF_MOD] = d * VOICE_LFO_DEPTH_FILTER; break;
-            case LFO_TARGET_AMP:    e->amp_coefs[COEF_MOD]         = d * VOICE_LFO_DEPTH_AMP;    break;
-            case LFO_TARGET_PITCH:  e->freq_coefs[COEF_MOD]        = d * VOICE_LFO_DEPTH_PITCH;  break;
-            case LFO_TARGET_SCAN:   e->duty_coefs[COEF_MOD]        = d * VOICE_LFO_DEPTH_SCAN;   break;
-            default: break;
-        }
-        amy_helpers_event_send(e);
-
-        /* osc 1: BPM-synced carrier (no pitch tracking, no velocity, no envelope) */
-        e = amy_helpers_event_begin();
-        e->synth                  = synth;
-        e->osc                    = 1;
-        e->wave                   = lfo_wave_to_amy(lfo->wave);
-        e->freq_coefs[COEF_CONST] = lfo_rate_to_hz(lfo->rate, s_bpm);
-        e->freq_coefs[COEF_NOTE]  = 0.0f;
-        e->freq_coefs[COEF_BEND]  = 0.0f;
-        e->amp_coefs[COEF_CONST]  = 1.0f;
-        e->amp_coefs[COEF_VEL]    = 0.0f;
-        e->amp_coefs[COEF_EG0]    = 0.0f;
-        amy_helpers_event_send(e);
-    } else {
-        /* Disabled or PAN/RANDOM fallback: clear mod coupling, silence carrier */
-        amy_event *e = amy_helpers_event_begin();
-        e->synth                       = synth;
-        e->osc                         = 0;
-        e->filter_freq_coefs[COEF_MOD] = 0.0f;
-        e->amp_coefs[COEF_MOD]         = 0.0f;
-        e->freq_coefs[COEF_MOD]        = 0.0f;
-        e->duty_coefs[COEF_MOD]        = 0.0f;
-        amy_helpers_event_send(e);
-
-        e = amy_helpers_event_begin();
-        e->synth                 = synth;
-        e->osc                   = 1;
-        e->amp_coefs[COEF_CONST] = 0.0f;  /* dormant */
-        amy_helpers_event_send(e);
-    }
+    const seq_lfo_t *lfo = &layer->lfo[track];
+    voice_apply_native_lfo(layer->synth_id[track],
+                           is_native_lfo_track(lfo) ? lfo : NULL, s_bpm);
 }
 
 #endif /* CONFIG_SEQ_MELODIC_AMY_NATIVE_LFO */

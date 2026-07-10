@@ -49,3 +49,20 @@ typedef struct {
 
 /* Core-0 / UI-task only; pushes through amy_helpers (never amy_queue_lock). */
 void voice_build_wave(const voice_wave_cfg_t *cfg);
+
+/* Apply the AMY-native mod-source LFO routing for one synth built by
+ * voice_build_wave() with oscs_per_voice=2: osc0 gets mod_source=1 plus the
+ * selected target's COEF_MOD depth, osc1 becomes the LFO carrier at the
+ * BPM-synced rate. Pass lfo=NULL (or a disabled lfo) to deactivate: the mod
+ * coupling is cleared and the carrier silenced.
+ *
+ * Idempotent and state-clean: every target's COEF_MOD is cleared before the
+ * selected one is set, because re-sending the same voice count does not reset
+ * the osc pool — a prior target's coef would otherwise persist and keep
+ * modulating (the stale-AMP case rides AMY's convex dB combine path and ramps
+ * the output to a DC rail).
+ *
+ * Core-0 / UI-task only; pushes through amy_helpers (never amy_queue_lock).
+ * This is the function a future per-step p-lock caller uses from the tick
+ * engine. */
+void voice_apply_native_lfo(uint8_t synth, const seq_lfo_t *lfo, uint16_t bpm);

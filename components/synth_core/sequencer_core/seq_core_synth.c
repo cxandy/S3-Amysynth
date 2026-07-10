@@ -1,4 +1,5 @@
 #include "sequencer_core/seq_core_internal.h"
+#include "voice_config.h"
 
 /* ── State definitions — owns drum engine selector ──────────────────── */
 /* Drum sound source for the whole drum layer. SYNTH = tonal AMY patches (Juno/
@@ -149,41 +150,30 @@ static void sequencer_configure_melodic_wave_track(uint8_t synth_id,
     uint16_t wave = s_wave_for_patch[widx];
 #endif
 
-    amy_event *e = amy_helpers_event_begin();
-    e->synth          = synth_id;
-    e->num_voices     = num_voices;
+    voice_wave_cfg_t cfg = {
+        .synth                = synth_id,
+        .num_voices           = (uint8_t)num_voices,
 #if CONFIG_SEQ_MELODIC_AMY_NATIVE_LFO
-    e->oscs_per_voice = 2;   /* osc 1 reserved as native LFO carrier */
+        .oscs_per_voice       = 2,   /* osc 1 reserved as native LFO carrier */
 #else
-    e->oscs_per_voice = 1;
+        .oscs_per_voice       = 1,
 #endif
-    amy_helpers_event_send(e);
-
-    /* osc 0: voice oscillator */
-    e = amy_helpers_event_begin();
-    e->synth                  = synth_id;
-    e->osc                    = 0;
-    e->wave                   = wave;
+        .wave                 = wave,
+        .osc0_amp_const       = 1.0f,
+        .osc0_amp_vel         = 1.0f,
+        .ks_feedback_authored = filter_authored,
+        .ks_feedback_q        = filter_q,
 #if CONFIG_AMY_WAVETABLE
-    if (is_wavetable) {
-        e->preset = wt_preset;
-    }
+        .wt_preset            = is_wavetable ? (int16_t)wt_preset : -1,
+#else
+        .wt_preset            = -1,
 #endif
-    if (wave == KS) {
-        /* Authored Q drives KS string decay once the user has dialed it;
-         * otherwise keep the prior fixed default so behavior is unchanged
-         * until they touch the Q control on this track. */
-        e->feedback = filter_authored ? sequencer_core_ks_feedback_from_q(filter_q) : 0.9f;
-    }
-    e->freq_coefs[COEF_NOTE]  = 1.0f;
-    e->amp_coefs[COEF_CONST]  = 1.0f;
-    e->amp_coefs[COEF_VEL]    = 1.0f;
-    e->amp_coefs[COEF_EG0]    = 1.0f;
-    amy_helpers_event_send(e);
+    };
+    voice_build_wave(&cfg);
 
 #if CONFIG_SEQ_MELODIC_AMY_NATIVE_LFO
     /* osc 1: LFO carrier slot — starts dormant until an LFO is authored */
-    e = amy_helpers_event_begin();
+    amy_event *e = amy_helpers_event_begin();
     e->synth                 = synth_id;
     e->osc                   = 1;
     e->amp_coefs[COEF_CONST] = 0.0f;  /* dormant */

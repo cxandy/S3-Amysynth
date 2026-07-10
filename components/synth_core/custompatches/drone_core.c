@@ -268,17 +268,28 @@ static void drone_configure_wave_synth(uint8_t synth, uint8_t voices, uint16_t w
     float m          = s_amp_m();
     float const_sent = s_amp_const_sent();
 
-    /* Build-your-own synth: N voices, 2 oscs/voice, no patch. */
-    amy_event *e = amy_helpers_event_begin();
-    e->synth          = synth;
-    e->num_voices     = voices;
-    e->oscs_per_voice = DRONE_OSCS_PER_VC;
-    amy_helpers_event_send(e);
+    /* Shared skeleton: pool (build-your-own synth: N voices, 2 oscs/voice, no
+     * patch) + osc0 NOTE-following carrier (COEF_NOTE=1) so each voice plays
+     * its own chord note. Velocity does not scale amp (osc0_amp_vel=0); EG0
+     * multiplies the whole amp, so the ADSR envelope shapes the drone
+     * swell/fade *around* the LFO stutter. */
+    voice_wave_cfg_t cfg = {
+        .synth                = synth,
+        .num_voices           = voices,
+        .oscs_per_voice       = DRONE_OSCS_PER_VC,
+        .wave                 = wave,
+        .osc0_amp_const       = const_sent,
+        .osc0_amp_vel         = 0.0f,
+        .ks_feedback_authored = false,   /* fixed 0.9 KS default */
+        .ks_feedback_q        = 0.0f,
+        .wt_preset            = wt_preset,
+    };
+    voice_build_wave(&cfg);
 
     /* osc1 = PULSE LFO. Absolute Hz (note-follow off), full const amp.
      * The PULSE duty IS the gate length: 0.5 = 50/50 square (legacy), lower =
      * a shorter "on" fraction per subdivision = a tighter percussive chop. */
-    e = amy_helpers_event_begin();
+    amy_event *e = amy_helpers_event_begin();
     e->synth                 = synth;
     e->osc                   = 1;
     e->wave                  = PULSE;
@@ -290,21 +301,13 @@ static void drone_configure_wave_synth(uint8_t synth, uint8_t voices, uint16_t w
     e->amp_coefs[COEF_EG0]   = 0.0f;
     amy_helpers_event_send(e);
 
-    /* osc0 = carrier. NOTE-following pitch (COEF_NOTE=1) so each voice plays its
-     * own chord note; amp = const + mod(=osc1) gated, EG0 envelope; LPF24. */
+    /* osc0 drone specializations: amp = const + mod(=osc1) stutter gate, and
+     * the LPF24 sweep filter. Sent after osc1 so mod_source always points at
+     * a configured gate oscillator. */
     e = amy_helpers_event_begin();
     e->synth                  = synth;
     e->osc                    = 0;
-    e->wave                   = wave;
-    if (wave == KS) e->feedback = 0.9f;
-    if (wt_preset >= 0) e->preset = wt_preset;
-    e->freq_coefs[COEF_NOTE]  = 1.0f;    /* follow the voice's note pitch */
-    e->amp_coefs[COEF_CONST]  = const_sent;
     e->amp_coefs[COEF_MOD]    = m;
-    e->amp_coefs[COEF_VEL]    = 0.0f;    /* velocity does not scale amp      */
-    /* EG0 multiplies the whole amp (combine_controls_mult), so the ADSR
-     * envelope shapes the drone swell/fade *around* the LFO stutter. */
-    e->amp_coefs[COEF_EG0]    = 1.0f;
     e->mod_source             = 1;       /* osc1 of this voice (base-osc rel) */
     e->filter_type            = FILTER_LPF24;
     e->filter_freq_coefs[COEF_CONST] = s_d.sweep_hi;

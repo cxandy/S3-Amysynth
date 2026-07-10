@@ -195,64 +195,64 @@ static void arp_configure_wave_synth(void)
     uint8_t synth  = sequencer_core_arp_synth();
     uint8_t voices = sequencer_core_arp_voices();
 
-    /* Define the synth pool: N voices, 2 oscs each.  Osc 1 is the AMY-native
-     * LFO carrier; it is dormant (amp=0) when no LFO is authored.  Always
-     * allocating 2 oscs avoids a pool reset when the LFO is toggled later. */
-    amy_event *e = amy_helpers_event_begin();
-    e->synth          = synth;
-    e->num_voices     = voices;
-    e->oscs_per_voice = 2;
-    amy_helpers_event_send(e);
+    /* Shared skeleton: pool (2 oscs/voice — osc 1 is the AMY-native LFO
+     * carrier, dormant when no LFO is authored; always allocating it avoids a
+     * pool reset when the LFO is toggled later) + osc0 note-following carrier
+     * with velocity + EG0 amplitude. */
+    voice_wave_cfg_t cfg = {
+        .synth                = synth,
+        .num_voices           = voices,
+        .oscs_per_voice       = 2,
+        .wave                 = s_arp.wave,
+        .osc0_amp_const       = 1.0f,
+        .osc0_amp_vel         = 1.0f,
+        .ks_feedback_authored = s_arp.filter_authored,
+        .ks_feedback_q        = s_arp.filter.resonance,
+        .wt_preset            = -1,
+    };
+    voice_build_wave(&cfg);
 
-    /* osc 0: user-chosen waveform, note-following pitch, velocity + EG0 amplitude.
-     * When LFO is active, mod_source=1 (voice-local — AMY adds base_osc offset,
-     * so it resolves to osc 1 within each voice) plus the COEF_MOD depth for the
-     * chosen target. */
-    bool lfo_on = s_arp.lfo_authored && s_arp.lfo.enabled;
-    e = amy_helpers_event_begin();
-    e->synth                  = synth;
-    e->osc                    = 0;
-    e->wave                   = s_arp.wave;
-    if (s_arp.wave == KS) {
-        /* Authored Q drives KS string decay once the user has dialed it;
-         * otherwise keep the prior fixed default until they touch Q. */
-        e->feedback = s_arp.filter_authored
-            ? sequencer_core_ks_feedback_from_q(s_arp.filter.resonance)
-            : 0.9f;
-    }
-    e->freq_coefs[COEF_NOTE]  = 1.0f;
-    e->amp_coefs[COEF_CONST]  = 1.0f;
-    e->amp_coefs[COEF_VEL]    = 1.0f;
-    e->amp_coefs[COEF_EG0]    = 1.0f;
-    if (lfo_on) {
-        e->mod_source = 1;
-        /* Clear every target's mod coef before selecting one: re-sending the
-         * same voice count does NOT reset the osc pool (see above), so a prior
-         * target's COEF_MOD would otherwise persist and keep modulating. The
-         * stale-AMP case is the worst: amp COEF_MOD rides AMY's convex dB
-         * combine path, so a leftover coef ramps the output to a DC rail. */
-        e->filter_freq_coefs[COEF_MOD] = 0.0f;
-        e->amp_coefs[COEF_MOD]         = 0.0f;
-        e->freq_coefs[COEF_MOD]        = 0.0f;
-        e->duty_coefs[COEF_MOD]        = 0.0f;
-        float d = s_arp.lfo.depth / 100.0f;
-        switch (s_arp.lfo.target) {
-            case LFO_TARGET_FILTER: e->filter_freq_coefs[COEF_MOD] = d * VOICE_LFO_DEPTH_FILTER; break;
-            case LFO_TARGET_AMP:    e->amp_coefs[COEF_MOD]         = d * VOICE_LFO_DEPTH_AMP;    break;
-            case LFO_TARGET_PITCH:  e->freq_coefs[COEF_MOD]        = d * VOICE_LFO_DEPTH_PITCH;  break;
-            case LFO_TARGET_SCAN:   e->duty_coefs[COEF_MOD]        = d * VOICE_LFO_DEPTH_SCAN;   break;
-            default: break;
+    /* osc 0 arp specializations, layered on the skeleton:
+     * — native LFO coupling: mod_source=1 (voice-local — AMY adds base_osc
+     *   offset, so it resolves to osc 1 within each voice) plus the COEF_MOD
+     *   depth for the chosen target;
+     * — plucky amp (EG0) / slower independent filter sweep (EG1): only wired
+     *   once the user has authored+enabled a filter, so a stock arp voice with
+     *   no filter is unaffected. arp_rebuild() pushes valid EG1 breakpoints
+     *   alongside this so the coef never reads a stuck 1.0 (AMY treats a
+     *   never-configured breakpoint set as a permanent unity gate). */
+    bool lfo_on          = s_arp.lfo_authored && s_arp.lfo.enabled;
+    bool wave_filter_eg1 = s_arp.filter_authored && s_arp.filter.enabled;
+    amy_event *e;
+    if (lfo_on || wave_filter_eg1) {
+        e = amy_helpers_event_begin();
+        e->synth = synth;
+        e->osc   = 0;
+        if (lfo_on) {
+            e->mod_source = 1;
+            /* Clear every target's mod coef before selecting one: re-sending
+             * the same voice count does NOT reset the osc pool, so a prior
+             * target's COEF_MOD would otherwise persist and keep modulating.
+             * The stale-AMP case is the worst: amp COEF_MOD rides AMY's convex
+             * dB combine path, so a leftover coef ramps the output to a rail. */
+            e->filter_freq_coefs[COEF_MOD] = 0.0f;
+            e->amp_coefs[COEF_MOD]         = 0.0f;
+            e->freq_coefs[COEF_MOD]        = 0.0f;
+            e->duty_coefs[COEF_MOD]        = 0.0f;
+            float d = s_arp.lfo.depth / 100.0f;
+            switch (s_arp.lfo.target) {
+                case LFO_TARGET_FILTER: e->filter_freq_coefs[COEF_MOD] = d * VOICE_LFO_DEPTH_FILTER; break;
+                case LFO_TARGET_AMP:    e->amp_coefs[COEF_MOD]         = d * VOICE_LFO_DEPTH_AMP;    break;
+                case LFO_TARGET_PITCH:  e->freq_coefs[COEF_MOD]        = d * VOICE_LFO_DEPTH_PITCH;  break;
+                case LFO_TARGET_SCAN:   e->duty_coefs[COEF_MOD]        = d * VOICE_LFO_DEPTH_SCAN;   break;
+                default: break;
+            }
         }
+        if (wave_filter_eg1) {
+            e->filter_freq_coefs[COEF_EG1] = ARP_FILTER_EG1_DEPTH_OCT;
+        }
+        amy_helpers_event_send(e);
     }
-    /* Plucky amp (EG0 above) / slower independent filter sweep (EG1): only
-     * wired once the user has authored+enabled a filter, so a stock arp
-     * voice with no filter is unaffected. arp_rebuild() pushes valid EG1
-     * breakpoints alongside this so the coef never reads a stuck 1.0 (AMY
-     * treats a never-configured breakpoint set as a permanent unity gate). */
-    if (s_arp.filter_authored && s_arp.filter.enabled) {
-        e->filter_freq_coefs[COEF_EG1] = ARP_FILTER_EG1_DEPTH_OCT;
-    }
-    amy_helpers_event_send(e);
 
     /* osc 1: LFO carrier — no pitch tracking, no velocity, no envelope.
      * amp_coefs[COEF_CONST]=1 when active so AMY computes mod_value each block;

@@ -106,9 +106,10 @@ static void synth_ui_task(void *pvParameters)
             }
         }
 
-        /* Drain deferred layer-add request (runs in synth_ui_task, 4096-byte
-         * stack; safe for the heavy memset + patch-string parse that would
-         * overflow the esp_timer task's 3584-byte stack). */
+        /* Drain deferred layer-add request (runs in synth_ui_task, 8192-byte
+         * stack — sized for the patch-string parse's ~3.4 KB inline frame,
+         * which would overflow the esp_timer task's 3584-byte stack and
+         * overflowed this task's former 4096 too). */
         if (s_layer_add_pending) {
             s_layer_add_pending = false;
             /* Re-check cap; num_layers may have changed since flag was set. */
@@ -203,20 +204,24 @@ void synth_ui_init(u8g2_t *u8g2)
     SEQ_HEAP_CHECK("ui_init: after set_playing");
 
     /* First melodic layer (default patch, 16 steps). Added HERE, before the
-     * UI task exists, for two reasons: (1) the patch-string load runs
-     * amy_parse_message's ~3.4 KB frame inline on the caller's stack, which
-     * does not fit the 4096-byte seq_ui stack the deferred-add drain runs on
-     * (the known Add-Layer overflow - deferring this add wedged boot holding
-     * s_event_mutex + amy_queue_lock); (2) running single-threaded before the
-     * applier task is registered satisfies the single-applier contract with
-     * no cross-task handoff. */
+     * UI task exists: running single-threaded on the main task's stack, before
+     * the applier task is registered, satisfies the single-applier contract
+     * with no cross-task handoff. (Deferring this add into the seq_ui drain
+     * once wedged boot when the patch-string parse overflowed the task's
+     * former 4096-byte stack while holding s_event_mutex + amy_queue_lock;
+     * the stack is 8192 now, but boot-time work has no reason to defer.) */
     synth_ui_add_layer(SEQ_LAYER_MELODIC, SEQ_STEPS);
     SEQ_HEAP_CHECK("ui_init: after add_layer(melodic)");
 
     /* Pin to Core 0: the OLED refresh does blocking I2C and is not latency
-     * critical, so keep it off Core 1 where the AMY DSP now runs. */
+     * critical, so keep it off Core 1 where the AMY DSP now runs.
+     * 8192 stack: the deferred Add-Layer drain runs a patch-string load whose
+     * amy_parse_message frame is ~3.4 KB inline on this stack; 4096 could not
+     * absorb it (same intermittent overflow class as encoder/button tasks,
+     * which were restored to 8192 for the same reason). DRAM-preserving
+     * alternative remains the amy_ingest pump task. */
     TaskHandle_t ui_task = NULL;
-    xTaskCreatePinnedToCore(synth_ui_task, "seq_ui", 4096, NULL, 5, &ui_task, 0);
+    xTaskCreatePinnedToCore(synth_ui_task, "seq_ui", 8192, NULL, 5, &ui_task, 0);
     /* From here on this task is the single applier for structural s_layers
      * edits (it drains s_layer_add_pending/s_layer_delete_pending); debug
      * builds assert any add/delete_layer from another task. Other contexts
@@ -271,7 +276,7 @@ uint8_t synth_ui_add_layer(seq_layer_type_t type, uint8_t num_steps)
 
 /* Request a melodic layer add. Sets a pending flag consumed by synth_ui_task
  * on its next frame, so the heavy work (memset + patch-string parse) runs on
- * the 4096-byte task stack rather than the 3584-byte esp_timer task stack.
+ * that task's 8192-byte stack rather than the 3584-byte esp_timer task stack.
  * Safe to call from any Core-0 context (esp_timer cb, button handler, etc.). */
 void synth_ui_request_add_layer(void)
 {

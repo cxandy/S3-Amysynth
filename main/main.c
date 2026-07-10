@@ -324,6 +324,20 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
 // on the esp_timer task only if queue creation failed at startup).
 static void dispatch_button_event(my_button_id_t button_id, button_event_t event)
 {
+    /* MY_BUTTON_SHIFT (shoulder): temporary binding. On the sequencer grid a
+     * press toggles the step under the cursor, so one hand rides the encoder
+     * while the other enters steps (tracker-style two-handed entry). Fires on
+     * PRESS_DOWN for zero tap latency; all SHIFT events are consumed here so
+     * they never leak into screen logic. Long-term this button is reserved as
+     * a hold-modifier (shift) layer. */
+    if (button_id == MY_BUTTON_SHIFT) {
+        if (event == BUTTON_PRESS_DOWN &&
+            synth_ui_active_view() == UI_VIEW_SEQ) {
+            synth_ui_toggle_step_at_cursor();
+        }
+        return;
+    }
+
     // MY_BUTTON_1 is the patch-select hold button, repurposed per editor:
     //   filter editor  → enabled on/off toggle (single press)
     //   ADSR/LFO editor → layer-wide vs track-only commit scope toggle

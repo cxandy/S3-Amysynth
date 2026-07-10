@@ -351,17 +351,26 @@ void synth_ui_handle_encoder(long delta)
     }
 }
 
-/* Encoder push: in edit mode toggles the step under the cursor on/off (and
- * mirrors that to the core); otherwise it acts as a play/pause toggle. */
+/* Toggle the grid step under the cursor on/off (and mirror it to the core).
+ * Gated on edit_mode like the encoder push, but with no play/pause fallback,
+ * so it is safe to bind to a dedicated toggle button: a press outside edit
+ * mode does nothing. Returns whether a step was toggled. */
+bool synth_ui_toggle_step_at_cursor(void)
+{
+    if (!seq_state.edit_mode) return false;
+    uint8_t li = seq_state.active_layer_idx;
+    uint8_t t  = seq_state.selected_track;
+    uint8_t s  = seq_state.selected_step;
+    seq_state.layers[li].grid[t][s] = !seq_state.layers[li].grid[t][s];
+    sequencer_core_set_step(li, t, s, seq_state.layers[li].grid[t][s]);
+    return true;
+}
+
+/* Encoder push: in edit mode toggles the step under the cursor on/off;
+ * otherwise it acts as a play/pause toggle. */
 void synth_ui_handle_button(void)
 {
-    if (seq_state.edit_mode) {
-        uint8_t li = seq_state.active_layer_idx;
-        uint8_t t  = seq_state.selected_track;
-        uint8_t s  = seq_state.selected_step;
-        seq_state.layers[li].grid[t][s] = !seq_state.layers[li].grid[t][s];
-        sequencer_core_set_step(li, t, s, seq_state.layers[li].grid[t][s]);
-    } else {
+    if (!synth_ui_toggle_step_at_cursor()) {
         seq_state.playing = !seq_state.playing;
         sequencer_core_set_playing(seq_state.playing);
     }

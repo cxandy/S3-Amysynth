@@ -94,12 +94,13 @@ typedef struct {
     float   cutoff_hz;     /* 65..8000 Hz */
     float   resonance;     /* 0.51..8.0 (Q factor) */
     bool    enabled;       /* false = bypass (FILTER_NONE sent) */
-    float   filter_env_amount; /* EG1 -> cutoff depth in octaves. 0.0 (default,
-                                  memset-zeroed) = inert: cutoff tracks COEF_CONST
-                                  only, exactly as before. Non-zero routes the
-                                  row's EG1 through filter_freq_coefs[COEF_EG1]
-                                  (same convention as bass_presets.c and
-                                  arp_core.c:253). */
+    float   filter_env_amount; /* EG1 -> cutoff depth in octaves, bipolar -8..+8
+                                  (negative = inverted/downward sweep). 0.0
+                                  (default, memset-zeroed) = inert: cutoff tracks
+                                  COEF_CONST only, exactly as before. Non-zero
+                                  routes the row's EG1 through
+                                  filter_freq_coefs[COEF_EG1] (same convention as
+                                  bass_presets.c and arp_core.c:253). */
 } seq_filter_t;
 
 /* ── LFO (per-track tempo-synced software modulator) ── */

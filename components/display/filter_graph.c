@@ -121,6 +121,13 @@ void filter_graph_draw(u8g2_t *u8g2, const filter_graph_t *fg)
         float q  = norm_to_q(fg->resonance_norm);
         if (fg->cursor == 1) {
             snprintf(val_buf, sizeof(val_buf), "Q:%.1f", (double)q);
+        } else if (fg->cursor == 4 || fg->cursor == 5) {
+            /* EG1 depth, signed so the polarity toggle's effect is visible. */
+            if (fg->env_depth_oct == 0.0f) {
+                snprintf(val_buf, sizeof(val_buf), "EG:0.0");
+            } else {
+                snprintf(val_buf, sizeof(val_buf), "EG:%+.1f", (double)fg->env_depth_oct);
+            }
         } else {
             if (hz >= 1000.0f) {
                 snprintf(val_buf, sizeof(val_buf), "%.1fk", (double)(hz / 1000.0f));
@@ -132,18 +139,24 @@ void filter_graph_draw(u8g2_t *u8g2, const filter_graph_t *fg)
         uint8_t vw = (uint8_t)u8g2_GetStrWidth(u8g2, val_buf);
         uint8_t vx = (uint8_t)(126 - vw);
         /* Frame the readout when the matching cursor is editing. */
-        if (fg->editing && (fg->cursor == 0 || fg->cursor == 1)) {
+        if (fg->editing && (fg->cursor == 0 || fg->cursor == 1 || fg->cursor == 4)) {
             u8g2_DrawRFrame(u8g2, (uint8_t)(vx - 2), 0, (uint8_t)(vw + 4), 11, 1);
         }
         u8g2_DrawStr(u8g2, vx, 8, val_buf);
     }
 
-    /* Centre: filter type name (cursor=2) or EN toggle (cursor=3). */
+    /* Centre: filter type name (cursor=2), EN toggle (cursor=3), or EG1
+     * polarity toggle (cursor=5). */
     {
         u8g2_SetFont(u8g2, u8g2_font_5x7_tr);
-        if (fg->cursor == 3) {
-            /* EN cursor: show enable state centred in the top bar. */
-            const char *en_str = fg->enabled ? "EN:ON" : "EN:OFF";
+        if (fg->cursor == 3 || fg->cursor == 5) {
+            /* Toggle cursors: show the state centred in the top bar. */
+            const char *en_str;
+            if (fg->cursor == 3) {
+                en_str = fg->enabled ? "EN:ON" : "EN:OFF";
+            } else {
+                en_str = (fg->env_depth_oct < 0.0f) ? "ENV-" : "ENV+";
+            }
             uint8_t ew = (uint8_t)u8g2_GetStrWidth(u8g2, en_str);
             uint8_t ex = (uint8_t)((128 - ew) / 2);
             if (fg->editing) {

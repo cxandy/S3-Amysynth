@@ -6,6 +6,6 @@ idf_component_register(
     # renderer). IDF resolves the resulting synth_core <-> display requirement
     # cycle; a header-only seq_model component would remove it (spec-08 Option B).
     REQUIRES esp_driver_i2c esp_driver_gpio u8g2 synth_core
-    PRIV_REQUIRES g_clamp
+    PRIV_REQUIRES seq_clamp
 )
 target_compile_options(${COMPONENT_LIB} PRIVATE "-Wstack-usage=1024")

@@ -58,6 +58,8 @@ config SEQ_MELODIC_PATCH_JUNO_EPIANO_TREM
 
 config SEQ_MELODIC_PATCH_PIANO_BUILTIN
 	bool "AMY built-in piano (patch 256)"
+config SEQ_MELODIC_PATCH_CUSTOM_START
+	bool "start of custom presets/raw waveforms"
 
 endchoice
 
@@ -70,6 +72,7 @@ config SEQ_MELODIC_PATCH
 	default 7 if SEQ_MELODIC_PATCH_JUNO_PIANO1
 	default 104 if SEQ_MELODIC_PATCH_JUNO_EPIANO_TREM
 	default 256 if SEQ_MELODIC_PATCH_PIANO_BUILTIN
+	default 1 if SEQ_MELODIC_PATCH_CUSTOM_START
 	help
 		Resolved AMY patch number for melodic layer initialization.
 
@@ -228,7 +231,7 @@ config SEQ_ARP_DEFAULT_ENABLED
 config SEQ_ARP_DEFAULT_SCALE
 	int "Arp default scale index"
 	range 0 8
-	default 1
+	default 5
 	help
 		The arp's own (independent) quantizer scale. Note slots store raw
 		chromatic notes and are snapped to this scale at playback.

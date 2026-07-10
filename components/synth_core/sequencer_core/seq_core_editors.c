@@ -213,7 +213,7 @@ void sequencer_core_set_melodic_filter(uint8_t layer_idx, uint8_t track,
     dst->cutoff_hz   = SEQ_CLAMP_F32(f->cutoff_hz,  65.0f, 8000.0f);
     dst->resonance   = SEQ_CLAMP_F32(f->resonance,  0.51f, 8.0f);
     dst->enabled     = f->enabled;
-    dst->filter_env_amount = SEQ_CLAMP_F32(f->filter_env_amount, 0.0f, 8.0f);
+    dst->filter_env_amount = SEQ_CLAMP_F32(f->filter_env_amount, -8.0f, 8.0f);
 
     layer->vp[track].filter_authored = true;
     sequencer_configure_melodic_filter_track(layer_idx, track);

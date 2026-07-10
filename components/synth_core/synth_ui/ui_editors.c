@@ -71,6 +71,13 @@ static bool  s_graph_amp_mode = false;
 static float s_graph_amp_edit = 1.0f;   /* scratch 0..1, seeds from target on open */
 static bool  s_graph_env_dirty = false; /* set only when user moves an ADSR point */
 
+/* EG1 filter-env depth (melodic only): scratch octaves for the EG1 page's trim
+ * mode. Seeded from the row's seq_filter_t.filter_env_amount on editor open;
+ * committed on confirm ONLY when edited (s_graph_fenv_dirty) so an untouched
+ * editor session never authors the row's filter. */
+static float s_graph_fenv_edit  = 0.0f;
+static bool  s_graph_fenv_dirty = false;
+
 /* Layer-apply scope: when true, effect-editor commits write to all SEQ_TRACKS
  * in the active layer instead of only the selected track.  Toggled by
  * MY_BUTTON_1 while the ADSR graph or LFO editor is open.  The filter editor
@@ -354,6 +361,17 @@ void synth_ui_graph_open_envelope(void)
     }
 
     graph_seed_from_env(&env);
+
+    /* Seed the EG1 filter-env depth scratch (melodic rows only). */
+    s_graph_fenv_dirty = false;
+    s_graph_fenv_edit  = 0.0f;
+    if (s_graph_target == GRAPH_TGT_MELODIC) {
+        seq_filter_t f;
+        if (sequencer_core_get_melodic_filter(s_graph_layer, s_graph_track, &f)) {
+            s_graph_fenv_edit = f.filter_env_amount;
+        }
+    }
+
     graph_update_ticks();
     graph_popup_open(&s_graph_popup, GPOPUP_MODE_EDIT, NULL);
     graph_popup_set_style(&s_graph_popup, GPOPUP_STYLE_ADSR);
@@ -424,6 +442,22 @@ static void graph_commit_to_env(void)
             break;
     }
     s_graph_amp_mode = false;   /* clear mode so topbar reverts on next open */
+
+    /* Commit the EG1 filter-env depth (melodic only, only if edited). Read-
+     * modify-write through the public filter API so the COEF_EG1 push, the
+     * guaranteed EG1 breakpoints, the 0..8 clamp, and filter_authored all
+     * stay in the engine. Honors the layer/track scope. */
+    if (s_graph_fenv_dirty && s_graph_target == GRAPH_TGT_MELODIC) {
+        uint8_t t0 = s_editor_apply_all ? 0 : s_graph_track;
+        uint8_t t1 = s_editor_apply_all ? (uint8_t)(SEQ_TRACKS - 1) : s_graph_track;
+        for (uint8_t t = t0; t <= t1; ++t) {
+            seq_filter_t f;
+            if (!sequencer_core_get_melodic_filter(s_graph_layer, t, &f)) continue;
+            f.filter_env_amount = s_graph_fenv_edit;
+            sequencer_core_set_melodic_filter(s_graph_layer, t, &f);
+        }
+        s_graph_fenv_dirty = false;
+    }
 }
 
 /* Set the time-range mode (long_range=true → LONG 15s, false → SHORT 2s) and
@@ -535,6 +569,18 @@ bool synth_ui_graph_handle_encoder(long delta)
     if (!graph_popup_is_active(&s_graph_popup)) return false;
 
     if (s_graph_amp_mode) {
+        if (s_graph_eg_index == 1 && s_graph_target == GRAPH_TGT_MELODIC) {
+            /* EG1 page: encoder adjusts EG1->cutoff depth, 0.25 oct/detent.
+             * Bipolar -8..+8; negative = inverted/downward sweep (same range
+             * as the filter editor's EG cursor — one shared field). */
+            float v = s_graph_fenv_edit + (float)delta * 0.25f;
+            if (v < -8.0f) v = -8.0f;
+            if (v >  8.0f) v =  8.0f;
+            s_graph_fenv_edit  = v;
+            s_graph_fenv_dirty = true;
+            s_force_redraw = true;
+            return true;
+        }
         /* Amp mode: encoder adjusts per-target amplitude trim in 5% steps. */
         float v = s_graph_amp_edit + (float)delta * 0.05f;
         if (v < 0.0f) v = 0.0f;
@@ -635,6 +681,7 @@ static void filter_sync_fgraph(void)
     s_fgraph.cutoff_norm    = filter_hz_to_norm(s_filter_edit.cutoff_hz);
     s_fgraph.resonance_norm = filter_q_to_norm(s_filter_edit.resonance);
     s_fgraph.enabled        = s_filter_edit.enabled;
+    s_fgraph.env_depth_oct  = s_filter_edit.filter_env_amount;
     /* cursor and editing stay unchanged */
 }
 
@@ -708,11 +755,15 @@ bool synth_ui_filter_handle_encoder(long delta)
     if (!s_filter_active) return false;
     bool drone = (seq_state.ui_mode == UI_MODE_DRONE);
 
+    bool arp = (seq_state.ui_mode == UI_MODE_ARP);
+
     if (!s_fgraph.editing) {
         /* Not editing: scroll cursor position.
          * Drone: 0=cutoff 1=resonance (type fixed, no EN cursor).
-         * Non-drone: 0=cutoff 1=resonance 2=type 3=enable. */
-        uint8_t max_cursor = drone ? 1 : 3;
+         * Arp:   0=cutoff 1=resonance 2=type 3=enable (EG1 depth is the
+         *        fixed ARP_FILTER_EG1_DEPTH_OCT — this field is ignored).
+         * Melodic: adds 4=EG1 depth 5=EG1 polarity. */
+        uint8_t max_cursor = drone ? 1 : (arp ? 3 : 5);
         if (delta > 0) {
             s_fgraph.cursor = (uint8_t)((s_fgraph.cursor + 1) % (max_cursor + 1));
         } else if (delta < 0) {
@@ -752,6 +803,21 @@ bool synth_ui_filter_handle_encoder(long delta)
                 s_filter_edit.enabled = !s_filter_edit.enabled;
                 s_fgraph.enabled      = s_filter_edit.enabled;
                 ESP_LOGI(TAG, "filter enabled -> %d", (int)s_filter_edit.enabled);
+            }
+            break;
+        }
+        case 4: {   /* EG1 -> cutoff depth, bipolar -8..+8 oct (melodic only) */
+            float step = 0.1f * (float)delta;
+            s_filter_edit.filter_env_amount =
+                SEQ_CLAMP_F32(s_filter_edit.filter_env_amount + step, -8.0f, 8.0f);
+            break;
+        }
+        case 5: {   /* EG1 polarity toggle: one detent inverts the sweep, so a
+                     * dialed-in depth can be A/B'd up vs down without cranking
+                     * the encoder back through zero. No-op at 0.0 (also keeps
+                     * -0.0 out of the readout). */
+            if (s_filter_edit.filter_env_amount != 0.0f) {
+                s_filter_edit.filter_env_amount = -s_filter_edit.filter_env_amount;
             }
             break;
         }
@@ -1005,6 +1071,7 @@ void synth_ui_cycle_editor(void)
     h = fnv1a_bytes(h, &s_graph_track, sizeof(s_graph_track));
     h = fnv1a_bytes(h, &s_graph_amp_mode, sizeof(s_graph_amp_mode));
     h = fnv1a_bytes(h, &s_graph_amp_edit, sizeof(s_graph_amp_edit));
+    h = fnv1a_bytes(h, &s_graph_fenv_edit, sizeof(s_graph_fenv_edit));
     h = fnv1a_bytes(h, &s_graph_eg_index, sizeof(s_graph_eg_index));
     h = fnv1a_bytes(h, s_graph_popup.points,
                     s_graph_popup.num_points * sizeof(gpopup_point_t));
@@ -1038,8 +1105,12 @@ static void graph_draw_topbar(u8g2_t *u8g2)
     uint8_t rw = 0;
     if (s_graph_amp_mode) {
         char amp_buf[10];
-        snprintf(amp_buf, sizeof(amp_buf), "AMP%d%%",
-                 (int)(s_graph_amp_edit * 100.0f + 0.5f));
+        if (s_graph_eg_index == 1 && s_graph_target == GRAPH_TGT_MELODIC) {
+            snprintf(amp_buf, sizeof(amp_buf), "ENV%.2f", (double)s_graph_fenv_edit);
+        } else {
+            snprintf(amp_buf, sizeof(amp_buf), "AMP%d%%",
+                     (int)(s_graph_amp_edit * 100.0f + 0.5f));
+        }
         u8g2_SetFont(u8g2, u8g2_font_6x10_tf);
         rw = (uint8_t)u8g2_GetStrWidth(u8g2, amp_buf);
         u8g2_DrawStr(u8g2, (uint8_t)(128 - rw - 2), 8, amp_buf);

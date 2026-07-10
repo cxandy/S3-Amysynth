@@ -28,6 +28,9 @@ void synth_ui_cycle_active_layer(void);
 /* Input dispatch ── called from encoder / button tasks */
 void synth_ui_handle_encoder(long delta);
 void synth_ui_handle_button(void);
+/* Toggle the grid step under the cursor (edit_mode-gated, no play/pause
+ * fallback). Returns true if a step was toggled. */
+bool synth_ui_toggle_step_at_cursor(void);
 void synth_ui_toggle_playing(void);
 void synth_ui_set_bpm(uint16_t bpm);
 void synth_ui_adjust_track_note(int delta);

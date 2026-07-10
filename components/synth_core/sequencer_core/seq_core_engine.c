@@ -134,7 +134,7 @@ bool sequencer_track_audible(const seq_layer_t *layer, uint8_t track)
     return !layer->mute[track];
 }
 
-static uint8_t sequencer_clamp_layer_note(const seq_layer_t *layer, uint8_t note)
+uint8_t sequencer_clamp_layer_note(const seq_layer_t *layer, uint8_t note)
 {
     if (layer->type == SEQ_LAYER_DRUM) {
         return SEQ_CLAMP_U8(note, SEQ_MIDI_NOTE_MIN, SEQ_MIDI_NOTE_MAX);
@@ -143,8 +143,8 @@ static uint8_t sequencer_clamp_layer_note(const seq_layer_t *layer, uint8_t note
     }
 }
 
-static uint8_t sequencer_resolve_track_note(const seq_layer_t *layer,
-                                            uint8_t source_note)
+uint8_t sequencer_resolve_track_note(const seq_layer_t *layer,
+                                     uint8_t source_note)
 {
     if (layer->type != SEQ_LAYER_MELODIC) {
         return sequencer_clamp_layer_note(layer, source_note);

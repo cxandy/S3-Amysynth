@@ -138,6 +138,14 @@ float sequencer_step_velocity(const seq_layer_t *layer, uint8_t track, uint8_t s
  * ratchet path respects mute/solo the same way the plain periodic path does. */
 bool sequencer_track_audible(const seq_layer_t *layer, uint8_t track);
 
+/* From seq_core_engine.c — shared with seq_core_trig.c so the per-step
+ * note-transform can re-clamp to the layer's note bounds and re-snap a
+ * transformed pitch through the exact same chord/scale quantizer the plain
+ * per-track resolve uses (spec 20 §3.1/§3.2). resolve applies the scale/chord
+ * snap; clamp only bounds the note (used when step_quant_bypass is set). */
+uint8_t sequencer_clamp_layer_note(const seq_layer_t *layer, uint8_t note);
+uint8_t sequencer_resolve_track_note(const seq_layer_t *layer, uint8_t source_note);
+
 /* From seq_core_trig.c — per-step probability/ratchet/conditional-trig engine.
  * sequencer_core_step_is_decorated() is consulted by sequencer_emit_step()
  * (seq_core_engine.c) to decide whether a step still uses the plain

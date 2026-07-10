@@ -60,6 +60,27 @@ typedef enum {
     SEQ_STEP_COND_COUNT,
 } seq_step_cond_type_t;
 
+/* ── Per-step note transform (OP-Z step-component subset, spec 20 §3.1) ──
+ * NONE keeps the step's authored pitch verbatim — the zeroed default, a pure
+ * no-op that leaves the step on the plain periodic-tag path. Any non-NONE mode
+ * offsets the emitted pitch per fire and therefore forces the step onto the
+ * decorated one-shot path (see sequencer_core_step_is_decorated): the plain
+ * path emits one repeating tag with a fixed pitch and AMY has no
+ * per-repetition hook.
+ *   RANDOM    re-pitches every fire by +/- a fixed semitone span.
+ *   RAMP_UP   walks the pitch up across successive layer loops, then wraps.
+ *   RAMP_DOWN walks it down.
+ * The transformed pitch is re-snapped to the active scale/chord unless the
+ * step's step_quant_bypass bit is set (spec 20 §3.2), in which case it is
+ * emitted chromatically. */
+typedef enum {
+    SEQ_STEP_TRANSFORM_NONE      = 0,
+    SEQ_STEP_TRANSFORM_RANDOM    = 1,
+    SEQ_STEP_TRANSFORM_RAMP_UP   = 2,
+    SEQ_STEP_TRANSFORM_RAMP_DOWN = 3,
+    SEQ_STEP_TRANSFORM_COUNT,
+} seq_step_transform_t;
+
 /* ── Filter type constants (mirror AMY's FILTER_* values) ── */
 #define SEQ_FILTER_NONE  0
 #define SEQ_FILTER_LPF   1
@@ -204,6 +225,12 @@ typedef struct {
     uint8_t  step_ratchet[SEQ_TRACKS][SEQ_MAX_STEPS];    /* 1..SEQ_MAX_RATCHET sub-hits    */
     uint8_t  step_cond_type[SEQ_TRACKS][SEQ_MAX_STEPS];  /* seq_step_cond_type_t           */
     uint8_t  step_cond_param[SEQ_TRACKS][SEQ_MAX_STEPS]; /* FILL: loop divisor 2..8        */
+    /* ── Per-step OP-Z note transform (spec 20 §3.1/§3.2) ──
+     * Both default to 0 = current behaviour: SEQ_STEP_TRANSFORM_NONE keeps the
+     * authored pitch and leaves the step on the plain path; step_quant_bypass=0
+     * re-snaps a transformed pitch to the scale. A zeroed layer needs no init. */
+    uint8_t  step_transform[SEQ_TRACKS][SEQ_MAX_STEPS];    /* seq_step_transform_t (0=NONE)  */
+    uint8_t  step_quant_bypass[SEQ_TRACKS][SEQ_MAX_STEPS]; /* 1 = skip scale snap on transform */
 } seq_layer_t;
 
 /* ── Global sequencer display/UI state ── */

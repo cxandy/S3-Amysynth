@@ -135,8 +135,10 @@ uint8_t sequencer_core_add_layer(seq_layer_type_t type, uint8_t num_steps)
     /* amp_scale defaults to 1.0 (unity); memset in add_layer zeroes it, so
      * explicit init here is required to avoid silencing all tracks. Same
      * rationale for step_prob (0% would silence every step) and step_ratchet
-     * (0 sub-hits would fire nothing); step_cond_type/param default correctly
-     * to the zeroed SEQ_STEP_COND_NONE/0 and need no explicit init. */
+     * (0 sub-hits would fire nothing); step_cond_type/param and the per-step
+     * transform/quant-bypass arrays default correctly to their zeroed no-op
+     * (SEQ_STEP_COND_NONE / SEQ_STEP_TRANSFORM_NONE / no bypass) and need no
+     * explicit init. */
     for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
         layer->amp_scale[t] = 1.0f;
         for (uint8_t s = 0; s < SEQ_MAX_STEPS; s++) {

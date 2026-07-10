@@ -37,6 +37,11 @@
 
 /* ── Timing ──────────────────────────────────────────────────────────── */
 #define SEQ_TICKS_PER_STEP    (AMY_SEQUENCER_PPQ / 4)
+/* Max swing (shuffle): percent of one step by which odd 16ths are delayed.
+ * Mirrors the drone's DRONE_SWING_MAX. Stays < 100 so a swung note-on never
+ * crosses into the next step's slot. Musician mapping: the Digitakt 50-80%
+ * scalar corresponds to 0-60 here (50% = straight = 0). 66 is the ceiling. */
+#define SEQ_SWING_MAX         66
 /* A musical bar = 16 steps. Fixed regardless of layer length so the bar
  * counter and repeat-rate are independent of which layers are active. */
 #define SEQ_TICKS_PER_BAR     (16u * SEQ_TICKS_PER_STEP)

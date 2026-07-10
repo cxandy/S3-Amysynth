@@ -355,6 +355,14 @@ void              sequencer_core_set_track_repeat_rate(uint8_t layer_idx,
 seq_repeat_rate_t sequencer_core_get_track_repeat_rate(uint8_t layer_idx,
                                                        uint8_t track);
 
+/* ── Per-layer swing / shuffle ────────────────────────────────────────────
+ * Delays odd 16th-steps by swing_pct% of one step (0..SEQ_SWING_MAX). Whole
+ * layer, all tracks. 0 = straight (default). Re-emits the layer immediately so
+ * AMY re-schedules every step at its swung tick. Mirrors the drone swing model
+ * (drone_set_swing). Engine + API only for now; no UI wiring yet. */
+void    sequencer_core_set_layer_swing(uint8_t layer_idx, uint8_t swing_pct);
+uint8_t sequencer_core_get_layer_swing(uint8_t layer_idx);
+
 /* ── Per-track mute / solo ────────────────────────────────────────────────
  * Scoped per layer: solo only compares against the other tracks of the SAME
  * layer, not across layers. Standard mixing-desk semantics — if any track in

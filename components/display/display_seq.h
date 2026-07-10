@@ -162,6 +162,11 @@ typedef struct {
     bool      chord_mode;                /* false = scale quantizer (default) */
     uint8_t   chord_root;                /* chromatic 0-11 (C=0)              */
     chord_type_t chord_type;
+    uint8_t   swing_pct;                 /* 0..SEQ_SWING_MAX shuffle: odd 16th
+                                            steps are delayed by this % of one
+                                            step at emit time. 0 = straight
+                                            (default; memset-zeroed in
+                                            sequencer_core_add_layer).        */
     uint8_t  synth_id[SEQ_TRACKS];   /* one AMY synth per row (both melodic and
                                         drum layers: each track has its own slot */
     uint16_t patch;                  /* shared timbre across the layer's rows

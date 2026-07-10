@@ -227,6 +227,15 @@ void sequencer_configure_melodic_filter_track(uint8_t layer_idx, uint8_t track)
         e->filter_type = f->filter_type;
         e->filter_freq_coefs[COEF_CONST] = f->cutoff_hz;
         e->resonance = f->resonance;
+        /* EG1 -> cutoff depth (octaves). Only wired when the user has dialed a
+         * non-zero amount, so a plain melodic filter is byte-for-byte unchanged.
+         * COEF_EG1 is the second (aux) envelope generator; on melodic tracks
+         * nothing routes it to amplitude (no amp_coefs[COEF_EG1] anywhere), so
+         * there is no amp/filter double-use to arbitrate — the amount==0 gate is
+         * the only guard needed. Same convention as arp_core.c:253. */
+        if (f->filter_env_amount != 0.0f) {
+            e->filter_freq_coefs[COEF_EG1] = f->filter_env_amount;
+        }
     } else {
         e->filter_type = FILTER_NONE;
     }
@@ -234,6 +243,16 @@ void sequencer_configure_melodic_filter_track(uint8_t layer_idx, uint8_t track)
         e->feedback = sequencer_core_ks_feedback_from_q(f->resonance);
     }
     amy_helpers_event_send(e);
+
+    /* Guarantee valid EG1 breakpoints on this synth whenever the filter env is
+     * live, so filter_freq_coefs[COEF_EG1] modulates a real ramp instead of a
+     * stuck unity gate (AMY treats a never-configured breakpoint set as a
+     * permanent 1.0 — see arp_core.c:247-253). Uses the row's stored EG1
+     * (authored shape, or the zeroed default). Skipped entirely when inert. */
+    if (f->enabled && f->filter_env_amount != 0.0f) {
+        sequencer_core_push_envelope_eg1(layer->synth_id[track], 0,
+                                         seq_layer_env1(layer_idx, track));
+    }
 }
 
 bool sequencer_core_get_melodic_filter(uint8_t layer_idx, uint8_t track,
@@ -255,6 +274,7 @@ void sequencer_core_set_melodic_filter(uint8_t layer_idx, uint8_t track,
     dst->cutoff_hz   = SEQ_CLAMP_F32(f->cutoff_hz,  65.0f, 8000.0f);
     dst->resonance   = SEQ_CLAMP_F32(f->resonance,  0.51f, 8.0f);
     dst->enabled     = f->enabled;
+    dst->filter_env_amount = SEQ_CLAMP_F32(f->filter_env_amount, 0.0f, 8.0f);
 
     layer->filter_authored[track] = true;
     sequencer_configure_melodic_filter_track(layer_idx, track);

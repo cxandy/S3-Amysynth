@@ -206,6 +206,10 @@ static void trig_schedule_ratchets(uint8_t layer_idx, const seq_layer_t *layer,
     }
 
     float velocity = sequencer_step_velocity(layer, track, step) * layer->amp_scale[track];
+    /* Per-step velocity offset (patch-06): signed percentage points, default 0.
+     * Applied here as well as the plain path so decorated steps match. */
+    velocity += (float)layer->step_velocity_adj[track][step] * 0.01f;
+    if (velocity < 0.0f) velocity = 0.0f;
     if (velocity > 1.0f) velocity = 1.0f;
     /* Single per-fire pitch source for both ratchet sub-hits and the plain
      * decorated (n==1) path: apply any per-step note transform here so every
@@ -214,10 +218,19 @@ static void trig_schedule_ratchets(uint8_t layer_idx, const seq_layer_t *layer,
                                         layer->step_note[track][step]);
     uint8_t synth = layer->synth_id[track];
 
+    /* Ratchet velocity taper (patch-06): sub-hit k is scaled by (1 - taper*k%).
+     * Default 0 = flat (every sub-hit at full velocity — the historical
+     * behaviour). Positive taper decays toward the tail; negative ramps up.
+     * k==0 is always full velocity. */
+    int8_t taper = layer->step_ratchet_taper[track][step];
     for (uint8_t k = 0; k < n; k++) {
+        float scale = 1.0f - (float)taper * 0.01f * (float)k;
+        if (scale < 0.0f) scale = 0.0f;
+        if (scale > 1.0f) scale = 1.0f;
+        float v = velocity * scale;
         uint32_t tick_on  = now_ticks + 1u + (uint32_t)k * sub_ticks;
         uint32_t tick_off = tick_on + gate;
-        amy_send_note_sched(synth, (float)note, velocity,
+        amy_send_note_sched(synth, (float)note, v,
                             ratchet_on_tag(layer_idx, track, k), tick_on, 0);
         amy_send_note_sched(synth, (float)note, 0.0f,
                             ratchet_off_tag(layer_idx, track, k), tick_off, 0);

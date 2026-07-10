@@ -94,11 +94,11 @@
 #define INT_OF_S(s, b) ((int)floorf((s) * (float)(1 << (b))))
 #define S_FRAC_OF_S(s, b) ((s) * (1 << (b)) - floorf((s) * (1 << (b))))
 
-#define MUL0_SS(a, b)  ((a) * (b))
-#define MUL4_SS(a, b)  ((a) * (b))
-#define MUL5A_SS(a, b) ((a) * (b))  // LOCAL EDIT (S3-Amysynth): float fallback missing upstream
-#define MUL6A_SS(a, b) ((a) * (b))  // LOCAL EDIT (S3-Amysynth): float fallback missing upstream
-#define MUL8_SS(a, b)  ((a) * (b))
+#define MUL0_SS(a, b) ((a) * (b))
+#define MUL4_SS(a, b) ((a) * (b))
+#define MUL5A_SS(a, b) ((a) * (b))
+#define MUL6A_SS(a, b) ((a) * (b))
+#define MUL8_SS(a, b) ((a) * (b))
 #define MUL8F_SS(a, b) ((a) * (b))
 #define MUL4E_SS(a, b) ((a) * (b))
 #define MUL4_SP_S(a, b) ((a) * (b))

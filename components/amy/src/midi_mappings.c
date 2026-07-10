@@ -57,7 +57,8 @@ struct midi_mapping default_note_mapping = {
     .min_val = 0,
     .max_val = 1.0f,
     .offset_val = 0,
-    .message_template = "i%iiM1n%nl%v",
+    //.message_template = "i%iiM1n%nl%v",
+    .message_template = "i%in%nl%v",
 };
 
 
@@ -151,6 +152,11 @@ int midi_clear_mapping(int channel, int type, int code) {
 
 int midi_store_mapping(int channel, int type, int code, int is_log, float min_val, float max_val, float offset_val, const char *message, size_t message_len) {
     // Register a MIDI mapping and a wire code template.
+    //char tmp[256];
+    //strncpy(tmp, message, message_len);
+    //tmp[message_len] = '\0';
+    //fprintf(stderr, "midi_store_mapping: ch %d type %d code %d L %d N %.3f X %.3f O %.3f CMD (%d) '%s'\n",
+    //        channel, type, code, is_log, min_val, max_val, offset_val, message_len, tmp);
     // Strip trailing wire protocol terminator(s) so they don't accumulate on round-trips.
     while (message_len > 0 && message[message_len - 1] == 'Z') {
         --message_len;
@@ -177,8 +183,9 @@ bool midi_fetch_mapping_command(int channel, int type, int code, char *s, size_t
 }
 
 float map_midi_value(struct midi_mapping *mapping, uint8_t value) {
+    float ret_val = 0;
     if (mapping->is_log != 0) {
-        return (mapping->min_val + mapping->offset_val)
+        ret_val = (mapping->min_val + mapping->offset_val)
             * expf(
                 logf((mapping->max_val + mapping->offset_val)
                      / (mapping->min_val + mapping->offset_val))
@@ -186,10 +193,11 @@ float map_midi_value(struct midi_mapping *mapping, uint8_t value) {
               )
             - mapping->offset_val;
     } else {  // Linear.
-        return mapping->min_val
+        ret_val = mapping->min_val
             + (mapping->max_val - mapping->min_val)
               * (float)value / 127.0f;
     }
+    return ret_val;
 }
 
 void substitute_midi_special_values(char *dest, const char *src, int channel, int code, float value) {
@@ -227,9 +235,12 @@ void substitute_midi_special_values(char *dest, const char *src, int channel, in
 }
 
 void midi_msg_handler(uint8_t * bytes, uint16_t len, uint8_t is_sysex, uint32_t time) {
+    //fprintf(stderr, "time %.3f midi_msg_handler: 0x%x 0x%x 0x%x\n", amy_global.time, bytes[0], bytes[1], bytes[2]);
     uint8_t status = bytes[0] & 0xF0;
-    if (status == 0xB0 || status == 0x90 || status == 0x80) {  // CC or note-on
-        int channel = (bytes[0] & 0x0F) + 1;
+    uint8_t channel = (bytes[0] & 0x0F) + 1;
+    if (status == 0xB0
+        || ((!instrument_number_exists(channel, NULL) || instrument_grab_midi_notes(channel))
+            && (status == 0x90 || status == 0x80))) {  // CC or note-on with grab_midi set.
         int type = (status == 0xB0) ? MIDI_MAP_TYPE_CC : MIDI_MAP_TYPE_NOTE;
         int code = bytes[1];  // note for note-on events
         struct midi_mapping **p_mapping = midi_mapping_find(channel, type, code);
@@ -243,13 +254,14 @@ void midi_msg_handler(uint8_t * bytes, uint16_t len, uint8_t is_sysex, uint32_t 
                 value = 0;
             }
             char message[AMY_WIRE_COMMAND_LEN];
-            char offset = 0;
+            // Mark message as already passed through mapping for this channel (synth).
+            sprintf(message, "iM%d", channel);
+            int offset = strlen(message);
             if (AMY_IS_SET(time)) {
-                sprintf(message, "t%" PRId32, time);
+                sprintf(message + offset, "t%" PRId32, time);
                 offset = strlen(message);
             }
             substitute_midi_special_values(message + offset, mapping->message_template, channel, code, value);
-            //fprintf(stderr, "midi_cc_handler: message %s\n", message);
             amy_add_message(message);
         }
     }

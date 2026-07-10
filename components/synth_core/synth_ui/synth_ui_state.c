@@ -61,8 +61,21 @@ uint32_t seq_view_signature(void)
     h = fnv1a_bytes(h, &seq_state.selected_step, sizeof(seq_state.selected_step));
     h = fnv1a_bytes(h, &seq_state.drum_select_mode, sizeof(seq_state.drum_select_mode));
     h = fnv1a_bytes(h, &seq_state.patch_select_mode, sizeof(seq_state.patch_select_mode));
+    /* Drum engine + PCM presets live in the core (sample_rec can change them
+     * without going through the UI), so snapshot them into the mirror here —
+     * this runs every frame, like the bpm snapshot above — and hash the
+     * mirror so a change redraws. */
+    seq_state.drum_pcm = (sequencer_core_get_drum_engine() == SEQ_DRUM_PCM);
+    h = fnv1a_bytes(h, &seq_state.drum_pcm, sizeof(seq_state.drum_pcm));
     if (seq_state.num_layers > 0) {
-        const seq_layer_t *L = &seq_state.layers[seq_state.active_layer_idx];
+        seq_layer_t *L = &seq_state.layers[seq_state.active_layer_idx];
+        if (L->type == SEQ_LAYER_DRUM) {
+            for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
+                L->track_pcm_preset[t] =
+                    sequencer_core_get_drum_pcm_preset(seq_state.active_layer_idx, t);
+            }
+            h = fnv1a_bytes(h, L->track_pcm_preset, sizeof(L->track_pcm_preset));
+        }
         h = fnv1a_bytes(h, &L->type, sizeof(L->type));
         h = fnv1a_bytes(h, &L->patch, sizeof(L->patch));
         h = fnv1a_bytes(h, L->track_patch, sizeof(L->track_patch));

@@ -83,6 +83,12 @@ void arp_set_scale(uint8_t scale_index);
 void arp_set_root_note(uint8_t root_note);
 void arp_set_chord(uint8_t root_midi, uint8_t scale_index);
 void arp_set_patch(uint16_t patch_number);
+/* Live FM voice edits (FM screen): re-push the shared custom voice
+ * (s_fm_voice) to the arp synth when the arp is currently playing it
+ * (source == ARP_SRC_PATCH && patch == SEQ_PATCH_FM_CUSTOM); no-op
+ * otherwise. Called from sequencer_core_fm_voice_changed() alongside the
+ * melodic-layer fanout. */
+void arp_core_fm_voice_changed(void);
 /* Sound source: switch between a DX7/Juno patch and a raw AMY waveform.
  * On change, rebuilds the synth slot and re-applies any authored ADSR/filter.
  * In WAVE mode, arp_set_patch() stores the patch but does not reconfigure the

@@ -78,7 +78,13 @@ void amy_profiles_print() {}
 
 
 // Use the tiny built-in PCM set by default across platforms.
+#ifdef GAMMA9001
+// The Gamma9001 builds (Tulip, AMYboard, web) bake the full TR-808 bank as
+// their ROM set; the other Gamma9001 banks stream from gamma9001_pcm (pcm.c).
+#include "pcm_gamma808.h"
+#else
 #include "pcm_tiny.h"
+#endif
 
 #include "clipping_lookup_table.h"
 
@@ -545,14 +551,15 @@ void add_delta_to_queue(struct delta *d, struct delta **queue) {
 float map_60dB_to_01f(float lin) {
     // Map .001 to 0, 1 to 1 logarithmically.
     if (lin == 0) return -10.0f;
-    float result = 1.0f + 0.10034333188799373f * log2f(lin);  // 0.100343 = 1 / (3 * log2(10))
+    // Use AMY's fast log2 LUT instead of libm log2f (called per-osc per-block).
+    float result = 1.0f + 0.10034333188799373f * S2F(log2_lut(F2S(lin)));  // 0.100343 = 1 / (3 * log2(10))
     return result;
 }
 
 float map_01_to_60dBf(float log) {
     // Inverse of map_60dB_to_01f - Map (0, 1) to (.001, 1) exponentially
     if (log <= -10.0f) return 0;
-    float result = exp2f((log - 1.0f) / 0.10034333188799373f);
+    float result = S2F(exp2_lut(F2S((log - 1.0f) / 0.10034333188799373f)));
     return result;
 }
 
@@ -657,7 +664,7 @@ void amy_event_to_deltas_queue(amy_event *e, uint16_t base_osc, struct delta **q
     EVENT_TO_DELTA_WITH_BASEOSC(chained_osc, CHAINED_OSC)
     EVENT_TO_DELTA_WITH_BASEOSC(reset_osc, RESET_OSC)
     EVENT_TO_DELTA_WITH_BASEOSC(mod_source, MOD_SOURCE)
-    EVENT_TO_DELTA_I(note_source, NOTE_SOURCE)
+    EVENT_TO_DELTA_I(note_source_channel, NOTE_SOURCE_CHANNEL)
     EVENT_TO_DELTA_I(filter_type, FILTER_TYPE)
     EVENT_TO_DELTA_I(algorithm, ALGORITHM)
     EVENT_TO_DELTA_F(eq_l, EQ_L)
@@ -780,7 +787,7 @@ void reset_osc_params(struct synthinfo *psynth) {
     psynth->bus = AMY_DEFAULT_BUS;
     psynth->wave = SINE;
     AMY_UNSET(psynth->preset);
-    AMY_UNSET(psynth->note_source);
+    AMY_UNSET(psynth->note_source_channel);
     AMY_UNSET(psynth->midi_note);
     psynth->velocity = 0;
     for (int j = 0; j < NUM_COMBO_COEFS; ++j)  psynth->amp_coefs[j] = 0;
@@ -1262,7 +1269,7 @@ void play_delta(struct delta *d) {
     DELTA_TO_SYNTH_F(RATIO, logratio)
     DELTA_TO_SYNTH_F(RESONANCE, resonance)
     DELTA_TO_SYNTH_I(FILTER_TYPE, filter_type)
-    DELTA_TO_SYNTH_I(NOTE_SOURCE, note_source)
+    DELTA_TO_SYNTH_I(NOTE_SOURCE_CHANNEL, note_source_channel)
     DELTA_TO_SYNTH_I(EG0_TYPE, eg_type[0])
     DELTA_TO_SYNTH_I(EG1_TYPE, eg_type[1])
     if (d->param == PRESET) {
@@ -1531,6 +1538,8 @@ float amp_combine_controls(float *controls, float *coefs) {
     float result = 0;
     for (int i = 0; i < NUM_COMBO_COEFS; ++i)  {
         float coef = coefs[i];
+        // A zero coef contributes nothing (0 * val == 0), so skip map_60db_to_01f
+        if (coef == 0)  continue;
         float val = controls[i];
         if (i == COEF_CONST)  {val = coef; coef = 1.0f;}   // coef[CONST] is always 1.0f, so swap them.  We're going to map the val.
         if (i != COEF_MOD) {
@@ -1544,8 +1553,9 @@ float amp_combine_controls(float *controls, float *coefs) {
     //    // Double the slope below 0.01.
     //    log_amp = -2.0f + 2.0f * (log_amp + 2.0f);
     //}
-    result = powf(10.0f, result);
-    if (result <= AMP_THRESH_PLUS)  result = 0; 
+    // Avoid powf with fxpt exp2
+    result = S2F(exp2_lut(F2S(result * 3.321928094887362f)));
+    if (result <= AMP_THRESH_PLUS)  result = 0;
     return result;
 }
 
@@ -1580,12 +1590,12 @@ void hold_and_modify(uint16_t osc) {
     float filter_logfreq = combine_controls(ctrl_inputs, synth[osc]->filter_logfreq_coefs);
     if (filter_logfreq < MIN_FILTER_LOGFREQ)  filter_logfreq = MIN_FILTER_LOGFREQ;
     if (AMY_IS_SET(msynth[osc]->last_filter_logfreq)) {
-        #define MAX_DELTA_FILTER_LOGFREQ_DOWN 2.0
+        #define MAX_DELTA_FILTER_LOGFREQ_DOWN 3.0
         float last_logfreq = msynth[osc]->last_filter_logfreq;
-        if (filter_logfreq < last_logfreq - MAX_DELTA_FILTER_LOGFREQ_DOWN) {
+        if (filter_logfreq < (last_logfreq - (MAX_DELTA_FILTER_LOGFREQ_DOWN / synth[osc]->resonance))) {
             // Filter cutoff downward slew-rate limit.
             // See https://github.com/shorepine/amy/issues/126
-            filter_logfreq = last_logfreq - MAX_DELTA_FILTER_LOGFREQ_DOWN;
+            filter_logfreq = last_logfreq - (MAX_DELTA_FILTER_LOGFREQ_DOWN / synth[osc]->resonance);
         }
     }
     msynth[osc]->last_filter_logfreq = filter_logfreq;
@@ -1896,29 +1906,6 @@ void amy_block_processed(void) {
         amy_global.config.amy_external_block_done_hook();
     }
 #endif
-}
-
-void amy_process_event(amy_event *e) {
-    peek_stack("process_event");
-    if(AMY_IS_SET(e->sequence[SEQUENCE_TICK]) || AMY_IS_SET(e->sequence[SEQUENCE_PERIOD]) || AMY_IS_SET(e->sequence[SEQUENCE_TAG])) {
-        uint8_t added = sequencer_add_event(e);
-        (void)added; // we don't need to do anything with this info at this time
-        e->status = EVENT_SEQUENCE;
-    } else if (AMY_IS_SET(e->reset_osc) && (e->reset_osc & RESET_PATCH) && AMY_IS_SET(e->patch_number)) {
-        // We're resetting just one patch, do it now.  But RESET_PATCH with no patch_number should propagate to deltas.
-        patches_reset_patch(e->patch_number);
-        AMY_UNSET(e->reset_osc);
-    } else {
-        // if time is set, play then
-        // if time and latency is set, play in time + latency
-        // if time is not set, play now
-        // if time is not set + latency is set, play in latency
-        uint32_t playback_time = amy_sysclock();
-        if(AMY_IS_SET(e->time)) playback_time = e->time;
-        playback_time += amy_global.latency_ms;
-        e->time = playback_time;
-        e->status = EVENT_SCHEDULED;
-    }
 }
 
 int16_t * amy_fill_buffer() {

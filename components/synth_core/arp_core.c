@@ -1,5 +1,6 @@
 #include "arp_core.h"
 #include "sequencer_core.h"
+#include "custompatches/fm_voice.h"  /* s_fm_voice + fm_voice_push_live (FM_CUSTOM) */
 #include "amy_helpers.h"   /* amy_helpers_event_begin/send — for WAVE mode osc config */
 #include "quantizer.h"
 #include "seq_clamp.h"
@@ -324,9 +325,11 @@ static void arp_rebuild(void)
     } else {
         sequencer_core_arp_configure(s_arp.patch, sequencer_core_arp_voices(),
                                      s_arp.filter_authored, s_arp.filter.resonance);
-        /* Wave patches (257+) have no built-in EG0; always push the envelope so
-         * notes decay.  Juno/DX7 patches: only push when user has authored one. */
-        if (s_arp.patch >= SEQ_PATCH_WAVE_BASE || s_arp.env_authored) {
+        /* Raw wave/wavetable patches have no built-in EG0; always push the
+         * envelope so notes decay. Juno/DX7 patch strings AND the bass/FM
+         * presets carry their own envelopes (they're part of the preset's
+         * character): only push over those when the user has authored one. */
+        if (sequencer_core_is_wave_patch(s_arp.patch) || s_arp.env_authored) {
             sequencer_core_push_envelope(sequencer_core_arp_synth(), &s_arp.env);
         }
     }
@@ -560,7 +563,9 @@ void arp_set_chord(uint8_t root_midi, uint8_t scale_index)
 
 void arp_set_patch(uint16_t patch_number)
 {
-    patch_number = SEQ_CLAMP_U16(patch_number, 0, SEQ_PATCH_WAVE_MAX);
+    /* Full shared catalog (Juno/DX7/piano/waves/bass/wavetable/FM) — the same
+     * ceiling as melodic; kind dispatch happens in sequencer_core_arp_configure(). */
+    patch_number = SEQ_CLAMP_U16(patch_number, 0, SEQ_PATCH_FULL_MAX);
     if (s_arp.patch == patch_number) return;
     s_arp.patch = patch_number;
     /* In WAVE mode: store the new patch number but leave the synth slot alone.
@@ -569,6 +574,15 @@ void arp_set_patch(uint16_t patch_number)
         arp_rebuild();
     }
     /* Patch reconfig does not change scheduling; no re-emit needed. */
+}
+
+void arp_core_fm_voice_changed(void)
+{
+#if CONFIG_SYNTH_CUSTOM_FM
+    if (s_arp.source == ARP_SRC_PATCH && s_arp.patch == SEQ_PATCH_FM_CUSTOM) {
+        fm_voice_push_live(sequencer_core_arp_synth(), &s_fm_voice);
+    }
+#endif
 }
 
 void arp_get_envelope(seq_env_t *out)

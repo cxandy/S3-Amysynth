@@ -2,6 +2,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include "sdkconfig.h"     /* CONFIG_* gates on the virtual patch ranges below */
 #include "display_seq.h"   /* seq_layer_type_t, seq_layer_t, SEQ_* defines */
 #include "chord_types.h"
 
@@ -13,11 +14,10 @@ extern "C" {
  * Patch numbers beyond the 0..256 built-in (Juno/DX7/piano) range.
  * Intercepted before amy_send_patch() so they never collide with real patches.
  * Melodic tracks, arp, and drone all use these constants for wave-patch routing.
- * Drone: SEQ_PATCH_WAVE_BASE..SEQ_PATCH_TRIANGLE plus (AMY_WAVETABLE)
- *        SEQ_PATCH_WAVETABLE_BASE..MAX; NOISE/KS/bass are excluded (see
- *        DRONE_PATCH_MAX in drone_core.c).
- * Arp:   full range SEQ_PATCH_WAVE_BASE..SEQ_PATCH_WAVE_MAX, plus
- *        (AMY_WAVETABLE) SEQ_PATCH_WAVETABLE_BASE..MAX. */
+ * Melodic and arp route the FULL 0..SEQ_PATCH_FULL_MAX range; the drone opts
+ * out of the ranges its excitation model can't play via drone_patch_excluded()
+ * (drone_core.c). Exclusions are per-consumer predicates on one shared catalog
+ * (patch_cycle.h / ui_patch_cycle.c) — never per-consumer copies of the list. */
 #define SEQ_PATCH_WAVE_BASE   257
 #define SEQ_PATCH_SINE        257   /* AMY SINE     */
 #define SEQ_PATCH_SAW_DOWN    258   /* AMY SAW_DOWN */
@@ -89,6 +89,19 @@ static inline bool sequencer_core_is_wave_patch(uint16_t patch)
 #define SEQ_PATCH_FM_MAX      276
 #define SEQ_PATCH_ROUTABLE_MAX SEQ_PATCH_FM_MAX
 
+/* Compile-aware ceiling: the highest patch actually routable in THIS build.
+ * Tracks whichever optional range is compiled in: FM (276) when
+ * SYNTH_CUSTOM_FM, else the wavetable top (271) when AMY_WAVETABLE, else the
+ * bass top (266). Single source for browse domains and apply-path clamps —
+ * new ranges added above extend every consumer through this one define. */
+#if CONFIG_SYNTH_CUSTOM_FM
+#define SEQ_PATCH_FULL_MAX SEQ_PATCH_ROUTABLE_MAX
+#elif CONFIG_AMY_WAVETABLE
+#define SEQ_PATCH_FULL_MAX SEQ_PATCH_WAVETABLE_MAX
+#else
+#define SEQ_PATCH_FULL_MAX SEQ_PATCH_BASS_MAX
+#endif
+
 /* ── BPM range & default (shared with synth_ui for boot initialisation) ── */
 #define SEQ_DEFAULT_BPM  108
 
@@ -155,6 +168,16 @@ seq_drum_engine_t sequencer_core_get_drum_engine(void);
 void     sequencer_core_set_drum_pcm_preset(uint8_t layer_idx, uint8_t track,
                                             uint16_t preset_number);
 uint16_t sequencer_core_get_drum_pcm_preset(uint8_t layer_idx, uint8_t track);
+
+/* Step one drum track's PCM preset dir (+/-1) through the compiled-in ROM
+ * bank (0 .. pcm_wavetable_base-1, i.e. the drum samples only — wavetable and
+ * runtime memory presets excluded), wrapping at the ends. A track currently
+ * on a memory preset (sample_rec override, numbered above the ROM map) steps
+ * back onto the ROM bank at the near end. Live-reloads the track's osc when
+ * the PCM engine is active. Returns the newly-applied preset, or 0 for
+ * non-drum/out-of-range layers. */
+uint16_t sequencer_core_cycle_drum_pcm_preset(uint8_t layer_idx, uint8_t track,
+                                              int dir);
 
 /* ── Per-row melodic ADSR envelope (runtime-editable) ──
  * Scoped per row (per track); each row has its own AMY synth, so its envelope

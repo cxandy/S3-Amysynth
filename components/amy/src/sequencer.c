@@ -138,7 +138,12 @@ void sequencer_debug() {
 }
 
 void sequencer_recompute() {
-    amy_global.us_per_tick = (uint32_t) (1000000.0 / ((amy_global.tempo/60.0) * (float)AMY_SEQUENCER_PPQ));    
+    // LOCAL EDIT (S3-Amysynth): all-float, single divide. The unsuffixed
+    // 1000000.0 / 60.0 literals promoted the whole expression to double,
+    // which is software-emulated on this target (and most 32-bit ports).
+    // 60000000 us/min / (bpm * ticks-per-beat) == the original expression.
+    // Upstream-PR candidate.
+    amy_global.us_per_tick = (uint32_t) (60000000.0f / (amy_global.tempo * (float)AMY_SEQUENCER_PPQ));
     amy_global.next_amy_tick_us = (((uint64_t)amy_sysclock()) * 1000L) + (uint64_t)amy_global.us_per_tick;
 }
 
@@ -277,7 +282,16 @@ void sequencer_check_and_fill() {
         amy_global.next_amy_tick_us = now_us;
     }
     // The while is in case the timer fires later than a tick; (on esp this would be due to SPI or wifi ops)
-    while(amy_sysclock()  >= (uint32_t)(amy_global.next_amy_tick_us / 1000L)) {
+    // LOCAL EDIT (S3-Amysynth): compare in the us domain against the now_us
+    // already computed above. The old ms-domain compare re-read amy_sysclock()
+    // AND paid a 64-bit divide (next_amy_tick_us / 1000) on every check - a
+    // real __udivdi3 libcall per 500 us timer callback on 32-bit targets,
+    // since GCC cannot strength-reduce a 64-bit divide by a constant there.
+    // Behavior delta: a tick's deadline is no longer rounded down to the ms
+    // boundary, so a tick can fire up to 1 ms later (never earlier) within
+    // the same 500 us callback grid; the accumulated tick rate is unchanged.
+    // Upstream-PR candidate.
+    while(now_us >= amy_global.next_amy_tick_us) {
         sequencer_process_tick();
         amy_global.next_amy_tick_us = amy_global.next_amy_tick_us + (uint64_t)amy_global.us_per_tick;
     }

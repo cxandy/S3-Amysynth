@@ -87,11 +87,18 @@ void display_seq_draw_frame(u8g2_t *u8g2, const display_seq_state_t *state, uint
     for (int t = 0; t < SEQ_TRACKS; t++) {
         int y = grid_top + t * row_h;
 
-        /* Track label: drums now show the per-track patch NUMBER (each drum
-         * track is its own Juno patch); melodic shows the pitch name. */
-        char label[6];
+        /* Track label: drums show the per-track patch NUMBER (SYNTH engine)
+         * or the PCM preset with a 'P' prefix (PCM engine); melodic shows
+         * the pitch name. */
+        char label[8];
         if (layer->type == SEQ_LAYER_DRUM) {
-            snprintf(label, sizeof(label), "%u", (unsigned)layer->track_patch[t]);
+            if (state->drum_pcm) {
+                snprintf(label, sizeof(label), "P%u",
+                         (unsigned)layer->track_pcm_preset[t]);
+            } else {
+                snprintf(label, sizeof(label), "%u",
+                         (unsigned)layer->track_patch[t]);
+            }
         } else {
             note_name_str(layer->track_base_note[t], label);
         }
@@ -150,8 +157,17 @@ void display_seq_draw_frame(u8g2_t *u8g2, const display_seq_state_t *state, uint
      * compiled in (CONFIG_SEQ_PATCH_SHOW_NAMES); otherwise the top-bar number
      * is the only readout. patch_name_for() is a no-op returning NULL when the
      * table is excluded, so this whole block costs nothing then. */
-    if (state->patch_select_mode && layer->type == SEQ_LAYER_MELODIC) {
-        const char *pname = patch_name_for(layer->patch);
+    if (state->patch_select_mode) {
+        const char *pname;
+        if (layer->type == SEQ_LAYER_MELODIC) {
+            pname = patch_name_for(layer->patch);
+        } else if (state->drum_pcm) {
+            /* Drum layer, PCM engine: the selected track's ROM sample. */
+            pname = pcm_preset_name_for(layer->track_pcm_preset[state->selected_track]);
+        } else {
+            /* Drum layer, SYNTH engine: the selected track's patch. */
+            pname = patch_name_for(layer->track_patch[state->selected_track]);
+        }
         if (pname) {
             u8g2_SetFont(u8g2, u8g2_font_6x10_tf);
             uint8_t nw = (uint8_t)u8g2_GetStrWidth(u8g2, pname);

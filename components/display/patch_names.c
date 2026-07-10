@@ -339,4 +339,57 @@ const char *patch_name_for(uint16_t patch)
     return s_patch_names[patch];
 }
 
+/* ── PCM ROM drum presets ──
+ * Positional table matching the compiled-in bank's pcm_map[] (names from the
+ * generator comments in pcm_gamma808.h / pcm_tiny.h). Numbering is bank-
+ * dependent, so the table follows CONFIG_AMY_PCM_GAMMA808. Wavetable map
+ * entries above the drums are unnamed on purpose (not selectable as drums). */
+#if CONFIG_AMY_PCM_GAMMA808
+#define SEQ_PCM_NAME_COUNT 19
+static const char *const s_pcm_preset_names[SEQ_PCM_NAME_COUNT] = {
+    /*  0 */ "808 Bass Drum 1",
+    /*  1 */ "808 Bass Drum 2",
+    /*  2 */ "808 Bass Drum 3",
+    /*  3 */ "808 Clap",
+    /*  4 */ "808 Clave",
+    /*  5 */ "808 Conga Hi",
+    /*  6 */ "808 Conga Lo",
+    /*  7 */ "808 Conga Mid",
+    /*  8 */ "808 Cowbell",
+    /*  9 */ "808 HiHat Closed",
+    /* 10 */ "808 HiHat Open",
+    /* 11 */ "808 Shaker",
+    /* 12 */ "808 Snare 1",
+    /* 13 */ "808 Snare 2",
+    /* 14 */ "808 Snare 3",
+    /* 15 */ "808 Rimshot",
+    /* 16 */ "808 Tom Lo",
+    /* 17 */ "808 Tom Hi",
+    /* 18 */ "808 Cymbal",
+};
+#else
+#define SEQ_PCM_NAME_COUNT 11
+static const char *const s_pcm_preset_names[SEQ_PCM_NAME_COUNT] = {
+    /*  0 */ "808 Maraca",
+    /*  1 */ "808 Kick 4",
+    /*  2 */ "808 Snare 4",
+    /*  3 */ "808 Snare 7",
+    /*  4 */ "808 Snare 10",
+    /*  5 */ "808 Snare 12",
+    /*  6 */ "808 C-Hat 1",
+    /*  7 */ "808 O-Hat 1",
+    /*  8 */ "808 Tom Lo M",
+    /*  9 */ "808 Dry Clap",
+    /* 10 */ "808 Cowbell",
+};
+#endif /* CONFIG_AMY_PCM_GAMMA808 */
+
+const char *pcm_preset_name_for(uint16_t preset)
+{
+    if (preset >= SEQ_PCM_NAME_COUNT) {
+        return (const char *)0;
+    }
+    return s_pcm_preset_names[preset];
+}
+
 #endif /* CONFIG_SEQ_PATCH_SHOW_NAMES */

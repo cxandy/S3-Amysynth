@@ -1,11 +1,12 @@
 # AMY Local Edits
 
 Edits applied on top of the upstream `shorepine/amy` submodule.
-Upstream commit: `2516477` (v1.2.12, 2026-06-24).
+Upstream commit: `1e23c70` (v1.2.31, 2026-07-07).
 
 All edits are marked `// LOCAL EDIT` in the source. ESP32-S3-specific edits are
 permanent (upstream has no concept of IRAM/DRAM placement or FreeRTOS task
-signatures); the two bug fixes below were PRd upstream and are no longer here.
+signatures); the fixes listed under "Dropped" were merged upstream and are no
+longer carried here.
 
 ```mermaid
 flowchart TD
@@ -14,6 +15,7 @@ flowchart TD
 
     Submodule -.diff baseline only.-> Active
 
+    Active --> SR["48 kHz sample rate on ESP<br/>src/amy.h"]
     Active --> FP["Kconfig-gated fixed-point toggle<br/>src/amy.h, src/amy_fixedpoint.h"]
     Active --> ATTR["IRAM_ATTR / DRAM_ATTR macros<br/>src/amy.h"]
     Active --> LUT["Clipping LUT DRAM placement<br/>src/clipping_lookup_table.h"]
@@ -21,6 +23,7 @@ flowchart TD
     Active --> HOT["IRAM hot-path annotations<br/>src/envelope.c<br/>src/filters.c<br/>src/log2_exp2.c<br/>src/oscillators.c"]
     Active --> TASK["IDF 6.0 task-signature fixes<br/>src/i2s.c, src/amy_midi.c"]
     Active --> SEQ["SEQ_LOCK + active-tag O(1) scan<br/>src/sequencer.c"]
+    Active --> CLK["Integer sysclock + us-domain tick compare<br/>src/api.c, src/sequencer.c"]
     Active --> PROF["COARSE profiler mode<br/>src/amy.h, src/amy.c"]
 ```
 
@@ -30,8 +33,19 @@ flowchart TD
 |----|-------------|
 | [#740](https://github.com/shorepine/amy/pull/740) + [#743](https://github.com/shorepine/amy/pull/743) | `chained_osc` NULL guard in `render_osc_wave` (amy.c) |
 | [#744](https://github.com/shorepine/amy/pull/744) | `init_stereo_reverb()` → `bool` return + OOM crash safety (delay.h, delay.c, amy.h, amy.c, api.c) |
+| [#787](https://github.com/shorepine/amy/pull/787) (merged as [#809](https://github.com/shorepine/amy/pull/809), v1.2.24) | Reverb `LPF()` state passed by pointer - feedback crossover lowpass now actually filters (delay.c) |
+| [#790](https://github.com/shorepine/amy/pull/790) (merged as [#811](https://github.com/shorepine/amy/pull/811), v1.2.26) | Reverb delay-line state hoisted into loop locals (delay.c) |
+| upstream `8ade0b1` | `MUL5A_SS` / `MUL6A_SS` float-mode fallbacks (amy_fixedpoint.h) |
 
 ## Active local edits
+
+### `src/amy.h` — 48 kHz sample rate on ESP
+
+`AMY_SAMPLE_RATE` forced to 48000 in the `ESP_PLATFORM` branch (upstream's
+generic fallback is 44100). Must match `CONFIG_UAC_SAMPLE_RATE`; a mismatch
+detunes/distorts USB audio. Any re-vendor silently reverts this - after every
+AMY update, verify `grep AMY_SAMPLE_RATE src/amy.h` shows the ESP branch at
+48000.
 
 ### `src/amy.h` — Kconfig-gated fixed-point toggle
 
@@ -42,25 +56,22 @@ guard. Enabled via menuconfig: **AMY Synthesizer → Use fixed-point arithmetic*
 The ESP32-S3 LX7 FPU makes float equal-or-faster; fixed-point was designed for
 RP2040. The option is preserved for comparison or future portability needs.
 
-### `src/amy_fixedpoint.h` — float-mode fallbacks and `ldexpf` SHIFTL/SHIFTR
+### `src/amy_fixedpoint.h` — `ldexpf` SHIFTL/SHIFTR
 
-Two edits to the `#ifndef AMY_USE_FIXEDPOINT` (float mode) section:
+One edit to the `#ifndef AMY_USE_FIXEDPOINT` (float mode) section (the former
+`MUL5A_SS`/`MUL6A_SS` fallback edit was added upstream in `8ade0b1`):
 
-1. **`MUL5A_SS` / `MUL6A_SS` float fallbacks** — upstream defines these only in
-   the fixed-point path; `oscillators.c` uses them unconditionally so the float
-   build fails without them. Added `(a) * (b)` fallbacks.
-
-2. **`SHIFTL` / `SHIFTR` use `ldexpf` instead of `exp2f`** — the original float
-   macros were `(s) * exp2f(b)`. When `b` is a runtime variable (e.g.
-   `exp2_lut()` integer part), `exp2f(runtime_int)` cannot be constant-folded
-   and emits a transcendental libcall. `ldexpf(s, b)` is the correct primitive
-   for ×2^n scaling and is never worse. **Caveat (verified by objdump):** on
-   this Xtensa LX7 toolchain GCC does *not* lower `ldexpf` (or `floorf`) to the
-   hardware `FLOOR.S`/exponent ops — both remain `call8` libcalls. So this is a
-   correctness/clarity win and a marginal speedup at most, NOT the fix for
-   float-mode CPU cost. Float mode is dominated by per-sample `floorf` libcalls
-   in `INT_OF_S` / `S_FRAC_OF_S` / `P_WRAPPED_SUM` (see note below); fixed-point
-   remains the product mode on this target.
+**`SHIFTL` / `SHIFTR` use `ldexpf` instead of `exp2f`** — the original float
+macros were `(s) * exp2f(b)`. When `b` is a runtime variable (e.g.
+`exp2_lut()` integer part), `exp2f(runtime_int)` cannot be constant-folded
+and emits a transcendental libcall. `ldexpf(s, b)` is the correct primitive
+for ×2^n scaling and is never worse. **Caveat (verified by objdump):** on
+this Xtensa LX7 toolchain GCC does *not* lower `ldexpf` (or `floorf`) to the
+hardware `FLOOR.S`/exponent ops — both remain `call8` libcalls. So this is a
+correctness/clarity win and a marginal speedup at most, NOT the fix for
+float-mode CPU cost. Float mode is dominated by per-sample `floorf` libcalls
+in `INT_OF_S` / `S_FRAC_OF_S` / `P_WRAPPED_SUM` (see note below); fixed-point
+remains the product mode on this target.
 
 ### `src/amy.h` — IRAM_ATTR / DRAM_ATTR macros
 
@@ -168,6 +179,51 @@ Two related improvements:
    O(active events) regardless of tag magnitude. `s_tag_slot[tag]` → position in
    the dense list (or -1) enables O(1) removal via swap-with-last.
 
+### `src/api.c` + `src/sequencer.c` — Integer sample clock + µs-domain tick compare
+
+**Upstream-PR candidate** (universal 32-bit bugs, not target-specific). Three
+related fixes to the sample-slaved clock and the sequencer timing path
+(PR draft: `docs/pr-draft-sysclock-integer-clock.md`):
+
+1. **`amy_sysclock()` integer math** (`src/api.c`): the float version
+   `(uint32_t)((total_blocks * AMY_BLOCK_SIZE / (float)AMY_SAMPLE_RATE) * 1000)`
+   had two correctness bugs, verified by host-side test:
+   - the u32 samples-domain multiply wraps at 2^32 samples = **24.85 h at
+     48 kHz** (the comment claims 49.7 days); at 25 h uptime the clock reads
+     ~8.7 min and the sequencer re-fires ~25 h of absolute-tick events;
+   - the 24-bit float mantissa quantizes the clock as uptime grows — by 12 h
+     it advances in **8 ms jumps** (true block step 5.33 ms), lumping
+     everything slaved to it (sequencer → arp/drone/song ticks).
+   Replaced with `(uint32_t)(((uint64_t)total_blocks * (AMY_BLOCK_SIZE *
+   1000u)) / AMY_SAMPLE_RATE)` — exact (0 mismatches vs a 128-bit reference
+   over the full u32 range, sampled), monotonic, true 49.7-day u32-ms wrap.
+   Costs one `__udivdi3` per call on 32-bit (u64 divide by constant is not
+   strength-reduced there); a call-free 48 kHz/256 specialization
+   (`total_blocks*5 + total_blocks/3`) exists if that ever matters, but the
+   portable form is kept to match the upstream PR and minimize re-vendor
+   drift.
+
+2. **µs-domain tick compare** (`src/sequencer.c`,
+   `sequencer_check_and_fill()`): the old loop condition
+   `amy_sysclock() >= (uint32_t)(next_amy_tick_us / 1000L)` paid a
+   `__udivdi3` **and** a second `amy_sysclock()` per check, every 500 µs
+   timer callback. Now compares the already-computed `now_us` against
+   `next_amy_tick_us` directly. Behavior delta: tick deadlines are no longer
+   rounded down to the ms boundary, so a tick can fire up to 1 ms later
+   (never earlier) on the 500 µs callback grid; accumulated tick rate is
+   unchanged.
+
+3. **`sequencer_recompute()` float-only** (`src/sequencer.c`): unsuffixed
+   `1000000.0` / `60.0` literals promoted the tempo math to software-emulated
+   double (`__extendsfdf2/__divdf3/__muldf3/__fixunsdfsi`). Rewritten as the
+   equivalent single-divide `60000000.0f / (tempo * PPQ)`. Cold path (tempo
+   changes only) — hygiene, not a hot-path win.
+
+Net effect on the 2 kHz Core-0 timer callback: 77 → 53 insns, calls column
+`__divsf3, __udivdi3` → one `__udivdi3` (the sysclock divide), float
+conversion traffic gone. Origin: asmdiff ELF-mode sweep
+(`2026-07-07-codegen-hotspots-handoff.md`).
+
 ### `src/amy.h` + `src/amy.c` — COARSE profiler mode
 
 Upstream gates the whole profiler behind `AMY_DEBUG`, which times *every* tag —
@@ -226,8 +282,28 @@ built-in 64-cycle tables × 16384 samples × 2 bytes), **zero DIRAM/IRAM/PSRAM**
 `pcm[]` array (`pcm.c:77`), never RAM-copied. Verified via `idf.py size`
 before/after on an otherwise-identical build.
 
+### `Kconfig` + `CMakeLists.txt` — Gamma TR-808 PCM bank flag
+
+Same pattern as `AMY_WAVETABLE` above — no vendored source is modified.
+Kconfig option `AMY_PCM_GAMMA808` (default **y**) defines upstream's own
+`GAMMA9001` compile-time switch (introduced in v1.2.31's Gamma9001 work),
+which selects:
+
+- `amy.c`: ROM PCM bank = `pcm_gamma808.h` (19 full-length TR-808 samples)
+  instead of the legacy 11-sample `pcm_tiny.h`;
+- `patches.h`: the patch-258 "MIDI drums" string matching that bank's map;
+- `pcm.c`/`amy.h`: the gamma9001 streaming hooks (`amy_set_gamma9001_pcm()`
+  + presets at `GAMMA9001_PRESET_BASE`+, NULL-guarded and inert until a blob
+  is provided, e.g. mmapped from a flash partition).
+
+PCM preset numbering differs between banks; the sequencer drum defaults in
+`components/synth_core/sequencer_core/seq_core_synth.c` follow
+`CONFIG_AMY_PCM_GAMMA808`. Wavetable presets are unaffected (addressed via
+`pcm_wavetable_base`). Cost ≈ +268 KB flash `.rodata` (XIP-cached, never
+RAM-copied); zero DRAM/PSRAM/IRAM.
+
 ## Deferred / needs porting
 
 | Edit | Status |
 |------|--------|
-| Block-processed ESP32 stereo reverb (`delay.c`, `#ifdef ESP_PLATFORM`) | **Not applied.** Upstream changed `stereo_reverb()` to take `reverb_params_t *rev` (all delay state inside struct); the block-processed optimization needs adapting to the new API before it can be reapplied. |
+| Block-processed ESP32 stereo reverb (`delay.c`, `#ifdef ESP_PLATFORM`) | **Not applied.** Upstream changed `stereo_reverb()` to take `reverb_params_t *rev` (all delay state inside struct); the block-processed optimization needs adapting to the new API before it can be reapplied. The locals-caching optimization (now upstream via #811) recovers part of the same win on the new API; re-evaluate whether full block processing is still worth it after hardware measurement. |

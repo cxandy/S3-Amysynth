@@ -55,8 +55,8 @@ static void debug_print_midi_hex(const uint8_t *data, uint32_t len, uint8_t syse
 void amy_send_midi_note_on(uint16_t osc) {
     // don't forward on a note coming in through MIDI IN 
     //fprintf(stderr, "amy_send_midi_note_on: osc %d source %d note %.1f vel %.3f\n",
-    //        osc, synth[osc]->note_source, synth[osc]->midi_note, synth[osc]->velocity);
-    if(synth[osc]->note_source != NOTE_SOURCE_MIDI) {
+    //        osc, synth[osc]->note_source_channel, synth[osc]->midi_note, synth[osc]->velocity);
+    if(AMY_IS_UNSET(synth[osc]->note_source_channel)) {
         uint8_t bytes[3];
         bytes[0] = 0x90;
         bytes[1] = (uint8_t)roundf(synth[osc]->midi_note);
@@ -68,7 +68,7 @@ void amy_send_midi_note_on(uint16_t osc) {
 // Send a MIDI note off OUT
 void amy_send_midi_note_off(uint16_t osc) {
     // don't forward on a note coming in through MIDI IN 
-    if(synth[osc]->note_source != NOTE_SOURCE_MIDI) {
+    if(AMY_IS_UNSET(synth[osc]->note_source_channel)) {
         uint8_t bytes[3];
         // Send note-off as a note-on with vel 0.
         bytes[0] = 0x90;
@@ -89,30 +89,33 @@ void amy_received_program_change(uint8_t channel, uint8_t program, uint32_t time
     amy_event e = amy_default_event();
     e.time = time;
     e.synth = channel;
-    e.note_source = NOTE_SOURCE_MIDI;
+    e.note_source_channel = channel;
     // MIDI patches are in blocks of 128, potentially set by an earlier CC0.
     int bank_number = instrument_bank_number(channel);
     if (bank_number < 0) {
         // If the bank hasn't been set, stay within the block of 128 of the current patch
         // (so e.g. DX7 voices remain DX7).
         bank_number = (instrument_get_patch_number(e.synth) & 0xFF80) >> 7;
-        // Only banks 0 (Juno, patches 0-127) and 1 (DX7, 128-255) are full 128-patch
-        // banks.  Patches 256+ (additive piano, AMYboard Web Editor base) infer bank 2,
-        // whose PC targets are almost all undefined and silence the board (issue #758),
-        // so fall back to bank 0 (Juno) for those.
-        if (bank_number > 1) bank_number = 0;
+        // Banks 0 (Juno, patches 0-127) and 1 (DX7, 128-255) are full 128-patch
+        // banks, and bank 3 (384+) is the Gamma9001 drum kit bank -- a synth
+        // sitting on a drum kit patch should stay in the kit bank so a bare PC
+        // switches kits.  Patches 256-383 (additive piano, AMYboard Web Editor
+        // base, reserved space) infer bank 2, whose PC targets are almost all
+        // undefined and silence the board (issue #758), so fall back to bank 0
+        // (Juno) only for those.
+        if (bank_number == 2) bank_number = 0;
     }
     e.patch_number = program + 128 * bank_number;
-    if (channel != AMY_MIDI_CHANNEL_DRUMS) {  // What would that even mean?
+    //if (channel != AMY_MIDI_CHANNEL_DRUMS) {  // What would that even mean?
         amy_add_event(&e);
-    }
+    //}
 }
 
 void amy_received_pedal(uint8_t channel, uint8_t value, uint32_t time) {
     amy_event e = amy_default_event();
     e.time = time;
     e.synth = channel;
-    e.note_source = NOTE_SOURCE_MIDI;
+    e.note_source_channel = channel;
     e.pedal = value;
     amy_add_event(&e);
 }
@@ -121,7 +124,7 @@ void amy_received_all_notes_off(uint8_t channel, uint32_t time) {
     amy_event e = amy_default_event();
     e.time = time;
     e.synth = channel;
-    e.note_source = NOTE_SOURCE_MIDI;
+    e.note_source_channel = channel;
     // All notes off is indicated by vel = 0 and note = 0
     e.velocity = 0;
     e.midi_note = 0;
@@ -133,7 +136,7 @@ void amy_received_pitch_bend(uint8_t channel, uint8_t low_byte, uint8_t high_byt
     e.time = time;
     // Currently, pitch bend is global and not applied per-channel, but preserve the info.
     e.synth = channel;
-    e.note_source = NOTE_SOURCE_MIDI;
+    e.note_source_channel = channel;
     // The integer range is -8192 to 8191, the float range is -1/6th to +1/6th,
     // units are octaves, so +/- 2 semitones.
     e.pitch_bend = ((float)(((int)((high_byte << 7) | low_byte)) - 8192)) / (6.0f * 8192.0f);
@@ -147,8 +150,7 @@ void amy_event_midi_message_received(uint8_t * data, uint32_t len, uint8_t sysex
         uint8_t status = status_byte & 0xF0;
         uint8_t channel = status_byte & 0x0F;
         // Do the AMY instrument things here
-        /* if(status == 0x90) amy_received_note_on(channel+1, data[1], data[2], time);
-           else */ if(status == 0xB0 && data[1] == 0x40) amy_received_pedal(channel+1, data[2], time);
+        if(status == 0xB0 && data[1] == 0x40) amy_received_pedal(channel+1, data[2], time);
         else if(status == 0xB0 && data[1] == 0x7B) amy_received_all_notes_off(channel+1, time);
         else if(status == 0XB0) amy_received_control_change(channel+1, data[1], data[2], time);
         else if(status == 0xC0) amy_received_program_change(channel+1, data[1], time);

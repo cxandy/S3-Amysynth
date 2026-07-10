@@ -165,6 +165,11 @@ typedef struct {
     uint16_t track_patch[SEQ_TRACKS];/* per-track timbre (drum layer): each drum
                                         track loads its own AMY patch. Unused by
                                         melodic layers (they share `patch`).     */
+    uint16_t track_pcm_preset[SEQ_TRACKS]; /* per-track PCM ROM preset (drum layer,
+                                        PCM engine): UI mirror of the core's
+                                        selection, refreshed each frame by
+                                        seq_view_signature(). Drives the row
+                                        label and name banner when drum_pcm.  */
     uint32_t synth_flags;            /* shared flags across the layer's rows  */
     uint8_t  num_voices;             /* per-synth voice count                 */
     uint8_t  step_page;                              /* display page 0|1 (32-step) */
@@ -203,6 +208,10 @@ typedef struct {
     bool        edit_mode;
     bool        drum_select_mode;   /* true while note-select btn held   */
     bool        patch_select_mode;  /* true while patch-select btn held  */
+    bool        drum_pcm;           /* true = drum engine is PCM: drum row
+                                       labels/banner show PCM presets, not
+                                       patches. Mirror of the core engine,
+                                       refreshed by seq_view_signature().  */
 
     /* ── Screen + menu overlay ── */
     ui_mode_t   ui_mode;            /* which top-level screen is active   */

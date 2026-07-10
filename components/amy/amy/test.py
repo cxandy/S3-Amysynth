@@ -542,14 +542,14 @@ class TestJunoPatch(AmyTest):
 
 
 class TestJunoClip(AmyTest):
-  """Juno patch that clips."""
+  """Juno patch that used to clip until we trimmed the volumes in #802.  Now run with vel=5."""
 
   def run(self):
     amy.send(time=0, voices="0,1,2,3", patch=9)
-    amy.send(time=50, voices="0", note=60, vel=1)
-    amy.send(time=50, voices="1", note=57, vel=1)
-    amy.send(time=50, voices="2", note=55, vel=1)
-    amy.send(time=50, voices="3", note=52, vel=1)
+    amy.send(time=50, voices="0", note=60, vel=5)
+    amy.send(time=50, voices="1", note=57, vel=5)
+    amy.send(time=50, voices="2", note=55, vel=5)
+    amy.send(time=50, voices="3", note=52, vel=5)
     amy.send(time=800, voices="0", vel=0)
     amy.send(time=800, voices="1", vel=0)
     amy.send(time=800, voices="2", vel=0)
@@ -841,6 +841,24 @@ class TestMidiDrums(AmyTest):
     amy.inject_midi(900, 0x89, 37, 100)  # snare note off
 
 
+class TestMidiDrumsPatch258(AmyTest):
+  """Test MIDI drums on channel 1 using patch 258 via injection.  Should match TestMidiDrums."""
+
+  def __init__(self):
+    super().__init__()
+    self.default_synths = True  # Need default synths to set chorus, EQ like TestMidiDrums
+
+  def run(self):
+    # The MIDI drums default has amp=5
+    amy.send(time=0, synth=1, num_voices=6, patch=258)
+    # inject_midi args are (time, midi_event_chan, midi_note, midi_vel)
+    amy.inject_midi(100, 0x90, 35, 100)  # bass
+    amy.inject_midi(400, 0x90, 35, 100)  # bass
+    amy.inject_midi(400, 0x90, 37, 100)  # snare
+    amy.inject_midi(700, 0x90, 37, 100)  # snare
+    amy.inject_midi(750, 0x80, 37, 100)  # snare note off (should be ignored)
+
+
 class TestMidiRunningStatusClock(AmyTest):
   """Running status must survive System Real-Time bytes interleaved into the
   stream. Regression for shorepine/amy#747/#748: an interleaved MIDI clock
@@ -873,11 +891,14 @@ class TestDrumsVoiceStealing(AmyTest):
 
   def run(self):
     for i in range(14):
-      amy.send(time=100 + i * 20, synth=10, note=40 + i // 2, vel=1)
+      #amy.send(time=100 + i * 20, synth=10, note=40 + i // 2, vel=1)
+      amy.inject_midi(100 + i * 20, 0x99, 40 + i // 2, 0x7F)
     for i in range(14):
-      amy.send(time=400 + i * 20, synth=10, note=40 + i // 2, vel=0)
+      #amy.send(time=400 + i * 20, synth=10, note=40 + i // 2, vel=0)
+      amy.inject_midi(400 + i * 20, 0x99, 40 + i // 2, 0)
     print("expect to see excess note-off for note 40")
-    amy.send(time=900, synth=10, note=40, vel=0)
+    #amy.send(time=900, synth=10, note=40, vel=0)
+    amy.inject_midi(900, 0x89, 40, 0)
 
   
 class TestDefaultChan1Synth(AmyTest):
@@ -888,26 +909,6 @@ class TestDefaultChan1Synth(AmyTest):
     self.default_synths = True
 
   def run(self):
-    amy.send(time=100, synth=1, note=60, vel=1)
-    amy.send(time=300, synth=1, note=63, vel=1)
-    amy.send(time=500, synth=1, note=67, vel=1)
-    amy.send(time=700, synth=1, note=74, vel=1)
-    amy.send(time=800, synth=1, note=60, vel=0)
-    amy.send(time=850, synth=1, note=63, vel=0)
-    amy.send(time=900, synth=1, note=67, vel=0)
-    amy.send(time=950, synth=1, note=74, vel=0)
-
-
-class TestSynthProgChange(AmyTest):
-  """Test switchting default synth to DX7, do oscs allocate OK?"""
-
-  def __init__(self):
-    super().__init__()
-    self.default_synths = True
-
-  def run(self):
-    # DX7 first patch, uses 9 oscs/voice, num_voices is inherited from previous init.
-    amy.send(time=0, synth=1, patch=128)
     amy.send(time=100, synth=1, note=60, vel=1)
     amy.send(time=300, synth=1, note=63, vel=1)
     amy.send(time=500, synth=1, note=67, vel=1)
@@ -933,18 +934,24 @@ class TestSynthDrums(AmyTest):
     amy.send(time=900, synth=10, note=37, vel=0)  # snare note off - ignored with current setup.
 
 
-class TestSynthFlags(AmyTest):
-  """Test setting up MIDI drums using synth_flags (alias).  Slightly different waveform than TestSynthDrums because chorus is off."""
+class TestSynthProgChange(AmyTest):
+  """Test switchting default synth to DX7, do oscs allocate OK?"""
+
+  def __init__(self):
+    super().__init__()
+    self.default_synths = True
 
   def run(self):
-    # The default config is NOT set, set up MIDI drums on instrument 1 here.
-    # synth_flags=3 means do MIDI drums note translation and ignore note-offs.
-    amy.send(synth=1, synth_flags=3, num_voices=4, oscs_per_voice=1)
-    amy.send(time=100, synth=1, note=35, vel=100/127)  # bass
-    amy.send(time=400, synth=1, note=35, vel=100/127)  # bass
-    amy.send(time=400, synth=1, note=37, vel=100/127)  # snare
-    amy.send(time=700, synth=1, note=37, vel=100/127)  # snare
-    amy.send(time=900, synth=1, note=37, vel=0)  # snare note off - ignored with current setup.
+    # DX7 first patch, uses 9 oscs/voice, num_voices is inherited from previous init.
+    amy.send(time=0, synth=1, patch=128)
+    amy.send(time=100, synth=1, note=60, vel=1)
+    amy.send(time=300, synth=1, note=63, vel=1)
+    amy.send(time=500, synth=1, note=67, vel=1)
+    amy.send(time=700, synth=1, note=74, vel=1)
+    amy.send(time=800, synth=1, note=60, vel=0)
+    amy.send(time=850, synth=1, note=63, vel=0)
+    amy.send(time=900, synth=1, note=67, vel=0)
+    amy.send(time=950, synth=1, note=74, vel=0)
 
 
 class TestDoubleNoteOff(AmyTest):
@@ -1476,6 +1483,77 @@ class TestSynthBusCmds(AmyTest):
     amy.send(time=300, synth=2, note=63, vel=5)
     amy.send(time=500, synth=1, note=67, vel=5)
     amy.send(time=700, synth=2, note=70, vel=5)
+
+
+class TestGrabMidiNotes(AmyTest):
+  """Test that grab_midi_notes=False works.  This test should not include the drums."""
+
+  def __init__(self):
+    super().__init__()
+    self.default_synths = True
+
+  def run(self):
+    # Disable MIDI on ch10
+    amy.send(time=0, synth=10, grab_midi_notes=False);
+    # inject_midi args are (time, midi_event_chan, midi_note, midi_vel)
+    amy.inject_midi(100, 0x90, 48, 100)  # low note
+    amy.inject_midi(400, 0x99, 35, 100)  # bass drum (should not sound)
+    amy.inject_midi(500, 0x80, 48, 0)  # low note off
+    amy.inject_midi(700, 0x99, 37, 100)  # snare (should not sound)
+    amy.inject_midi(900, 0x89, 37, 100)  # snare note off
+
+
+def send_midi(time=0, synth=1, note=60, vel=0):
+  """Wrap inject_midi with an amy.send-like interface."""
+  amy.inject_midi(time, 0x90 + (synth - 1), note, min(127, int(round(vel * 127))))
+
+
+class TestMidiNoteCmd(AmyTest):
+  """midi_note_cmd sets a particular command for a particular midi note."""
+
+  def run(self):
+    amy.send(time=0, synth=1, num_voices=4, patch=0, synth_flags=1)
+    amy.send(time=0, synth=10, num_voices=4, patch=258, synth_flags=3)  # MIDI drums
+    # midi_note_cmd = <midi note>,log,min,max,offset,wire_cmd
+    amy.send(time=0, synth=1, midi_note_cmd='64,0,0,1,0,' + amy.message(synth=10, note=56, vel='%v'))
+    # Synth 2 is not defined but we can still set up midi_note_cmds for it.  Note=-1 means all notes (%n)
+    amy.send(time=0, synth=2, midi_note_cmd='-1,0,0,1,0,' + amy.message(synth=1, note='%n', vel='%v'))
+    # Note 63 should play as normal, note 64 should cause cowbell.
+    send_midi(time=100, synth=1, note=63, vel=1)
+    send_midi(time=200, synth=1, note=64, vel=1)
+    send_midi(time=300, synth=1, note=63, vel=0)
+    send_midi(time=400, synth=1, note=64, vel=0)
+    # Notes to synth 2 should play on synth 1, including further forwarding to synth 10 (as above).
+    send_midi(time=500, synth=2, note=63, vel=1)
+    send_midi(time=600, synth=2, note=64, vel=1)
+    send_midi(time=700, synth=2, note=63, vel=0)
+    send_midi(time=800, synth=2, note=64, vel=0)
+
+
+class TestTranceGlitch(AmyTest):
+  """Investigating a glitch that occurs in 'Emo Trance Backbeat' on AMYboard World."""
+
+  def run(self):
+    amy.send(time=0, volume=0.1)
+    amy.send(time=0, synth=2, patch=55, num_voices=6)
+    #for n in [40, 43, 47, 52, 55]:
+    for n in [52]:
+      amy.send(time=100, synth=2, note=n, vel=0.55)
+
+
+class TestPatch32Glitch(AmyTest):
+  """One of the excessive glitch voices reported."""
+
+  def run(self):
+    amy.send(time=0, synth=2, patch=32, num_voices=4)
+    amy.send(time=100, synth=2, note=71, vel=1)
+    amy.send(time=200, synth=2, note=71, vel=0)
+    amy.send(time=300, synth=2, note=71, vel=1)
+    amy.send(time=400, synth=2, note=71, vel=0)
+    amy.send(time=500, synth=2, note=71, vel=1)
+    amy.send(time=600, synth=2, note=71, vel=0)
+    amy.send(time=700, synth=2, note=71, vel=1)
+    amy.send(time=800, synth=2, note=71, vel=0)
 
 
 def main(argv):

@@ -97,9 +97,9 @@ static SAMPLE FRACTIONAL_SAMPLE(PHASOR phase, const SAMPLE *delay, int index_mas
 
 void delay_line_in_out(SAMPLE *in, SAMPLE *out, int n_samples, SAMPLE* mod_in, SAMPLE mod_scale, delay_line_t *delay_line, SAMPLE mix_level, SAMPLE feedback_level) {
     // Read and write the next n_samples from/to the delay line.
-    // mod_in is a per-sample modulation of the maximum delay, where 1 gives
+    // mod_in is a per-sample modulation of the maximum delay, where 1 gives 
     // the max delay, -1 gives no delay, and 0 gives max_delay/2.
-    // mod_scale is a constant scale factor applied to each value in mod_in,
+    // mod_scale is a constant scale factor applied to each value in mod_in, 
     // used e.g. to flip the sign of the delay.
     // Also supports input feedback from a non-modulated feedback delay output.
     int delay_len = delay_line->len;
@@ -142,8 +142,6 @@ static inline void DEL_IN(delay_line_t *delay_line, SAMPLE val) {
 static inline SAMPLE LPF(SAMPLE samp, SAMPLE *state, SAMPLE lpcoef, SAMPLE lpgain, SAMPLE gain) {
     // 1-pole lowpass filter (exponential smoothing).
     // Smoothing. lpcoef=1 => no smoothing; lpcoef=0.001 => much smoothing.
-    // *state is the filter memory; the caller owns it so it persists across
-    // samples and blocks.
     *state += SMULR6(lpcoef, samp - *state);
     // Cross-fade between smoothed and original.  lpgain=0 => all smoothed, 1 => all dry.
     return SMULR6(SHIFTR(gain, 1), *state + SMULR6(lpgain, samp - *state));
@@ -318,6 +316,7 @@ void stereo_reverb(reverb_params_t *rev, SAMPLE *r_in, SAMPLE *l_in, SAMPLE *r_o
     // an instance of the Stautner-Puckette multichannel reverberator from
     // https://www.ee.columbia.edu/~dpwe/e4896/papers/StautP82-reverb.pdf
 
+
     // Early-reflection lines e1..e6, reverb delay lines dl1..dl4.
     DL_LOAD(e1, rev->ref_1);
     DL_LOAD(e2, rev->ref_2);
@@ -413,7 +412,3 @@ void stereo_reverb(reverb_params_t *rev, SAMPLE *r_in, SAMPLE *l_in, SAMPLE *r_o
     rev->f3state = f3state;
     rev->f4state = f4state;
 }
-
-#undef DL_LOAD
-#undef DL_WRITE
-#undef DL_READ

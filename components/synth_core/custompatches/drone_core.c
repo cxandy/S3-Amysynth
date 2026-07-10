@@ -705,17 +705,24 @@ void drone_set_rate(drone_rate_t rate)
     s_d.last_lfo_hz = -1.0f;
 }
 
-void drone_set_patch(uint16_t patch)
+bool drone_patch_excluded(uint16_t patch)
 {
-    patch = SEQ_CLAMP_U16((int)patch, DRONE_PATCH_MIN, DRONE_PATCH_MAX);
+    if (patch > DRONE_PATCH_MAX) return true;   /* incl. bass/FM w/o wavetable */
 #if CONFIG_AMY_WAVETABLE
-    /* Snap NOISE/KS/bass (262-266) — excluded from the drone — back to
-     * TRIANGLE rather than clamping the whole upper range away, since
-     * AMY_WAVETABLE widens DRONE_PATCH_MAX past that gap. */
+    /* NOISE/KS/bass (262-266) sit below the wavetable range that IS
+     * supported, so they need excluding individually. */
     if (patch > SEQ_PATCH_TRIANGLE && patch < SEQ_PATCH_WAVETABLE_BASE) {
-        patch = SEQ_PATCH_TRIANGLE;
+        return true;
     }
 #endif
+    return false;
+}
+
+void drone_set_patch(uint16_t patch)
+{
+    /* Cycling never offers an excluded patch (the drone domain's predicate
+     * skips them); this snap only defends direct/programmatic callers. */
+    if (drone_patch_excluded(patch)) patch = SEQ_PATCH_TRIANGLE;
     if (s_d.patch == patch) return;
     s_d.patch = patch;
     if (s_d.source == DRONE_SRC_PATCH) {

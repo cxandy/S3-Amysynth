@@ -33,14 +33,26 @@ static const patch_domain_t s_drum_domain = {
     .list = SEQ_DRUM_PATCH_LIST, .count = SEQ_DRUM_PATCH_COUNT, .full_max = 0
 };
 
-/* Built-in 808 PCM sample indices (from amy/src/pcm_tiny.h pcm_map[]) used by
- * PCM drum mode, one per track: kick, snare, closed-hat, clap. */
+/* Built-in 808 PCM sample indices used by PCM drum mode, one per track:
+ * kick, snare, closed-hat, clap. The compiled-in ROM bank (and with it the
+ * preset numbering) follows CONFIG_AMY_PCM_GAMMA808: the gamma808 TR-808
+ * bank (amy/src/pcm_gamma808.h pcm_map[]) vs the legacy tiny set
+ * (amy/src/pcm_tiny.h pcm_map[]). */
+#if CONFIG_AMY_PCM_GAMMA808
+static const int16_t SEQ_DRUM_PCM_PRESET[SEQ_TRACKS] = {
+    2,    /* track 0: [2] TR-808 Bass Drum 3 (punchy) */
+    12,   /* track 1: [12] TR-808 Snare 1     */
+    9,    /* track 2: [9] TR-808 HiHat Closed */
+    3,    /* track 3: [3] TR-808 Clap         */
+};
+#else
 static const int16_t SEQ_DRUM_PCM_PRESET[SEQ_TRACKS] = {
     1,    /* track 0: [1] 808-KIK 4-D    */
     2,    /* track 1: [2] 808-SNR 4-D    */
     6,    /* track 2: [6] 808-C-HAT1-D   */
     9,    /* track 3: [9] 808-DRYCLP-D   */
 };
+#endif
 
 /* Per-layer, per-track PCM preset override. Defaults (lazily) to
  * SEQ_DRUM_PCM_PRESET; sequencer_core_set_drum_pcm_preset() is the only way
@@ -248,6 +260,43 @@ seq_env_t *seq_layer_env1(uint8_t layer_idx, uint8_t track)
  * amy_helpers.{c,h}) — one module-level event + mutex for all first-party
  * callers, all of which are FreeRTOS tasks (never ISRs). */
 
+/* Apply one routable patch (0..SEQ_PATCH_FULL_MAX) to a synth slot,
+ * dispatching per kind — the SINGLE dispatch for every consumer (melodic
+ * tracks and the arp; the drone has its own excitation model):
+ *   raw wave / wavetable  → direct oscillator config (no patch string)
+ *   bass preset (264-266) → bass_preset_configure_track (oscs_per_voice=2)
+ *   FM/ALGO (272-276)     → fm preset / live-editable custom voice (7 oscs)
+ *   everything else       → amy_send_patch() string loader (Juno/DX7/piano)
+ * Returns true when a patch STRING was loaded: those carry global EQ/chorus
+ * commands, so the caller must synth_ui_fx_reassert_global() afterwards
+ * (once, even when applying to several slots). */
+static bool sequencer_apply_patch_kind(uint8_t synth_id, uint16_t patch,
+                                       uint16_t num_voices, uint32_t synth_flags,
+                                       bool filter_authored, float filter_q)
+{
+    if (sequencer_core_is_wave_patch(patch)) {
+        sequencer_configure_melodic_wave_track(synth_id, patch, num_voices,
+                                               filter_authored, filter_q);
+        return false;
+    }
+    if (patch >= SEQ_PATCH_BASS_BASE && patch <= SEQ_PATCH_BASS_MAX) {
+        bass_preset_configure_track(synth_id, patch, num_voices);
+        return false;
+    }
+#if CONFIG_SYNTH_CUSTOM_FM
+    if (patch >= SEQ_PATCH_FM_BASE && patch <= SEQ_PATCH_FM_MAX) {
+        if (patch == SEQ_PATCH_FM_CUSTOM) {
+            fm_voice_configure_track(synth_id, num_voices, &s_fm_voice);
+        } else {
+            fm_preset_configure_track(synth_id, patch, num_voices);
+        }
+        return false;
+    }
+#endif
+    amy_send_patch(synth_id, patch, num_voices, synth_flags);
+    return true;
+}
+
 /* (Re)configure the AMY synth(s) for layer_idx.
  * Drums use a single synth (synth_id[0]); melodic layers configure one synth
  * per row, all sharing the same patch/flags/voice-count but on distinct slots. */
@@ -299,47 +348,22 @@ void sequencer_configure_synth(uint8_t layer_idx)
     }
 
     /* Melodic: push the shared patch/flags/voices to each row's own synth.
-     * Patches >= SEQ_PATCH_WAVE_BASE are raw-waveform virtual patches; they are
-     * configured directly instead of via the amy_send_patch() string loader.
-     * Wavetable virtual patches (SEQ_PATCH_WAVETABLE_BASE..MAX) route through
-     * the same wave-track configurator, which sets wave=WAVETABLE + preset.
-     * Patches >= SEQ_PATCH_BASS_BASE are multi-osc bass presets (oscs_per_voice=2).
-     * Patches >= SEQ_PATCH_FM_BASE are 6-operator FM/ALGO voices (oscs_per_voice=7):
-     * FM_BASS..FM_LEAD are fixed presets, FM_CUSTOM is the live-editable voice. */
-    bool is_wave_patch = sequencer_core_is_wave_patch(layer->patch);
-    bool is_bass_patch = (layer->patch >= SEQ_PATCH_BASS_BASE &&
-                          layer->patch <= SEQ_PATCH_BASS_MAX);
-    bool is_fm_patch   = (layer->patch >= SEQ_PATCH_FM_BASE &&
-                          layer->patch <= SEQ_PATCH_FM_MAX);
+     * Kind dispatch (raw wave / bass / FM / patch string) lives in
+     * sequencer_apply_patch_kind() above, shared with the arp. */
+    bool string_patch = false;
     for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
         sequencer_kill_synth_voices(layer->synth_id[t]);
-        if (is_wave_patch) {
-            sequencer_configure_melodic_wave_track(layer->synth_id[t],
-                                                   layer->patch,
-                                                   layer->num_voices,
-                                                   layer->filter_authored[t],
-                                                   layer->filter[t].resonance);
-        } else if (is_bass_patch) {
-            bass_preset_configure_track(layer->synth_id[t],
+        string_patch = sequencer_apply_patch_kind(layer->synth_id[t],
                                                   layer->patch,
-                                                  layer->num_voices);
-#if CONFIG_SYNTH_CUSTOM_FM
-        } else if (is_fm_patch) {
-            if (layer->patch == SEQ_PATCH_FM_CUSTOM) {
-                fm_voice_configure_track(layer->synth_id[t], layer->num_voices, &s_fm_voice);
-            } else {
-                fm_preset_configure_track(layer->synth_id[t], layer->patch, layer->num_voices);
-            }
-#endif
-        } else {
-            amy_send_patch(layer->synth_id[t], layer->patch,
-                           layer->num_voices, layer->synth_flags);
-        }
+                                                  layer->num_voices,
+                                                  layer->synth_flags,
+                                                  layer->filter_authored[t],
+                                                  layer->filter[t].resonance);
     }
-    /* Raw-wave, bass, and FM patches carry no global EQ/chorus commands; skip
-     * reassert. Non-wave/non-bass/non-FM patches (Juno/DX7) must reassert so
-     * that switching away from one doesn't leave stale global FX active. */
-    if (!is_wave_patch && !is_bass_patch && !is_fm_patch) synth_ui_fx_reassert_global();
+    /* Raw-wave, bass, and FM patches carry no global EQ/chorus commands; only
+     * patch strings (Juno/DX7) must reassert so that loading one doesn't
+     * leave stale global FX active. */
+    if (string_patch) synth_ui_fx_reassert_global();
     sequencer_configure_melodic_envelope(layer_idx);
     sequencer_configure_melodic_envelope1(layer_idx);
     sequencer_configure_melodic_filter(layer_idx);
@@ -415,6 +439,8 @@ void sequencer_core_fm_voice_changed(void)
             fm_voice_push_live(layer->synth_id[t], &s_fm_voice);
         }
     }
+    /* The arp can play FM_CUSTOM too; it checks its own source/patch state. */
+    arp_core_fm_voice_changed();
 }
 #endif
 
@@ -522,6 +548,31 @@ void sequencer_core_set_drum_pcm_preset(uint8_t layer_idx, uint8_t track,
              layer_idx, track, (unsigned)preset_number);
 }
 
+uint16_t sequencer_core_cycle_drum_pcm_preset(uint8_t layer_idx, uint8_t track,
+                                              int dir)
+{
+    if (layer_idx >= s_num_layers || track >= SEQ_TRACKS) return 0;
+    if (s_layers[layer_idx].type != SEQ_LAYER_DRUM) return 0;
+
+    /* ROM drum samples only: pcm_wavetable_base is the first non-drum map
+     * entry in the compiled-in bank (gamma808: 19, pcm_tiny: 11) regardless
+     * of whether wavetables are compiled in. Memory presets (sample_rec
+     * overrides) sit above the ROM map; stepping from one re-enters the ROM
+     * bank at the near end. */
+    uint16_t bound = pcm_wavetable_base;
+    if (bound == 0) return 0;
+
+    uint16_t cur = drum_pcm_preset_for(layer_idx, track);
+    uint16_t next;
+    if (cur >= bound) {
+        next = (dir > 0) ? 0 : (uint16_t)(bound - 1);
+    } else {
+        next = (uint16_t)((cur + (uint16_t)bound + (dir > 0 ? 1 : -1)) % bound);
+    }
+    sequencer_core_set_drum_pcm_preset(layer_idx, track, next);
+    return next;
+}
+
 uint16_t sequencer_core_get_drum_pcm_preset(uint8_t layer_idx, uint8_t track)
 {
     if (layer_idx >= s_num_layers || track >= SEQ_TRACKS) return 0;
@@ -581,23 +632,18 @@ void sequencer_core_push_envelope_eg1(uint8_t synth, uint8_t osc, const seq_env_
 void sequencer_core_arp_configure(uint16_t patch_number, uint8_t num_voices,
                                   bool filter_authored, float filter_q)
 {
-#if CONFIG_AMY_WAVETABLE
-    patch_number = SEQ_CLAMP_U16(patch_number, 0, SEQ_PATCH_WAVETABLE_MAX);
-#else
-    patch_number = SEQ_CLAMP_U16(patch_number, 0, SEQ_PATCH_WAVE_MAX);
-#endif
-    if (patch_number >= SEQ_PATCH_WAVE_BASE) {
-        /* Wave virtual patch (SINE..KS, or — AMY_WAVETABLE — the wavetable
-         * bank patches): configure as a raw-waveform synth (same logic as
-         * melodic wave tracks) instead of loading an amy_send_patch() string. */
-        sequencer_configure_melodic_wave_track(SEQ_ARP_SYNTH, patch_number, num_voices,
-                                               filter_authored, filter_q);
-    } else {
-        amy_send_patch(SEQ_ARP_SYNTH, patch_number, num_voices, 0);
-    }
+    /* Full catalog, same as melodic: kind dispatch (raw wave / bass / FM /
+     * patch string) is shared via sequencer_apply_patch_kind(). */
+    patch_number = SEQ_CLAMP_U16(patch_number, 0, SEQ_PATCH_FULL_MAX);
+    /* Osc topology can change between kinds (1-2 oscs for waves/bass, 7 for
+     * FM voices); kill sounding voices before the pool is rebuilt. */
+    sequencer_kill_synth_voices(SEQ_ARP_SYNTH);
+    bool string_patch = sequencer_apply_patch_kind(SEQ_ARP_SYNTH, patch_number,
+                                                   num_voices, 0,
+                                                   filter_authored, filter_q);
     /* Patch strings carry global EQ/chorus commands; reassert so Juno/DX7 FX
-     * don't leak when switching to/from a wave patch. */
-    synth_ui_fx_reassert_global();
+     * don't leak. Wave/bass/FM patches carry none. */
+    if (string_patch) synth_ui_fx_reassert_global();
     ESP_LOGI(TAG, "arp synth %u patch -> %u (%u voices)",
              (unsigned)SEQ_ARP_SYNTH, (unsigned)patch_number, (unsigned)num_voices);
 }

@@ -41,7 +41,7 @@ EMSCRIPTEN_OPTIONS = -s WASM=1 --bind \
 -s ASYNCIFY -s ASYNCIFY_STACK_SIZE=128000
 PYTHON = python3
 
-.PHONY: default all clean amy-module test web deploy-web
+.PHONY: default all clean amy-module test web deploy-web godot-api
 
 default: $(TARGET)
 all: default
@@ -106,9 +106,14 @@ timing: amy-module
 valgrind: amy-example
 	valgrind --leak-check=full --show-reachable=yes --suppressions=valgrind.suppressions ./amy-example
 
-build/amy.js: $(TARGET)
+# The web build carries the Gamma9001 drum banks: drums.bin is generated from
+# sounds/gamma9001/ and linked straight into the wasm as gamma9001_pcm_data.
+build/drums_bin.c: sounds/gamma9001/manifest.json amy/headers.py
+	$(PYTHON) -m amy.headers gamma9001
+
+build/amy.js: $(TARGET) build/drums_bin.c
 	mkdir -p build
-	emcc $(SOURCES) $(CFLAGS) $(EMSCRIPTEN_OPTIONS) -O3 -o $@
+	emcc $(SOURCES) build/drums_bin.c $(CFLAGS) -DGAMMA9001 $(EMSCRIPTEN_OPTIONS) -O3 -o $@
 
 build/amy_api.generated.js: scripts/gen_amy_js_api.py amy/__init__.py src/patches.h
 	mkdir -p build
@@ -120,9 +125,16 @@ build/patches.generated.js: scripts/gen_patches_js.py src/patches.h
 
 web: build/amy.js build/amy_api.generated.js build/patches.generated.js
 
+# emscripten (>=4.x) inlines the AudioWorklet/WasmWorker glue into amy.js, so it
+# no longer emits separate amy.aw.js / amy.ww.js files (older builds did).
 deploy-web: web
 	cat build/amy.js src/amy_connector.js build/amy_api.generated.js > docs/amy.js
-	cp build/amy.wasm build/amy.aw.js build/amy.ww.js docs/
+	cp build/amy.wasm docs/
+
+# Regenerate the Godot GDScript send() kwarg map from amy/__init__.py (the
+# source of truth). Run on release and verified in CI so godot/amy.gd can't drift.
+godot-api:
+	$(PYTHON) scripts/gen_amy_gd_api.py
 
 clean:
 	-rm -f src/*.o

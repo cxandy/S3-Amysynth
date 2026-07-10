@@ -92,10 +92,12 @@ void amy_helpers_note_send(uint8_t synth, float midi_note, float velocity,
 void amy_helpers_config_send(amy_event *event)
 {
     /* Config sends must not carry a sequence[] tuple — that shape would be
-     * silently rerouted to the tick scheduler instead of applying now. */
-    configASSERT(event->sequence[SEQUENCE_TAG] == 0 &&
-                 event->sequence[SEQUENCE_TICK] == 0 &&
-                 event->sequence[SEQUENCE_PERIOD] == 0);
+     * silently rerouted to the tick scheduler instead of applying now. AMY's
+     * "unset" state is the AMY_UNSET sentinel, NOT zero (amy_default_event
+     * UNSETs all three fields); mirror amy_add_event's own routing test. */
+    configASSERT(AMY_IS_UNSET(event->sequence[SEQUENCE_TAG]) &&
+                 AMY_IS_UNSET(event->sequence[SEQUENCE_TICK]) &&
+                 AMY_IS_UNSET(event->sequence[SEQUENCE_PERIOD]));
     amy_helpers_event_send(event);
 }
 

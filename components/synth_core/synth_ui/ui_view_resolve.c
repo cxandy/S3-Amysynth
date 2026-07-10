@@ -50,7 +50,7 @@ static void draw_filter(u8g2_t *g, ui_view_vw_t *vw)    { (void)vw; synth_ui_fil
 static void draw_lfo(u8g2_t *g, ui_view_vw_t *vw)       { (void)vw; synth_ui_lfo_view_draw(g); }
 static void draw_stepedit(u8g2_t *g, ui_view_vw_t *vw)  { display_stepedit_draw_frame(g, &vw->stepedit); }
 static void draw_graph(u8g2_t *g, ui_view_vw_t *vw)     { (void)vw; synth_ui_graph_view_draw(g); }
-static void draw_menu(u8g2_t *g, ui_view_vw_t *vw)      { display_menu_draw_frame(g, &vw->menu); }
+static void draw_menu(u8g2_t *g, ui_view_vw_t *vw)      { display_menu_draw_frame_titled(g, menu_page_title(), &vw->menu); }
 static void draw_arp(u8g2_t *g, ui_view_vw_t *vw)       { display_arp_draw_frame(g, &vw->arp); }
 static void draw_drone(u8g2_t *g, ui_view_vw_t *vw)     { display_drone_draw_frame(g, &vw->drone); }
 static void draw_prog(u8g2_t *g, ui_view_vw_t *vw)      { display_prog_draw_frame(g, &vw->prog); }

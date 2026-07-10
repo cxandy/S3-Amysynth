@@ -92,6 +92,15 @@ void     arp_build_view(arp_view_t *out);
 void     stepedit_build_view(stepedit_view_t *out);
 void     fm_build_view(menu_view_t *out);
 
+/* ─── Global-FX submenu page (item model in ui_screen_fxmenu.c; the page
+ *     state and input routing live in ui_screen_menu.c) ────────────────── */
+const menu_item_view_t *fx_menu_build_items(void);
+uint8_t  fx_menu_item_count(void);
+bool     fx_menu_item_is_value(uint8_t idx);
+bool     fx_menu_item_is_back(uint8_t idx);
+void     fx_menu_edit_value(uint8_t idx, int delta);
+const char *menu_page_title(void);   /* header-bar title for the active page */
+
 /* ─── Draw wrappers (encapsulate private s_fgraph/s_lfo_view/s_graph_popup) */
 void     synth_ui_graph_view_draw(u8g2_t *u8g2);
 void     synth_ui_filter_view_draw(u8g2_t *u8g2);

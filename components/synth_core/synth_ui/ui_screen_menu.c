@@ -20,7 +20,12 @@ static const char *TAG = "synth_ui";
  * A small modal list. Items are either ACTIONS (run on click, no value) or
  * VALUE items (click to enter editing, encoder changes the value, click to
  * exit). The model is a static table; values are read/written live from the
- * sequencer_core quantizer + arp_core + global FX cache. */
+ * sequencer_core quantizer + arp_core + global FX cache.
+ *
+ * The overlay has two pages: the main list below, and the global-FX page
+ * (item model in ui_screen_fxmenu.c) reached through MI_FX_MENU. This file
+ * owns the page state and routes encoder/button input to the active page;
+ * both pages share seq_state.menu_cursor/menu_editing. */
 
 typedef enum {
     MI_SCREEN_SEQ = 0,
@@ -40,13 +45,7 @@ typedef enum {
     MI_DRUM_ENGINE,
     MI_ADD_LAYER,
     MI_REMOVE_LAYER,
-    MI_EQ_LOW,
-    MI_EQ_MID,
-    MI_EQ_HIGH,
-    MI_ECHO_LEVEL,
-    MI_CHORUS_LEVEL,
-    MI_REVERB_LEVEL,
-    MI_PRESET_GLOBAL_FX,
+    MI_FX_MENU,
     MI_VOLUME,
     MI_SAMPLE,
     MI_SAMPLE_CANCEL,
@@ -55,9 +54,28 @@ typedef enum {
 
 static menu_item_view_t s_menu_items[MI_COUNT];
 
+/* Page state: false = main list, true = the global-FX page. The main-page
+ * cursor is parked here while the FX page is open so Back restores it. */
+static bool    s_fx_page = false;
+static uint8_t s_main_cursor = 0;
+
+/* Title for the menu overlay's header bar (drawn by ui_view_resolve.c). */
+const char *menu_page_title(void)
+{
+    return s_fx_page ? "GLOBAL FX" : "MENU";
+}
+
 /* Format the current value of each menu item into the flat view array. */
 void menu_build_view(menu_view_t *out)
 {
+    if (s_fx_page) {
+        out->items   = fx_menu_build_items();
+        out->count   = fx_menu_item_count();
+        out->cursor  = seq_state.menu_cursor;
+        out->editing = seq_state.menu_editing;
+        return;
+    }
+
     for (uint8_t i = 0; i < MI_COUNT; i++) {
         s_menu_items[i].value[0] = '\0';
     }
@@ -121,30 +139,9 @@ void menu_build_view(menu_view_t *out)
             snprintf(s_menu_items[MI_REMOVE_LAYER].value, MENU_VALUE_LEN, "--");
     }
 
-    /* Global FX (cached values; AMY has no getters). */
-    snprintf(s_menu_items[MI_EQ_LOW].label, MENU_LABEL_LEN, "EQ Low");
-    snprintf(s_menu_items[MI_EQ_LOW].value, MENU_VALUE_LEN, "%+ddB",
-             (int)s_fx.eq_low_db);
-    snprintf(s_menu_items[MI_EQ_MID].label, MENU_LABEL_LEN, "EQ Mid");
-    snprintf(s_menu_items[MI_EQ_MID].value, MENU_VALUE_LEN, "%+ddB",
-             (int)s_fx.eq_mid_db);
-    snprintf(s_menu_items[MI_EQ_HIGH].label, MENU_LABEL_LEN, "EQ High");
-    snprintf(s_menu_items[MI_EQ_HIGH].value, MENU_VALUE_LEN, "%+ddB",
-             (int)s_fx.eq_high_db);
-    snprintf(s_menu_items[MI_ECHO_LEVEL].label, MENU_LABEL_LEN, "Echo");
-    snprintf(s_menu_items[MI_ECHO_LEVEL].value, MENU_VALUE_LEN, "%u%%",
-             (unsigned)s_fx.echo_level);
-    snprintf(s_menu_items[MI_CHORUS_LEVEL].label, MENU_LABEL_LEN, "Chorus");
-    snprintf(s_menu_items[MI_CHORUS_LEVEL].value, MENU_VALUE_LEN, "%u%%",
-             (unsigned)s_fx.chorus_level);
-    snprintf(s_menu_items[MI_REVERB_LEVEL].label, MENU_LABEL_LEN, "Reverb");
-    snprintf(s_menu_items[MI_REVERB_LEVEL].value, MENU_VALUE_LEN, "%u%%",
-             (unsigned)s_fx.reverb_level);
-
-    /* "Presets alter global FX? y/n" — OFF makes Juno presets per-synth. */
-    snprintf(s_menu_items[MI_PRESET_GLOBAL_FX].label, MENU_LABEL_LEN, "Preset FX");
-    snprintf(s_menu_items[MI_PRESET_GLOBAL_FX].value, MENU_VALUE_LEN, "%s",
-             s_fx.presets_alter_global ? "ON" : "OFF");
+    /* Global FX live on their own page (ui_screen_fxmenu.c). */
+    snprintf(s_menu_items[MI_FX_MENU].label, MENU_LABEL_LEN, "FX");
+    snprintf(s_menu_items[MI_FX_MENU].value, MENU_VALUE_LEN, ">");
 
     /* Master output volume (0..200%, unity=100%). Written to amy_global.volume[]. */
     snprintf(s_menu_items[MI_VOLUME].label, MENU_LABEL_LEN, "Volume");
@@ -206,13 +203,6 @@ static bool menu_item_is_value(menu_item_id_t id)
         case MI_ARP_ENABLED:
         case MI_DRONE_ENABLED:
         case MI_DRUM_ENGINE:
-        case MI_EQ_LOW:
-        case MI_EQ_MID:
-        case MI_EQ_HIGH:
-        case MI_ECHO_LEVEL:
-        case MI_CHORUS_LEVEL:
-        case MI_REVERB_LEVEL:
-        case MI_PRESET_GLOBAL_FX:
         case MI_VOLUME:
             return true;
         default:
@@ -259,44 +249,6 @@ static void menu_edit_value(menu_item_id_t id, int delta)
                         ? SEQ_DRUM_SYNTH : SEQ_DRUM_PCM);
             }
             break;
-        case MI_EQ_LOW: {
-            int v = SEQ_CLAMP_INT((int)s_fx.eq_low_db + dir, -15, 15);
-            s_fx.eq_low_db = (int8_t)v; fx_push_eq();
-            break;
-        }
-        case MI_EQ_MID: {
-            int v = SEQ_CLAMP_INT((int)s_fx.eq_mid_db + dir, -15, 15);
-            s_fx.eq_mid_db = (int8_t)v; fx_push_eq();
-            break;
-        }
-        case MI_EQ_HIGH: {
-            int v = SEQ_CLAMP_INT((int)s_fx.eq_high_db + dir, -15, 15);
-            s_fx.eq_high_db = (int8_t)v; fx_push_eq();
-            break;
-        }
-        case MI_ECHO_LEVEL: {
-            int v = SEQ_CLAMP_INT((int)s_fx.echo_level + dir * 5, 0, 100);
-            s_fx.echo_level = (uint8_t)v; fx_push_echo();
-            break;
-        }
-        case MI_CHORUS_LEVEL: {
-            int v = SEQ_CLAMP_INT((int)s_fx.chorus_level + dir * 5, 0, 100);
-            s_fx.chorus_level = (uint8_t)v; fx_push_chorus();
-            break;
-        }
-        case MI_REVERB_LEVEL: {
-            int v = SEQ_CLAMP_INT((int)s_fx.reverb_level + dir * 5, 0, 100);
-            s_fx.reverb_level = (uint8_t)v; fx_push_reverb();
-            break;
-        }
-        case MI_PRESET_GLOBAL_FX:
-            if (dir != 0) {
-                s_fx.presets_alter_global = !s_fx.presets_alter_global;
-                /* Turning the guard back ON re-imposes the user's cached FX
-                 * immediately, undoing whatever the last preset left behind. */
-                if (!s_fx.presets_alter_global) synth_ui_fx_reassert_global();
-            }
-            break;
         case MI_VOLUME: {
             /* 5% steps, range 0..200% (0.0..2.0 linear). Clamping and the
              * write to amy_global.volume[] are handled by the setter. */
@@ -314,8 +266,10 @@ void synth_ui_menu_toggle(void)
     if (synth_ui_graph_is_active()) return;
     seq_state.menu_open    = !seq_state.menu_open;
     seq_state.menu_editing = false;
-    if (seq_state.menu_open && seq_state.menu_cursor >= MI_COUNT) {
-        seq_state.menu_cursor = 0;
+    if (seq_state.menu_open) {
+        /* Always reopen on the main page so the menu lands somewhere known. */
+        s_fx_page = false;
+        if (seq_state.menu_cursor >= MI_COUNT) seq_state.menu_cursor = 0;
     }
     s_force_redraw = true;
     ESP_LOGI(TAG, "menu %s", seq_state.menu_open ? "open" : "closed");
@@ -332,9 +286,12 @@ bool synth_ui_menu_handle_encoder(long delta)
     if (delta == 0) return true;
 
     if (seq_state.menu_editing) {
-        menu_edit_value((menu_item_id_t)seq_state.menu_cursor, (int)delta);
+        if (s_fx_page)
+            fx_menu_edit_value(seq_state.menu_cursor, (int)delta);
+        else
+            menu_edit_value((menu_item_id_t)seq_state.menu_cursor, (int)delta);
     } else {
-        int n = (int)MI_COUNT;
+        int n = s_fx_page ? (int)fx_menu_item_count() : (int)MI_COUNT;
         int c = (int)seq_state.menu_cursor + (int)delta;
         /* clamp (no wrap) so the list feels bounded */
         c = SEQ_CLAMP_INT(c, 0, n - 1);
@@ -347,6 +304,19 @@ bool synth_ui_menu_handle_encoder(long delta)
 bool synth_ui_menu_handle_button(void)
 {
     if (!seq_state.menu_open) return false;
+
+    if (s_fx_page) {
+        uint8_t idx = seq_state.menu_cursor;
+        if (fx_menu_item_is_value(idx)) {
+            seq_state.menu_editing = !seq_state.menu_editing;
+        } else if (fx_menu_item_is_back(idx)) {
+            s_fx_page = false;
+            seq_state.menu_cursor  = s_main_cursor;
+            seq_state.menu_editing = false;
+        }
+        s_force_redraw = true;
+        return true;
+    }
 
     menu_item_id_t id = (menu_item_id_t)seq_state.menu_cursor;
 
@@ -393,6 +363,12 @@ bool synth_ui_menu_handle_button(void)
                 s_to_layer = seq_state.active_layer_idx;
                 synth_ui_request_delete_to_layer();
                 seq_state.menu_open = false;
+                break;
+            case MI_FX_MENU:
+                /* Dive into the global-FX page; the menu stays open. */
+                s_main_cursor = seq_state.menu_cursor;
+                s_fx_page = true;
+                seq_state.menu_cursor = 0;
                 break;
             case MI_SAMPLE:
                 switch (sample_rec_get_state()) {

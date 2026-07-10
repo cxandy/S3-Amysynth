@@ -20,6 +20,7 @@
 #include "quantizer.h"     /* quantizer_chord_intervals() */
 #include "amy.h"
 #include "amy_helpers.h"
+#include "voice_config.h"  /* voice_env_apply_ks_noise_floor */
 #include "sdkconfig.h"
 #include "esp_log.h"
 
@@ -382,9 +383,11 @@ static void drone_rebuild(void)
      * synth oscs). Deferred authority, matching the melodic + arp behaviour. */
     if (s_d.env_authored) {
         seq_env_t env_to_push = s_d.env;
-        if (s_d.wave == KS || s_d.wave == NOISE) {
-            env_to_push.attack_ms = 2;  /* KS/NOISE: onset transient suppressed by attack ramp */
-        }
+        /* Attack-floor only (is_ks=false): the drone never zeroes KS sustain,
+         * and KS/NOISE are excluded from its wave cycle anyway — this guards
+         * stale persisted values without changing the envelope shape. */
+        voice_env_apply_ks_noise_floor(&env_to_push, false,
+                                       s_d.wave == KS || s_d.wave == NOISE);
         sequencer_core_push_envelope(DRONE_SYNTH_MAIN, &env_to_push);
         if (s_d.sub_enabled) {
             sequencer_core_push_envelope(DRONE_SYNTH_SUB, &env_to_push);
@@ -838,9 +841,9 @@ void drone_set_envelope(const seq_env_t *env)
     if (s_d.env.attack_ms < 2) s_d.env.attack_ms = 2;  /* 2 ms floor */
     s_d.env_authored = true;
     seq_env_t env_to_push = s_d.env;
-    if (s_d.wave == KS || s_d.wave == NOISE) {
-        env_to_push.attack_ms = 2;  /* KS/NOISE: onset transient suppressed by attack ramp */
-    }
+    /* Attack-floor only, matching drone_rebuild(): no KS sustain zeroing. */
+    voice_env_apply_ks_noise_floor(&env_to_push, false,
+                                   s_d.wave == KS || s_d.wave == NOISE);
     sequencer_core_push_envelope(DRONE_SYNTH_MAIN, &env_to_push);
     if (s_d.sub_enabled) {
         sequencer_core_push_envelope(DRONE_SYNTH_SUB, &env_to_push);

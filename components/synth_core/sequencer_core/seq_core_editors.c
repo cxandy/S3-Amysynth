@@ -95,28 +95,21 @@ void sequencer_configure_melodic_envelope_track(uint8_t layer_idx, uint8_t track
 {
 #if CONFIG_SEQ_MELODIC_ENVELOPE_ENABLED
     const seq_layer_t *layer = &s_layers[layer_idx];
-    const seq_env_t   *env   = seq_layer_env(layer_idx, track);
-    float sustain = (float)env->sustain_pct / 100.0f;
-    uint32_t attack_ms = env->attack_ms;
-    /* KS and NOISE excite via an onset transient; an attack ramp suppresses it.
-     * KS additionally forces sustain=0: the string's body is carried entirely
-     * by the KS feedback decay, not by a held amplitude level. */
-    if (layer->patch == SEQ_PATCH_KS) {
-        attack_ms = 2;
-        sustain   = 0.0f;
-    } else if (layer->patch == SEQ_PATCH_NOISE) {
-        attack_ms = 2;  /* force floor */
-    }
+    seq_env_t env = *seq_layer_env(layer_idx, track);
+    voice_env_apply_ks_noise_floor(&env,
+                                   layer->patch == SEQ_PATCH_KS,
+                                   layer->patch == SEQ_PATCH_NOISE);
+    float sustain = (float)env.sustain_pct / 100.0f;
 
     amy_event *e = amy_helpers_event_begin();
     e->synth = layer->synth_id[track];
     e->bp_is_set[0] = 1;
-    e->eg_type[0] = env->eg_type;
-    e->eg0_times[0] = attack_ms;
+    e->eg_type[0] = env.eg_type;
+    e->eg0_times[0] = env.attack_ms;
     e->eg0_values[0] = 1.0f;
-    e->eg0_times[1] = env->decay_ms;
+    e->eg0_times[1] = env.decay_ms;
     e->eg0_values[1] = sustain;
-    e->eg0_times[2] = env->release_ms;
+    e->eg0_times[2] = env.release_ms;
     e->eg0_values[2] = 0.0f;
     amy_helpers_event_send(e);
 #else

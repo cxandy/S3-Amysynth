@@ -313,14 +313,8 @@ static void arp_rebuild(void)
         /* WAVE mode has no patch envelope; always push the arp's env (authored
          * or default) so EG0 breakpoints are valid and notes decay correctly. */
         seq_env_t env_to_push = s_arp.env;
-        if (s_arp.wave == KS) {
-            /* KS: onset transient suppressed by attack ramp; the string body is
-             * carried by the KS feedback decay, not by a held amplitude level. */
-            env_to_push.attack_ms   = 2;
-            env_to_push.sustain_pct = 0;
-        } else if (s_arp.wave == NOISE) {
-            env_to_push.attack_ms = 2;  /* NOISE: onset transient suppressed by attack ramp */
-        }
+        voice_env_apply_ks_noise_floor(&env_to_push,
+                                       s_arp.wave == KS, s_arp.wave == NOISE);
         sequencer_core_push_envelope(sequencer_core_arp_synth(), &env_to_push);
     } else {
         sequencer_core_arp_configure(s_arp.patch, sequencer_core_arp_voices(),

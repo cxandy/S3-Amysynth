@@ -65,6 +65,15 @@
 #define SEQ_MAX_BPM           300
 /* SEQ_DEFAULT_BPM is declared in sequencer_core.h (shared with synth_ui). */
 
+/* ── Drum layer slot ─────────────────────────────────────────────────────
+ * Layer slot 0 is always the drum layer and is permanent; other layers are
+ * melodic and deletable. This is an invariant, not a preference — several
+ * paths assume s_layers[SEQ_DRUM_LAYER_IDX].type == SEQ_LAYER_DRUM.
+ * Deliberately NOT coupled to the SEQ_LAYER_DRUM enum value (which also
+ * happens to be 0): one is a slot index, the other a type tag; keeping them
+ * distinct constants avoids a silent alias if the enum is ever renumbered. */
+#define SEQ_DRUM_LAYER_IDX    0u
+
 /* ── Drum synth slots ────────────────────────────────────────────────────
  * Drums are now a per-track Juno-patch layer: each of the 4 tracks loads its
  * own AMY patch and gets its own synth slot, exactly like melodic rows. We

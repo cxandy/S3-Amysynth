@@ -297,6 +297,28 @@ static bool sequencer_apply_patch_kind(uint8_t synth_id, uint16_t patch,
     return true;
 }
 
+/* Apply one patch to one slot and remember whether it needs a global-FX
+ * reassert, without doing the reassert yet — batch callers apply to several
+ * slots and must reassert exactly once after the loop. Returns true if a
+ * later flush is owed. */
+static bool seq_apply_patch(uint8_t synth_id, uint16_t patch,
+                            uint16_t num_voices, uint32_t synth_flags,
+                            bool filter_authored, float filter_q)
+{
+    return sequencer_apply_patch_kind(synth_id, patch, num_voices,
+                                      synth_flags, filter_authored, filter_q);
+}
+
+/* Reassert global FX iff any patch applied since the last flush was a patch
+ * STRING (Juno/DX7/piano): those carry global EQ/chorus commands that
+ * overwrite the user's FX state on load. Raw-wave, bass, and FM patches carry
+ * none and owe nothing. Idempotent; safe to call with owed == false. Every
+ * patch-load path flushes through here so no caller can forget the reassert. */
+static inline void seq_flush_patch_fx(bool owed)
+{
+    if (owed) synth_ui_fx_reassert_global();
+}
+
 /* (Re)configure the AMY synth(s) for layer_idx.
  * Drums use a single synth (synth_id[0]); melodic layers configure one synth
  * per row, all sharing the same patch/flags/voice-count but on distinct slots. */
@@ -342,8 +364,9 @@ void sequencer_configure_synth(uint8_t layer_idx)
             amy_send_patch(layer->synth_id[t], layer->track_patch[t],
                            layer->num_voices, layer->synth_flags);
         }
-        /* Patch strings carry global EQ/chorus commands; keep them per-synth. */
-        synth_ui_fx_reassert_global();
+        /* Every drum SYNTH slot loads a patch string, so a flush is always
+         * owed here (once, after the loop). */
+        seq_flush_patch_fx(true);
         return;
     }
 
@@ -353,17 +376,14 @@ void sequencer_configure_synth(uint8_t layer_idx)
     bool string_patch = false;
     for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
         sequencer_kill_synth_voices(layer->synth_id[t]);
-        string_patch = sequencer_apply_patch_kind(layer->synth_id[t],
-                                                  layer->patch,
-                                                  layer->num_voices,
-                                                  layer->synth_flags,
-                                                  layer->filter_authored[t],
-                                                  layer->filter[t].resonance);
+        string_patch |= seq_apply_patch(layer->synth_id[t],
+                                        layer->patch,
+                                        layer->num_voices,
+                                        layer->synth_flags,
+                                        layer->filter_authored[t],
+                                        layer->filter[t].resonance);
     }
-    /* Raw-wave, bass, and FM patches carry no global EQ/chorus commands; only
-     * patch strings (Juno/DX7) must reassert so that loading one doesn't
-     * leave stale global FX active. */
-    if (string_patch) synth_ui_fx_reassert_global();
+    seq_flush_patch_fx(string_patch);
     sequencer_configure_melodic_envelope(layer_idx);
     sequencer_configure_melodic_envelope1(layer_idx);
     sequencer_configure_melodic_filter(layer_idx);
@@ -421,7 +441,10 @@ void sequencer_core_set_layer_patch(uint8_t layer_idx, uint16_t patch_number)
     patch_number = SEQ_CLAMP_U16(patch_number, 0, SEQ_PATCH_ROUTABLE_MAX);
     if (layer->patch == patch_number) return;
     layer->patch    = patch_number;
-    s_melodic_patch = patch_number;  /* keep global accessor consistent */
+    s_melodic_patch = patch_number;  /* side-effect write: the global accessor
+                                        doubles as the display fallback, which
+                                        must track the last-touched layer (see
+                                        the contract in seq_core_internal.h) */
     sequencer_configure_synth(layer_idx);
     ESP_LOGI(TAG, "L%u patch -> %u", (unsigned)layer_idx, (unsigned)patch_number);
 }
@@ -474,8 +497,8 @@ void sequencer_core_set_drum_patch(uint8_t layer_idx, uint8_t track,
     amy_send_patch(layer->synth_id[track], patch_number,
                    layer->num_voices, layer->synth_flags);
 
-    /* Patch strings carry global EQ/chorus commands; keep them per-synth. */
-    synth_ui_fx_reassert_global();
+    /* A drum patch is always a string, so the flush is always owed. */
+    seq_flush_patch_fx(true);
 
     ESP_LOGI(TAG, "drum L%u track %u patch -> %u",
              layer_idx, track, (unsigned)patch_number);
@@ -638,12 +661,10 @@ void sequencer_core_arp_configure(uint16_t patch_number, uint8_t num_voices,
     /* Osc topology can change between kinds (1-2 oscs for waves/bass, 7 for
      * FM voices); kill sounding voices before the pool is rebuilt. */
     sequencer_kill_synth_voices(SEQ_ARP_SYNTH);
-    bool string_patch = sequencer_apply_patch_kind(SEQ_ARP_SYNTH, patch_number,
-                                                   num_voices, 0,
-                                                   filter_authored, filter_q);
-    /* Patch strings carry global EQ/chorus commands; reassert so Juno/DX7 FX
-     * don't leak. Wave/bass/FM patches carry none. */
-    if (string_patch) synth_ui_fx_reassert_global();
+    bool string_patch = seq_apply_patch(SEQ_ARP_SYNTH, patch_number,
+                                        num_voices, 0,
+                                        filter_authored, filter_q);
+    seq_flush_patch_fx(string_patch);
     ESP_LOGI(TAG, "arp synth %u patch -> %u (%u voices)",
              (unsigned)SEQ_ARP_SYNTH, (unsigned)patch_number, (unsigned)num_voices);
 }

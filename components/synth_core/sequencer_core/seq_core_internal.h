@@ -95,6 +95,13 @@ extern seq_layer_t    s_layers[];
 extern uint8_t        s_num_layers;
 extern bool           s_playing;
 extern uint8_t        s_next_melodic_synth;
+/* Global melodic patch DEFAULT — not an authoritative global. Two writers with
+ * different scopes: sequencer_core_set_melodic_patch() writes it as the global
+ * selection and fans it out to every melodic layer, and
+ * sequencer_core_set_layer_patch() writes it as a consistency side-effect of
+ * setting ONE layer's patch (so the display fallback tracks the last-touched
+ * layer). Readers must treat s_layers[i].patch as the per-layer source of
+ * truth; this is only the seed for new layers plus the display fallback. */
 extern uint16_t       s_melodic_patch;
 extern volatile bool  s_layers_mutating;   /* guards delete_layer's compaction vs. the tick */
 

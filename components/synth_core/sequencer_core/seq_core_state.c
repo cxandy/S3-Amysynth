@@ -1,4 +1,5 @@
 #include "sequencer_core/seq_core_internal.h"
+#include <assert.h>
 
 /* ── State definitions — owns the core layer table and play state ─── */
 seq_layer_t s_layers[MAX_LAYERS];
@@ -31,6 +32,8 @@ static inline void seq_assert_layers_applier(void)
                  xTaskGetCurrentTaskHandle() == s_layers_applier);
 #endif
 }
+/* Default seed + display fallback, NOT an authoritative global — dual-writer
+ * contract documented at the declaration in seq_core_internal.h. */
 uint16_t    s_melodic_patch = SEQ_MEL_PATCH;
 /* Running allocator for per-row melodic synth slots. Each melodic layer claims
  * a contiguous block of SEQ_TRACKS slots starting here; reset in core_init. */
@@ -176,6 +179,10 @@ uint8_t sequencer_core_add_layer(seq_layer_type_t type, uint8_t num_steps)
     CORE_HEAP_CHECK("add_layer: after configure_synth");
     /* Layer is fully initialised: now expose it to the tick path. */
     s_num_layers++;
+    /* Construction-time check of the permanent-drum-layer invariant: slot 0
+     * is the drum layer (created first at boot) and every later add lands
+     * above it. Verified once here rather than trusted throughout. */
+    assert(s_layers[SEQ_DRUM_LAYER_IDX].type == SEQ_LAYER_DRUM);
     /* Runtime trig bookkeeping (loop counters / last-played / last-step-seen)
      * is indexed by layer slot, not layer identity; a wholesale reset here
      * (rather than trying to shift it in lockstep with the new layer) is
@@ -191,7 +198,7 @@ bool sequencer_core_delete_layer(uint8_t layer_idx)
 {
     seq_assert_layers_applier();
     if (s_num_layers <= 1) return false;                  /* must keep at least 1 */
-    if (layer_idx == 0)   return false;                   /* drum layer is permanent */
+    if (layer_idx == SEQ_DRUM_LAYER_IDX) return false;    /* drum layer is permanent */
     if (layer_idx >= s_num_layers) return false;
     if (s_layers[layer_idx].type == SEQ_LAYER_DRUM) return false;
 

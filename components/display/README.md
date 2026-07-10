@@ -19,8 +19,10 @@ into the home for all the OLED rendering as the UI expanded.
 **Renderers** (project-specific; the UI logic lives in `synth_core`, this layer
 only draws the flat view structs it is handed)
 
-- Sequencer grid, the arp screen, the drone parameter list, and the menu overlay
-- A reusable ADSR/curve **graph-popup** widget used by the envelope editor
+- Every screen: sequencer grid, arp, drone (list + visualizer), menu overlay,
+  chord progression, track options, step-trig popup, and the bottom hint strip
+- A reusable ADSR/curve **graph-popup** widget used by the envelope editor,
+  plus the filter-response and LFO editor renderers
 - Patch-name tables for the on-screen patch browser
 
 ## Files
@@ -28,13 +30,19 @@ only draws the flat view structs it is handed)
 | File | Role |
 | --- | --- |
 | `priv_i2c_u8g2.{c,h}` | I2C + U8g2 HAL: bus/device setup, init, power, `u8g2_t*` accessor (`i2c_u8g2_*` symbols) |
-| `display_seq.{c,h}` | sequencer grid renderer + the shared UI state struct (`display_seq_state_t`, `seq_*` types) |
+| `display_seq.{c,h}` | sequencer grid renderer + the shared UI state struct |
 | `display_arp.{c,h}` | arp screen renderer + its flat view struct |
-| `display_drone.{c,h}` | drone parameter-list renderer + its flat view struct |
-| `display_menu.{c,h}` | menu overlay renderer (scrollable label:value list) |
+| `display_drone.{c,h}` | drone parameter-list renderer + the drone visualizer |
+| `display_menu.{c,h}` | menu overlay renderer (scrollable label:value list, also reused by the FX and FM pages) |
+| `display_prog.{c,h}` | chord-progression screen renderer |
+| `display_trackopts.{c,h}` | per-track options screen renderer (repeat/mute/solo/chord) |
+| `display_stepedit.{c,h}` | per-step probability / ratchet / conditional-trig popup |
+| `display_hint.{c,h}` | bottom hint-strip compositor (rows 57–63) |
+| `display_lfo.{c,h}` | LFO editor overlay renderer |
 | `graph_popup.{c,h}` | reusable graph/curve editor widget (ADSR) |
 | `filter_graph.{c,h}` | per-synth filter frequency-response renderer |
 | `patch_names.{c,h}` | AMY patch number → name tables for the browser |
+| `chord_types.h` | shared chord type/root name lookup tables |
 | `Kconfig` | display menuconfig options |
 
 ## Design
@@ -46,18 +54,24 @@ menu). This keeps the display layer decoupled from synth/sequencer logic — the
 same reason the menu and arp/drone screens each have a small `*_view_t` instead
 of reaching into engine state directly.
 
-The shared sequencer UI state struct (`display_seq_state_t` in
-`display_seq.h`) is the one exception: it is large enough that it doubles as
-the canonical UI state, included by both this layer and `synth_core`.
+Two conventions matter for anyone adding a screen:
+
+- **Fill-only renderers, single flush.** No renderer calls `u8g2_SendBuffer`.
+  Every `*_draw_frame` only fills the buffer; the UI task composites the hint
+  strip on top and issues the one `SendBuffer` per redraw. A renderer that
+  flushes on its own reintroduces visible flicker on the hint strip.
+- **The shared sequencer UI state struct** (`display_seq.h`) is the one
+  exception to the flat-view rule: it is large enough that it doubles as the
+  canonical UI state, included by both this layer and `synth_core`.
 
 ## Filter editor (`filter_graph`)
 
 ### UI overview
 
-The filter editor is a full-screen overlay opened by long-pressing the encoder
-button (the same gesture that opens the ADSR envelope editor). MY\_BUTTON\_3
-single-click swaps between the two editors while either is open; long-pressing
-MY\_BUTTON\_0 cancels; a second long-press on the encoder commits.
+The filter editor is a full-screen overlay reached from the ADSR editor
+(long-press the encoder button to open the editors, then MY\_BUTTON\_3
+single-click cycles ADSR → Filter → LFO). Long-pressing MY\_BUTTON\_0 cancels;
+a long-press on the encoder commits.
 
 The screen is split into two zones:
 
@@ -72,7 +86,7 @@ The screen is split into two zones:
 │  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓╎▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒  │  (rows 16-63)
 │  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒  │
 └──────────────────────────────────────────┘  row 63
-   65 Hz                              8 kHz
+   20 Hz                              8 kHz
 ```
 
 **Top bar** — three fields:
@@ -83,7 +97,7 @@ The screen is split into two zones:
 - **Right** (`font_5x7_tr`): current parameter value — `NNNHz` / `N.NkHz` when
   the cursor is on cutoff, `Q:N.N` when on resonance. Framed while editing.
 
-**Plot** — X axis is log-frequency (65 Hz left → 8 kHz right). Y axis is
+**Plot** — X axis is log-frequency (20 Hz left → 8 kHz right). Y axis is
 amplitude (top = louder). The filled area under the curve is drawn with vertical
 lines to the baseline. An XOR cursor column marks the cutoff frequency.
 
@@ -109,7 +123,7 @@ resonance parameter.
 ```c
 typedef struct {
     uint8_t filter_type;     /* FGRAPH_FILTER_{NONE,LPF,BPF,HPF,LPF24} */
-    float   cutoff_norm;     /* 0..1, log-mapped: 0 = 65 Hz, 1 = 8000 Hz */
+    float   cutoff_norm;     /* 0..1, log-mapped: 0 = 20 Hz, 1 = 8000 Hz */
     float   resonance_norm;  /* 0..1 linear: 0 = 0.51 (min Q), 1 = 8.0 */
     uint8_t cursor;          /* 0=cutoff, 1=resonance, 2=type */
     bool    editing;         /* true while encoder is adjusting this field */
@@ -118,9 +132,9 @@ typedef struct {
 } filter_graph_t;
 ```
 
-`synth_ui.c` owns the `filter_graph_t` scratch copy (`s_fgraph`) and populates
-it from the live synth state on editor open. The display component has no AMY or
-`synth_core` dependency; all Hz ↔ norm conversions happen in `synth_ui`.
+`synth_core` owns the `filter_graph_t` scratch copy and populates it from the
+live synth state on editor open. The display component has no AMY or
+`synth_core` dependency; all Hz ↔ norm conversions happen on the UI side.
 
 ### Response model
 
@@ -147,7 +161,7 @@ This keeps the renderer free of any runtime AMY dependency.
 
 | Symbol | Value | Meaning |
 |--------|-------|---------|
-| `FGRAPH_CUTOFF_HZ_MIN` | 65 Hz | Left edge of X axis / minimum cutoff |
+| `FGRAPH_CUTOFF_HZ_MIN` | 20 Hz | Left edge of X axis / minimum cutoff |
 | `FGRAPH_CUTOFF_HZ_MAX` | 8000 Hz | Right edge of X axis / maximum cutoff |
 | `FGRAPH_RES_MIN` | 0.51 | Minimum Q (AMY biquad hard floor) |
 | `FGRAPH_RES_MAX` | 8.0 | Maximum Q (project cap) |
@@ -175,6 +189,7 @@ u8g2_SendBuffer(u8g2);
 - Default panel setup is `u8g2_Setup_ssd1306_i2c_128x64_noname_f`; change
   `cfg.setup_fn` for a different controller.
 - The OLED is full-buffer and `SendBuffer` is blocking I2C (~20 ms), so the UI
-  task on core 0 renders on change only (signature-compared), not every frame.
+  task on core 0 renders on change only (signature-compared) and flushes once
+  per frame, not per renderer.
 - For multi-task access, guard U8g2 calls with your own mutex — the project does
   all drawing from the single `synth_ui` task.

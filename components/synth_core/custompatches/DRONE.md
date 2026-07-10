@@ -2,15 +2,16 @@
 
 A standalone, tempo-synced **drone synth** translated from an AMYboard
 "stutter house drone" Python sketch. It is fully independent of the sequencer
-layers and the arp — its own AMY synth slots, its own state, its own screen,
-reached from the main menu. It is the first inhabitant of the
-`custompatches/` subfolder, intended as the home for future custom patches.
+layers, the arp, and the chord progression — its own AMY synth slots, its own
+state, its own screen, reached from the main menu. It was the first inhabitant
+of the `custompatches/` subfolder, now also home to the bass presets, the FM
+voice, and the resampler.
 
 ```
 SAW/SQUARE/TRI/SINE carrier, gated by a square LFO (the "stutter"),
 through an LPF24 whose cutoff sweeps slowly. The carrier plays a CHORD;
-a mono sub tracks the chord root an octave below. Everything (stutter
-rate, sweep period, ADSR fade) locks to the global BPM.
+a mono sub tracks the chord root an octave (or more) below. Everything
+(stutter rate, sweep period, gate pattern, ADSR fade) locks to the global BPM.
 ```
 
 ## Files
@@ -18,8 +19,9 @@ rate, sweep period, ADSR fade) locks to the global BPM.
 | File | Role |
 |---|---|
 | `custompatches/drone_core.c` / `include/custompatches/drone_core.h` | The engine: state, AMY synth config, note scheduling, tempo-locked service. |
-| `../display/display_drone.{c,h}` | The screen renderer (scrollable label:value list). |
-| `synth_ui.c` | Glue: init, per-frame service, render branch, the parameter-list screen logic, menu items, input handlers. |
+| `../synth_ui/ui_screen_drone.c` | The screen's input handling and view building. |
+| `../../display/display_drone.{c,h}` | The screen renderer (scrollable label:value list + the visualizer view). |
+| `../voice_config.c` | Shared voice layer: builds the 2-osc WAVE voice, wires the native LFO. |
 | `main/main.c` | Sets `amy_cfg.max_synths = 66`; routes drone-screen input. |
 
 The module mirrors the **arp module** pattern 1:1 (standalone engine + own synth
@@ -32,11 +34,11 @@ understand this.
 flowchart TD
   MENU["Main menu\n(Screen: Drone, Drone ON/OFF)"] --> MODE["seq_state.ui_mode = UI_MODE_DRONE"]
   MODE --> SCREEN["Drone screen\n(display_drone, param list)"]
-  SCREEN -->|encoder / button| GLUE["synth_ui drone handlers"]
+  SCREEN -->|encoder / button| GLUE["ui_screen_drone handlers"]
   GLUE --> CORE["drone_core (setters)"]
   CORE -->|queued amy_event| MAIN["Synth 64: carrier\n(N voices = chord notes)"]
   CORE -->|queued amy_event| SUB["Synth 65: sub\n(1 voice = root)"]
-  SERVICE["drone_core_service()\n(synced to global clock)"] --> SWEEP["filter cutoff sweep\n+ LFO re-sync"]
+  SERVICE["drone_core_service()\n(synced to global clock)"] --> SWEEP["filter cutoff sweep\n+ LFO re-sync + gate pattern"]
   SWEEP --> MAIN
   SWEEP --> SUB
 ```
@@ -44,10 +46,12 @@ flowchart TD
 ## AMY voice model (WAVE mode)
 
 Each carrier synth is a **build-your-own (no patch)** instrument with
-`oscs_per_voice = 2`:
+`oscs_per_voice = 2`, assembled by the shared `voice_build_wave()` (the same
+voice model the arp's WAVE source uses):
 
 - **osc1 = PULSE LFO.** Absolute Hz (`freq_coefs[COEF_NOTE]=0`), `amp const=1`,
-  duty 0.5. Runs continuously. Its bipolar output (−1..+1) is the stutter source.
+  duty set by the **GATE** row. Runs continuously. Its bipolar output (−1..+1)
+  is the stutter source.
 - **osc0 = carrier.** NOTE-following (`freq_coefs[COEF_NOTE]=1`) so each voice's
   pitch comes from its note-on (this is what lets the synth play a chord).
   `mod_source = 1` points at osc1 of the same voice. `filter_type = LPF24`,
@@ -55,45 +59,40 @@ Each carrier synth is a **build-your-own (no patch)** instrument with
 
 ### How the amplitude / stutter math actually works
 
-AMY combines amp coefficients with `combine_controls_mult` (amy.c), **not** a
-sum. CONST/NOTE/VEL/EG0/EG1 are pure multipliers; MOD/BEND apply as
-`(1 + coef·control)`. So the carrier amplitude is:
-
-> Note: `combine_controls_mult` describes the pre-1.2.12 model. The active
-> function is `amp_combine_controls` (`amy.c:1512`), which dB-compresses every
-> coef except MOD and sums before a `powf(10, 3·Σ)` stage; MOD still sums
-> linearly, so the const/mod relationship described below still holds.
+On screen the two amplitude controls are labelled **PEAK** (always-on carrier
+level, `amp_peak`) and **DUCK** (stutter depth, `amp_duck`); on the AMY wire
+they are the CONST and MOD amp coefficients. AMY's active amp combine is
+`amp_combine_controls` (`amy.c`), a dB/exponential model: every coefficient
+except MOD is dB-compressed and summed before a `powf` stage, while MOD still
+sums linearly — so the peak/duck relationship below holds:
 
 ```
-amp = amp_const · eg0 · (1 + amp_mod · LFO)        LFO ∈ {−1, +1}
+amp = peak · eg0 · (1 + duck · LFO)        LFO ∈ {−1, +1}
 ```
 
-- `amp_const` (0..1): the always-on level.
-- `amp_mod`   (0..1): stutter depth. On the LFO-low half `amp = const·(1−mod)`
-  → reaches **silence at mod=1** (true hard gate); on the high half
-  `amp = const·(1+mod)`.
-- `eg0`: the ADSR envelope (see below), multiplying the whole thing — so the
+- `peak` (0..1): the always-on level.
+- `duck` (0..1): stutter depth. On the LFO-low half `amp = peak·(1−duck)`
+  → reaches **silence at duck=1** (true hard gate); on the high half
+  `amp = peak·(1+duck)`.
+- `eg0`: the ADSR envelope, multiplying the whole thing — so the
   envelope shapes the drone swell/fade **around** the LFO chop.
 
-These map 1:1 to the Python `amp={'const':x,'mod':y}` wire values and are exposed
-directly as the **CONST** and **MOD** screen rows (0.0–1.0, 0.1 steps).
-
 > **Historical note / gotcha:** an earlier version derived a single "MIX" knob
-> as `const = total·(1−mix)`, `mod = total·mix`. Because AMY *multiplies* and
-> *skips zero coefs* (`if (coef != 0)`), this produced a cliff: at 95% mix the
-> tone was near-silent, but at 100% `const` hit exactly 0, got skipped, and the
-> level jumped to full. Exposing `const`/`mod` directly removes the remap and the
-> discontinuity. Keep `const` > 0 to avoid the same skip.
+> as `peak = total·(1−mix)`, `duck = total·mix`. Because AMY *skips zero
+> coefficients*, this produced a cliff: at 95% mix the tone was near-silent,
+> but at 100% the const coef hit exactly 0, got skipped, and the level jumped
+> to full. Exposing the two controls directly removes the remap and the
+> discontinuity. Keep PEAK > 0 to avoid the same skip.
 
 ## Chords
 
 The carrier plays a **chord**, one AMY voice per note, up to `DRONE_CHORD_MAX_NOTES = 5`.
 Chord voicing is derived at runtime from the shared `quantizer_chord_intervals(chord_type_t)`
-table — the same table used by the Prog screen and the scale quantizer. The fixed
-per-preset MIDI note lists that appeared here previously have been removed.
+table — the same table used by the Prog screen and the scale quantizer.
 
-**Root** is a drone-local MIDI note (24–72, C1–C5); all chord intervals are
-computed relative to it. **Chord type** is any of the 11 shared types:
+**Root** is a drone-local MIDI note (24–72, C1–C5; default 45 = A2); all chord
+intervals are computed relative to it. **Chord type** is any of the 11 shared
+types:
 
 | Type | Intervals (semitones from root) |
 |---|---|
@@ -113,29 +112,43 @@ computed relative to it. **Chord type** is any of the 11 shared types:
 to the new voice count, then re-triggers — so switching to a smaller chord never
 leaves voices stuck on.
 
-The **sub** stays a single voice at `chord_root + sub_interval` (default −12).
-This is deliberate: low frequencies + polyphony invite phase cancellation, so the
-low end is kept mono.
+The **sub** stays a single voice at `chord_root + sub_interval` (default −12,
+range 0 to −36). This is deliberate: low frequencies + polyphony invite phase
+cancellation, so the low end is kept mono.
+
+The drone does **not** follow the global chord progression — its ROOT/CHORD
+rows are always manual. (The progression re-voices chord-mode layers and
+re-roots the arp, not the drone.)
 
 ## Tempo sync
 
 `drone_core_service()` runs once per UI frame (20 Hz), like `arp_core_service()`.
-Two jobs, both derived from `seq_state.bpm`:
+Everything it derives comes from the global BPM and AMY's 48-PPQ tick counter:
 
 1. **Stutter LFO** — `LFO_Hz = (BPM/60) · mult`, re-sent to osc1 when the BPM
    changes. Multipliers: `1/4 = ×1, 1/8 = ×2, 1/16 = ×4, 1/32 = ×8`. This matches
    the **arp's** convention (arp `1/16` = 12 ticks @ 48 PPQ = one event per
    sixteenth note), so a drone "1/16" stutter pulse lands on the same grid as an
    arp "1/16" note onset. One square cycle (on+off) spans one named note.
+   On top of the raw LFO sit the rhythm controls:
+   - **GATE** (0.05–0.95) sets the pulse duty cycle — how much of each
+     subdivision the gate stays open.
+   - **SWING** (0–66 %) delays alternate gate openings.
+   - **PATTERN** masks the stutter against an 8-step rhythm: FULL (all on),
+     FOUR (four-on-the-floor), OFFBT (upbeats), GALOP (short-short-long),
+     DUB (dub push).
+   - **BLIP** (0–1) fires a short downward filter zap on gate edges for a
+     percussive attack transient.
 2. **Filter sweep** — a sine LFO over the cutoff between `sweep_lo` and
-   `sweep_hi`, with a period of `sweep_bars` bars. Its phase is a **pure function
-   of `sequencer_ticks()`** (AMY's 48-PPQ musical clock — the same one the
-   sequencer and arp ride), NOT of the UI frame rate: one bar = `48*4 = 192`
-   ticks, `phase = 2π · (tick % period_ticks) / period_ticks`. This makes the
+   `sweep_hi` (100–8000 Hz), with a period of `sweep_bars` bars (1–16). Its
+   phase is a **pure function of `sequencer_ticks()`** (AMY's 48-PPQ musical
+   clock — the same one the sequencer and arp ride), NOT of the UI frame rate:
+   one bar = `48*4 = 192` ticks,
+   `phase = 2π · (tick % period_ticks) / period_ticks`. This makes the
    sweep frame-rate-independent (UI jitter or skipped frames cannot drift it) and
    genuinely beat-locked — it advances with tempo automatically and stays
    coherent with the bar grid across BPM changes. Re-sent to osc0 each service
-   call; the sub uses `cutoff × 0.5`.
+   call; the sub uses `cutoff × 0.5`. Resonance is capped at 3.0.
 
    > Earlier this accumulated a fixed `frame_dt = 0.050` per `service()` call,
    > assuming the UI task ticked at exactly 20 Hz. That was fragile: the UI task
@@ -149,17 +162,19 @@ envelope.
 
 ## ADSR envelope (shared graph editor)
 
-The drone reuses the existing ADSR **graph_popup** editor (the same widget the
+The drone reuses the shared ADSR **graph_popup** editor (the same widget the
 melodic layers and the arp use). On the drone screen, **MY_BUTTON_ENC
-long-press** opens the editor bound to the drone (`graph_target_t` =
-`GRAPH_TGT_DRONE` in `synth_ui.c`); commit calls `drone_set_envelope()`.
+long-press** opens the editor bound to the drone; commit calls
+`drone_set_envelope()`. The drone's editable state lives in the same shared
+`voice_params_t` block (`s_d.vp`) as the other instruments.
 
 - The envelope is **deferred-authority**: not pushed until the user commits, so
   an un-edited drone holds at full sustain (EG0 = 1.0 on a held note). Once
   authored, it is re-applied after any rebuild/source/chord change.
-- It is pushed via the shared `sequencer_core_push_envelope(synth, env)` helper
-  (the same EG0 breakpoint delta path the melodic layers use), to both the main
-  and sub synths.
+- It is pushed via the shared envelope helper (the same EG0 breakpoint delta
+  path the melodic layers use), to both the main and sub synths.
+- The editor's tab cycle skips the LFO tab for the drone (the stutter LFO *is*
+  the drone's modulation; ADSR → Filter → ADSR).
 
 ## PATCH mode
 
@@ -181,12 +196,12 @@ stateDiagram-v2
 
     state WAVE {
         [*] --> Stuttering
-        Stuttering --> Stuttering : CONST/MOD amp coefs (amp_combine_controls dB model)
+        Stuttering --> Stuttering : PEAK/DUCK amp coefs (amp_combine_controls dB model)
     }
 
     state PATCH {
         [*] --> PatchVoice
-        PatchVoice --> PatchVoice : filter sweep + resonance overlaid on patch osc0 (stutter/CONST/MOD hidden, do not apply)
+        PatchVoice --> PatchVoice : filter sweep + resonance overlaid on patch osc0 (stutter rows hidden, do not apply)
     }
 ```
 
@@ -194,8 +209,9 @@ stateDiagram-v2
 synth instead of the raw 2-osc voice. The patch owns its own oscillators and
 amplitude, so:
 
-- The **square-LFO stutter** and the **CONST/MOD** controls do **not** apply
-  (WAVE-only). Those rows are hidden on the screen in PATCH mode.
+- The **square-LFO stutter** and the **PEAK / DUCK / STUTTER / GATE** controls
+  do **not** apply (WAVE-only). Those rows are hidden on the screen in PATCH
+  mode, and the engine builds no LFO oscillator at all.
 - The **chord voicing, filter sweep, and resonance** still apply (filter +
   resonance are overlaid on the patch's osc0).
 - Patches can be sensitive: a quiet/bandlimited patch fed through `LPF24` at a
@@ -207,7 +223,7 @@ amplitude, so:
 
 | Slot range | Owner |
 |---|---|
-| 6–9 | drum layer |
+| 6–9 | drum layer (one per track) |
 | 11–62 | melodic layers |
 | 63 | arp |
 | **64** | **drone main carrier** (`DRONE_SYNTH_MAIN`) |
@@ -215,19 +231,20 @@ amplitude, so:
 
 `main/main.c` sets `amy_cfg.max_synths = 66`. AMY's instrument table is sized
 from config (`instruments_init(config.max_synths)`). AMY's default 250 oscs leave
-ample headroom (5-voice main × 2 oscs + sub = ~12 oscs).
+ample headroom (5-voice main × 2 oscs + sub × 2 = ~12 oscs).
 
 **Sequencer tags: zero.** The drone uses **direct** (immediate, non-scheduled)
 note-on/param events, so it consumes no entries in AMY's `sequences[]` table —
-no interaction with the sequencer/arp tag windows.
+no interaction with the sequencer/arp/ratchet tag windows.
 
 ## Concurrency / safety
 
-All AMY interaction goes through the queued event API (`amy_add_event`) using a
-module-private scratch `amy_event` + mutex (`amy_event` is ~800 B and must never
-sit on a task stack). The drone **never** touches `synth[]` directly — this
-respects the `amy_render` lock fix (the render path walks `synth[]` under the
-queue lock; all config/notes must be deltas). See `AMY-EDITS.md`.
+All AMY interaction goes through the queued event API (`amy_add_event`) using
+the shared scratch `amy_event` + mutex in `amy_helpers` (an `amy_event` is
+~800 B and must never sit on a task stack). The drone **never** touches
+`synth[]` directly — this respects the render-lock rule (the render path walks
+`synth[]` under the queue lock; all config/notes must be deltas). See
+`AMY-EDITS.md`.
 
 ## Input map (drone screen)
 
@@ -242,32 +259,42 @@ queue lock; all config/notes must be deltas). See `AMY-EDITS.md`.
 
 A drone-screen isolation guard in `main.c` (mirroring the arp guard) suppresses
 the sequencer's editing gestures while the drone screen is up, but keeps the
-menu toggle and global play/pause live. `synth_ui_drone_is_active()` is false
-while the graph editor or menu is open, so those overlays never conflict.
+menu toggle and global play/pause live. The guard stands down while the graph
+editor or menu overlays are on top, so those never conflict.
 
 ## Screen layout (parameter list)
+
+WAVE-mode row order (PATCH mode hides the stutter rows and shows PATCH
+instead of WAVE):
 
 ```
 DRONE     : ON
 SOURCE    : WAVE          (WAVE / PATCH)
 WAVE      : SAW           (WAVE only: SAW/SAWUP/PULSE/TRI/SINE)
-CHORD     : Am7           (Am7/Fmaj7/Dm9/Cmaj9/Gsus4)
-RES       : 1.50
-CONST     : 0.5           (WAVE only: always-on level)
-MOD       : 0.5           (WAVE only: stutter depth)
+ROOT      : A2            (C1..C5, shifts the whole voicing)
+CHORD     : Min7          (11 shared chord types)
+RES       : 1.50          (0.1..3.0)
+PEAK      : 0.5           (WAVE only: always-on level, keep > 0)
+DUCK      : 0.5           (WAVE only: stutter depth)
+VISUALISE : OFF           (switch to the drone visualizer view)
 STUTTER   : 1/16          (WAVE only: 1/4..1/32, tempo-locked)
-SWEEP LO  : 600 Hz
-SWEEP HI  : 2000 Hz
-SWEEP SPD : 4 bar
+GATE      : 0.50          (WAVE only: duty cycle 0.05..0.95)
+SWING     : 0             (0..66 %)
+PATTERN   : FULL          (FULL/FOUR/OFFBT/GALOP/DUB)
+BLIP      : 0.0           (0..1 filter-zap on gate edges)
+SWEEP LO  : 600 Hz        (100..8000)
+SWEEP HI  : 2000 Hz       (100..8000)
+SWEEP SPD : 4 bar         (1..16)
 SUB       : ON
-SUB INT   : -12           (semitones below the chord root)
+SUB INT   : -12           (0..-36 semitones below the chord root)
 PATCH     : 25            (PATCH only)
 ```
 
-## Global FX (related, in the main menu — not the drone)
+## Global FX (related — lives in the menu's FX page, not the drone)
 
-Added alongside this work: **EQ Low/Mid/High (dB), Echo, Chorus, Reverb** levels
-as menu value-items. These are built-in AMY global effects driven by single
-`amy_event` field sends (`eq_l/m/h`, `echo_level`, `chorus_level`,
-`reverb_level`), cached in `s_fx` for display since AMY exposes no FX getters.
-They apply globally to everything, not just the drone.
+The built-in AMY global effects — **EQ Low/Mid/High (dB), Echo, Chorus,
+Reverb** with their extended parameters (feedback, time, tone, rate, depth,
+liveness, damping, crossover) — are edited on the menu's dedicated **FX**
+page. They are driven by single `amy_event` field sends and cached in the
+firmware for display (AMY exposes no FX getters). They apply globally to
+everything, not just the drone.

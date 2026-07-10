@@ -1,34 +1,49 @@
 # Multi-Layer Sequencer Architecture
 
-> Implemented 2026-04-03. Build target: ESP32-S3-N16R8, ESP-IDF 6.0.
+> Build target: ESP32-S3-N16R8, ESP-IDF 6.0.
 
 ---
 
 ## Overview
 
-The sequencer is split into three cooperating layers:
+The sequencer is split into cooperating layers:
 
 ```
-main.c  ──button events──▶  synth_ui.c  ──state changes──▶  sequencer_core.c  ──amy_add_event──▶  AMY engine
-                            (FreeRTOS task)                      (stateless helpers)
+main.c  ──button events──▶  synth_ui/  ──state changes──▶  sequencer_core/  ──amy_add_event──▶  AMY engine
+                            (FreeRTOS task + screens)         (engine TUs)
                                    │
-                             display_seq.c  ──u8g2──▶  SSD1306 OLED
+                             display_*.c  ──u8g2──▶  SSD1306 OLED
 ```
 
-| Layer | File | Responsibility |
+| Layer | Location | Responsibility |
 |---|---|---|
-| UI / input | `synth_ui.c` | Encoder + button dispatch, cursor navigation, layer cycling, OLED refresh (20 Hz task) |
-| Audio core | `sequencer_core.c` | Owns all AMY scheduling; edits to grid, note, BPM immediately call `amy_add_event()` |
-| Display | `display_seq.c` | Pure render function; reads `display_seq_state_t` and drives U8g2 |
-| Types / state | `display_seq.h` | Shared data structures (`seq_layer_t`, `display_seq_state_t`) |
+| UI / input | `components/synth_core/synth_ui/` | Encoder + button dispatch, per-screen input handlers, cursor navigation, layer cycling, OLED refresh (20 Hz task) |
+| Audio core | `components/synth_core/sequencer_core/` | Owns all AMY scheduling; edits to grid, note, BPM immediately call `amy_add_event()` |
+| Display | `components/display/display_seq.c` (and siblings) | Pure render functions; read flat view structs and drive U8g2 |
+| Types / state | `sequencer_core/seq_model.h` | Shared data structures (`seq_layer_t` and friends) |
+
+The engine side is split by concern rather than living in one file:
+
+| File | Role |
+|---|---|
+| `seq_model.h` | data model (`seq_layer_t`, per-step decoration fields, LFO/filter/env types) |
+| `seq_core_config.h` | compile-time limits, Kconfig fallbacks, synth-slot and tag layout |
+| `seq_core_state.c` | layer table and lifecycle |
+| `seq_core_engine.c` | tag scheduling, transport, mute/solo gating |
+| `seq_core_trig.c` | per-step probability / ratchet / conditional-trig evaluation |
+| `seq_core_synth.c` | patch loading, drum Synth/PCM engine switch |
+| `seq_core_editors.c` | envelope / filter / LFO commits from the editors |
+| `seq_core_tempo.c` | BPM |
+| `seq_core_progression.c` | chord progression |
 
 ---
 
 ## Data Model
 
-### `seq_layer_t`  (`display_seq.h`)
+### `seq_layer_t`  (`sequencer_core/seq_model.h`)
 
-One instance per active sequencer layer. Holds everything about a single pattern.
+One instance per active sequencer layer. Holds everything about a single
+pattern. Abridged to its current field groups:
 
 ```c
 typedef struct {
@@ -36,40 +51,55 @@ typedef struct {
     uint8_t  num_steps;                           // 16 or 32
     uint8_t  num_tracks;                          // always SEQ_TRACKS (4)
     bool     grid[SEQ_TRACKS][SEQ_MAX_STEPS];     // step on/off
-    uint8_t  step_note[SEQ_TRACKS][SEQ_MAX_STEPS];// per-step MIDI pitch (forward-compatible)
-    uint8_t  track_base_note[SEQ_TRACKS];         // current base pitch shown on OLED
+    uint8_t  step_note[SEQ_TRACKS][SEQ_MAX_STEPS];// per-step MIDI pitch
+    uint8_t  track_base_note[SEQ_TRACKS];         // base pitch shown on OLED
+
+    voice_params_t vp[SEQ_TRACKS];                // per-row EG0+EG1 envelopes, filter,
+                                                  // LFO (each with deferred-authority
+                                                  // flag) + output trim
     uint8_t  repeat_rate[SEQ_TRACKS];             // fires every N bars (1/2/4/8)
     bool     mute[SEQ_TRACKS];                    // per-track mute
     bool     solo[SEQ_TRACKS];                    // per-track solo (overrides mute)
-    uint8_t  synth_id;                            // AMY synth slot
-    uint16_t patch;                               // AMY patch number
-    uint32_t synth_flags;                         // AMY synth flags
-    uint8_t  num_voices;                          // polyphony count
-    uint8_t  step_page;                           // display page 0|1 (32-step layers only)
+    bool     chord_mode;                          // progression re-voices this layer
+    uint8_t  chord_root;                          // chromatic 0-11
+    chord_type_t chord_type;
+    uint8_t  swing_pct;                           // odd 16ths delayed by % of a step
+
+    uint8_t  synth_id[SEQ_TRACKS];                // one AMY synth slot per row
+    uint16_t patch;                               // shared melodic timbre
+    uint16_t track_patch[SEQ_TRACKS];             // per-track timbre (drum layer)
+    uint16_t track_pcm_preset[SEQ_TRACKS];        // per-track PCM preset (drum/PCM)
+    uint32_t synth_flags;
+    uint8_t  num_voices;
+    uint8_t  step_page;                           // display page 0|1 (32-step only)
+
+    // per-step decorations (100/1/NONE = "plain" step, zero extra cost)
+    uint8_t  step_prob[SEQ_TRACKS][SEQ_MAX_STEPS];      // 0..100 %
+    uint8_t  step_ratchet[SEQ_TRACKS][SEQ_MAX_STEPS];   // 1..SEQ_MAX_RATCHET (4)
+    uint8_t  step_cond_type[SEQ_TRACKS][SEQ_MAX_STEPS]; // NONE / FILL / PREV
+    uint8_t  step_cond_param[SEQ_TRACKS][SEQ_MAX_STEPS];// FILL: loop divisor 2..8
+    // further per-step fields (note transform, micro-timing nudge, velocity
+    // offset, ratchet taper) exist in the model ahead of their UI
+    ...
 } seq_layer_t;
 ```
 
-### `display_seq_state_t` (`display_seq.h`)
+Two structural points worth noting:
 
-Single global (`seq_state` in `synth_ui.c`) shared between the UI task and the display renderer.
+- **`synth_id` is per row.** Both drum and melodic layers give every track its
+  own AMY synth slot, which is what keeps same-pitch notes on different rows
+  from collapsing into one voice and lets each drum track carry its own patch.
+- **`voice_params_t` is the shared voice-config block.** The same struct is
+  embedded by the arp (`s_arp.vp`) and the drone (`s_d.vp`), so the editors and
+  the deferred-authority rules behave identically across all three engines.
 
-```c
-typedef struct {
-    seq_layer_t layers[MAX_LAYERS];  // all layer data
-    uint8_t     num_layers;          // how many are active
-    uint8_t     active_layer_idx;    // which layer is currently displayed/edited
-    uint16_t    bpm;
-    uint8_t     current_pattern;
-    uint8_t     current_step;        // playhead for active layer
-    bool        playing;
-    uint8_t     selected_track;
-    uint8_t     selected_step;
-    bool        edit_mode;
-    bool        drum_select_mode;    // true while MY_BUTTON_2 held
-} display_seq_state_t;
-```
+### UI state
 
-### Compile-time limits (`display_seq.h`)
+The UI-facing state (`seq_state`, owned by `synth_ui/synth_ui_state.c`) wraps
+the layer array with cursor / edit-mode / active-layer bookkeeping and is read
+by the pure renderers in `components/display/`. See `display_seq.h`.
+
+### Compile-time limits (`seq_model.h`)
 
 | Define | Value | Meaning |
 |---|---|---|
@@ -78,49 +108,67 @@ typedef struct {
 | `SEQ_MAX_STEPS` | 32 | Maximum per layer |
 | `MAX_LAYERS` | 4 | Maximum simultaneous layers |
 
-`display_seq_state_t` owns a fixed-size array of `seq_layer_t`, bounded by the compile-time limits above:
-
 ```mermaid
 classDiagram
-    class display_seq_state_t {
+    class seq_state {
         seq_layer_t layers[MAX_LAYERS]
         uint8_t num_layers
         uint8_t active_layer_idx
-        uint16_t bpm
-        uint8_t current_pattern
-        uint8_t current_step
-        bool playing
         uint8_t selected_track
         uint8_t selected_step
+        bool playing
         bool edit_mode
-        bool drum_select_mode
     }
     class seq_layer_t {
         seq_layer_type_t type
         uint8_t num_steps
-        uint8_t num_tracks
-        bool grid[SEQ_TRACKS][SEQ_MAX_STEPS]
-        uint8_t step_note[SEQ_TRACKS][SEQ_MAX_STEPS]
-        uint8_t track_base_note[SEQ_TRACKS]
-        uint8_t synth_id
-        uint16_t patch
-        uint32_t synth_flags
-        uint8_t num_voices
-        uint8_t step_page
+        bool grid[4][32]
+        uint8_t step_note[4][32]
+        voice_params_t vp[4]
+        uint8_t repeat_rate[4]
+        bool mute[4]
+        bool solo[4]
+        uint8_t synth_id[4]
+        uint16_t track_patch[4]
+        uint8_t step_prob[4][32]
+        uint8_t step_ratchet[4][32]
+        uint8_t step_cond_type[4][32]
     }
-    display_seq_state_t "1" *-- "0..4" seq_layer_t : layers[MAX_LAYERS]
-    note for display_seq_state_t "SEQ_TRACKS=4, SEQ_STEPS=16 (default),\nSEQ_MAX_STEPS=32 (per-layer cap),\nMAX_LAYERS=4 (array cap)"
+    class voice_params_t {
+        seq_env_t env
+        seq_env_t env1
+        seq_filter_t filter
+        seq_lfo_t lfo
+        bool env_authored
+        bool env1_authored
+        bool filter_authored
+        bool lfo_authored
+        float amp_trim
+    }
+    seq_state "1" *-- "0..4" seq_layer_t : layers
+    seq_layer_t "1" *-- "4" voice_params_t : vp per row
 ```
 
 ---
 
 ## AMY Scheduling
 
-Steps are scheduled as **repeating AMY sequencer events** using `SEQUENCE_TICK` / `SEQUENCE_PERIOD`. No FreeRTOS timer fires audio — all timing is owned by the AMY tick engine driven by `amy_update()` in `amy_usb_render_task`.
+Plain steps are scheduled as **repeating AMY sequencer events** using
+`SEQUENCE_TICK` / `SEQUENCE_PERIOD`. No FreeRTOS timer fires audio - all timing
+is owned by the AMY tick engine driven by `amy_update()` in
+`amy_usb_render_task`.
 
-### Tag formula
+**Decorated steps take a different path.** A step whose probability is below
+100 %, whose ratchet count exceeds 1, or which carries a conditional trigger
+does not get a periodic tag at all: `sequencer_core_service_tick()`
+(`seq_core_trig.c`) evaluates it once per loop iteration and schedules one-shot
+events instead, so the probability roll and FILL/PREV conditions are decided
+fresh on every pass.
 
-`SEQUENCE_TAG` is `uint32_t` so the tag space is effectively unlimited. Tags are assigned by layer / track / step position:
+### Tag layout
+
+`SEQUENCE_TAG` is `uint32_t`. Tags are assigned by layer / track / step
+position:
 
 ```
 ON  tag = layer × (SEQ_TRACKS × SEQ_MAX_STEPS × 2)
@@ -133,61 +181,89 @@ Preview = MAX_LAYERS × (SEQ_TRACKS × SEQ_MAX_STEPS × 2)
           + layer × SEQ_TRACKS + track
 ```
 
-With `MAX_LAYERS=4`, `SEQ_TRACKS=4`, `SEQ_MAX_STEPS=32`:
-- Tags 0–1023 — step ON/OFF events for all 4 layers
-- Tags 1024–1039 — one-shot preview events (one per layer per track)
+With `MAX_LAYERS=4`, `SEQ_TRACKS=4`, `SEQ_MAX_STEPS=32` the full map
+(`seq_core_config.h`) is:
+
+| Range | Owner |
+|---|---|
+| 0-1023 | step ON/OFF events, all 4 layers |
+| 1024-1055 | one-shot preview events (one per layer per track) |
+| 1056-1119 | arpeggiator (`SEQ_ARP_TAG_BASE` .. `SEQ_ARP_TAG_MAX`) |
+| 1120-1247 | ratchet one-shots for decorated steps (`SEQ_RATCHET_TAG_BASE` ..) |
+
+`main.c` sets `amy_cfg.max_sequencer_tags = 1280`, clearing the highest used
+tag with margin (AMY's guard is `tag > max_sequences`, an off-by-one that
+allows a write *at* the limit - see ARP-ARCHITECTURE.md).
 
 ### Period derivation
 
-Each layer's bar period is `num_steps × SEQ_TICKS_PER_STEP` (where `SEQ_TICKS_PER_STEP = AMY_SEQUENCER_PPQ / 4 = 12`).
+Each layer's bar period is `num_steps × SEQ_TICKS_PER_STEP` (where
+`SEQ_TICKS_PER_STEP = AMY_SEQUENCER_PPQ / 4 = 12`).
 
 | `num_steps` | Bar period (ticks) | Typical use |
 |---|---|---|
 | 16 | 192 | Standard 1-bar pattern |
 | 32 | 384 | Extended 2-bar pattern |
 
-When a 16-step layer and a 32-step layer run simultaneously, the 16-step layer's period (192) divides evenly into the 32-step period (384), so the shorter pattern **repeats exactly twice** per longer cycle — it never goes silent.
+When a 16-step layer and a 32-step layer run simultaneously, the 16-step
+layer's period (192) divides evenly into the 32-step period (384), so the
+shorter pattern **repeats exactly twice** per longer cycle - it never goes
+silent.
+
+A per-track **repeat rate** (`repeat_rate[track]`, values 1/2/4/8) stretches
+this further: the track's steps fire only every Nth bar, evaluated in the trig
+path.
 
 ### Gate widths
 
-| Layer type | Gate (ticks) | Duration |
-|---|---|---|
-| Drum | `SEQ_TICKS_PER_STEP / 3` = 4 | Short, percussive |
-| Melodic | `SEQ_TICKS_PER_STEP × 2 / 3` = 8 | Legato-ish, 2/3 of step |
+Both gates are Kconfig-set fractions of one step:
+
+| Layer type | Kconfig | Default | Ticks |
+|---|---|---|---|
+| Drum | `SEQ_DRUM_GATE_NUMERATOR/DENOMINATOR` | 3/4 step | 9 |
+| Melodic | `SEQ_MELODIC_GATE_NUMERATOR/DENOMINATOR` | 11/12 step | 11 |
+
+Drums honor note-offs (real patches, not one-shots), so the drum gate controls
+choke vs. ring; the near-legato melodic gate lets notes connect instead of
+stabbing.
 
 ---
 
 ## AMY Synth Slot Assignment
 
-| Layer | Synth ID | Patch | Voices | Synth flags |
-|---|---|---|---|---|
-| Layer 0 (Drum) | 6,7,8,9 (one per track) | per-track from curated Juno drum list (default 58/43/44/46) | 1 | 0 (note-offs enabled) |
-| Layer 1 (Melodic) | 11..14 | 128 (DX7 "E Piano 1") | 1 | 0 (note-offs enabled) |
-| Layer 2 (Melodic) | 15..18 | 128 | 1 | 0 |
-| Layer N (Melodic) | next free block of 4 (capped at 62) | 128 | 1 | 0 |
+| Consumer | Synth slots | Patch | Voices |
+|---|---|---|---|
+| Drum layer (layer 0) | **6-9** (one per track) | per-track from the curated drum list (defaults 58/245/221/220) or per-track PCM presets in PCM mode | 1 |
+| Melodic layers | **11-62**, contiguous blocks of 4 from base 11 | `CONFIG_SEQ_MELODIC_PATCH`, shared across the layer's rows | 1 per row |
+| Arp | **63** | `CONFIG_SEQ_ARP_DEFAULT_PATCH` | 4 |
+| Drone | **64 / 65** (carrier / sub) | build-your-own or AMY preset | 5 / 1 |
 
-The drum layer is now a **per-track Juno-patch layer** (no longer AMY MIDI-drum/PCM
-mode): each of its 4 tracks owns a dedicated synth slot in the fixed block **6..9**
-and loads its own patch from the curated drum list (`SEQ_DRUM_PATCH_LIST` in
-`sequencer_core.c`). Note-offs are honored (flags = 0) so each patch's own release
-envelope shapes the tail; the **drum gate** (`SEQ_GATE_DRUM`, Kconfig
-`SEQ_DRUM_GATE_NUMERATOR/DENOMINATOR`, default 1/2 step) controls choke vs. ring.
-Melodic layers claim consecutive blocks of 4 from base 11; the cap of 62 keeps the
-slot below AMY's `max_synths` (64), with 63 reserved for the arp.
+`main.c` sets `amy_cfg.max_synths = 66`. The melodic ceiling
+(`SEQ_MAX_SYNTH = 62`) keeps layer blocks clear of the arp and drone slots.
 
-Default melodic base notes: **C4 / E4 / G4 / B4** (Cmaj7 voicing). Default drum
-pitches: **C2 / C3 / G3 / C4** (36/48/55/60). Both editable via hold MY_BUTTON_2 +
-encoder. Drum **patch** selection is the patch-hold gesture (MY_BUTTON_1 + encoder),
-cycling the selected drum track through the curated list.
+The drum layer is a **per-track patch layer**: each of its 4 tracks owns a
+dedicated synth slot in the fixed block 6-9 and loads its own patch. In
+**Synth** mode that patch comes from a curated DX7/Juno drum list
+(`seq_core_synth.c`); in **PCM** mode each track plays an AMY PCM preset
+(808-style kick/snare/hat/clap by default). Note-offs are honored (flags = 0)
+so each patch's own release shapes the tail; the drum gate (above) controls
+choke vs. ring.
+
+Default melodic base notes: **C4 / E4 / G4 / B4** (Cmaj7 voicing). Default
+drum pitches: **39 / 45 / 53 / 82** (role-tuned per track). Both editable via
+hold MY_BUTTON_2 + encoder. Drum **patch** selection is the patch-hold gesture
+(MY_BUTTON_1 + encoder), cycling the selected drum track through the curated
+list.
 
 ---
 
 ## Public API
 
-### `sequencer_core.h`
+`sequencer_core.h` is the engine's public surface. Representative slices (the
+header is the source of truth - it has grown well beyond this list):
 
 ```c
-/* Lifecycle */
+/* Lifecycle / transport */
 void sequencer_core_init(void);
 void sequencer_core_set_playing(bool playing);
 void sequencer_core_set_bpm(uint16_t bpm);
@@ -203,46 +279,43 @@ void    sequencer_core_set_step(uint8_t layer_idx, uint8_t track,
                                 uint8_t step, bool state);
 void    sequencer_core_set_track_midi_note(uint8_t layer_idx, uint8_t track,
                                            uint8_t midi_note);
-uint8_t sequencer_core_get_track_midi_note(uint8_t layer_idx, uint8_t track);
+
+/* Per-track performance state */
+void sequencer_core_set_track_mute(uint8_t layer_idx, uint8_t track, bool mute);
+void sequencer_core_set_track_solo(uint8_t layer_idx, uint8_t track, bool solo);
+void sequencer_core_set_track_repeat_rate(uint8_t layer_idx, uint8_t track,
+                                          seq_repeat_rate_t rate);
+
+/* Per-step decorations */
+void sequencer_core_set_step_prob(uint8_t layer_idx, uint8_t track,
+                                  uint8_t step, uint8_t prob);
+/* ...ratchet, cond_type, cond_param accessors follow the same shape */
 ```
 
-### `synth_ui.h`
-
-```c
-/* Init (call after amy_start) */
-void    synth_ui_init(u8g2_t *u8g2);
-
-/* Layer management */
-uint8_t synth_ui_add_layer(seq_layer_type_t type, uint8_t num_steps);
-void    synth_ui_cycle_active_layer(void);
-
-/* Input dispatch */
-void synth_ui_handle_encoder(long delta);
-void synth_ui_handle_button(void);
-void synth_ui_toggle_playing(void);
-void synth_ui_set_bpm(uint16_t bpm);
-void synth_ui_adjust_track_note(int delta);
-void synth_ui_set_drum_select_mode(bool held);
-
-/* Global state — bpm is read directly by encoder_task */
-extern synth_ui_state_t seq_state;
-```
+Mute/solo gating happens in one place - `sequencer_track_audible()`
+(`seq_core_engine.c`): if any track in the layer is soloed, only soloed tracks
+sound; otherwise un-muted tracks sound. Both the plain emit path and the
+decorated-step trig path consult it.
 
 ---
 
-## Button Mapping (as of this implementation)
+## Button Mapping
 
 | Button | Event | Action |
 |---|---|---|
-| MY_BUTTON_0 (GPIO17) | `BUTTON_SINGLE_CLICK` | Cycle active layer (L0 ↔ L1 ↔ …); resets cursor to track 0, step 0, edit mode |
-| MY_BUTTON_0 (GPIO17) | `BUTTON_LONG_PRESS_START` | Toggle play / stop |
-| MY_BUTTON_ENC (GPIO16) | `BUTTON_SINGLE_CLICK` | Toggle focused step (edit mode) / toggle play (non-edit mode) |
-| MY_BUTTON_ENC (GPIO16) | `BUTTON_LONG_PRESS_START` | Open ADSR graph editor (bound to selected track) |
-| MY_BUTTON_1 (GPIO18) | held + encoder | Cycle patch for selected track (melodic layer) or selected drum track (drum layer) |
-| MY_BUTTON_2 (GPIO8) | held + encoder | Transpose base note for selected track (semitones, MIDI 0–127) |
-| MY_BUTTON_3 (GPIO42) | `BUTTON_SINGLE_CLICK` | Open / close main menu overlay |
+| MY_BUTTON_0 (GPIO17) | single click | Cycle active layer; resets cursor to track 0, step 0, edit mode |
+| MY_BUTTON_0 (GPIO17) | long press | Toggle play / stop (or cancel an open editor) |
+| MY_BUTTON_ENC (GPIO16) | single click | Toggle focused step (edit mode) / toggle play (non-edit mode) |
+| MY_BUTTON_ENC (GPIO16) | long press | Open ADSR graph editor (bound to selected track) |
+| MY_BUTTON_1 (GPIO18) | held + encoder | Cycle patch for selected track |
+| MY_BUTTON_2 (GPIO8) | held + encoder | Transpose base note for selected track (semitones) |
+| MY_BUTTON_3 (GPIO42) | single click | Open / close main menu overlay (cycles editor tabs while an editor is open) |
+| MY_BUTTON_3 (GPIO42) | long press | Open the Step Trig popup for the cursor step (sequencer screen); toggle EG0/EG1 while the ADSR editor is open |
 
-⚠ **Stale correction:** an earlier version of this table listed MY_BUTTON_1 as "Adjust BPM." BPM is now set via the menu overlay (`BPM` value item). MY_BUTTON_1 + encoder is the patch-select gesture. BPM can also be adjusted with a bare encoder turn when `edit_mode=false` (step cursor inactive).
+BPM is set via the menu overlay's `BPM` item, or with a bare encoder turn when
+`edit_mode=false`. All button events are queued from the callback to
+`button_handler_task` (depth-16 queue in `main.c`) so no UI logic runs on the
+`esp_timer` task.
 
 ---
 
@@ -250,12 +323,14 @@ extern synth_ui_state_t seq_state;
 
 ```
 [0,0]──────────────────────────────[127,0]
-BPM 120   L0 DRM        ▶         y=8
+BPM 108   L0 DRM        ▶         y=8
 ──────────────────────────────────  y=10
 CHH  □■□□ □■□□ □■□□ □■□□           y=20
 ABD  □□□□ □■□□ □□□□ □■□□           y=30
 Snr  □□□□ □□□□ □□□□ □□□□           y=40
 CBl  □□□□ □□□□ □□□□ □□□□           y=50
+──────────────────────────────────  y=57
+[hint strip: current button roles]  y=57..63
 ```
 
 - Header: `BPM NNN` | `LN TYP` (layer index + DRM/MEL) | ▶/▮▮ | `P1`/`P2` (32-step only)
@@ -265,30 +340,36 @@ CBl  □□□□ □□□□ □□□□ □□□□           y=50
 - Beat separators: vertical lines every 4 steps
 - Playhead: XOR column over current step (only shown if step is on this page)
 - Cursor: rounded rectangle around selected cell (edit mode only)
+- Hint strip: bottom 7 rows, composited by the UI task after the screen fill
 
-For 32-step layers the 16-cell window shown is `page × 16 .. (page+1) × 16 − 1`. Scrolling the cursor past step 15 flips to page 1; past step 31 wraps to step 0 page 0.
+For 32-step layers the 16-cell window shown is `page × 16 .. (page+1) × 16 − 1`.
+Scrolling the cursor past step 15 flips to page 1; past step 31 wraps to step 0
+page 0.
+
+All renderers are **fill-only**; `synth_ui_task` issues the single
+`u8g2_SendBuffer` per redraw after compositing the hint strip, and only when a
+view signature changed (the blocking ~20 ms I2C transfer is the scarce
+resource).
 
 ---
 
 ## FreeRTOS Task Summary
 
+Configured at creation (stack = words passed to `xTaskCreatePinnedToCore`):
 
-| Task | Priority | Core | Stack (HWM bytes) | Rate |
+| Task | Priority | Core | Stack | Rate |
 |---|---:|---:|---:|---|
-| `amy_render` | 22 | Core 1 | 6104 (≈6.1 KB HWM) | Deadline-driven (~5.33 ms/block at 48 kHz) |
-| `main` | 1 | 0 | 11276 (≈11.3 KB HWM) | Application entry / init loop |
-| `IDLE0` | 0 | 0 | 3292 (≈3.3 KB HWM) | Idle |
-| `IDLE1` | 0 | 1 | 3452 (≈3.5 KB HWM) | Idle |
-| `encoder_task` | 5 | 0 | 7360 (≈7.4 KB HWM) | 50 Hz poll |
-| `seq_ui` | 5 | 0 | 2280 (≈2.3 KB HWM) | 20 Hz (`vTaskDelayUntil`, 50 ms) |
-| `ipc0` | 24 | 0 | 1872 (≈1.9 KB HWM) | IPC / cross-core comms |
-| `ipc1` | 24 | 1 | 1872 (≈1.9 KB HWM) | IPC / cross-core comms |
-| `TinyUSB (UAC)` | 13 | 0 | 3308 (≈3.3 KB HWM) | USB host/device handling (event-driven) |
-| `esp_timer` | 22 | 0 | 3160 (≈3.2 KB HWM) | Timer callbacks / sequencer tick support |
-| `usb_mic_task` | 12 | 0 | 3420 (≈3.4 KB HWM) | USB microphone streaming / ring-buffer I/O |
-| `button_task` | 5 | 0 | 7484 (≈7.5 KB HWM) | Blocks on queue |
+| `amy_render` | 22 | 1 | 8192 | Deadline-driven (one 256-sample block per GPTimer wake, 5333 µs) |
+| `seq_ui` | 5 | 0 | 8192 | 20 Hz (`vTaskDelayUntil`, 50 ms); sized for AMY patch-string parses during deferred layer adds |
+| `button_task` | 5 | 0 | 8192 | Blocks on the button event queue |
+| `encoder_task` | 5 | 0 | 8192 | 50 Hz poll |
+| TinyUSB / UAC tasks | (component) | 0 | - | USB service, pinned to core 0 via sdkconfig |
+| `esp_timer` | 22 | 0 | - | AMY's 500 µs sequencer poll runs here |
 
-The `seq_ui` task owns one call path: read playhead from `sequencer_core_get_current_step()` → copy into `seq_state` → call `display_seq_draw_frame()`. No AMY state is read or written here.
+The `seq_ui` task owns one call path per frame: service the arp / drone /
+progression / LFO engines, resolve the active view, build its flat view
+struct, draw, composite the hint strip, and flush once. No AMY state is
+touched outside the queued event API.
 
 ---
 
@@ -297,19 +378,19 @@ The `seq_ui` task owns one call path: read playhead from `sequencer_core_get_cur
 ```
 app_main
   ├── i2c_u8g2_init()
-  ├── amy_start()              ← multicore=0, multithread=0, AMY_AUDIO_IS_NONE
+  ├── amy_start()              ← multicore=0, multithread=0, AMY_AUDIO_IS_NONE,
+  │                              max_synths=66, max_sequencer_tags=1280
   ├── usb_audio_init()
-  ├── synth_ui_init()
+  ├── synth_ui_init(u8g2)
+  │     ├── amy_helpers_init()          (shared event scratch + mutex)
   │     ├── sequencer_core_init()
-  │     ├── synth_ui_add_layer(SEQ_LAYER_DRUM, 16)
-  │     │     └── sequencer_core_add_layer() → configures AMY synth slot 10
-  │     ├── default pattern written to layers[0].grid
-  │     ├── sync_layer_to_core(0)
+  │     ├── arp_core_init() / drone_core_init() / sample_rec_init()
+  │     ├── add drum layer        → synth slots 6..9, seeded groove
   │     ├── sequencer_core_set_playing(true)
-  │     └── xTaskCreate(seq_ui_task)
-  ├── synth_ui_add_layer(SEQ_LAYER_MELODIC, 16)
-  │     └── sequencer_core_add_layer() → configures AMY synth slot 12
-  ├── xTaskCreatePinnedToCore(amy_render_task, core 1)
+  │     ├── add melodic layer     → synth slots 11..14
+  │     └── xTaskCreate(seq_ui task)
+  ├── xTaskCreatePinnedToCore(amy_usb_render_task, core 1)
+  ├── button queue + button_handler_task
   ├── my_buttons_init() + register_cb()
   └── encoder_init_task (deferred 1 s)
 ```
@@ -324,26 +405,22 @@ sequenceDiagram
     participant USB as usb_audio_init
     participant UI as synth_ui_init
     participant Core as sequencer_core
-    participant SeqTask as seq_ui_task
+    participant SeqTask as seq_ui task
     participant Render as amy_usb_render_task (Core 1)
-    participant Btn as my_buttons_init
+    participant Btn as button path
     participant Enc as encoder_init_task
 
     app_main->>OLED: i2c_u8g2_init()
     app_main->>AMY: amy_start() [multicore=0, multithread=0, AMY_AUDIO_IS_NONE]
     app_main->>USB: usb_audio_init()
     app_main->>UI: synth_ui_init()
-    UI->>Core: sequencer_core_init()
-    UI->>UI: synth_ui_add_layer(SEQ_LAYER_DRUM, 16)
-    UI->>Core: sequencer_core_add_layer() -> configures AMY synth slot 10
-    UI->>UI: default pattern written to layers[0].grid
-    UI->>Core: sync_layer_to_core(0)
+    UI->>Core: sequencer_core_init() + arp/drone/sampler init
+    UI->>Core: add drum layer (slots 6..9, seeded groove)
     UI->>Core: sequencer_core_set_playing(true)
-    UI->>SeqTask: xTaskCreate(seq_ui_task)
-    app_main->>UI: synth_ui_add_layer(SEQ_LAYER_MELODIC, 16)
-    UI->>Core: sequencer_core_add_layer() -> configures AMY synth slot 12
+    UI->>Core: add melodic layer (slots 11..14)
+    UI->>SeqTask: create seq_ui task
     app_main->>Render: xTaskCreatePinnedToCore(amy_usb_render_task, core 1)
-    app_main->>Btn: my_buttons_init() + register_cb()
+    app_main->>Btn: button queue + button_handler_task + my_buttons_init()
     app_main->>Enc: encoder_init_task (deferred 1 s)
 ```
 
@@ -351,33 +428,35 @@ sequenceDiagram
 
 ## Future Development Considerations
 
-
-### 32-step patterns
-
-`synth_ui_add_layer(type, 32)` already works. The core uses `num_steps × SEQ_TICKS_PER_STEP` as the bar period, so any `num_steps` value that is a multiple of 16 (16, 32) works without code changes. A UI function to toggle an existing layer between 16 and 32 steps would need to reschedule all its events (`sequencer_resync_layer(idx)`) after updating `layer->num_steps`.
-
-Call `sequencer_configure_synth(layer_idx)` (currently static) after changing `s_layers[layer_idx].patch`. You would need to expose it or add a `sequencer_core_set_patch(uint8_t layer_idx, uint16_t patch)` API function.
-
 ### More than 4 layers
 
-Increase `MAX_LAYERS` in `display_seq.h`. The tag formula scales automatically. Memory impact: each `seq_layer_t` is approximately `4×32 + 4×32 + sizeof(misc)` ≈ 300 bytes; 8 layers ≈ 2.4 KB. The OLED layout fits 4 tracks regardless of layer count — only one layer is displayed at a time, so display code is unaffected.
+Increase `MAX_LAYERS` in `seq_model.h`. The tag formula scales automatically
+(raise `amy_cfg.max_sequencer_tags` to keep the arp and ratchet windows above
+the step window). Memory impact per layer is dominated by the per-step
+decoration arrays; the OLED shows one layer at a time, so display code is
+unaffected. Melodic slot pressure: each layer consumes a block of 4 slots
+between 11 and 62, so the practical ceiling is ~12 melodic layers before the
+slot map, not memory, is the limit.
 
-AMY synth slot pressure: each melodic layer consumes one AMY synth slot (slots 12, 13, 14 … for layers 1, 2, 3). AMY defaults to `max_synths=64`, so up to ~50 melodic layers are mechanically possible.
+### Whole-layer mute / play-stop per layer
 
-### Layer deletion / reordering
-
-Not currently implemented. `s_num_layers` only ever increments. A delete operation would need to: clear all scheduled tags for the layer (`sequencer_clear_layer_tags(idx)`), compact the `s_layers[]` array, and renumber the surviving layers' tags (which requires re-emitting all steps). Simplest alternative: support muting a layer instead of deleting it.
-
-### Separate play/stop per layer
-
-Currently `sequencer_core_set_playing(bool)` stops all layers.
-
-Per-**track** mute/solo (scoped within a layer, not across layers) is implemented: `seq_layer_t.mute[SEQ_TRACKS]` / `.solo[SEQ_TRACKS]`, gated in `sequencer_emit_step()` via `sequencer_track_audible()` — solo, if engaged on any track in the layer, overrides mute (including on the same track). Exposed via `sequencer_core_set/get_track_mute()` and `sequencer_core_set/get_track_solo()`, editable from the TrackOpts screen (`ui_screen_trackopts.c`, rows `TO_ROW_MUTE`/`TO_ROW_SOLO`). A whole-layer mute/solo (independent of the per-track one) is not implemented and remains a future option.
+Per-track mute/solo (scoped within a layer) is implemented and editable from
+TrackOpts. A whole-layer mute, or per-layer transport independent of the
+global `sequencer_core_set_playing(bool)`, remains open.
 
 ### Saving patterns (NVS)
 
-No persistence is implemented. `seq_layer_t` is a flat struct with no pointers, so it is directly serialisable to NVS with `nvs_set_blob`. Key design decision: use a fixed blob key per slot index (e.g. `"layer_0"`, `"layer_1"`) and save `seq_state.num_layers` separately.
+No persistence is implemented. `seq_layer_t` is a flat struct with no
+pointers, so it is directly serialisable to NVS with `nvs_set_blob`. Key
+design decision: use a fixed blob key per slot index (e.g. `"layer_0"`,
+`"layer_1"`) and save the layer count separately. The chord progression and
+the resampler's PCM capture are similarly RAM-only today.
 
 ### AMY `write_samples_fn` / future upstream UAC support
 
-The current audio path is `AMY_AUDIO_IS_NONE` with `amy_usb_render_task` manually calling `amy_update()` → `usb_audio_write_stereo()`. If AMY upstream adds a proper ESP UAC path, migration would involve setting `amy_cfg.audio = AMY_AUDIO_IS_USB_GADGET` and pointing `amy_cfg.write_samples_fn` to a thin wrapper, eliminating `amy_usb_render_task`. The sequencer core is unaffected by this change.
+The current audio path is `AMY_AUDIO_IS_NONE` with `amy_usb_render_task`
+manually calling `amy_update()` → `usb_audio_write_stereo()`. If AMY upstream
+adds a proper ESP UAC path, migration would involve setting
+`amy_cfg.audio = AMY_AUDIO_IS_USB_GADGET` and pointing
+`amy_cfg.write_samples_fn` to a thin wrapper, eliminating
+`amy_usb_render_task`. The sequencer core is unaffected by this change.

@@ -1,81 +1,125 @@
 # synth_core Component
 
-This component provides a minimal, non-blocking 16-step sequencer UI for the AMY synth project on an ESP32-S3 with a 128x64 OLED display.
+The application brain of S3-Amysynth: the multi-layer step sequencer engine,
+every UI screen, the scale/chord quantizer, and the standalone instruments
+(arpeggiator, stutter drone, FM voice, resampler). Everything here talks to
+AMY exclusively through its queued event API and hands flat view structs to
+the `display` component for rendering.
 
-## Features
+## Layout
 
-- **4-Track x 16-Step Grid**: Displays 4 tracks (BD, SD, CH, OH) with 16 steps each.
-- **Non-blocking UI**: Uses a dedicated FreeRTOS task (`synth_ui_task`) running at 20Hz to refresh the display without blocking audio processing.
-- **Sequencer Timer**: A separate high-priority FreeRTOS task (`sequencer_timer_task`) handles BPM timing and schedules `amy_event`s for active steps.
-- **Encoder Integration**: 
-  - Rotating the encoder navigates the grid (in edit mode) or changes the BPM (in play mode).
-  - Pressing the encoder button toggles the selected step (in edit mode) or toggles play/pause (in play mode).
-- **Immediate Feedback**: Toggling a step immediately posts an `amy_event` to preview the sound.
+**Top level**
 
-## Architecture
+| File | Role |
+| --- | --- |
+| `amy_helpers.c` | shared AMY event scratch + mutex (an `amy_event` is ~800 B and never lives on a task stack) |
+| `amy_fx.c` | global FX cache and post-patch-load reassert (`synth_ui_fx_reassert_global`) |
+| `quantizer.c` | scale tables and chord math (shared by grid, arp, progression, drone) |
+| `arp_core.c` | arpeggiator engine — see [ARP-ARCHITECTURE.md](ARP-ARCHITECTURE.md) |
+| `voice_config.c` | shared voice-parameter layer: builds 2-osc WAVE voices, wires the native AMY LFO |
+| `graph_popup_amy.c` | AMY breakpoint ↔ graph-widget adapter for the envelope editor |
 
-- `synth_ui.c`: Contains the state machine, FreeRTOS tasks, and input handlers.
-- `include/synth_ui.h`: Exposes the initialization and input handling functions.
-- Relies on `display` for low-level display drawing helpers (`display_seq_draw_frame`).
-- Relies on `amy` for audio synthesis and event scheduling.
+**`sequencer_core/`** — the engine, split by concern: `seq_model.h` (data
+model), `seq_core_state.c` (layer lifecycle), `seq_core_engine.c` (tag
+scheduling, transport, mute/solo), `seq_core_trig.c` (per-step
+probability/ratchet/conditional trigs), `seq_core_synth.c` (patch loading,
+drum Synth/PCM engines), `seq_core_editors.c` (envelope/filter/LFO commits),
+`seq_core_tempo.c` (BPM), `seq_core_progression.c` (chord progression).
 
-## Usage
+**`synth_ui/`** — the 20 Hz UI task (`synth_ui_task.c`), the per-screen input
+handlers (`ui_screen_menu/arp/drone/prog/trackopts/stepedit/fxmenu/fm.c`),
+the modal editors (`ui_editors.c`: ADSR graph, filter, LFO), the screen/overlay
+precedence resolver (`ui_view_resolve.c`), patch cycling
+(`ui_patch_cycle.c`), and the bottom hint strip (`synth_ui_hint.c`).
 
-1. Initialize the display using `i2c_u8g2_init()`.
-2. Call `synth_ui_init(u8g2)` with the initialized `u8g2_t` pointer.
-3. In your encoder task, call `synth_ui_handle_encoder(delta)` when the encoder rotates.
-4. In your button task/interrupt, call `synth_ui_handle_button()` when the encoder button is pressed.
+**`custompatches/`** — instruments and presets built on AMY's event API:
+`drone_core.c` (see [DRONE.md](custompatches/DRONE.md)), `bass_presets.c`
+(multi-osc bass patches with EG1-driven filter sweeps), `fm_presets.c` /
+`fm_voice.c` (6-op FM presets + the live-editable FM voice, gated by
+`CONFIG_SYNTH_CUSTOM_FM`), `sample_rec.c` (the 1.5 s output resampler).
 
+## Highlights
+
+- **Per-row synths everywhere.** Every track of every layer (drum and
+  melodic) owns its own AMY synth slot: drums 6-9, melodic layers in blocks
+  of 4 from slot 11 (cap 62), arp 63, drone 64/65. AMY routes note-on by
+  `(synth, pitch)`, so shared slots would collapse same-pitch notes into one
+  voice.
+- **Non-blocking UI.** A dedicated FreeRTOS task (`seq_ui`, 20 Hz) services
+  the arp/drone/progression engines, resolves the active view, and draws.
+  Renderers are fill-only; the task issues one `u8g2_SendBuffer` per redraw,
+  and only when a view signature changed.
+- **AMY owns all musical timing.** Steps are repeating AMY sequencer events;
+  decorated steps (probability / ratchet / conditional trigs) are evaluated
+  per loop pass in `seq_core_trig.c`. No FreeRTOS timer fires audio.
+- **One shared voice-parameter block.** `voice_params_t` (EG0 + EG1
+  envelopes, filter, LFO, amp trim - each with a deferred-authority flag) is
+  embedded per melodic row, by the arp, and by the drone, so editor behavior
+  and patch-vs-user authority rules are identical across instruments.
+
+## Initialization
+
+`synth_ui_init(u8g2)` is the single entry point (called from `app_main` after
+`amy_start()` and `usb_audio_init()`). It initializes the helpers, engine,
+arp, drone and sampler, creates the boot drum + melodic layers, starts
+playback, and spawns the UI task. Input arrives via
+`synth_ui_handle_encoder(delta)` and the button dispatch in `main.c`.
 
 ## Melodic Envelope System
 
-Melodic layers shape note onset/tail via an AMY EG0 envelope. The system is layered:
-a compile-time **seed**, an optional **startup push**, and a live **runtime editor**.
-These cooperate — they are not competing implementations.
+Melodic layers shape note onset/tail via an AMY EG0 envelope, with a second
+envelope (EG1) available for modulation targets such as filter cutoff. The
+system is layered: a compile-time **seed**, an optional **startup push**, and
+a live **runtime editor**. These cooperate - they are not competing
+implementations.
 
-> **Synth model:** each melodic **row** (track) owns its **own** AMY synth slot
-> (`synth_id[track]`). Rows do not share a synth, so identical pitches on
-> different rows allocate independent voices and each row has a fully independent
-> live envelope. (Drums are the exception: one synth for all drum tracks, relying
-> on MIDI-drum pitch separation.) See *Per-row synths* below.
+> **Synth model:** each **row** (track) owns its **own** AMY synth slot
+> (`synth_id[track]`), so identical pitches on different rows allocate
+> independent voices and each row has fully independent live envelopes,
+> filter, and LFO. See *Per-row synths* above.
 
 ### Data flow
 
 ```
-Kconfig defaults ──seed──> layer->env[track] ──push──> AMY synth (EG0)
+Kconfig defaults ──seed──> layer->vp[track].env ──push──> AMY synth (EG0)
                               ▲                            ▲
                               │                            │
                 graph editor commit ────────────────────────
 ```
 
-1. **Seed (compile-time).** On layer creation (`sequencer_core.c`,
-   `sequencer_core_add_layer`), every melodic row's `layer->env[track]` is
-   initialised from `CONFIG_SEQ_MELODIC_ENV_*`. These are only the *initial*
-   values of the per-row store.
-2. **Push to AMY.** `sequencer_configure_melodic_envelope_track()` builds an AMY
-   event (`bp_is_set[0]`, `eg_type[0]`, `eg0_times/values`) and sends it. This
-   whole function is gated by `CONFIG_SEQ_MELODIC_ENVELOPE_ENABLED`. The layer-level
-   `sequencer_configure_melodic_envelope()` only pushes rows that are **authored**
-   (see *Deferred authority* below) — unauthored rows let the patch's own envelope
-   play.
+1. **Seed (compile-time).** On layer creation (`sequencer_core_add_layer`),
+   every melodic row's `vp[track]` is initialised via
+   `voice_params_init_defaults()`, with the EG0 values coming from
+   `CONFIG_SEQ_MELODIC_ENV_*`. These are only the *initial* values of the
+   per-row store.
+2. **Push to AMY.** `sequencer_configure_melodic_envelope_track()` builds an
+   AMY event (`bp_is_set[0]`, `eg_type[0]`, breakpoint times/values) and sends
+   it, gated by `CONFIG_SEQ_MELODIC_ENVELOPE_ENABLED`. Only **authored** rows
+   are pushed (see *Deferred authority*) - unauthored rows let the patch's own
+   envelope play.
 3. **Runtime edit.** The graph editor commits through
-   `sequencer_core_set_melodic_envelope()`, which overwrites the **same**
-   `layer->env[track]` struct, marks the row **authored**, and immediately
-   re-pushes to AMY.
+   `sequencer_core_set_melodic_envelope()`, which overwrites the same
+   `vp[track].env` struct, marks the row **authored**, and immediately
+   re-pushes to AMY. The EG1 breakpoint set follows the same path via its own
+   store (`vp[track].env1`), switched in the editor with MY_BUTTON_3
+   long-press.
 
 ### Deferred authority over patches
 
-A patch preset carries its own envelope. We don't want a one-time custom curve to
-permanently shadow every future preset on that row, so authority is **deferred**:
+A patch preset carries its own envelope. We don't want a one-time custom curve
+to permanently shadow every future preset on that row, so authority is
+**deferred**:
 
-- Each row has a `bool env_authored[track]` flag (`seq_layer_t`), starting `false`.
-- A **patch change** (`sequencer_core_set_melodic_patch` → `configure_synth`) only
-  re-imposes a row's stored envelope **if that row is authored**. Unauthored rows
-  adopt the freshly-loaded patch's own envelope.
-- A row becomes authored **only** when the user commits in the graph editor
-  (`sequencer_core_set_melodic_envelope` sets the flag). Custom values are always
-  *retained* in `layer->env[track]`, but they don't override a new preset until the
-  user re-opens the editor and commits again.
+- Each row's envelope has an `env_authored` flag (in `voice_params_t`),
+  starting `false`.
+- A **patch change** only re-imposes a row's stored envelope **if that row is
+  authored**. Unauthored rows adopt the freshly-loaded patch's own envelope.
+- A row becomes authored **only** when the user commits in the graph editor.
+  Custom values are always *retained*, but they don't override a new preset
+  until committed again.
+
+The filter and LFO settings carry their own `filter_authored` /
+`lfo_authored` flags with identical semantics.
 
 ```mermaid
 flowchart TD
@@ -89,95 +133,61 @@ flowchart TD
 
 Net effect: switch an *unauthored* row to a Juno preset and you hear Juno's
 envelope; customize a row in the editor (authoring it) and it keeps your curve
-across later patch changes. The `env_authored` flag is the single switch
-implementing this; there is currently no UI to clear it (re-authoring just
-overwrites with new committed values).
+across later patch changes.
 
 ### Kconfig options
 
 | Config | Default | Meaning |
 | --- | --- | --- |
-| `SEQ_MELODIC_ENVELOPE_ENABLED` | `y` | Master gate for pushing any EG0 envelope to AMY. **If `n`, graph edits update the stored struct but never reach AMY** (the push is `#ifdef`'d out), so the editor appears broken. Keep `y` whenever the editor is used. |
+| `SEQ_MELODIC_ENVELOPE_ENABLED` | `y` | Master gate for pushing any EG0 envelope to AMY. **If `n`, graph edits update the stored struct but never reach AMY** (the push is compiled out), so the editor appears broken. Keep `y` whenever the editor is used. |
 | `SEQ_MELODIC_ENV_EG0_TYPE` | `0` | `0`=Normal (musical), `1`=Linear, `2`=DX7, `3`=True exp. Type `2` is for DX7 level tables and sounds wrong on a plain A/D/S/R breakpoint set. |
-| `SEQ_MELODIC_ENV_ATTACK_MS` | `10` | Seed attack. Overwritten by editor commits. |
-| `SEQ_MELODIC_ENV_DECAY_MS` | `200` | Seed decay. Note: in the editor, decay time is **auto-derived** from attack + sustain (see *Locked sustain X*), so committed decay reflects the rule, not a dragged value. |
-| `SEQ_MELODIC_ENV_SUSTAIN_PCT` | `60` | Seed sustain level (%). |
-| `SEQ_MELODIC_ENV_RELEASE_MS` | `320` | Seed release. |
-| `SEQ_ENV_DEBUG_DUMP` | `n` | Temporary HW verification. Logs the exact breakpoint event sent to the row's synth on commit (target synth, eg_type, A/D/S/R ms, sustain). Off for normal builds. |
+| `SEQ_MELODIC_ENV_ATTACK_MS` | `4` | Seed attack. Overwritten by editor commits. |
+| `SEQ_MELODIC_ENV_DECAY_MS` | `250` | Seed decay. In the editor, decay time is **auto-derived** from attack + sustain (see *Locked sustain X*), so committed decay reflects the rule, not a dragged value. |
+| `SEQ_MELODIC_ENV_SUSTAIN_PCT` | `30` | Seed sustain level (%). |
+| `SEQ_MELODIC_ENV_RELEASE_MS` | `200` | Seed release. |
+| `SEQ_ENV_DEBUG_DUMP` | `n` | Logs the exact breakpoint event sent to the row's synth on commit. Off for normal builds. |
 
-The seed values are *not* stale once the editor exists — the editor writes the
+The seed values are *not* stale once the editor exists - the editor writes the
 exact same struct. Change them only if you want a different starting shape.
 
-### Graph editor (`graph_popup_amy.c`, `synth_ui.c`)
+### Graph editor (`graph_popup_amy.c`, `synth_ui/ui_editors.c`)
 
 - `graph_popup_amy.c` is the AMY↔widget adapter. It converts between AMY
   breakpoint arrays (times in ms, values 0..1) and the widget's normalised
   point model, prepending an implicit `(0,0)` origin.
 - `synth_ui_graph_open_envelope()` seeds the 3-point editor (A/D/R, plus
-  origin) from the **selected row's** stored envelope via `graph_seed_from_env()`.
+  origin) from the bound target's stored envelope via `graph_seed_from_env()`.
 - `graph_commit_to_env()` reads the points back, converts X→ms under the active
-  range mapping, and calls `sequencer_core_set_melodic_envelope()`. Edits reach
-  AMY immediately on commit.
+  range mapping, and commits to whichever instrument opened the editor. Edits
+  reach AMY immediately on commit.
 - **SHORT/LONG time range:** the X axis is linear in SHORT (2 s) and log-squashed
   in LONG (15 s). `graph_ms_to_x()`/`graph_x_to_ms()` are inverse mappings used
-  on both seed and commit, so round-trips don't drift. Toggling the range while
-  editing preserves in-progress points (it re-maps current points rather than
-  re-seeding from storage).
-- **Locked sustain X (auto-decay).** The sustain point is **Y-only**: the user sets
-  its *level*, but its *X* (the decay time) is derived, not draggable. The widget
-  enforces this via `graph_popup_set_adsr_lock_sx()` + `adsr_x_editable()` (S.x
-  nudges are ignored); the host recomputes S.x in `graph_recompute_decay()` after
-  seeding and after every encoder edit. This removes the hidden decay-time control
-  and the A/S marker overlap. The rule (`graph_decay_ms()`, all constants in
-  `synth_ui.c`):
+  on both seed and commit, so round-trips don't drift. The range auto-switches
+  with hysteresis based on total envelope length.
+- **Locked sustain X (auto-decay).** The sustain point is **Y-only**: the user
+  sets its *level*, but its *X* (the decay time) is derived, not draggable. The
+  widget enforces this via `graph_popup_set_adsr_lock_sx()`; the host
+  recomputes S.x in `graph_recompute_decay()` after seeding and after every
+  encoder edit. The rule (`graph_decay_ms()`, constants in `ui_editors.c`):
 
   ```
   decay_ms = clamp(DECAY_BASE_MS + attack_ms*DECAY_ATTACK_K
                    + (1 - sustain)*DECAY_SUSTAIN_SPAN_MS, MIN, MAX)
   ```
 
-  i.e. **lower sustain → longer, more audible decay**, scaling gently with attack.
-  `graph_commit_to_env()` reconstructs `decay = cum_d - cum_a`, which now equals the
-  derived value, so the committed `seq_env_t.decay_ms` carries the auto-decay.
+  i.e. **lower sustain → longer, more audible decay**, scaling gently with
+  attack. `graph_commit_to_env()` reconstructs `decay = cum_d - cum_a`, which
+  equals the derived value, so the committed `seq_env_t.decay_ms` carries the
+  auto-decay.
 
-### Per-row synths
+### Voice sizing
 
-Each melodic row has its **own** AMY synth (`synth_id[SEQ_TRACKS]` in
-`seq_layer_t`). All rows in a layer share the same patch, flags, and per-synth
-voice count, but live on distinct synth slots. Consequences:
-
-- **No cross-row voice collapse.** AMY routes note-on by `(synth, pitch)`. With a
-  shared synth, two rows resolving to the same pitch on the same step collapsed
-  onto one voice ("squashed / one note dominating"). Distinct synths fix this.
-- **Independent envelopes.** Editing row 0's envelope then row 2's affects each
-  row independently — there is no shared "active row" arbitration. (The old
-  `s_active_env_track` concept was removed in this migration.)
-
-**Slot allocation.** Drums use slot `SEQ_DRUM_SYNTH` (10). Melodic layers claim a
-contiguous block of `SEQ_TRACKS` slots from a running counter
-(`s_next_melodic_synth`, starting at `SEQ_MEL_SYNTH_BASE` = 11). The first
-melodic layer gets 11..14, the next 15..18, etc. Allocation is guarded against
-AMY's synth ceiling (`SEQ_MAX_SYNTH` = 63 < `max_synths` = 64).
-
-**Voice sizing.** Each row synth uses `SEQ_MEL_VOICES` voices (default **1** — a
-row only sounds one pitch at a time). Bump to 2 for note-off/note-on overlap
-headroom at the step boundary, at 2× oscillator cost. AMY's default osc budget
-is **250** (AMY default); worst case (4 layers × 4 rows × 1 voice × ~6 oscs/DX7-voice) ≈ 96
-oscs, comfortably under budget — and lower than the previous over-provisioned
-16-voice shared pools.
-
-### Build parameters for long test sessions
-
-- Keep `SEQ_MELODIC_ENVELOPE_ENABLED=y` (else edits never reach AMY).
-- Keep `SEQ_MELODIC_ENV_EG0_TYPE=0` (musical; type 2 sounds wrong here).
-- Enable `USB_AUDIO_DIAGNOSTICS=y` for underrun/drop/ring-fill counters.
-- Leave `USB_AUDIO_BLOCKING_WRITE` unset (drop mode preserves AMY clock
-  alignment; blocking can mask real-time issues over a long run).
-- Enable `AMYSYNTH_RTOS_STATS=y` to catch stack/load issues; consider raising
-  `AMYSYNTH_RTOS_STATS_PERIOD_MS` to 15000–30000 so periodic dumps don't drown
-  out the per-edit log line:
-  `env L%u row%u -> A%u D%u S%u%% R%u` (emitted by `sequencer_core_set_melodic_envelope`),
-  which confirms each commit landed.
+Each row synth uses `SEQ_MEL_VOICES` voices (default **1** - a row only
+sounds one pitch at a time). Bump to 2 for note-off/note-on overlap headroom
+at the step boundary, at 2× oscillator cost. AMY's osc budget is **250**
+(the AMY default); worst case (4 layers × 4 rows × 1 voice × ~6
+oscs/DX7-voice) ≈ 96 oscs plus the drum, arp and drone slots - comfortably
+under budget.
 
 ## Scale Table
 

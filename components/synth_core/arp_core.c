@@ -2,6 +2,7 @@
 #include "sequencer_core.h"
 #include "custompatches/fm_voice.h"  /* s_fm_voice + fm_voice_push_live (FM_CUSTOM) */
 #include "amy_helpers.h"   /* amy_helpers_event_begin/send — for WAVE mode osc config */
+#include "voice_config.h"  /* canonical LFO depth scalars + shared wave map */
 #include "quantizer.h"
 #include "seq_clamp.h"
 #include "sdkconfig.h"
@@ -177,18 +178,8 @@ void arp_core_clear_all(void)
 
 /* ── Source configuration helpers ────────────────────────────────────── */
 
-/* Map lfo_wave_t → AMY wave constant. */
-static uint16_t arp_lfo_wave_to_amy(lfo_wave_t wave)
-{
-    switch (wave) {
-        case LFO_WAVE_SINE:     return SINE;
-        case LFO_WAVE_TRIANGLE: return TRIANGLE;
-        case LFO_WAVE_SAW_UP:   return SAW_UP;
-        case LFO_WAVE_SAW_DOWN: return SAW_DOWN;
-        case LFO_WAVE_SQUARE:   return PULSE;
-        default:                return SINE;   /* LFO_WAVE_RANDOM → SINE fallback */
-    }
-}
+/* Map lfo_wave_t → AMY wave constant (shared map in voice_config.c). */
+#define arp_lfo_wave_to_amy voice_lfo_wave_to_amy
 
 /* Configure the arp's AMY synth slot as a bare oscillator (WAVE mode).
  *
@@ -237,10 +228,10 @@ static void arp_configure_wave_synth(void)
         e->mod_source = 1;
         float d = s_arp.lfo.depth / 100.0f;
         switch (s_arp.lfo.target) {
-            case LFO_TARGET_FILTER: e->filter_freq_coefs[COEF_MOD] = d * 3.0f; break;
-            case LFO_TARGET_AMP:    e->amp_coefs[COEF_MOD]         = d * 0.5f; break;
-            case LFO_TARGET_PITCH:  e->freq_coefs[COEF_MOD]        = d * 1.0f; break;
-            case LFO_TARGET_SCAN:   e->duty_coefs[COEF_MOD]        = d * 0.5f; break;
+            case LFO_TARGET_FILTER: e->filter_freq_coefs[COEF_MOD] = d * VOICE_LFO_DEPTH_FILTER; break;
+            case LFO_TARGET_AMP:    e->amp_coefs[COEF_MOD]         = d * VOICE_LFO_DEPTH_AMP;    break;
+            case LFO_TARGET_PITCH:  e->freq_coefs[COEF_MOD]        = d * VOICE_LFO_DEPTH_PITCH;  break;
+            case LFO_TARGET_SCAN:   e->duty_coefs[COEF_MOD]        = d * VOICE_LFO_DEPTH_SCAN;   break;
             default: break;
         }
     }

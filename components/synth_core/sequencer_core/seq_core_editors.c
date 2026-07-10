@@ -1,4 +1,5 @@
 #include "sequencer_core/seq_core_internal.h"
+#include "voice_config.h"
 
 /* ── State definitions — owns LFO phase accumulators ────────────────── */
 /* Software LFO state (phase accumulator, per-layer/track) */
@@ -11,17 +12,7 @@ uint32_t s_lfo_rng_state = 0xDEADBEEFu;
 
 #if CONFIG_SEQ_MELODIC_AMY_NATIVE_LFO
 
-static uint16_t lfo_wave_to_amy(lfo_wave_t wave)
-{
-    switch (wave) {
-        case LFO_WAVE_SINE:     return SINE;
-        case LFO_WAVE_TRIANGLE: return TRIANGLE;
-        case LFO_WAVE_SAW_UP:   return SAW_UP;
-        case LFO_WAVE_SAW_DOWN: return SAW_DOWN;
-        case LFO_WAVE_SQUARE:   return PULSE;
-        default:                return SINE;
-    }
-}
+#define lfo_wave_to_amy voice_lfo_wave_to_amy
 
 /* True when the given authored track should use AMY native LFO.
  * Caller is responsible for ensuring the layer uses a wave patch. */
@@ -48,10 +39,10 @@ static void melodic_configure_native_lfo_track(const seq_layer_t *layer, uint8_t
         e->osc        = 0;
         e->mod_source = 1;
         switch (lfo->target) {
-            case LFO_TARGET_FILTER: e->filter_freq_coefs[COEF_MOD] = d * 3.0f; break;
-            case LFO_TARGET_AMP:    e->amp_coefs[COEF_MOD]         = d * 0.5f; break;
-            case LFO_TARGET_PITCH:  e->freq_coefs[COEF_MOD]        = d * 1.0f; break;
-            case LFO_TARGET_SCAN:   e->duty_coefs[COEF_MOD]        = d * 0.5f; break;
+            case LFO_TARGET_FILTER: e->filter_freq_coefs[COEF_MOD] = d * VOICE_LFO_DEPTH_FILTER; break;
+            case LFO_TARGET_AMP:    e->amp_coefs[COEF_MOD]         = d * VOICE_LFO_DEPTH_AMP;    break;
+            case LFO_TARGET_PITCH:  e->freq_coefs[COEF_MOD]        = d * VOICE_LFO_DEPTH_PITCH;  break;
+            case LFO_TARGET_SCAN:   e->duty_coefs[COEF_MOD]        = d * VOICE_LFO_DEPTH_SCAN;   break;
             default: break;
         }
         amy_helpers_event_send(e);

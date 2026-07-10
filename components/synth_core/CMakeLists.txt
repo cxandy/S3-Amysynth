@@ -9,7 +9,7 @@ if(CONFIG_SYNTH_CUSTOM_FM)
         "synth_ui/ui_screen_fm.c")
 endif()
 
-idf_component_register(SRCS "amy_helpers.c" "amy_fx.c" "arp_core.c" "quantizer.c" "graph_popup_amy.c"
+idf_component_register(SRCS "amy_helpers.c" "amy_fx.c" "arp_core.c" "quantizer.c" "graph_popup_amy.c" "voice_config.c"
                             "synth_ui/synth_ui_state.c"
                             "synth_ui/synth_ui_task.c"
                             "synth_ui/synth_ui_hint.c"

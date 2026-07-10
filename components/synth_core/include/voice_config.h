@@ -16,8 +16,11 @@
 #define VOICE_LFO_DEPTH_AMP    0.5f
 #define VOICE_LFO_DEPTH_PITCH  1.0f
 #define VOICE_LFO_DEPTH_SCAN   0.5f
+#define VOICE_LFO_DEPTH_PAN    0.5f  /* swing around the 0.5 center baseline */
 
-/* lfo_wave_t -> AMY wave constant (hoisted; identical in both copies). */
+/* lfo_wave_t -> AMY wave constant. RANDOM maps to NOISE: compute_mod_noise
+ * is a native sample-and-hold (redraws only when the carrier phasor wraps),
+ * replacing the 20 Hz software lfo_next_rand() poll. */
 uint16_t voice_lfo_wave_to_amy(lfo_wave_t wave);
 
 /* KS/NOISE onset-transient attack floor (2 ms); KS also zeroes sustain. */

@@ -11,7 +11,8 @@ uint16_t voice_lfo_wave_to_amy(lfo_wave_t wave)
         case LFO_WAVE_SAW_UP:   return SAW_UP;
         case LFO_WAVE_SAW_DOWN: return SAW_DOWN;
         case LFO_WAVE_SQUARE:   return PULSE;
-        default:                return SINE;   /* LFO_WAVE_RANDOM -> SINE fallback */
+        case LFO_WAVE_RANDOM:   return NOISE;  /* native S&H at the carrier rate */
+        default:                return SINE;
     }
 }
 
@@ -75,11 +76,18 @@ void voice_apply_native_lfo(uint8_t synth, const seq_lfo_t *lfo, uint16_t bpm)
         e->amp_coefs[COEF_MOD]         = 0.0f;
         e->freq_coefs[COEF_MOD]        = 0.0f;
         e->duty_coefs[COEF_MOD]        = 0.0f;
+        e->pan_coefs[COEF_MOD]         = 0.0f;
         switch (lfo->target) {
             case LFO_TARGET_FILTER: e->filter_freq_coefs[COEF_MOD] = d * VOICE_LFO_DEPTH_FILTER; break;
             case LFO_TARGET_AMP:    e->amp_coefs[COEF_MOD]         = d * VOICE_LFO_DEPTH_AMP;    break;
             case LFO_TARGET_PITCH:  e->freq_coefs[COEF_MOD]        = d * VOICE_LFO_DEPTH_PITCH;  break;
             case LFO_TARGET_SCAN:   e->duty_coefs[COEF_MOD]        = d * VOICE_LFO_DEPTH_SCAN;   break;
+            case LFO_TARGET_PAN:
+                /* Pan is [0,1], not bipolar: set the center baseline and swing
+                 * COEF_MOD around it in the same event. */
+                e->pan_coefs[COEF_CONST] = 0.5f;
+                e->pan_coefs[COEF_MOD]   = d * VOICE_LFO_DEPTH_PAN;
+                break;
             default: break;
         }
         amy_helpers_event_send(e);
@@ -106,6 +114,7 @@ void voice_apply_native_lfo(uint8_t synth, const seq_lfo_t *lfo, uint16_t bpm)
         e->amp_coefs[COEF_MOD]         = 0.0f;
         e->freq_coefs[COEF_MOD]        = 0.0f;
         e->duty_coefs[COEF_MOD]        = 0.0f;
+        e->pan_coefs[COEF_MOD]         = 0.0f;
         amy_helpers_event_send(e);
 
         e = amy_helpers_event_begin();

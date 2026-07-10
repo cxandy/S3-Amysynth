@@ -13,12 +13,13 @@ uint32_t s_lfo_rng_state = 0xDEADBEEFu;
 #if CONFIG_SEQ_MELODIC_AMY_NATIVE_LFO
 
 /* True when the given authored track should use AMY native LFO.
- * Caller is responsible for ensuring the layer uses a wave patch. */
+ * Caller is responsible for ensuring the layer uses a wave patch.
+ * PAN rides pan_coefs[COEF_MOD] around a 0.5 center baseline and RANDOM maps
+ * to a native NOISE S&H carrier, so every enabled wave-patch LFO is native;
+ * the 20 Hz software poll now serves non-wave patches only. */
 static bool is_native_lfo_track(const seq_lfo_t *lfo)
 {
-    return lfo->enabled
-           && lfo->target != LFO_TARGET_PAN
-           && lfo->wave   != LFO_WAVE_RANDOM;
+    return lfo->enabled;
 }
 
 /* Push native LFO config to one track's AMY synth (wave-patch layers only).

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "display_seq.h"
+#include "seq_model.h"
 #include "sdkconfig.h"
 
 #ifdef __cplusplus

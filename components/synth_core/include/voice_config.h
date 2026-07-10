@@ -6,7 +6,7 @@
  * voice_params_t) follows in HW-A/B-gated phases (see
  * specs/spec-14-shared-voice-config.md). */
 
-#include "display_seq.h"   /* seq_env_t, lfo_wave_t (moves to seq_model.h w/ item 8) */
+#include "seq_model.h"     /* seq_env_t, lfo_wave_t */
 #include <stdbool.h>
 #include <stdint.h>
 

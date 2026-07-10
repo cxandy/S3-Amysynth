@@ -3,7 +3,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "sdkconfig.h"     /* CONFIG_* gates on the virtual patch ranges below */
-#include "display_seq.h"   /* seq_layer_type_t, seq_layer_t, SEQ_* defines */
+#include "seq_model.h"     /* seq_layer_type_t, seq_layer_t, SEQ_* defines */
 #include "chord_types.h"
 
 #ifdef __cplusplus
@@ -181,7 +181,7 @@ uint16_t sequencer_core_cycle_drum_pcm_preset(uint8_t layer_idx, uint8_t track,
 
 /* ── Per-row melodic ADSR envelope (runtime-editable) ──
  * Scoped per row (per track); each row has its own AMY synth, so its envelope
- * is fully independent. See seq_env_t in display_seq.h for the extension path
+ * is fully independent. See seq_env_t in seq_model.h for the extension path
  * to per-step. get returns false for non-melodic/out-of-range. set clamps,
  * stores, and pushes the envelope to that row's own synth. */
 bool sequencer_core_get_melodic_envelope(uint8_t layer_idx, uint8_t track,

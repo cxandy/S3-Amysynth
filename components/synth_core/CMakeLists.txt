@@ -40,6 +40,7 @@ idf_component_register(SRCS "amy_helpers.c" "amy_fx.c" "arp_core.c" "quantizer.c
                             "sequencer_core/seq_core_progression.c"
                             "sequencer_core/seq_core_tempo.c"
                             "sequencer_core/seq_core_trig.c"
+                            "sequencer_core/seq_core_snapshot.c"
                             "custompatches/drone_core.c"
                             "custompatches/bass_presets.c"
                             "custompatches/sample_rec.c"

@@ -310,6 +310,22 @@ bool             sequencer_core_delete_layer(uint8_t layer_idx);
 uint8_t          sequencer_core_get_num_layers(void);
 seq_layer_type_t sequencer_core_get_layer_type(uint8_t layer_idx);
 
+/* ── Project snapshot support ──
+ * Bulk export/import of one layer's full persistable state, for the project
+ * loader (components/project_store) to serialize/restore without going
+ * through per-field setters. Applier-task only — same single-writer contract
+ * as add_layer/delete_layer above (synth_ui_task drains these). */
+
+/* Copy layer layer_idx's persistable state into *out. False if out of range. */
+bool sequencer_core_export_layer(uint8_t layer_idx, seq_layer_t *out);
+
+/* Overwrite layer layer_idx's persistable fields from *src, re-push patches /
+ * envelopes / filters / LFO to the layer's synths, and resync scheduled steps.
+ * Runtime-owned fields (synth_id, num_tracks) keep their live values;
+ * step_page resets to 0. Applier-task only (same contract as
+ * add/delete_layer). */
+bool sequencer_core_import_layer(uint8_t layer_idx, const seq_layer_t *src);
+
 /* ── Per-layer step / note control ── */
 void    sequencer_core_set_step(uint8_t layer_idx, uint8_t track,
                                 uint8_t step, bool state);

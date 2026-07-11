@@ -8,6 +8,9 @@
 #include "quantizer.h"
 #include "amy_fx.h"
 #include "seq_clamp.h"
+#if CONFIG_SYNTH_PROJECT_STORE
+#include "project_fs.h"
+#endif
 #include "esp_log.h"
 #include <stdio.h>
 #include <string.h>
@@ -46,6 +49,9 @@ typedef enum {
     MI_ADD_LAYER,
     MI_REMOVE_LAYER,
     MI_FX_MENU,
+#if CONFIG_SYNTH_PROJECT_STORE
+    MI_PROJECTS,
+#endif
     MI_VOLUME,
     MI_SAMPLE,
     MI_SAMPLE_CANCEL,
@@ -58,11 +64,18 @@ static menu_item_view_t s_menu_items[MI_COUNT];
  * cursor is parked here while the FX page is open so Back restores it. */
 static bool    s_fx_page = false;
 static uint8_t s_main_cursor = 0;
+#if CONFIG_SYNTH_PROJECT_STORE
+static bool    s_projects_page = false;
+#endif
 
 /* Title for the menu overlay's header bar (drawn by ui_view_resolve.c). */
 const char *menu_page_title(void)
 {
-    return s_fx_page ? "GLOBAL FX" : "MENU";
+    if (s_fx_page) return "GLOBAL FX";
+#if CONFIG_SYNTH_PROJECT_STORE
+    if (s_projects_page) return "PROJECTS";
+#endif
+    return "MENU";
 }
 
 /* Format the current value of each menu item into the flat view array. */
@@ -75,6 +88,15 @@ void menu_build_view(menu_view_t *out)
         out->editing = seq_state.menu_editing;
         return;
     }
+#if CONFIG_SYNTH_PROJECT_STORE
+    if (s_projects_page) {
+        out->items   = projects_menu_build_items();
+        out->count   = projects_menu_item_count();
+        out->cursor  = seq_state.menu_cursor;
+        out->editing = seq_state.menu_editing;
+        return;
+    }
+#endif
 
     for (uint8_t i = 0; i < MI_COUNT; i++) {
         s_menu_items[i].value[0] = '\0';
@@ -142,6 +164,13 @@ void menu_build_view(menu_view_t *out)
     /* Global FX live on their own page (ui_screen_fxmenu.c). */
     snprintf(s_menu_items[MI_FX_MENU].label, MENU_LABEL_LEN, "FX");
     snprintf(s_menu_items[MI_FX_MENU].value, MENU_VALUE_LEN, ">");
+
+#if CONFIG_SYNTH_PROJECT_STORE
+    /* Persistent project storage lives on its own page (ui_screen_projects.c). */
+    snprintf(s_menu_items[MI_PROJECTS].label, MENU_LABEL_LEN, "Projects");
+    snprintf(s_menu_items[MI_PROJECTS].value, MENU_VALUE_LEN, "%s",
+             project_fs_ok() ? ">" : "ERR");
+#endif
 
     /* Master output volume (0..200%, unity=100%). Written to amy_global.volume[]. */
     snprintf(s_menu_items[MI_VOLUME].label, MENU_LABEL_LEN, "Volume");
@@ -269,6 +298,9 @@ void synth_ui_menu_toggle(void)
     if (seq_state.menu_open) {
         /* Always reopen on the main page so the menu lands somewhere known. */
         s_fx_page = false;
+#if CONFIG_SYNTH_PROJECT_STORE
+        s_projects_page = false;
+#endif
         if (seq_state.menu_cursor >= MI_COUNT) seq_state.menu_cursor = 0;
     }
     s_force_redraw = true;
@@ -286,12 +318,21 @@ bool synth_ui_menu_handle_encoder(long delta)
     if (delta == 0) return true;
 
     if (seq_state.menu_editing) {
-        if (s_fx_page)
+        if (s_fx_page) {
             fx_menu_edit_value(seq_state.menu_cursor, (int)delta);
-        else
+#if CONFIG_SYNTH_PROJECT_STORE
+        } else if (s_projects_page) {
+            projects_menu_edit_value(seq_state.menu_cursor, (int)delta);
+#endif
+        } else {
             menu_edit_value((menu_item_id_t)seq_state.menu_cursor, (int)delta);
+        }
     } else {
-        int n = s_fx_page ? (int)fx_menu_item_count() : (int)MI_COUNT;
+        int n = s_fx_page ? (int)fx_menu_item_count() :
+#if CONFIG_SYNTH_PROJECT_STORE
+                s_projects_page ? (int)projects_menu_item_count() :
+#endif
+                (int)MI_COUNT;
         int c = (int)seq_state.menu_cursor + (int)delta;
         /* clamp (no wrap) so the list feels bounded */
         c = SEQ_CLAMP_INT(c, 0, n - 1);
@@ -317,6 +358,21 @@ bool synth_ui_menu_handle_button(void)
         s_force_redraw = true;
         return true;
     }
+
+#if CONFIG_SYNTH_PROJECT_STORE
+    if (s_projects_page) {
+        uint8_t idx = seq_state.menu_cursor;
+        if (projects_menu_item_is_back(idx)) {
+            s_projects_page = false;
+            seq_state.menu_cursor  = s_main_cursor;
+            seq_state.menu_editing = false;
+        } else if (projects_menu_item_is_value(idx)) {
+            seq_state.menu_editing = projects_menu_handle_click(idx);
+        }
+        s_force_redraw = true;
+        return true;
+    }
+#endif
 
     menu_item_id_t id = (menu_item_id_t)seq_state.menu_cursor;
 
@@ -370,6 +426,15 @@ bool synth_ui_menu_handle_button(void)
                 s_fx_page = true;
                 seq_state.menu_cursor = 0;
                 break;
+#if CONFIG_SYNTH_PROJECT_STORE
+            case MI_PROJECTS:
+                /* Dive into the projects page; the menu stays open. */
+                s_main_cursor = seq_state.menu_cursor;
+                s_projects_page = true;
+                seq_state.menu_cursor = 0;
+                projects_menu_reset();
+                break;
+#endif
             case MI_SAMPLE:
                 switch (sample_rec_get_state()) {
                     case SAMPLE_REC_IDLE:

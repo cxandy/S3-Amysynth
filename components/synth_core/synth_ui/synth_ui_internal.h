@@ -112,6 +112,19 @@ bool     fx_menu_item_is_back(uint8_t idx);
 void     fx_menu_edit_value(uint8_t idx, int delta);
 const char *menu_page_title(void);   /* header-bar title for the active page */
 
+/* ─── Projects storage page (item model in ui_screen_projects.c; page state
+ *     and input routing live in ui_screen_menu.c). Declared unconditionally
+ *     (mirroring the FM screen's prototypes) — the implementation compiles
+ *     to nothing and these go unused when CONFIG_SYNTH_PROJECT_STORE is off,
+ *     since every call site is itself guarded by that symbol. ─────────── */
+const menu_item_view_t *projects_menu_build_items(void);
+uint8_t  projects_menu_item_count(void);
+bool     projects_menu_item_is_back(uint8_t idx);
+bool     projects_menu_item_is_value(uint8_t idx);
+bool     projects_menu_handle_click(uint8_t idx);
+void     projects_menu_edit_value(uint8_t idx, int delta);
+void     projects_menu_reset(void);
+
 /* ─── Draw wrappers (encapsulate private s_fgraph/s_lfo_view/s_graph_popup) */
 void     synth_ui_graph_view_draw(u8g2_t *u8g2);
 void     synth_ui_filter_view_draw(u8g2_t *u8g2);

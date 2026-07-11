@@ -339,6 +339,10 @@ static bool parse_layer(tlv_reader_t *b, seq_layer_t *L)
 
     if (!tlv_get_u32(b, &L->synth_flags)) return false;
     if (!tlv_get_u8(b, &L->num_voices))   return false;
+    /* AMY's instrument_init() aborts outside 1..MAX_VOICES_PER_INSTRUMENT
+     * (32); a CRC-valid but hand-edited file must not crash the load. */
+    if (L->num_voices < 1)  L->num_voices = 1;
+    if (L->num_voices > 32) L->num_voices = 32;
     { uint8_t v; if (!tlv_get_u8(b, &v)) return false; L->chord_mode = v != 0; }
     if (!tlv_get_u8(b, &L->chord_root)) return false;
     { uint8_t v; if (!tlv_get_u8(b, &v)) return false;
@@ -826,7 +830,13 @@ bool project_snapshot_load(uint8_t slot)
 #if CONFIG_SYNTH_PROJECT_SELFTEST
 void project_snapshot_selftest(void)
 {
+    /* Never over a real project: the test deletes the slot afterwards. */
     uint8_t slot = CONFIG_SYNTH_PROJECT_MAX_SLOTS - 1;
+    project_slot_info_t info;
+    if (project_store_slot_info(slot, &info) && info.used) {
+        ESP_LOGW(TAG, "SNAPSHOT SELFTEST SKIPPED (slot P%02u in use)", (unsigned)slot);
+        return;
+    }
     bool pass = project_snapshot_save(slot, "st2");
     pass = pass && project_snapshot_load(slot);
     project_store_delete(slot);

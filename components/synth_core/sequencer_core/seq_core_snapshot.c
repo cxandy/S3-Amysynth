@@ -37,26 +37,18 @@ bool sequencer_core_import_layer(uint8_t layer_idx, const seq_layer_t *src)
     dst->num_tracks = num_tracks;
     dst->step_page  = 0;
 
-    /* Re-push per-track sound config to the layer's synth slots. */
-    if (dst->type == SEQ_LAYER_MELODIC)
-        sequencer_core_set_layer_patch(layer_idx, dst->patch);   /* once - fans out */
-    for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
-        if (dst->type == SEQ_LAYER_MELODIC) {
-            if (dst->vp[t].env_authored)
-                sequencer_configure_melodic_envelope_track(layer_idx, t);
-            if (dst->vp[t].env1_authored)
-                sequencer_configure_melodic_envelope1_track(layer_idx, t);
-            if (dst->vp[t].filter_authored)
-                sequencer_configure_melodic_filter_track(layer_idx, t);
-        } else {
-            sequencer_core_set_drum_patch(layer_idx, t, dst->track_patch[t]);
-        }
-    }
-    if (dst->type == SEQ_LAYER_MELODIC) {
-        sequencer_configure_melodic_lfo(layer_idx);
-    } else if (sequencer_core_get_drum_engine() == SEQ_DRUM_PCM) {
-        /* PCM mode plays from track_pcm_preset[] instead of track_patch[];
-         * re-apply per-track so a saved sample_rec override survives reload. */
+    /* Re-push the full sound config to the layer's synth slots. The public
+     * patch setters dedup against the layer's stored patch number - which the
+     * struct copy above has already overwritten - so they would silently
+     * no-op here. Call the configure path directly instead: it reads patch,
+     * num_voices, and synth_flags from the just-copied struct (looping every
+     * drum track's track_patch[] in drum-SYNTH mode) and pushes the authored
+     * env/env1/filter/LFO for melodic layers itself. */
+    sequencer_configure_synth(layer_idx);
+    if (dst->type == SEQ_LAYER_DRUM) {
+        /* Restore each track's PCM preset selection: live-reloads the osc when
+         * the PCM engine is active, otherwise stores the override for the next
+         * engine toggle. */
         for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
             sequencer_core_set_drum_pcm_preset(layer_idx, t, dst->track_pcm_preset[t]);
         }

@@ -9,6 +9,7 @@
 #include "esp_log.h"
 #include <dirent.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -241,8 +242,14 @@ void project_store_selftest(void)
         && tlv_get_f32(&body, &c) && c == 0.5f
         && tlv_get_u32(&body, &d) && d == 0xDEADBEEFu;
 
-    /* Slot round-trip in the top slot (avoids user slots) */
+    /* Slot round-trip in the top slot - but never over a real project:
+     * the test deletes the slot afterwards, so an occupied slot means skip. */
     uint8_t slot = CONFIG_SYNTH_PROJECT_MAX_SLOTS - 1;
+    project_slot_info_t info;
+    if (project_store_slot_info(slot, &info) && info.used) {
+        ESP_LOGW(TAG, "SELFTEST SKIPPED (slot P%02u in use)", (unsigned)slot);
+        return;
+    }
     pass = pass && project_store_write(slot, "selftest", buf, w.len);
     uint8_t *rb = NULL; size_t rlen = 0; char nm[PROJECT_NAME_LEN];
     pass = pass && project_store_read(slot, &rb, &rlen, nm)

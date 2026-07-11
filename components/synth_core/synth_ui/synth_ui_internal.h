@@ -39,6 +39,13 @@ extern uint8_t           s_to_track;       /* owner: ui_screen_trackopts.c; menu
 void     ui_note_name(uint8_t midi_note, char buf[4]);
 void     sync_layer_to_core(uint8_t li);
 
+/* Re-sync the UI mirror (seq_state) from the audio core after a bulk
+ * out-of-band change to layer topology/content (project load): copies every
+ * core layer's persistable state into seq_state.layers[], resets the
+ * transport and cursor state to a safe idle default, and forces one redraw.
+ * Does not touch the core itself. Applier-task only (synth_ui_task). */
+void     synth_ui_reload_mirror_from_core(void);
+
 /* ─── View signatures (each defined in its screen/editor file) ──────────
  * The view-struct screens build the view once and return it through `out`
  * alongside the hash, so the task's draw switch reuses it instead of

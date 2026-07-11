@@ -27,6 +27,7 @@
 #include "my_buttons.h"
 #include "project_fs.h"
 #include "project_store.h"
+#include "project_snapshot.h"
 
 #ifndef CONFIG_AMYSYNTH_INPUT_DIAGNOSTICS
 #define CONFIG_AMYSYNTH_INPUT_DIAGNOSTICS 0
@@ -1022,6 +1023,7 @@ void app_main(void)
     if (project_fs_ok()) project_store_cleanup_tmp();
 #if CONFIG_SYNTH_PROJECT_SELFTEST
     project_store_selftest();
+    project_snapshot_selftest();
 #endif
 
     ESP_LOGI(TAG, "Main loop started.");

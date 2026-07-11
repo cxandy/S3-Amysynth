@@ -36,6 +36,27 @@ void sync_layer_to_core(uint8_t li)
     }
 }
 
+/* Re-sync the UI mirror from the core after a project load has rewritten
+ * layer topology/content out from under the UI (sequencer_core_add_layer/
+ * delete_layer/import_layer). Folds in the transport-stop mirror update too
+ * (seq_state.playing = false) since project_snapshot_load() already stopped
+ * the core transport immediately before this runs — one less thing for the
+ * loader to track. */
+void synth_ui_reload_mirror_from_core(void)
+{
+    seq_state.num_layers = sequencer_core_get_num_layers();
+    for (uint8_t i = 0; i < seq_state.num_layers; i++) {
+        sequencer_core_export_layer(i, &seq_state.layers[i]);
+    }
+    seq_state.active_layer_idx = 0;
+    seq_state.selected_track   = 0;
+    seq_state.selected_step    = 0;
+    seq_state.playing          = false;
+    seq_state.edit_mode        = false;
+    s_force_redraw = true;
+    ESP_LOGI(TAG, "UI mirror reloaded from core: %u layer(s)", seq_state.num_layers);
+}
+
 /* ── Note-name helper (local; mirrors display_seq.c's static one) ─────── */
 void ui_note_name(uint8_t midi_note, char buf[4])
 {

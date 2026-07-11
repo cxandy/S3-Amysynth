@@ -44,12 +44,13 @@ idf_component_register(SRCS "amy_helpers.c" "amy_fx.c" "arp_core.c" "quantizer.c
                             "custompatches/drone_core.c"
                             "custompatches/bass_presets.c"
                             "custompatches/sample_rec.c"
+                            "project/project_snapshot.c"
                             ${fm_srcs}
                             ${additive_srcs}
-                       INCLUDE_DIRS "include" "sequencer_core"
+                       INCLUDE_DIRS "include" "sequencer_core" "project"
                        PRIV_INCLUDE_DIRS "."
                        REQUIRES u8g2 display amy
-                       PRIV_REQUIRES seq_clamp)
+                       PRIV_REQUIRES seq_clamp project_store)
 target_compile_options(${COMPONENT_LIB} PRIVATE "-Wstack-usage=1024")
 set_source_files_properties(
     "${CMAKE_CURRENT_LIST_DIR}/synth_ui/synth_ui_state.c"

@@ -1,0 +1,35 @@
+#pragma once
+
+/* Whole-session save/load: walks every persistable subsystem (global mix,
+ * sequencer layers, arp, drone, chord progression) through the TLV container
+ * (project_tlv.h) and the atomic slot store (project_store.h). Called only
+ * from the synth_ui task, which owns the single-writer contract for layer
+ * topology edits (sequencer_core_add_layer/delete_layer) and drains the
+ * deferred UI mirror. */
+
+#include <stdint.h>
+#include <stdbool.h>
+#include "sdkconfig.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Serialize the full session and write it to `slot`. name may be NULL
+ * (keeps "P<nn>"). Returns false on any failure (nothing partially saved). */
+bool project_snapshot_save(uint8_t slot, const char *name);
+
+/* Load + apply slot. Validates fully before touching live state.
+ * Stops the transport. Returns false and leaves the session untouched on
+ * any validation failure. */
+bool project_snapshot_load(uint8_t slot);
+
+#if CONFIG_SYNTH_PROJECT_SELFTEST
+/* Full serialize -> parse -> apply -> delete round-trip against live
+ * boot-default state. Logs SNAPSHOT SELFTEST PASS/FAIL. */
+void project_snapshot_selftest(void);
+#endif
+
+#ifdef __cplusplus
+}
+#endif

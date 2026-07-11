@@ -25,6 +25,7 @@
 #include "esp_compiler.h"
 #include "soc/gpio_num.h"
 #include "my_buttons.h"
+#include "project_fs.h"
 
 #ifndef CONFIG_AMYSYNTH_INPUT_DIAGNOSTICS
 #define CONFIG_AMYSYNTH_INPUT_DIAGNOSTICS 0
@@ -1015,6 +1016,8 @@ void app_main(void)
          NULL,
         0);
 
+    /* Project storage: non-fatal if the partition is absent/corrupt. */
+    project_fs_init();
 
     ESP_LOGI(TAG, "Main loop started.");
    

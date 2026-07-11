@@ -19,3 +19,4 @@ dependencies:
   espressif/button: =*
   espressif/cmake_utilities: '*'
   espressif/esp-dsp: '*'
+  joltwallet/littlefs: "==1.*"

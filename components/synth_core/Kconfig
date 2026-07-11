@@ -313,4 +313,25 @@ config SEQ_FX_DEFAULT_CHORUS
 
 endmenu
 
+config SYNTH_PROJECT_STORE
+	bool "Persistent project storage (Projects menu)"
+	default y
+	help
+		Save/load full session snapshots to the 'storage' LittleFS
+		partition. Adds the Projects page to the main menu.
+
+config SYNTH_PROJECT_MAX_SLOTS
+	int "Project slots"
+	depends on SYNTH_PROJECT_STORE
+	range 1 64
+	default 32
+
+config SYNTH_PROJECT_SELFTEST
+	bool "Project serializer boot self-test (diagnostic)"
+	depends on SYNTH_PROJECT_STORE
+	default n
+	help
+		Runs a serialize/parse round-trip at boot and logs PASS/FAIL.
+		Diagnostic only - keep off in normal builds.
+
 endmenu

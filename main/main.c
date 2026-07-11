@@ -26,6 +26,7 @@
 #include "soc/gpio_num.h"
 #include "my_buttons.h"
 #include "project_fs.h"
+#include "project_store.h"
 
 #ifndef CONFIG_AMYSYNTH_INPUT_DIAGNOSTICS
 #define CONFIG_AMYSYNTH_INPUT_DIAGNOSTICS 0
@@ -1018,6 +1019,10 @@ void app_main(void)
 
     /* Project storage: non-fatal if the partition is absent/corrupt. */
     project_fs_init();
+    if (project_fs_ok()) project_store_cleanup_tmp();
+#if CONFIG_SYNTH_PROJECT_SELFTEST
+    project_store_selftest();
+#endif
 
     ESP_LOGI(TAG, "Main loop started.");
    

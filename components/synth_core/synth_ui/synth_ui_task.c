@@ -15,6 +15,7 @@
 #include "display_hint.h"
 #include "synth_ui_hint.h"
 #include "amy_helpers.h"
+#include "project_snapshot.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
@@ -119,6 +120,15 @@ static void synth_ui_task(void *pvParameters)
             }
         }
 
+#if CONFIG_SYNTH_PROJECT_STORE
+        /* Execute any project load/save queued by the Projects menu (clicks
+         * run on the button task). Must run here: a load rebuilds layer
+         * topology via core add/delete, which only this task - the single
+         * s_layers applier - may call. After the add/delete drains above so
+         * pending structural edits resolve before a load replaces them. */
+        projects_menu_service();
+#endif
+
         seq_state.current_step =
             sequencer_core_get_current_step(seq_state.active_layer_idx);
         if (s_u8g2) {
@@ -216,6 +226,17 @@ void synth_ui_init(u8g2_t *u8g2)
      * the stack is 8192 now, but boot-time work has no reason to defer.) */
     synth_ui_add_layer(SEQ_LAYER_MELODIC, SEQ_STEPS);
     SEQ_HEAP_CHECK("ui_init: after add_layer(melodic)");
+
+#if CONFIG_SYNTH_PROJECT_SELFTEST
+    /* Snapshot round-trip against the boot-default state just built. Must
+     * run HERE - after the boot layers exist, before seq_ui is registered as
+     * the single s_layers applier - because the load phase rebuilds layer
+     * topology and would trip the applier assert from any other task. The
+     * load leaves the transport stopped; restore the boot default. */
+    project_snapshot_selftest();
+    sequencer_core_set_playing(true);
+    seq_state.playing = true;
+#endif
 
     /* Pin to Core 0: the OLED refresh does blocking I2C and is not latency
      * critical, so keep it off Core 1 where the AMY DSP now runs.

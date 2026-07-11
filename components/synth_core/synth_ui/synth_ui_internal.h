@@ -124,6 +124,7 @@ bool     projects_menu_item_is_value(uint8_t idx);
 bool     projects_menu_handle_click(uint8_t idx);
 void     projects_menu_edit_value(uint8_t idx, int delta);
 void     projects_menu_reset(void);
+void     projects_menu_service(void);   /* drains the deferred load/save */
 
 /* ─── Draw wrappers (encapsulate private s_fgraph/s_lfo_view/s_graph_popup) */
 void     synth_ui_graph_view_draw(u8g2_t *u8g2);

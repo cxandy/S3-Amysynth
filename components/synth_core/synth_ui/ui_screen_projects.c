@@ -58,6 +58,19 @@ static bool    s_status_active = false;
 static uint8_t s_status_idx    = 0;
 static char    s_status_msg[MENU_VALUE_LEN];
 
+/* Deferred Load/Save request, executed by projects_menu_service() on the
+ * synth_ui task. Clicks run on the button task, but project_snapshot_load()
+ * rebuilds layer topology through sequencer_core_add/delete_layer, which only
+ * the registered single-applier task (seq_ui) may call - so the click only
+ * queues the request here. Save is deferred the same way, keeping all project
+ * flash I/O on the UI task and off the input path. */
+typedef enum { PREQ_NONE = 0, PREQ_LOAD, PREQ_SAVE } proj_req_t;
+static volatile proj_req_t s_req = PREQ_NONE;   /* set last: publishes the fields below */
+static uint8_t             s_req_slot     = 0;
+static uint8_t             s_req_idx      = 0;
+static bool                s_req_has_name = false;
+static char                s_req_name[PROJECT_NAME_LEN];
+
 static void set_status(uint8_t idx, const char *msg)
 {
     s_status_active = true;
@@ -262,6 +275,9 @@ void projects_menu_edit_value(uint8_t idx, int delta)
 bool projects_menu_handle_click(uint8_t idx)
 {
     if (!projects_menu_item_is_value(idx)) return false;
+    /* A queued load/save is still in flight (one UI frame): ignore clicks so
+     * a second request can't clobber the pending one's fields. */
+    if (s_req != PREQ_NONE) return seq_state.menu_editing;
     uint8_t slot = (uint8_t)(idx - 2);
     const project_slot_info_t *info = &s_info[slot];
     bool corrupt = slot_corrupt(info);
@@ -297,7 +313,10 @@ bool projects_menu_handle_click(uint8_t idx)
                 s_armed = false;
                 return false;
             }
-            set_status(idx, project_snapshot_load(slot) ? "LOADED" : "LOAD FAIL");
+            s_req_slot = slot;
+            s_req_idx  = idx;
+            s_req      = PREQ_LOAD;
+            set_status(idx, "LOAD..");
             s_armed = false;
             return false;
 
@@ -306,10 +325,15 @@ bool projects_menu_handle_click(uint8_t idx)
                 s_armed = true;
                 return true;   /* second click required to overwrite */
             }
-            set_status(idx, project_snapshot_save(slot, info->used ? info->name : NULL)
-                            ? "SAVED" : "SAVE FAIL");
+            s_req_slot     = slot;
+            s_req_idx      = idx;
+            s_req_has_name = info->used;
+            if (info->used) {
+                snprintf(s_req_name, sizeof(s_req_name), "%s", info->name);
+            }
+            s_req = PREQ_SAVE;
+            set_status(idx, "SAVE..");
             s_armed = false;
-            s_dirty = true;
             return false;
 
         case PA_REN:
@@ -337,6 +361,24 @@ bool projects_menu_handle_click(uint8_t idx)
             s_armed = false;
             return false;
     }
+}
+
+/* Runs once per synth_ui_task frame: executes the queued load/save on the
+ * layers-applier task, then rewrites the acted-on row's inline status. */
+void projects_menu_service(void)
+{
+    if (s_req == PREQ_NONE) return;
+
+    if (s_req == PREQ_LOAD) {
+        bool ok = project_snapshot_load(s_req_slot);
+        set_status(s_req_idx, ok ? "LOADED" : "LOAD FAIL");
+    } else {
+        bool ok = project_snapshot_save(s_req_slot,
+                                        s_req_has_name ? s_req_name : NULL);
+        set_status(s_req_idx, ok ? "SAVED" : "SAVE FAIL");
+        s_dirty = true;
+    }
+    s_req = PREQ_NONE;
 }
 
 #endif /* CONFIG_SYNTH_PROJECT_STORE */

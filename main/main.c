@@ -926,6 +926,16 @@ void app_main(void)
     ESP_ERROR_CHECK(usb_audio_init());
     HEAP_CHECK("after usb_audio_init");
 
+    /* Project storage: non-fatal if the partition is absent/corrupt. Mounted
+     * before synth_ui_init so the snapshot selftest inside it can run against
+     * the boot layers, single-threaded, before the layers-applier task is
+     * registered. */
+    project_fs_init();
+    if (project_fs_ok()) project_store_cleanup_tmp();
+#if CONFIG_SYNTH_PROJECT_SELFTEST
+    project_store_selftest();
+#endif
+
     /* synth_ui_init adds the boot layers (drum + first melodic) itself,
      * single-threaded on this task's stack, before the UI task starts. */
     synth_ui_init(s_u8g2);
@@ -1017,14 +1027,6 @@ void app_main(void)
          5,
          NULL,
         0);
-
-    /* Project storage: non-fatal if the partition is absent/corrupt. */
-    project_fs_init();
-    if (project_fs_ok()) project_store_cleanup_tmp();
-#if CONFIG_SYNTH_PROJECT_SELFTEST
-    project_store_selftest();
-    project_snapshot_selftest();
-#endif
 
     ESP_LOGI(TAG, "Main loop started.");
    

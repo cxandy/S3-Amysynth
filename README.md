@@ -187,7 +187,10 @@ regenerated on load by replaying the same apply paths a live edit uses. Loads
 are two-phase - everything is parsed, bounds-checked, and staged before any
 live state is touched, so a corrupt file is refused with the session intact.
 Saves write a temp file and rename it (atomic on LittleFS), so power loss
-never corrupts an existing project. `components/project_store` is
+never corrupts an existing project. Menu clicks only queue the request: the
+load/save itself executes on the `synth_ui` task, the one task allowed to
+rebuild sequencer layer topology (single-applier contract), keeping flash
+I/O off the input path. `components/project_store` is
 synth-agnostic (files, TLV container, mount); the serializer that knows the
 instrument model lives in `synth_core/project/`.
 

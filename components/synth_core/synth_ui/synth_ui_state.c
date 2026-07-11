@@ -52,7 +52,10 @@ void synth_ui_reload_mirror_from_core(void)
     seq_state.selected_track   = 0;
     seq_state.selected_step    = 0;
     seq_state.playing          = false;
-    seq_state.edit_mode        = false;
+    /* Match the boot default (seq_state initializer): edit_mode gates what a
+     * bare encoder turn/push does on the sequencer screen, and post-load must
+     * behave exactly like post-boot. */
+    seq_state.edit_mode        = true;
     s_force_redraw = true;
     ESP_LOGI(TAG, "UI mirror reloaded from core: %u layer(s)", seq_state.num_layers);
 }

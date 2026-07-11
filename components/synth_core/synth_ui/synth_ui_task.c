@@ -340,7 +340,8 @@ void synth_ui_cycle_active_layer(void)
              ? "drum" : "melodic");
 }
 
-/* Moves the step cursor by `delta` while in edit mode, or nudges BPM otherwise.
+/* Moves the step cursor by `delta` while in edit mode; outside edit mode a
+ * bare turn is deliberately a no-op (BPM lives in the main menu only).
  * The cursor walks the current track's steps; running off either end wraps to
  * the adjacent track (and wraps track index too), so a long turn scans the
  * whole grid track-by-track. */
@@ -371,8 +372,6 @@ void synth_ui_handle_encoder(long delta)
         if (num_steps == SEQ_MAX_STEPS) {
             seq_state.layers[li].step_page = (uint8_t)(new_step / 16);
         }
-    } else {
-        synth_ui_set_bpm((uint16_t)((int)seq_get_bpm() + (int)delta));
     }
 }
 

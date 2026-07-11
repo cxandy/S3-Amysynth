@@ -74,14 +74,18 @@ typedef struct {
     uint32_t  (*signature)(ui_view_vw_t *vw);   /* builds vw, returns FNV hash */
     void      (*draw)(u8g2_t *g, ui_view_vw_t *vw);
     /* Button-hint labels. A NULL static label means "compute dynamically",
-     * in which case the matching *_fn is called (only LFO/GRAPH b1 and LFO b2
-     * depend on state the view id does not carry). b3 is always static. */
+     * in which case the matching *_fn is called (only LFO/GRAPH b1 and
+     * LFO/GRAPH b2 depend on state the view id does not carry). b3 is always
+     * static. */
     const char *b1, *b2, *b3;
     const char *(*b1_fn)(void);
     const char *(*b2_fn)(void);
 } ui_view_desc_t;
 
 extern const ui_view_desc_t ui_view_table[UI_VIEW_COUNT];
+
+/* GRAPH b2 hint (owner: ui_editors.c) — "Amp" on EG0, "Env" on melodic EG1. */
+const char *synth_ui_graph_hint_b2(void);
 
 /* ─── Build-view helpers called from synth_ui_task draw switch ────────── */
 void     drone_build_view(drone_view_t *out);

@@ -324,16 +324,23 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
 // on the esp_timer task only if queue creation failed at startup).
 static void dispatch_button_event(my_button_id_t button_id, button_event_t event)
 {
-    /* MY_BUTTON_SHIFT (shoulder): temporary binding. On the sequencer grid a
+    /* MY_BUTTON_SHIFT (shoulder): per-view bindings. On the sequencer grid a
      * press toggles the step under the cursor, so one hand rides the encoder
-     * while the other enters steps (tracker-style two-handed entry). Fires on
-     * PRESS_DOWN for zero tap latency; all SHIFT events are consumed here so
-     * they never leak into screen logic. Long-term this button is reserved as
-     * a hold-modifier (shift) layer. */
+     * while the other enters steps (tracker-style two-handed entry); on the
+     * envelope editor it flips the EG1 sweep polarity. Fires on PRESS_DOWN
+     * for zero tap latency; all SHIFT events are consumed here so they never
+     * leak into screen logic. Long-term this button is reserved as a
+     * hold-modifier (shift) layer. */
     if (button_id == MY_BUTTON_SHIFT) {
-        if (event == BUTTON_PRESS_DOWN &&
-            synth_ui_active_view() == UI_VIEW_SEQ) {
-            synth_ui_toggle_step_at_cursor();
+        if (event == BUTTON_PRESS_DOWN) {
+            ui_view_id_t sv = synth_ui_active_view();
+            if (sv == UI_VIEW_SEQ) {
+                synth_ui_toggle_step_at_cursor();
+            } else if (sv == UI_VIEW_GRAPH) {
+                /* Envelope editor: flip the melodic EG1 sweep polarity
+                 * (no-op on the EG0 page and for arp/drone targets). */
+                synth_ui_graph_flip_eg1_polarity();
+            }
         }
         return;
     }
@@ -509,12 +516,11 @@ static void dispatch_button_event(my_button_id_t button_id, button_event_t event
     }
 
     // MY_BUTTON_3: while any editor (ADSR/filter/LFO) is open, single-click
-    // cycles to the next editor. While the ADSR graph editor specifically is
-    // open, long-press instead switches between its EG0 (amp) and EG1
-    // (typically filter) breakpoint sets. Step Trig editor: long-press opens
-    // it, single-click closes it (moved off MY_BUTTON_2 so it no longer
-    // fires accidentally while holding MY_BUTTON_2 to transpose). Outside
-    // all of that it is the menu toggle.
+    // cycles to the next editor page (EG0 -> EG1 -> filter -> LFO). The EG1
+    // sweep polarity flip lives on MY_BUTTON_SHIFT (handled above). Step Trig
+    // editor: long-press opens it, single-click closes it (moved off
+    // MY_BUTTON_2 so it no longer fires accidentally while holding
+    // MY_BUTTON_2 to transpose). Outside all of that it is the menu toggle.
     if (button_id == MY_BUTTON_3) {
         /* STEPEDIT outranks GRAPH in the canonical order, so resolving via v
          * fixes the former skew where this block checked graph/filter/lfo
@@ -522,8 +528,6 @@ static void dispatch_button_event(my_button_id_t button_id, button_event_t event
         if (v == UI_VIEW_GRAPH || v == UI_VIEW_FILTER || v == UI_VIEW_LFO) {
             if (event == BUTTON_SINGLE_CLICK) {
                 synth_ui_cycle_editor();
-            } else if (event == BUTTON_LONG_PRESS_START && v == UI_VIEW_GRAPH) {
-                synth_ui_graph_toggle_eg_index();
             }
             return;
         }

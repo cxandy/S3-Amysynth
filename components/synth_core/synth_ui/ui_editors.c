@@ -45,8 +45,8 @@ static graph_target_t s_graph_target = GRAPH_TGT_MELODIC;
 /* Which of the target's two independent AMY breakpoint generators the open
  * editor is showing/editing. 0 = EG0 (amp, the historical default), 1 = EG1
  * (typically the filter sweep — see sequencer_core_push_envelope_eg1()).
- * Reset to 0 on every editor open; toggled by MY_BUTTON_3 long-press while
- * the editor is open (synth_ui_graph_toggle_eg_index()). */
+ * Reset to 0 on every editor open; the editor cycle (MY_BUTTON_3 click)
+ * visits EG0 and EG1 as two consecutive screens before the filter editor. */
 static uint8_t s_graph_eg_index = 0;
 
 /* ── Time-range mapping ──────────────────────────────────────────────────────
@@ -329,7 +329,7 @@ void synth_ui_graph_open_envelope(void)
     /* Melodic write-back targets a specific row; capture it at open time. */
     s_graph_layer = seq_state.active_layer_idx;
     s_graph_track = seq_state.selected_track;
-    /* Always open on EG0 (amp); MY_BUTTON_3 long-press switches to EG1. */
+    /* Always open on EG0 (amp); MY_BUTTON_3 click advances to the EG1 page. */
     s_graph_eg_index = 0;
 
     seq_env_t env;
@@ -383,7 +383,7 @@ void synth_ui_graph_open_envelope(void)
 
 /* Convert the popup's current points to a seq_env_t and write it to the given
  * eg_index's store on the bound target. Shared by graph_commit_to_env() (the
- * currently-shown eg_index) and synth_ui_graph_toggle_eg_index() (writes the
+ * currently-shown eg_index) and graph_toggle_eg_index() (writes the
  * DEPARTING eg_index through before switching the view). */
 static void graph_write_points_to_env(uint8_t eg_index)
 {
@@ -537,7 +537,7 @@ void synth_ui_graph_toggle_amp_mode(void)
  * becomes authored now) so flipping tabs never silently discards work. The
  * curve is then fully reseeded (and range re-derived) from the other
  * eg_index's own stored envelope — the two can have very different shapes. */
-void synth_ui_graph_toggle_eg_index(void)
+static void graph_toggle_eg_index(void)
 {
     if (!graph_popup_is_active(&s_graph_popup)) return;
 
@@ -560,6 +560,30 @@ void synth_ui_graph_toggle_eg_index(void)
     s_graph_env_dirty = false;
     s_force_redraw = true;
     ESP_LOGI(TAG, "graph eg index -> EG%u", s_graph_eg_index);
+}
+
+/* Hint-strip b2 label for the envelope editor: MY_BUTTON_2's trim mode edits
+ * amplitude on the EG0 page but the EG1->cutoff sweep depth on the melodic
+ * EG1 page. */
+const char *synth_ui_graph_hint_b2(void)
+{
+    return (s_graph_eg_index == 1 && s_graph_target == GRAPH_TGT_MELODIC)
+         ? "Env" : "Amp";
+}
+
+/* Flip the sign of the EG1->cutoff sweep (melodic targets only — arp uses a
+ * fixed depth, the drone has no EG1 depth field). Bound to MY_BUTTON_SHIFT
+ * (shoulder) while the EG1 page is showing. No-op at 0.0 depth: there is
+ * nothing to invert and it keeps -0.0 out of the readout. */
+void synth_ui_graph_flip_eg1_polarity(void)
+{
+    if (!graph_popup_is_active(&s_graph_popup)) return;
+    if (s_graph_eg_index != 1 || s_graph_target != GRAPH_TGT_MELODIC) return;
+    if (s_graph_fenv_edit == 0.0f) return;
+    s_graph_fenv_edit  = -s_graph_fenv_edit;
+    s_graph_fenv_dirty = true;
+    s_force_redraw = true;
+    ESP_LOGI(TAG, "EG1 polarity -> %+.2f oct", (double)s_graph_fenv_edit);
 }
 
 /* Route an encoder delta to the pop-up. Returns true if the pop-up consumed it
@@ -681,7 +705,6 @@ static void filter_sync_fgraph(void)
     s_fgraph.cutoff_norm    = filter_hz_to_norm(s_filter_edit.cutoff_hz);
     s_fgraph.resonance_norm = filter_q_to_norm(s_filter_edit.resonance);
     s_fgraph.enabled        = s_filter_edit.enabled;
-    s_fgraph.env_depth_oct  = s_filter_edit.filter_env_amount;
     /* cursor and editing stay unchanged */
 }
 
@@ -760,10 +783,10 @@ bool synth_ui_filter_handle_encoder(long delta)
     if (!s_fgraph.editing) {
         /* Not editing: scroll cursor position.
          * Drone: 0=cutoff 1=resonance (type fixed, no EN cursor).
-         * Arp:   0=cutoff 1=resonance 2=type 3=enable (EG1 depth is the
-         *        fixed ARP_FILTER_EG1_DEPTH_OCT — this field is ignored).
-         * Melodic: adds 4=EG1 depth 5=EG1 polarity. */
-        uint8_t max_cursor = drone ? 1 : (arp ? 3 : 5);
+         * Arp/melodic: 0=cutoff 1=resonance 2=type 3=enable. The melodic
+         * EG1 sweep depth/polarity live on the envelope editor's EG1 page
+         * (arp uses the fixed ARP_FILTER_EG1_DEPTH_OCT). */
+        uint8_t max_cursor = drone ? 1 : 3;
         if (delta > 0) {
             s_fgraph.cursor = (uint8_t)((s_fgraph.cursor + 1) % (max_cursor + 1));
         } else if (delta < 0) {
@@ -803,21 +826,6 @@ bool synth_ui_filter_handle_encoder(long delta)
                 s_filter_edit.enabled = !s_filter_edit.enabled;
                 s_fgraph.enabled      = s_filter_edit.enabled;
                 ESP_LOGI(TAG, "filter enabled -> %d", (int)s_filter_edit.enabled);
-            }
-            break;
-        }
-        case 4: {   /* EG1 -> cutoff depth, bipolar -8..+8 oct (melodic only) */
-            float step = 0.1f * (float)delta;
-            s_filter_edit.filter_env_amount =
-                SEQ_CLAMP_F32(s_filter_edit.filter_env_amount + step, -8.0f, 8.0f);
-            break;
-        }
-        case 5: {   /* EG1 polarity toggle: one detent inverts the sweep, so a
-                     * dialed-in depth can be A/B'd up vs down without cranking
-                     * the encoder back through zero. No-op at 0.0 (also keeps
-                     * -0.0 out of the readout). */
-            if (s_filter_edit.filter_env_amount != 0.0f) {
-                s_filter_edit.filter_env_amount = -s_filter_edit.filter_env_amount;
             }
             break;
         }
@@ -1035,6 +1043,12 @@ bool synth_ui_toggle_editor_apply_scope(void)
 void synth_ui_cycle_editor(void)
 {
     if (graph_popup_is_active(&s_graph_popup)) {
+        if (s_graph_eg_index == 0) {
+            /* EG0 -> EG1: same widget, next page (writes the departing
+             * envelope through if it was edited). */
+            graph_toggle_eg_index();
+            return;
+        }
         synth_ui_graph_close_commit();
         synth_ui_filter_open();
     } else if (s_filter_active) {
@@ -1101,12 +1115,15 @@ static void graph_draw_topbar(u8g2_t *u8g2)
     u8g2_DrawStr(u8g2, 2, 8, buf);
 
     /* Right: amp indicator when in amp mode (replaces the old "S/L" range flag
-     * which is now set automatically and no longer meaningful to the user). */
+     * which is now set automatically and no longer meaningful to the user).
+     * The melodic EG1 page always shows the signed sweep depth instead, so the
+     * shoulder-button polarity flip has a visible readout. */
     uint8_t rw = 0;
-    if (s_graph_amp_mode) {
+    bool eg1_melodic = (s_graph_eg_index == 1 && s_graph_target == GRAPH_TGT_MELODIC);
+    if (s_graph_amp_mode || eg1_melodic) {
         char amp_buf[10];
-        if (s_graph_eg_index == 1 && s_graph_target == GRAPH_TGT_MELODIC) {
-            snprintf(amp_buf, sizeof(amp_buf), "ENV%.2f", (double)s_graph_fenv_edit);
+        if (eg1_melodic) {
+            snprintf(amp_buf, sizeof(amp_buf), "ENV%+.2f", (double)s_graph_fenv_edit);
         } else {
             snprintf(amp_buf, sizeof(amp_buf), "AMP%d%%",
                      (int)(s_graph_amp_edit * 100.0f + 0.5f));

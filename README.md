@@ -149,6 +149,48 @@ A few design decisions worth calling out:
   native AMY LFO - so a fix or feature in one instrument's voice model lands
   in all three.
 
+### Project storage
+
+Full session snapshots (patterns, per-row voice params, arp, drone, chord
+progression, FX, tempo) can be saved to 32 named slots on an 11.9 MB LittleFS
+`storage` partition occupying the flash above the app, managed from a Projects
+menu page that also reports per-project size and free space:
+
+```mermaid
+flowchart TD
+    subgraph UI["synth_ui task"]
+        MENU["Projects menu page<br/>slots + storage insight"]
+    end
+    subgraph SC["components/synth_core"]
+        SNAP["project_snapshot<br/>TLV serializer + two-phase loader"]
+        ENGINE["engine apply APIs<br/>configure_synth / layer import /<br/>arp + drone + progression + FX"]
+    end
+    subgraph PS["components/project_store"]
+        STORE["project_store<br/>slot files, atomic tmp+rename saves"]
+        TLV["project_tlv<br/>bounded TLV reader/writer + CRC32"]
+        FS["project_fs<br/>LittleFS mount at /proj + stats"]
+    end
+    PART[("storage partition<br/>11.9 MB LittleFS")]
+    AMY["AMY engine"]
+
+    MENU --> SNAP
+    SNAP --> STORE
+    STORE --> TLV
+    STORE --> FS --> PART
+    SNAP -- "load: replay via" --> ENGINE --> AMY
+```
+
+Design points: the file format is our own parameter model written field by
+field into versioned TLV sections (never AMY patch strings or raw struct
+dumps), so saves survive both struct growth and AMY updates; AMY state is
+regenerated on load by replaying the same apply paths a live edit uses. Loads
+are two-phase - everything is parsed, bounds-checked, and staged before any
+live state is touched, so a corrupt file is refused with the session intact.
+Saves write a temp file and rename it (atomic on LittleFS), so power loss
+never corrupts an existing project. `components/project_store` is
+synth-agnostic (files, TLV container, mount); the serializer that knows the
+instrument model lives in `synth_core/project/`.
+
 ## Optimization & performance
 
 Real-time audio on a dual-core MCU leaves little timing margin: the render task
@@ -222,6 +264,7 @@ The component layout:
 | `components/usb_audio/` | USB audio ring buffer / UAC glue |
 | `components/rotary_encoder/`, `components/my_buttons/` | input drivers |
 | `components/seq_clamp/` | header-only clamping helpers shared across the UI/engine code |
+| `components/project_store/` | project persistence: LittleFS mount, TLV container, slot files with atomic saves |
 | `components/amy/` | vendored AMY engine (see [AMY-EDITS.md](AMY-EDITS.md) for local patches) |
 
 ## Diagnostics

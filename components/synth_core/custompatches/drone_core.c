@@ -725,7 +725,10 @@ void drone_set_rate(drone_rate_t rate)
 
 bool drone_patch_excluded(uint16_t patch)
 {
-    if (patch > DRONE_PATCH_MAX) return true;   /* incl. bass/FM w/o wavetable */
+    /* Compile-awareness is shared with every other consumer: a range gated
+     * off by Kconfig is excluded here too, on top of the drone's own rules. */
+    if (sequencer_core_patch_compiled_out(patch)) return true;
+    if (patch > DRONE_PATCH_MAX) return true;   /* incl. bass/FM/additive w/o wavetable */
 #if CONFIG_AMY_WAVETABLE
     /* NOISE/KS/bass (262-266) sit below the wavetable range that IS
      * supported, so they need excluding individually. */

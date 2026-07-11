@@ -256,6 +256,7 @@ seq_env_t *seq_layer_env1(uint8_t layer_idx, uint8_t track)
  *   raw wave / wavetable  → direct oscillator config (no patch string)
  *   bass preset (264-266) → bass_preset_configure_track (oscs_per_voice=2)
  *   FM/ALGO (272-276)     → fm preset / live-editable custom voice (7 oscs)
+ *   additive (277-279)    → additive preset / custom voice (N+1 oscs)
  *   everything else       → amy_send_patch() string loader (Juno/DX7/piano)
  * Returns true when a patch STRING was loaded: those carry global EQ/chorus
  * commands, so the caller must synth_ui_fx_reassert_global() afterwards
@@ -264,6 +265,15 @@ static bool sequencer_apply_patch_kind(uint8_t synth_id, uint16_t patch,
                                        uint16_t num_voices, uint32_t synth_flags,
                                        bool filter_authored, float filter_q)
 {
+    /* Virtual patch number whose feature is not in this build (browse skips
+     * these, but stored/programmatic values can still arrive): snap to raw
+     * SINE rather than letting a virtual number reach the string loader. */
+    if (sequencer_core_patch_compiled_out(patch)) {
+        sequencer_configure_melodic_wave_track(synth_id, SEQ_PATCH_SINE,
+                                               num_voices, filter_authored,
+                                               filter_q);
+        return false;
+    }
     if (sequencer_core_is_wave_patch(patch)) {
         sequencer_configure_melodic_wave_track(synth_id, patch, num_voices,
                                                filter_authored, filter_q);
@@ -279,6 +289,16 @@ static bool sequencer_apply_patch_kind(uint8_t synth_id, uint16_t patch,
             fm_voice_configure_track(synth_id, num_voices, &s_fm_voice);
         } else {
             fm_preset_configure_track(synth_id, patch, num_voices);
+        }
+        return false;
+    }
+#endif
+#if CONFIG_SYNTH_ADDITIVE
+    if (patch >= SEQ_PATCH_ADDITIVE_BASE && patch <= SEQ_PATCH_ADDITIVE_MAX) {
+        if (patch == SEQ_PATCH_ADDITIVE_CUSTOM) {
+            additive_voice_configure_track(synth_id, num_voices, &s_additive_voice);
+        } else {
+            additive_preset_configure_track(synth_id, patch, num_voices);
         }
         return false;
     }
@@ -387,8 +407,10 @@ void sequencer_core_set_melodic_patch(uint16_t patch_number)
     /* 0..127: Juno, 128..255: DX7, 256: built-in piano.
      * 257..263: raw-waveform virtual patches (SEQ_PATCH_SINE..SEQ_PATCH_WAVE_MAX).
      * 264..266: multi-osc bass presets (SEQ_PATCH_BASS_BASE..SEQ_PATCH_BASS_MAX).
-     * 267..271: wavetable banks (AMY_WAVETABLE only). 272..276: FM/ALGO voices
-     * (SEQ_PATCH_FM_BASE..SEQ_PATCH_FM_MAX), always the true ceiling. */
+     * 267..271: wavetable banks (AMY_WAVETABLE only). 272..276: FM/ALGO voices.
+     * 277..279: additive/partials voices
+     * (SEQ_PATCH_ADDITIVE_BASE..SEQ_PATCH_ADDITIVE_MAX), always the true
+     * ceiling. */
     patch_number = SEQ_CLAMP_U16(patch_number, 0, SEQ_PATCH_ROUTABLE_MAX);
     if (s_melodic_patch == patch_number) {
         return;
@@ -454,6 +476,24 @@ void sequencer_core_fm_voice_changed(void)
     }
     /* The arp can play FM_CUSTOM too; it checks its own source/patch state. */
     arp_core_fm_voice_changed();
+}
+#endif
+
+/* ── Live additive voice edits ────────────────────────────────────────────── */
+
+#if CONFIG_SYNTH_ADDITIVE
+void sequencer_core_additive_voice_changed(void)
+{
+    for (uint8_t i = 0; i < s_num_layers; i++) {
+        seq_layer_t *layer = &s_layers[i];
+        if (layer->type != SEQ_LAYER_MELODIC) continue;
+        if (layer->patch != SEQ_PATCH_ADDITIVE_CUSTOM) continue;
+        for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
+            additive_voice_push_live(layer->synth_id[t], &s_additive_voice);
+        }
+    }
+    /* The arp can play ADDITIVE_CUSTOM too; it checks its own state. */
+    arp_core_additive_voice_changed();
 }
 #endif
 
@@ -649,7 +689,8 @@ void sequencer_core_arp_configure(uint16_t patch_number, uint8_t num_voices,
      * patch string) is shared via sequencer_apply_patch_kind(). */
     patch_number = SEQ_CLAMP_U16(patch_number, 0, SEQ_PATCH_FULL_MAX);
     /* Osc topology can change between kinds (1-2 oscs for waves/bass, 7 for
-     * FM voices); kill sounding voices before the pool is rebuilt. */
+     * FM voices, N+1 for additive); kill sounding voices before the pool is
+     * rebuilt. */
     sequencer_kill_synth_voices(SEQ_ARP_SYNTH);
     bool string_patch = seq_apply_patch(SEQ_ARP_SYNTH, patch_number,
                                         num_voices, 0,

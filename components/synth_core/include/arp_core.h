@@ -89,6 +89,10 @@ void arp_set_patch(uint16_t patch_number);
  * otherwise. Called from sequencer_core_fm_voice_changed() alongside the
  * melodic-layer fanout. */
 void arp_core_fm_voice_changed(void);
+/* Live additive voice edits: same contract as arp_core_fm_voice_changed()
+ * but for s_additive_voice / SEQ_PATCH_ADDITIVE_CUSTOM. Called from
+ * sequencer_core_additive_voice_changed(). */
+void arp_core_additive_voice_changed(void);
 /* Sound source: switch between a DX7/Juno patch and a raw AMY waveform.
  * On change, rebuilds the synth slot and re-applies any authored ADSR/filter.
  * In WAVE mode, arp_set_patch() stores the patch but does not reconfigure the

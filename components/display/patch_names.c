@@ -21,9 +21,9 @@
 /* This table is positional: the 267-271 slot is always present (either real
  * wavetable names or "(reserved)" placeholders, see below) so that FM/ALGO at
  * 272-276 lands at a fixed index regardless of CONFIG_AMY_WAVETABLE. */
-#define SEQ_PATCH_NAME_COUNT 277  /* 0..276 inclusive (257-263 = waves, 264-266 = bass
+#define SEQ_PATCH_NAME_COUNT 280  /* 0..279 inclusive (257-263 = waves, 264-266 = bass
                                      presets, 267-271 = wavetable banks or reserved,
-                                     272-276 = FM/ALGO) */
+                                     272-276 = FM/ALGO, 277-279 = additive) */
 
 static const char *const s_patch_names[SEQ_PATCH_NAME_COUNT] = {
     /* ── Juno-106 (0..127) ── */
@@ -329,6 +329,12 @@ static const char *const s_patch_names[SEQ_PATCH_NAME_COUNT] = {
     /* 274 */ "FM Bell",
     /* 275 */ "FM Lead",
     /* 276 */ "FM Custom (edit)",
+
+    /* ── Additive/partials voices (277-279) — like FM, named unconditionally
+     * so the table stays positional under the CONFIG_SYNTH_ADDITIVE gate. ── */
+    /* 277 */ "Add Organ",
+    /* 278 */ "Add Bell",
+    /* 279 */ "Add Custom",
 };
 
 const char *patch_name_for(uint16_t patch)

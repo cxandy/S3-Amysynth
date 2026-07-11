@@ -35,28 +35,32 @@ static const uint16_t s_patch_catalog[] = {
     264, /* Bass 1: Sub-Heavy Detune (PULSE + detuned SAW, LPF24) */
     265, /* Bass 2: Sine-Reinforced Acid/Pluck (SINE + SAW, LPF24) */
     266, /* Bass 3: FM DX7-Style (SINE + sub-octave SINE, DX7 env) */
-#if CONFIG_AMY_WAVETABLE
+    /* Kconfig-gated ranges are listed unconditionally: when a feature is
+     * compiled out, its numbers are skipped at cycle time by the domains'
+     * sequencer_core_patch_compiled_out() exclusion — one mechanism for
+     * curated and full-range browse alike, no #if bookkeeping here. */
     267, /* Wavetable: 111.WAV      */
     268, /* Wavetable: BRAIDS01.WAV */
     269, /* Wavetable: PPG_WA00.WAV */
     270, /* Wavetable: SINE2SAW.WAV */
     271, /* Wavetable: VIRAL.WAV    */
-#endif
-#if CONFIG_SYNTH_CUSTOM_FM
     272, /* FM Bass (6-op ALGO) */
     273, /* FM E.Piano (6-op ALGO) */
     274, /* FM Bell (6-op ALGO) */
     275, /* FM Lead (6-op ALGO) */
     276, /* FM Custom — opens the FM edit screen (Menu > Screen: FM) */
-#endif
+    277, /* Add Organ (BYO_PARTIALS, 8 harmonics) */
+    278, /* Add Bell (inharmonic partial ratios)  */
+    279, /* Add Custom — live-editable additive voice (editor screen TBD) */
 };
 #define SEQ_RUNTIME_PATCH_COUNT ((int)(sizeof(s_patch_catalog) / sizeof(s_patch_catalog[0])))
 #endif
 
-/* Full-range browse walks 0..SEQ_PATCH_FULL_MAX (sequencer_core.h — the
- * compile-aware ceiling shared with the apply-path clamps): Juno 0..127,
- * DX7 128..255, piano 256, waves 257..263, bass 264..266, wavetable banks
- * 267..271 (AMY_WAVETABLE only), FM/ALGO 272..276 (SYNTH_CUSTOM_FM only). */
+/* Full-range browse walks 0..SEQ_PATCH_FULL_MAX (sequencer_core.h — always
+ * the top of the fixed numbering space): Juno 0..127, DX7 128..255,
+ * piano 256, waves 257..263, bass 264..266, wavetable banks 267..271,
+ * FM/ALGO 272..276, additive 277..279. Ranges whose Kconfig gate is off are
+ * interior holes skipped by the domains' compiled-out exclusion. */
 #if CONFIG_SEQ_PATCH_BROWSE_FULL_RANGE
 #define PATCH_DOMAIN_CATALOG .list = NULL, .count = 0, .full_max = SEQ_PATCH_FULL_MAX
 #else
@@ -64,11 +68,16 @@ static const uint16_t s_patch_catalog[] = {
     .count = SEQ_RUNTIME_PATCH_COUNT, .full_max = SEQ_PATCH_FULL_MAX
 #endif
 
-/* Melodic and arp play everything in the catalog. */
-static const patch_domain_t s_melodic_domain = { PATCH_DOMAIN_CATALOG };
+/* Melodic and arp play everything in the catalog that is compiled into this
+ * build — ranges gated off by Kconfig (wavetable/FM/additive) are interior
+ * holes in the fixed numbering and get skipped dynamically. */
+static const patch_domain_t s_melodic_domain = {
+    PATCH_DOMAIN_CATALOG, .excluded = sequencer_core_patch_compiled_out
+};
 
 /* Drone: same catalog, minus what its excitation model can't play
- * (NOISE/KS/bass/FM — see drone_patch_excluded() in drone_core.c). The
+ * (NOISE/KS/bass/FM/additive — see drone_patch_excluded() in drone_core.c,
+ * which also folds in the compiled-out check above). The
  * predicate is skipped during stepping, so cycling stays monotonic in both
  * browse modes and never trips drone_set_patch()'s snap-back. */
 static const patch_domain_t s_drone_domain = {

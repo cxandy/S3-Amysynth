@@ -5,6 +5,8 @@
 #include "custompatches/bass_presets.h"
 #include "custompatches/fm_presets.h"
 #include "custompatches/fm_voice.h"
+#include "custompatches/additive_presets.h"
+#include "custompatches/additive_voice.h"
 #include "arp_core.h"
 #include "amy.h"
 #include "amy_helpers.h"

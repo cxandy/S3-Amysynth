@@ -47,7 +47,9 @@ extern "C" {
  * Intercepted the same way as SEQ_PATCH_WAVE_BASE — never sent to
  * amy_send_patch(). Range kept separate from SEQ_PATCH_WAVE_BASE so it can be
  * added without renumbering the bass presets above. */
-#if CONFIG_AMY_WAVETABLE
+/* The numbers exist unconditionally (like every virtual range) so that
+ * compile-aware code — sequencer_core_patch_compiled_out() below — can name
+ * them in any build; only their *routability* is gated on the Kconfig flag. */
 #define SEQ_PATCH_WAVETABLE_BASE  267
 #define SEQ_PATCH_WAVETABLE_0     267   /* 111.WAV      */
 #define SEQ_PATCH_WAVETABLE_1     268   /* BRAIDS01.WAV */
@@ -55,7 +57,6 @@ extern "C" {
 #define SEQ_PATCH_WAVETABLE_3     270   /* SINE2SAW.WAV */
 #define SEQ_PATCH_WAVETABLE_4     271   /* VIRAL.WAV    */
 #define SEQ_PATCH_WAVETABLE_MAX   271
-#endif
 
 /* True for any raw-waveform virtual patch (SINE..KS, and — when AMY_WAVETABLE
  * is compiled in — the wavetable bank patches). Shared by the melodic
@@ -89,20 +90,53 @@ static inline bool sequencer_core_is_wave_patch(uint16_t patch)
 #define SEQ_PATCH_FM_LEAD     275   /* FM Lead (brighter 2-op chain, algorithm 0) */
 #define SEQ_PATCH_FM_CUSTOM   276   /* Live-editable voice — opens the FM screen */
 #define SEQ_PATCH_FM_MAX      276
-#define SEQ_PATCH_ROUTABLE_MAX SEQ_PATCH_FM_MAX
 
-/* Compile-aware ceiling: the highest patch actually routable in THIS build.
- * Tracks whichever optional range is compiled in: FM (276) when
- * SYNTH_CUSTOM_FM, else the wavetable top (271) when AMY_WAVETABLE, else the
- * bass top (266). Single source for browse domains and apply-path clamps —
- * new ranges added above extend every consumer through this one define. */
-#if CONFIG_SYNTH_CUSTOM_FM
-#define SEQ_PATCH_FULL_MAX SEQ_PATCH_ROUTABLE_MAX
-#elif CONFIG_AMY_WAVETABLE
-#define SEQ_PATCH_FULL_MAX SEQ_PATCH_WAVETABLE_MAX
-#else
-#define SEQ_PATCH_FULL_MAX SEQ_PATCH_BASS_MAX
+/* ── Additive/partials voices (melodic + arp; oscs_per_voice = N+1) ────────
+ * Osc 0 is the AMY BYO_PARTIALS control osc (preset = partial count, shared
+ * envelope); oscs 1..N are PARTIAL sines summed additively — no algo_source
+ * routing, AMY derives the child set from preset + osc adjacency. Intercepted
+ * before amy_send_patch() exactly like the FM range. ORGAN/BELL are fixed
+ * presets (see additive_presets.c); ADDITIVE_CUSTOM is the single
+ * live-editable voice (custompatches/additive_voice.h), global not per-layer,
+ * playing its drawbar-organ default until an additive editor screen lands.
+ * Numbered to start unconditionally after the FM range for the same reason FM
+ * sits above the wavetables: patch numbers never shift under a build-flag
+ * change and the virtual ranges can never collide. */
+#define SEQ_PATCH_ADDITIVE_BASE    277
+#define SEQ_PATCH_ADDITIVE_ORGAN   277   /* drawbar organ, 8 harmonics, 1/n  */
+#define SEQ_PATCH_ADDITIVE_BELL    278   /* inharmonic free-bar bell ratios  */
+#define SEQ_PATCH_ADDITIVE_CUSTOM  279   /* live-editable additive voice     */
+#define SEQ_PATCH_ADDITIVE_MAX     279
+#define SEQ_PATCH_ROUTABLE_MAX SEQ_PATCH_ADDITIVE_MAX
+
+/* True when `patch` falls in a virtual range whose feature is NOT compiled
+ * into this build. The single compile-awareness point for the whole patch
+ * space: browse domains skip these numbers via their `excluded` predicate
+ * (patch_cycle.h) and the patch-kind dispatch snaps them to a safe fallback,
+ * so a new gated range only needs a clause here — no ceiling cascade, no
+ * per-consumer hardcoded holes. Patch numbers are fixed unconditionally
+ * (ranges never renumber under build flags), which is what makes holes
+ * possible in the first place. */
+static inline bool sequencer_core_patch_compiled_out(uint16_t patch)
+{
+#if !CONFIG_AMY_WAVETABLE
+    if (patch >= SEQ_PATCH_WAVETABLE_BASE && patch <= SEQ_PATCH_WAVETABLE_MAX) return true;
 #endif
+#if !CONFIG_SYNTH_CUSTOM_FM
+    if (patch >= SEQ_PATCH_FM_BASE && patch <= SEQ_PATCH_FM_MAX) return true;
+#endif
+#if !CONFIG_SYNTH_ADDITIVE
+    if (patch >= SEQ_PATCH_ADDITIVE_BASE && patch <= SEQ_PATCH_ADDITIVE_MAX) return true;
+#endif
+    (void)patch;
+    return false;
+}
+
+/* Browse/clamp ceiling. Always the top of the numbering space: compiled-out
+ * ranges inside it are skipped dynamically by
+ * sequencer_core_patch_compiled_out() rather than by shrinking the ceiling
+ * (which could not express interior holes, e.g. additive on with FM off). */
+#define SEQ_PATCH_FULL_MAX SEQ_PATCH_ROUTABLE_MAX
 
 /* ── BPM range & default (shared with synth_ui for boot initialisation) ── */
 #define SEQ_DEFAULT_BPM  108
@@ -131,6 +165,13 @@ uint16_t sequencer_core_get_layer_patch(uint8_t layer_idx);
  * screen after any encoder edit to algorithm/ratio/level/feedback. No-op if
  * no row is on that patch. */
 void sequencer_core_fm_voice_changed(void);
+
+/* Re-push the live custom additive voice (custompatches/additive_voice.h's
+ * s_additive_voice) to every melodic row currently on
+ * SEQ_PATCH_ADDITIVE_CUSTOM, plus the arp if it is playing it. Called by the
+ * (future) additive UI screen after any encoder edit to ratio/level. No-op if
+ * nothing is on that patch. */
+void sequencer_core_additive_voice_changed(void);
 
 /* ── Drum per-track patch (curated Juno list) ──
  * Drum layers are per-track Juno-patch layers: each track owns its own patch.

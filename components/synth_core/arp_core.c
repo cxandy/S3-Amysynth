@@ -1,6 +1,7 @@
 #include "arp_core.h"
 #include "sequencer_core.h"
 #include "custompatches/fm_voice.h"  /* s_fm_voice + fm_voice_push_live (FM_CUSTOM) */
+#include "custompatches/additive_voice.h"  /* s_additive_voice + push_live (ADDITIVE_CUSTOM) */
 #include "amy_helpers.h"   /* amy_helpers_event_begin/send — for WAVE mode osc config */
 #include "voice_config.h"  /* canonical LFO depth scalars + shared wave map */
 #include "quantizer.h"
@@ -515,6 +516,15 @@ void arp_core_fm_voice_changed(void)
 #if CONFIG_SYNTH_CUSTOM_FM
     if (s_arp.source == ARP_SRC_PATCH && s_arp.patch == SEQ_PATCH_FM_CUSTOM) {
         fm_voice_push_live(sequencer_core_arp_synth(), &s_fm_voice);
+    }
+#endif
+}
+
+void arp_core_additive_voice_changed(void)
+{
+#if CONFIG_SYNTH_ADDITIVE
+    if (s_arp.source == ARP_SRC_PATCH && s_arp.patch == SEQ_PATCH_ADDITIVE_CUSTOM) {
+        additive_voice_push_live(sequencer_core_arp_synth(), &s_additive_voice);
     }
 #endif
 }

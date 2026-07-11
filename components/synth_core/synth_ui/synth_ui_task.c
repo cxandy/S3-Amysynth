@@ -4,6 +4,7 @@
 #include "arp_core.h"
 #include "custompatches/drone_core.h"
 #include "custompatches/fm_voice.h"
+#include "custompatches/additive_voice.h"
 #include "custompatches/sample_rec.h"
 #include "display_seq.h"
 #include "display_drone.h"
@@ -175,6 +176,9 @@ void synth_ui_init(u8g2_t *u8g2)
     SEQ_HEAP_CHECK("ui_init: after drone_core_init");
 #if CONFIG_SYNTH_CUSTOM_FM
     fm_voice_default(&s_fm_voice);
+#endif
+#if CONFIG_SYNTH_ADDITIVE
+    additive_voice_default(&s_additive_voice);
 #endif
     sample_rec_init();
     SEQ_HEAP_CHECK("ui_init: after sample_rec_init");

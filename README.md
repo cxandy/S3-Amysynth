@@ -221,7 +221,7 @@ The component layout:
 | `components/display/` | display HAL + screen renderers + reusable graph-popup widget |
 | `components/usb_audio/` | USB audio ring buffer / UAC glue |
 | `components/rotary_encoder/`, `components/my_buttons/` | input drivers |
-| `components/g_clamp/` | header-only clamping helpers shared across the UI/engine code |
+| `components/seq_clamp/` | header-only clamping helpers shared across the UI/engine code |
 | `components/amy/` | vendored AMY engine (see [AMY-EDITS.md](AMY-EDITS.md) for local patches) |
 
 ## Diagnostics

@@ -1114,13 +1114,23 @@ static void graph_draw_topbar(u8g2_t *u8g2)
     }
     u8g2_DrawStr(u8g2, 2, 8, buf);
 
+    /* The middle point readout and the right-side trim readout share the
+     * 60..126 px band, so only one may draw per frame (both at once overlap
+     * into unreadable doubled text). Point selection is resolved first; the
+     * right readout yields to it and returns when the cursor leaves A/D/R. */
+    gpopup_point_t pts[GPOPUP_MAX_POINTS];
+    uint8_t n = graph_popup_get_points(&s_graph_popup, pts, GPOPUP_MAX_POINTS);
+    uint8_t c = s_graph_popup.cursor;
+    bool mid_shown = (!s_graph_amp_mode && n >= 4 && c >= 1 && c <= 3);
+
     /* Right: amp indicator when in amp mode (replaces the old "S/L" range flag
      * which is now set automatically and no longer meaningful to the user).
-     * The melodic EG1 page always shows the signed sweep depth instead, so the
-     * shoulder-button polarity flip has a visible readout. */
+     * The melodic EG1 page shows the signed sweep depth instead whenever the
+     * middle readout is idle, so the shoulder-button polarity flip has a
+     * visible readout. */
     uint8_t rw = 0;
     bool eg1_melodic = (s_graph_eg_index == 1 && s_graph_target == GRAPH_TGT_MELODIC);
-    if (s_graph_amp_mode || eg1_melodic) {
+    if (s_graph_amp_mode || (eg1_melodic && !mid_shown)) {
         char amp_buf[10];
         if (eg1_melodic) {
             snprintf(amp_buf, sizeof(amp_buf), "ENV%+.2f", (double)s_graph_fenv_edit);
@@ -1134,10 +1144,7 @@ static void graph_draw_topbar(u8g2_t *u8g2)
     }
 
     /* Middle: live readout of the selected point's real value (ms / %). */
-    gpopup_point_t pts[GPOPUP_MAX_POINTS];
-    uint8_t n = graph_popup_get_points(&s_graph_popup, pts, GPOPUP_MAX_POINTS);
-    uint8_t c = s_graph_popup.cursor;
-    if (!s_graph_amp_mode && n >= 4 && c >= 1 && c <= 3) {
+    if (mid_shown) {
         uint32_t cum_a = graph_x_to_ms(pts[1].x);
         uint32_t cum_d = graph_x_to_ms(pts[2].x);
         uint32_t cum_r = graph_x_to_ms(pts[3].x);

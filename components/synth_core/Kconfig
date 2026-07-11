@@ -219,6 +219,20 @@ config SYNTH_CUSTOM_FM
 		(272-276) are dropped from the runtime patch browser; and the FM menu
 		entry is hidden.
 
+config SYNTH_ADDITIVE
+	bool "Additive/partials voices (WIP)"
+	default n
+	help
+		Compiles in the additive-synthesis melodic voices built on AMY's
+		BYO_PARTIALS wave type: the fixed presets (Add Organ, Add Bell) and
+		the live-editable Add Custom voice. Each voice is one control osc
+		plus up to 12 PARTIAL sine oscs, so it costs N+1 oscillators from
+		the global pool per sounding voice.
+
+		Work in progress and off by default. When disabled, none of the
+		additive voice code or presets is built and the additive patch
+		numbers (277-279) are dropped from the runtime patch browser.
+
 comment "Arpeggiator"
 
 config SEQ_ARP_DEFAULT_ENABLED

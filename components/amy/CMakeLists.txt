@@ -39,6 +39,17 @@ endif()
 # that include amy.h see the same amy_set_gamma9001_pcm() declaration.
 if(CONFIG_AMY_PCM_GAMMA808)
     target_compile_definitions(${COMPONENT_LIB} PUBLIC GAMMA9001)
+
+    # Gamma9001 sample blob: flashed to the 'drums' data partition alongside
+    # the app when present (regenerate with tools/gen-gamma9001-drums.py, or
+    # upstream amy.headers.generate_gamma9001_headers()). Missing blob is not
+    # an error - boot then leaves presets 256+ disabled.
+    set(AMY_DRUMS_BIN "${CMAKE_CURRENT_LIST_DIR}/drums.bin")
+    if(EXISTS ${AMY_DRUMS_BIN})
+        esptool_py_flash_to_partition(flash "drums" ${AMY_DRUMS_BIN})
+    else()
+        message(STATUS "amy: drums.bin not present; gamma9001 presets 256+ will be unavailable")
+    endif()
 endif()
 
 # Keep the same compile flag for amy.c (relax strict-aliasing warnings)

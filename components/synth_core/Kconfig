@@ -334,4 +334,14 @@ config SYNTH_PROJECT_SELFTEST
 		Runs a serialize/parse round-trip at boot and logs PASS/FAIL.
 		Diagnostic only - keep off in normal builds.
 
+config SYNTH_DRUM_SYNTH_MODE
+	bool "Synth (DX7/Juno) drum engine"
+	default n
+	help
+		Compile the legacy Synth drum engine: a curated DX7/Juno patch
+		list playable per drum track, selectable as the first entry of
+		the Drum Bank menu item. When off, drum layers are PCM-only
+		(808 ROM bank + gamma9001 sample banks) and projects saved with
+		the Synth engine load as PCM.
+
 endmenu

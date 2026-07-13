@@ -390,12 +390,68 @@ static const char *const s_pcm_preset_names[SEQ_PCM_NAME_COUNT] = {
 };
 #endif /* CONFIG_AMY_PCM_GAMMA808 */
 
+#if CONFIG_AMY_PCM_GAMMA808
+/* Gamma9001 sample banks (presets 256..391), streamed from the 'drums' flash
+ * partition. Order mirrors the vendored amy/src/pcm_gamma9001.h map exactly —
+ * re-verify after any AMY re-vendor. Names shortened to fit the drum screen's
+ * patch banner. */
+#define SEQ_GAMMA_NAME_FIRST 256
+static const char *const s_gamma_preset_names[] = {
+    /* tr909 256-272 */
+    "909 BD", "909 BD Lo", "909 Clap", "909 Crash", "909 HH",
+    "909 HH Long", "909 HH Short", "909 OH", "909 OH Long", "909 OH Short",
+    "909 Ride", "909 Rim", "909 SD", "909 SD Short", "909 Tom Hi",
+    "909 Tom Lo", "909 Tom Mid",
+    /* linn9000 273-282 */
+    "Linn Kick", "Linn Bongo", "Linn Cowbell", "Linn Cymbal", "Linn HH Cl",
+    "Linn HH Op", "Linn Rimshot", "Linn Snare", "Linn Tamb", "Linn Tom",
+    /* mr12 283-286 */
+    "MR12 HH Cl", "MR12 HH Op", "MR12 Kick", "MR12 Snare",
+    /* synthetics 287-310 */
+    "Syn Metal 09", "Syn Metal 16", "Syn Static 07", "Syn Wood 01",
+    "Syn Wood 02", "Syn Wood 03", "Syn BD 03", "Syn BD 04", "Syn BD 07",
+    "Tokyo Burst", "Tokyo Deep", "Tokyo Jet", "Tokyo Space", "Syn Hizz 06",
+    "Syn Pew 03", "Syn Boink 02", "Syn Boink 04", "Syn Blop 01",
+    "Syn Blop 02", "Syn Click 05", "Syn Click 06", "Syn Click 07",
+    "Syn Click 08", "Syn Click 09",
+    /* power 311-330 */
+    "Pwr Real Kick", "Pwr Metal Kick", "Pwr Side Stick", "Pwr Snare",
+    "Pwr Hand Clap", "Pwr Gate Snare", "Pwr Tom 1", "Pwr Tight HH",
+    "Pwr Tom 2", "Pwr Pedal HH", "Pwr Tom 3", "Pwr Open HH", "Pwr Tom 4",
+    "Pwr Tom 5", "Pwr Crash", "Pwr Tom 6", "Pwr Ride Edge", "Pwr Ride Cup",
+    "Pwr Splash", "Pwr Cowbell",
+    /* percussion 331-374 */
+    "Afr Conga 1", "Afr Conga 2", "Afr Conga 3", "Afr Conga 4",
+    "Bongo 1", "Bongo 2", "Bongo 3", "Bongo 4", "Bongo 5", "Bongo 6",
+    "Bongo 7", "Conga 1", "Conga 2", "Conga 3", "Conga 4", "Conga 5",
+    "Conga 6", "Digeridoo", "Kanu", "Noise Kick", "Old Snare", "Shaker 1",
+    "Shaker 2", "Sitar", "Strings 1", "Strings 2", "Strings Sweep",
+    "Tabla 1", "Tabla 2", "Tabla 3", "Tamb 1", "Tamb 3", "Tamb 4", "Tamp 2",
+    "Timbales 1", "Timbales 2", "Timbales 3", "Timbales 4", "Timpani 1",
+    "Timpani 2", "Triangle 1", "Triangle 2", "Untitled", "Whistle",
+    /* acoustic 375-377 */
+    "Ac Tambourine", "Ac Shaker Sh", "Ac Shaker Tiny",
+    /* extras 378-391 */
+    "JCave", "Laser", "Mach3", "Silver", "Vibrablib", "HeHa", "HiHi",
+    "Dim Future", "Smiling", "Ana Strings", "BassRec", "Xox", "Beach",
+    "Narrow",
+};
+#define SEQ_GAMMA_NAME_COUNT \
+    ((int)(sizeof(s_gamma_preset_names) / sizeof(s_gamma_preset_names[0])))
+#endif /* CONFIG_AMY_PCM_GAMMA808 */
+
 const char *pcm_preset_name_for(uint16_t preset)
 {
-    if (preset >= SEQ_PCM_NAME_COUNT) {
-        return (const char *)0;
+    if (preset < SEQ_PCM_NAME_COUNT) {
+        return s_pcm_preset_names[preset];
     }
-    return s_pcm_preset_names[preset];
+#if CONFIG_AMY_PCM_GAMMA808
+    if (preset >= SEQ_GAMMA_NAME_FIRST &&
+        preset < SEQ_GAMMA_NAME_FIRST + SEQ_GAMMA_NAME_COUNT) {
+        return s_gamma_preset_names[preset - SEQ_GAMMA_NAME_FIRST];
+    }
+#endif
+    return (const char *)0;
 }
 
 #endif /* CONFIG_SEQ_PATCH_SHOW_NAMES */

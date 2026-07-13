@@ -25,6 +25,7 @@
 #include "esp_compiler.h"
 #include "soc/gpio_num.h"
 #include "my_buttons.h"
+#include "esp_partition.h"
 #include "project_fs.h"
 #include "project_store.h"
 #include "project_snapshot.h"
@@ -800,6 +801,70 @@ static void amy_profiler_overhead_selftest(void)
 }
 #endif
 
+#ifdef GAMMA9001
+/* Feed AMY the gamma9001 drum-bank blob (PCM presets 256-391) from the
+ * 'drums' data partition. Preferred path is a read-only flash mmap of
+ * exactly the blob's size, but PSRAM XIP (SPIRAM_FETCH_INSTRUCTIONS +
+ * SPIRAM_RODATA) leaves too few data-cache MMU pages for ~3.6 MB on this
+ * config, so the fallback copies the blob into PSRAM heap instead (~3.6 MB
+ * of the ~7 MB free; same placement class as the FX delay lines). Every
+ * failure path is non-fatal: AMY keeps those presets disabled. */
+static void gamma9001_pcm_mount(void)
+{
+    const esp_partition_t *part = esp_partition_find_first(
+        ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, "drums");
+    if (part == NULL) {
+        ESP_LOGW(TAG, "gamma9001: no 'drums' partition; PCM presets 256+ unavailable");
+        return;
+    }
+
+    /* A never-flashed partition reads as erased flash (all 0xFF); don't hand
+     * AMY full-scale noise as samples. */
+    uint16_t probe[4];
+    if (esp_partition_read(part, 0, probe, sizeof(probe)) != ESP_OK ||
+        (probe[0] == 0xFFFFu && probe[1] == 0xFFFFu &&
+         probe[2] == 0xFFFFu && probe[3] == 0xFFFFu)) {
+        ESP_LOGW(TAG, "gamma9001: 'drums' partition is blank (flash drums.bin); "
+                      "PCM presets 256+ unavailable");
+        return;
+    }
+
+    size_t bytes = amy_gamma9001_pcm_bytes();
+    if (bytes == 0 || bytes > part->size) {
+        ESP_LOGW(TAG, "gamma9001: blob size %u exceeds partition (%u); "
+                      "PCM presets 256+ unavailable",
+                 (unsigned)bytes, (unsigned)part->size);
+        return;
+    }
+
+    const void *map = NULL;
+    esp_partition_mmap_handle_t handle;
+    if (esp_partition_mmap(part, 0, bytes, ESP_PARTITION_MMAP_DATA,
+                           &map, &handle) == ESP_OK) {
+        amy_set_gamma9001_pcm((const int16_t *)map);
+        ESP_LOGI(TAG, "gamma9001: drum banks flash-mapped (%u KB)",
+                 (unsigned)(bytes / 1024u));
+        return;
+    }
+
+    /* MMU pages exhausted: stage the blob in PSRAM instead. */
+    int16_t *buf = heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM);
+    if (buf == NULL) {
+        ESP_LOGW(TAG, "gamma9001: mmap failed and PSRAM alloc of %u KB failed; "
+                      "PCM presets 256+ unavailable", (unsigned)(bytes / 1024u));
+        return;
+    }
+    if (esp_partition_read(part, 0, buf, bytes) != ESP_OK) {
+        ESP_LOGW(TAG, "gamma9001: partition read failed; PCM presets 256+ unavailable");
+        free(buf);
+        return;
+    }
+    amy_set_gamma9001_pcm(buf);
+    ESP_LOGI(TAG, "gamma9001: drum banks copied to PSRAM (%u KB; flash mmap unavailable)",
+             (unsigned)(bytes / 1024u));
+}
+#endif /* GAMMA9001 */
+
 void app_main(void)
 {
    
@@ -910,6 +975,10 @@ void app_main(void)
      * table from this value. AMY's default 250 oscs leave ample headroom for the
      * drone's 2 voices x 2 oscs. Keep in sync with drone_core.c. */
     amy_cfg.max_synths = 66;
+#ifdef GAMMA9001
+    gamma9001_pcm_mount();
+#endif
+
     ESP_LOGI(TAG, "Starting AMY synth engine... (audio=%d, Fs=%d)", amy_cfg.audio, AMY_SAMPLE_RATE);
     ESP_LOGI(TAG, "[startup] before amy_start");
     HEAP_CHECK("before amy_start");

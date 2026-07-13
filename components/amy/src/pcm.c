@@ -49,6 +49,12 @@ const int16_t * gamma9001_pcm = NULL;
 void amy_set_gamma9001_pcm(const int16_t * data) {
     gamma9001_pcm = data;
 }
+// LOCAL EDIT: expose the blob size (GAMMA9001_BIN_FRAMES lives only in
+// pcm_gamma9001.h, which defines the map array and so cannot be included
+// twice) so the ESP32-S3 port can mmap or PSRAM-copy exactly the blob.
+uint32_t amy_gamma9001_pcm_bytes(void) {
+    return (uint32_t)GAMMA9001_BIN_FRAMES * sizeof(int16_t);
+}
 #endif
 
 

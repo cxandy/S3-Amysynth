@@ -302,6 +302,39 @@ PCM preset numbering differs between banks; the sequencer drum defaults in
 `pcm_wavetable_base`). Cost ≈ +268 KB flash `.rodata` (XIP-cached, never
 RAM-copied); zero DRAM/PSRAM/IRAM.
 
+### `filters.c` + `log2_exp2.c` + `log2_exp2_fxpt_lutable.h` + `amy.h` — LUT trig in biquad coefficient generators (upstream cherry-pick #875 + #877)
+
+Cherry-picked from upstream (both MERGED post-1.2.31: shorepine/amy#875
+"Avoid transcendentals" filters.c/log2_exp2 portions, and #877 "sin/cos_lut in
+the hpf and bpf coefficient generators too"). **Retire on the next vendor
+sync >= v1.2.53** — the hunks are verbatim, so the sync should apply cleanly.
+
+- `filters.c`: `dsps_biquad_gen_lpf/hpf/bpf_f32` compute `cos/sin(2*pi*f)`
+  via new `sin2pi`/`cos2pi` macros backed by a fixed-point quarter-sine LUT
+  instead of libm `sinf`/`cosf` (removes transcendental libcalls from every
+  filter-coefficient regen, i.e. once per block per filtered osc under EG/LFO
+  sweeps). The rare LPF pole-correction branch keeps `acosf`/`cosf`, as
+  upstream does. `M_PI` fallback literal gains an `f` suffix.
+- `log2_exp2.c`: new `sin_lut()`/`cos_lut()` (quadrant fold over a 257-entry
+  quarter-sine table, same `lut_val` interpolator as log2/exp2).
+- `log2_exp2_fxpt_lutable.h`: `qsin_fxpt_lutable[257]` (+514 B flash rodata,
+  XIP-cached like its neighbors).
+- `amy.h`: `sin_lut`/`cos_lut` prototypes.
+
+Deliberately NOT taken from #875: the `amy.c` `logfreq_of_freq` /
+`freq_of_logfreq` / `freq_for_midi_note` LUT conversions (global tuning-
+precision change; evaluate separately) and the `amy_fixedpoint.h`
+`S2F/F2S_nofpu` experiment (dead code — upstream keeps `_orig` active).
+
+### `pcm.c` + `amy.h` — `amy_gamma9001_pcm_bytes()` accessor (LOCAL EDIT)
+
+Two-line helper returning `GAMMA9001_BIN_FRAMES * 2`. The constant lives only
+in `pcm_gamma9001.h`, which also defines the map array and so cannot be
+included a second time; the ESP32-S3 mount code (`main.c
+gamma9001_pcm_mount()`) needs the exact blob size to flash-mmap it (a whole-
+partition mmap exhausts data-cache MMU pages under PSRAM XIP) or to size the
+PSRAM fallback copy. Upstream PR candidate (tiny, platform-neutral).
+
 ## Deferred / needs porting
 
 | Edit | Status |

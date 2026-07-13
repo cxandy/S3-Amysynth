@@ -13,6 +13,7 @@ seq_drum_engine_t s_drum_engine = SEQ_DRUM_PCM;
  * BELL/MARIMBA/etc.) have far sharper attack + shorter decay than the Juno
  * "drum" patches, so they read as real percussion. Pitch still drives timbre
  * (low = body/kick, high = hat/shaker) — see role-based defaults below. */
+#if CONFIG_SYNTH_DRUM_SYNTH_MODE
 static const uint16_t SEQ_DRUM_PATCH_LIST[] = {
     245,  /* DX7 B.DRM-SNAR  — dedicated bass-drum/snare, closest to a kit voice */
     221,  /* DX7 BLOCK       — woodblock, tight click (hat/rim)                  */
@@ -33,6 +34,51 @@ static const uint16_t SEQ_DRUM_PATCH_LIST[] = {
 static const patch_domain_t s_drum_domain = {
     .list = SEQ_DRUM_PATCH_LIST, .count = SEQ_DRUM_PATCH_COUNT, .full_max = 0
 };
+#endif /* CONFIG_SYNTH_DRUM_SYNTH_MODE */
+
+/* ── Drum sample banks (menu "Drum Bank" selector) ──
+ * One row per selectable PCM bank: the compiled-in 808 ROM bank plus the
+ * gamma9001 banks streamed from the 'drums' flash partition. first/count are
+ * PCM preset ranges; roles[] seeds the four tracks (kick, snare, hat,
+ * clap-analog) when the bank is selected. Preset numbers mirror the vendored
+ * amy/src/pcm_gamma9001.h map (256=909BD .. 391=Narrow) — re-verify after any
+ * AMY re-vendor. Banks are contiguous in preset space, so free per-track
+ * cycling after a seed stays inside the bank until the user walks out. */
+typedef struct {
+    const char *name;
+    uint16_t    first, count;
+    uint16_t    roles[SEQ_TRACKS];
+} seq_drum_bank_t;
+
+#define SEQ_GAMMA_PCM_FIRST 256u
+#define SEQ_GAMMA_PCM_COUNT 136u
+
+static const seq_drum_bank_t s_drum_banks[] = {
+    { "808",   0,   19, {   2,  12,   9,   3} },  /* ROM bank (gamma808)       */
+    { "909",   256, 17, { 256, 268, 260, 258} },  /* BD, SD, HH, CLAP          */
+    { "Linn",  273, 10, { 273, 280, 277, 279} },  /* Kick, Snare, HHC, RimShot */
+    { "MR12",  283, 4,  { 285, 286, 283, 284} },  /* Kick, Snare, HHC, HHO     */
+    { "SynFX", 287, 24, { 294, 289, 306, 302} },  /* BD04, Static, Click, Boink*/
+    { "Power", 311, 20, { 311, 314, 318, 315} },  /* RealKick, Snare, HH, Clap */
+    { "Perc",  331, 44, { 350, 351, 352, 335} },  /* NoiceKick, OldSnr, Shaker */
+    { "Misc",  375, 17, { 388, 381, 376, 379} },  /* BassRec, Silver, Shkr, Lsr*/
+};
+#define SEQ_DRUM_BANK_COUNT ((uint8_t)(sizeof(s_drum_banks) / sizeof(s_drum_banks[0])))
+
+/* Last bank applied via the selector (display state only; the per-track
+ * presets are the persisted truth and cycle freely across banks). */
+static uint8_t s_drum_bank = 0;
+
+/* Gamma9001 banks are selectable only while their sample blob is mounted
+ * (main.c maps the 'drums' partition and calls amy_set_gamma9001_pcm). */
+static inline bool drum_gamma_available(void)
+{
+#ifdef GAMMA9001
+    return gamma9001_pcm != NULL;
+#else
+    return false;
+#endif
+}
 
 /* Built-in 808 PCM sample indices used by PCM drum mode, one per track:
  * kick, snare, closed-hat, clap. The compiled-in ROM bank (and with it the
@@ -545,6 +591,7 @@ uint16_t sequencer_core_get_drum_patch(uint8_t layer_idx, uint8_t track)
 uint16_t sequencer_core_cycle_drum_patch(uint8_t layer_idx, uint8_t track,
                                          int dir)
 {
+#if CONFIG_SYNTH_DRUM_SYNTH_MODE
     if (layer_idx >= s_num_layers || track >= SEQ_TRACKS) return 0;
     seq_layer_t *layer = &s_layers[layer_idx];
     if (layer->type != SEQ_LAYER_DRUM) return 0;
@@ -552,6 +599,10 @@ uint16_t sequencer_core_cycle_drum_patch(uint8_t layer_idx, uint8_t track,
     uint16_t next = patch_domain_step(&s_drum_domain, layer->track_patch[track], dir);
     sequencer_core_set_drum_patch(layer_idx, track, next);
     return next;
+#else
+    (void)layer_idx; (void)track; (void)dir;
+    return 0;
+#endif
 }
 
 /* ── Drum sound source (Synth vs PCM) ───────────────────────────────────── */
@@ -559,6 +610,11 @@ uint16_t sequencer_core_cycle_drum_patch(uint8_t layer_idx, uint8_t track,
 void sequencer_core_set_drum_engine(seq_drum_engine_t engine)
 {
     if (engine != SEQ_DRUM_SYNTH && engine != SEQ_DRUM_PCM) return;
+#if !CONFIG_SYNTH_DRUM_SYNTH_MODE
+    /* Synth engine compiled out: coerce so old project snapshots saved in
+     * SYNTH mode still load (as PCM) instead of muting the drum layer. */
+    engine = SEQ_DRUM_PCM;
+#endif
     if (s_drum_engine == engine) return;
     s_drum_engine = engine;
 
@@ -607,23 +663,98 @@ uint16_t sequencer_core_cycle_drum_pcm_preset(uint8_t layer_idx, uint8_t track,
     if (layer_idx >= s_num_layers || track >= SEQ_TRACKS) return 0;
     if (s_layers[layer_idx].type != SEQ_LAYER_DRUM) return 0;
 
-    /* ROM drum samples only: pcm_wavetable_base is the first non-drum map
-     * entry in the compiled-in bank (gamma808: 19, pcm_tiny: 11) regardless
-     * of whether wavetables are compiled in. Memory presets (sample_rec
-     * overrides) sit above the ROM map; stepping from one re-enters the ROM
-     * bank at the near end. */
+    /* Combined drum sample domain: the ROM bank (0 .. pcm_wavetable_base-1;
+     * pcm_wavetable_base is the first non-drum map entry — gamma808: 19,
+     * pcm_tiny: 11) followed by the gamma9001 banks (256..391) when their
+     * blob is mounted. The two ranges are walked as one wrapping list via a
+     * linear index. Memory presets (sample_rec overrides, outside both
+     * ranges) step back into the domain at the near end. */
     uint16_t bound = pcm_wavetable_base;
     if (bound == 0) return 0;
+    uint16_t total = bound + (drum_gamma_available() ? SEQ_GAMMA_PCM_COUNT : 0);
 
     uint16_t cur = drum_pcm_preset_for(layer_idx, track);
-    uint16_t next;
-    if (cur >= bound) {
-        next = (dir > 0) ? 0 : (uint16_t)(bound - 1);
+    int li_cur;
+    if (cur < bound) {
+        li_cur = (int)cur;
+    } else if (cur >= SEQ_GAMMA_PCM_FIRST &&
+               cur < SEQ_GAMMA_PCM_FIRST + SEQ_GAMMA_PCM_COUNT &&
+               total > bound) {
+        li_cur = (int)bound + (int)(cur - SEQ_GAMMA_PCM_FIRST);
     } else {
-        next = (uint16_t)((cur + (uint16_t)bound + (dir > 0 ? 1 : -1)) % bound);
+        /* Memory preset (or unreachable gamma preset): enter at the near end. */
+        li_cur = (dir > 0) ? -1 : 0;
     }
+
+    int li_next = (li_cur + (dir > 0 ? 1 : -1) + (int)total) % (int)total;
+    uint16_t next = (li_next < (int)bound)
+        ? (uint16_t)li_next
+        : (uint16_t)(SEQ_GAMMA_PCM_FIRST + (uint16_t)(li_next - (int)bound));
     sequencer_core_set_drum_pcm_preset(layer_idx, track, next);
     return next;
+}
+
+/* ── Drum source selector (see sequencer_core.h) ──
+ * Domain layout: [Synth]* + s_drum_banks[0] (808 ROM) + gamma banks. The
+ * Synth entry exists only when compiled in; the gamma entries only while the
+ * sample blob is mounted. */
+#if CONFIG_SYNTH_DRUM_SYNTH_MODE
+#define DRUM_SOURCE_SYNTH_ENTRIES 1u
+#else
+#define DRUM_SOURCE_SYNTH_ENTRIES 0u
+#endif
+
+uint8_t sequencer_core_drum_source_count(void)
+{
+    uint8_t banks = drum_gamma_available() ? SEQ_DRUM_BANK_COUNT : 1;
+    return (uint8_t)(DRUM_SOURCE_SYNTH_ENTRIES + banks);
+}
+
+const char *sequencer_core_drum_source_name(uint8_t idx)
+{
+#if CONFIG_SYNTH_DRUM_SYNTH_MODE
+    if (idx == 0) return "Synth";
+#endif
+    uint8_t bank = (uint8_t)(idx - DRUM_SOURCE_SYNTH_ENTRIES);
+    if (bank >= SEQ_DRUM_BANK_COUNT) return "?";
+    return s_drum_banks[bank].name;
+}
+
+uint8_t sequencer_core_get_drum_source(void)
+{
+#if CONFIG_SYNTH_DRUM_SYNTH_MODE
+    if (s_drum_engine == SEQ_DRUM_SYNTH) return 0;
+#endif
+    return (uint8_t)(DRUM_SOURCE_SYNTH_ENTRIES + s_drum_bank);
+}
+
+void sequencer_core_set_drum_source(uint8_t idx)
+{
+    if (idx >= sequencer_core_drum_source_count()) return;
+
+#if CONFIG_SYNTH_DRUM_SYNTH_MODE
+    if (idx == 0) {
+        sequencer_core_set_drum_engine(SEQ_DRUM_SYNTH);
+        return;
+    }
+#endif
+    uint8_t bank = (uint8_t)(idx - DRUM_SOURCE_SYNTH_ENTRIES);
+    s_drum_bank = bank;
+    const seq_drum_bank_t *b = &s_drum_banks[bank];
+
+    /* Seed every drum layer's four tracks with the bank's role defaults.
+     * set_drum_pcm_preset live-reloads each track's osc when PCM is already
+     * active; the engine switch below covers the Synth->PCM case (it
+     * reconfigures the slots and picks up the just-seeded presets). */
+    for (uint8_t i = 0; i < s_num_layers; i++) {
+        if (s_layers[i].type != SEQ_LAYER_DRUM) continue;
+        for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
+            sequencer_core_set_drum_pcm_preset(i, t, b->roles[t]);
+        }
+    }
+    sequencer_core_set_drum_engine(SEQ_DRUM_PCM);
+    ESP_LOGI(TAG, "drum bank -> %s (presets %u..%u)",
+             b->name, (unsigned)b->first, (unsigned)(b->first + b->count - 1));
 }
 
 uint16_t sequencer_core_get_drum_pcm_preset(uint8_t layer_idx, uint8_t track)

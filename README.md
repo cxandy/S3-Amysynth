@@ -152,9 +152,10 @@ A few design decisions worth calling out:
 ### Project storage
 
 Full session snapshots (patterns, per-row voice params, arp, drone, chord
-progression, FX, tempo) can be saved to 32 named slots on an 11.9 MB LittleFS
-`storage` partition occupying the flash above the app, managed from a Projects
-menu page that also reports per-project size and free space:
+progression, FX, tempo) can be saved to 32 named slots on an 8 MB LittleFS
+`storage` partition occupying the flash above the app and the 4 MB `drums`
+sample partition, managed from a Projects menu page that also reports
+per-project size and free space:
 
 ```mermaid
 flowchart TD
@@ -170,7 +171,7 @@ flowchart TD
         TLV["project_tlv<br/>bounded TLV reader/writer + CRC32"]
         FS["project_fs<br/>LittleFS mount at /proj + stats"]
     end
-    PART[("storage partition<br/>11.9 MB LittleFS")]
+    PART[("storage partition<br/>8 MB LittleFS")]
     AMY["AMY engine"]
 
     MENU --> SNAP
@@ -193,6 +194,14 @@ rebuild sequencer layer topology (single-applier contract), keeping flash
 I/O off the input path. `components/project_store` is
 synth-agnostic (files, TLV container, mount); the serializer that knows the
 instrument model lives in `synth_core/project/`.
+
+The `drums` partition feeds AMY's Gamma9001 drum banks: 136 PCM samples
+(TR-909, Linn 9000, MR-12, synthetic and acoustic percussion) as presets
+256-391 plus the ready-made kit patches 385-390, on top of the 19-sample
+TR-808 bank baked into the app. The blob is raw int16 PCM generated from the
+AMY sample library (`amy.headers.generate_gamma9001_headers()` upstream) and
+is mmapped read-only at boot; if the partition is absent or blank the boot
+log says so and those presets simply stay disabled.
 
 ## Optimization & performance
 

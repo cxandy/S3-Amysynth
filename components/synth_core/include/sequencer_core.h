@@ -212,15 +212,30 @@ void     sequencer_core_set_drum_pcm_preset(uint8_t layer_idx, uint8_t track,
                                             uint16_t preset_number);
 uint16_t sequencer_core_get_drum_pcm_preset(uint8_t layer_idx, uint8_t track);
 
-/* Step one drum track's PCM preset dir (+/-1) through the compiled-in ROM
- * bank (0 .. pcm_wavetable_base-1, i.e. the drum samples only — wavetable and
- * runtime memory presets excluded), wrapping at the ends. A track currently
- * on a memory preset (sample_rec override, numbered above the ROM map) steps
- * back onto the ROM bank at the near end. Live-reloads the track's osc when
- * the PCM engine is active. Returns the newly-applied preset, or 0 for
- * non-drum/out-of-range layers. */
+/* Step one drum track's PCM preset dir (+/-1) through the combined drum
+ * sample space: the compiled-in ROM bank (0 .. pcm_wavetable_base-1) followed
+ * by the gamma9001 banks (presets 256..391) when their sample blob is mounted
+ * — wavetable and runtime memory presets excluded, wrapping at the ends. A
+ * track currently on a memory preset (sample_rec override) steps back into
+ * the domain at the near end. Live-reloads the track's osc when the PCM
+ * engine is active. Returns the newly-applied preset, or 0 for non-drum/
+ * out-of-range layers. */
 uint16_t sequencer_core_cycle_drum_pcm_preset(uint8_t layer_idx, uint8_t track,
                                               int dir);
+
+/* ── Drum source selector (menu "Drum Bank") ──
+ * One flat domain for the menu item: optionally the Synth engine
+ * (CONFIG_SYNTH_DRUM_SYNTH_MODE), then the ROM 808 bank, then each gamma9001
+ * bank (909/Linn/MR12/...; listed only while the drums partition is mounted).
+ * Selecting a PCM bank forces the PCM engine and re-seeds every drum track
+ * with that bank's role defaults (kick/snare/hat/clap analog) — the pattern
+ * keeps playing, only the sound source swaps. The selector position reflects
+ * the last applied source; per-track presets remain freely cyclable across
+ * banks afterwards. */
+uint8_t     sequencer_core_drum_source_count(void);
+const char *sequencer_core_drum_source_name(uint8_t idx);
+uint8_t     sequencer_core_get_drum_source(void);
+void        sequencer_core_set_drum_source(uint8_t idx);
 
 /* ── Per-row melodic ADSR envelope (runtime-editable) ──
  * Scoped per row (per track); each row has its own AMY synth, so its envelope

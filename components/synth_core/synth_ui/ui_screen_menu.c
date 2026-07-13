@@ -142,9 +142,9 @@ void menu_build_view(menu_view_t *out)
     snprintf(s_menu_items[MI_DRONE_ENABLED].value, MENU_VALUE_LEN, "%s",
              drone_get_enabled() ? "ON" : "OFF");
 
-    snprintf(s_menu_items[MI_DRUM_ENGINE].label, MENU_LABEL_LEN, "Drum Mode");
+    snprintf(s_menu_items[MI_DRUM_ENGINE].label, MENU_LABEL_LEN, "Drum Bank");
     snprintf(s_menu_items[MI_DRUM_ENGINE].value, MENU_VALUE_LEN, "%s",
-             sequencer_core_get_drum_engine() == SEQ_DRUM_PCM ? "PCM" : "Synth");
+             sequencer_core_drum_source_name(sequencer_core_get_drum_source()));
 
     snprintf(s_menu_items[MI_ADD_LAYER].label, MENU_LABEL_LEN, "Add Layer");
     snprintf(s_menu_items[MI_ADD_LAYER].value, MENU_VALUE_LEN, "%u/%u",
@@ -273,9 +273,18 @@ static void menu_edit_value(menu_item_id_t id, int delta)
             break;
         case MI_DRUM_ENGINE:
             if (dir != 0) {
-                sequencer_core_set_drum_engine(
-                    sequencer_core_get_drum_engine() == SEQ_DRUM_PCM
-                        ? SEQ_DRUM_SYNTH : SEQ_DRUM_PCM);
+                int n = (int)sequencer_core_drum_source_count();
+                int ni = ((int)sequencer_core_get_drum_source() + dir + n) % n;
+                sequencer_core_set_drum_source((uint8_t)ni);
+                /* A bank seed rewrote the core's per-track presets; refresh
+                 * the UI mirror so the drum screen's labels follow. */
+                for (uint8_t i = 0; i < seq_state.num_layers; i++) {
+                    if (seq_state.layers[i].type != SEQ_LAYER_DRUM) continue;
+                    for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
+                        seq_state.layers[i].track_pcm_preset[t] =
+                            sequencer_core_get_drum_pcm_preset(i, t);
+                    }
+                }
             }
             break;
         case MI_VOLUME: {

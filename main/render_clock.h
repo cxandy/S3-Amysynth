@@ -48,7 +48,8 @@ extern "C" {
  * @param sample_rate_hz  Audio sample rate in Hz (AMY_SAMPLE_RATE). Each
  *                        backend derives its own hardware-specific period
  *                        from these two values (e.g. the GPTimer backend
- *                        computes its 3 MHz tick count internally).
+ *                        converts them into a tick count against the counter
+ *                        resolution the timer driver actually granted).
  * @return ESP_OK on success.
  */
 esp_err_t render_clock_start(uint32_t block_frames, uint32_t sample_rate_hz);

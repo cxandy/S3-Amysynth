@@ -123,6 +123,9 @@ extern const uint32_t pcm_wavetable_len;
 // Until the pointer is set those presets are silently unavailable.
 extern const int16_t * gamma9001_pcm;
 extern void amy_set_gamma9001_pcm(const int16_t * data);
+// LOCAL EDIT: blob size in bytes (GAMMA9001_BIN_FRAMES * 2) for the platform
+// mount code; see pcm.c.
+extern uint32_t amy_gamma9001_pcm_bytes(void);
 #endif
 
 // File-streaming buffer size multiplier (in blocks).
@@ -968,6 +971,8 @@ float map_01_to_60dBf(float log);
 
 SAMPLE log2_lut(SAMPLE x);
 SAMPLE exp2_lut(SAMPLE x);
+SAMPLE sin_lut(SAMPLE x);
+SAMPLE cos_lut(SAMPLE x);
 
 
 float atoff(const char *s);

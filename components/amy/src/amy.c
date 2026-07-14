@@ -2,6 +2,7 @@
 // brian@variogr.am / dan.ellis@gmail.com
 
 #include "amy.h"
+#include "amy_simd.h"  // LOCAL EDIT (S3-Amysynth): PIE block clear/copy
 #include "delay.h"
 
 // LOCAL EDIT (S3-Amysynth): also build the profiler support (tables, timers,
@@ -197,6 +198,31 @@ output_sample_type * output_block;
     //if (size > 400000) abort();
     //fprintf(stderr, "malloc(%ld) @0x%lx\n", size, result);
     return result;
+  }
+
+  // LOCAL EDIT (S3-Amysynth): allocator for the sample-block buffers the ESP32-S3 PIE
+  // kernels walk (fbl, per_osc_fb, the FM scratch blocks).
+  //
+  // 16-byte alignment is a CORRECTNESS matter for PIE, not just speed: EE.VLD.128 /
+  // EE.VST.128 force the low address bits of the operand to zero, so an unaligned base
+  // silently accesses the wrong (rounded-down) address instead of faulting. The pie_dsp
+  // wrappers already guard against that with a scalar head, but aligning the base means
+  // the head is empty and a whole AMY_BLOCK_SIZE block goes down the vector path.
+  //
+  // Deliberately NOT folded into malloc_caps(): most AMY allocations are small structs
+  // (synthinfo, msynth, instruments, sequencer arrays) and heap_caps_aligned_alloc
+  // over-allocates per block. On this board internal DRAM is the scarce resource
+  // (~54 KB free), so we pay the alignment overhead only where PIE actually reads.
+  //
+  // Freeing is unchanged: in IDF free(p) == heap_caps_free(p), which is the correct
+  // deallocator for heap_caps_aligned_alloc (heap_caps_aligned_free is deprecated).
+  void * malloc_caps_block(uint32_t size, uint32_t flags) {
+  #if defined(ESP_PLATFORM) && AMY_PIE_SIMD
+    const uint32_t aligned_size = (size + 15u) & ~15u;  // aligned_alloc wants a multiple
+    return heap_caps_aligned_alloc(16, aligned_size, flags);
+  #else
+    return malloc_caps(size, flags);
+  #endif
   }
 #endif
 
@@ -1029,8 +1055,9 @@ int8_t oscs_init() {
     // clear out both as local mode won't use fbl[1] 
     for(uint16_t core=0;core<AMY_CORES;++core) {
         for (int bus = 0; bus < AMY_NUM_BUSES; ++bus) {
-            per_osc_fb[core][bus] = (SAMPLE*)malloc_caps(sizeof(SAMPLE) * AMY_BLOCK_SIZE, amy_global.config.ram_caps_fbl);
-            fbl[core][bus] = (SAMPLE*)malloc_caps(sizeof(SAMPLE) * AMY_BLOCK_SIZE * AMY_NCHANS, amy_global.config.ram_caps_fbl);
+            // LOCAL EDIT (S3-Amysynth): PIE kernels walk these - 16-byte aligned.
+            per_osc_fb[core][bus] = (SAMPLE*)malloc_caps_block(sizeof(SAMPLE) * AMY_BLOCK_SIZE, amy_global.config.ram_caps_fbl);
+            fbl[core][bus] = (SAMPLE*)malloc_caps_block(sizeof(SAMPLE) * AMY_BLOCK_SIZE * AMY_NCHANS, amy_global.config.ram_caps_fbl);
             bzero(fbl[core][bus], sizeof(SAMPLE) * AMY_BLOCK_SIZE * AMY_NCHANS);
         }
     }
@@ -1793,12 +1820,15 @@ AMY_IRAM_ATTR void amy_render(uint16_t start, uint16_t end, uint8_t core) {
     amy_grab_lock();
 
     for(int bus = 0; bus <= amy_global.highest_bus; ++bus)
-        bzero(fbl[core][bus], sizeof(SAMPLE) * AMY_BLOCK_SIZE * AMY_NCHANS); 
+        // LOCAL EDIT (S3-Amysynth): PIE-accelerated block clear (see amy_simd.h).
+        AMY_BLOCK_BZERO(fbl[core][bus], sizeof(SAMPLE) * AMY_BLOCK_SIZE * AMY_NCHANS);
     SAMPLE max_max = 0;
     for(uint16_t osc=start; osc<end; osc++) {
         if(synth[osc] != NULL && synth[osc]->status == SYNTH_AUDIBLE) { // skip oscs that are silent or mod sources from playback
             uint8_t bus = synth[osc]->bus;
-            bzero(per_osc_fb[core][bus], AMY_BLOCK_SIZE * sizeof(SAMPLE));
+            // LOCAL EDIT (S3-Amysynth): hottest clear in the render path - runs once
+            // per audible oscillator per block. PIE-accelerated (see amy_simd.h).
+            AMY_BLOCK_BZERO(per_osc_fb[core][bus], AMY_BLOCK_SIZE * sizeof(SAMPLE));
             SAMPLE max_val = render_osc_wave(osc, core, per_osc_fb[core][bus]);
             if (synth[osc]->status != SYNTH_AUDIBLE) {
                 reset_modosc(msynth[osc]);  // (g)  This makes a difference, but not clicks
@@ -1824,7 +1854,8 @@ AMY_IRAM_ATTR void amy_render(uint16_t start, uint16_t end, uint8_t core) {
             ensure_osc_allocd(CHORUS_MOD_SOURCE + bus, NULL);
             hold_and_modify(CHORUS_MOD_SOURCE + bus);
             if(amy_global.bus[bus]->chorus.level!=0)  {
-                bzero(amy_global.bus[bus]->chorus.delay_mod, AMY_BLOCK_SIZE * sizeof(SAMPLE));
+                // LOCAL EDIT (S3-Amysynth): PIE-accelerated block clear (see amy_simd.h).
+                AMY_BLOCK_BZERO(amy_global.bus[bus]->chorus.delay_mod, AMY_BLOCK_SIZE * sizeof(SAMPLE));
                 render_osc_wave(CHORUS_MOD_SOURCE + bus, 0 /* core */, amy_global.bus[bus]->chorus.delay_mod);
             }
         }
@@ -1924,8 +1955,15 @@ int16_t * amy_fill_buffer() {
     // mix results from both cores.
     //SAMPLE max_val = core_max[0];
     #ifdef AMY_DUALCORE
-    for (int bus = 0; bus <= amy_global.highest_bus; ++bus)
-        for (int16_t i=0; i < AMY_BLOCK_SIZE * AMY_NCHANS; ++i)  fbl[0][bus][i] += fbl[1][bus][i];
+    // LOCAL EDIT (S3-Amysynth): AMY_DUALCORE is defined unconditionally for
+    // ESP_PLATFORM, but this build runs multicore=0, so amy_render() is only ever
+    // invoked with core=0 and fbl[1] stays at its alloc-time zero fill forever.
+    // Without this guard we sum 512 int32 zeros per bus, every block, for nothing.
+    // Runtime (not compile-time) test so the sum reappears if multicore is enabled.
+    if (amy_global.config.platform.multicore) {
+        for (int bus = 0; bus <= amy_global.highest_bus; ++bus)
+            for (int16_t i=0; i < AMY_BLOCK_SIZE * AMY_NCHANS; ++i)  fbl[0][bus][i] += fbl[1][bus][i];
+    }
     //    if (core_max[1] > max_val)  max_val = core_max[1];
     #endif
     // Apply global processing only if there is some signal.

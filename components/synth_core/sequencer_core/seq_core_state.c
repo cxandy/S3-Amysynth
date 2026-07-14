@@ -142,8 +142,8 @@ uint8_t sequencer_core_add_layer(seq_layer_type_t type, uint8_t num_steps)
         uint8_t base = s_next_melodic_synth;
         if (base + SEQ_TRACKS - 1 > SEQ_MAX_SYNTH) {
             base = (uint8_t)(SEQ_MAX_SYNTH - (SEQ_TRACKS - 1));
-            ESP_LOGW(TAG, "add_layer[%d]: melodic synth ceiling reached, "
-                          "reusing slots %u..%u", idx, base, base + SEQ_TRACKS - 1);
+            ESP_LOGW(TAG, "add_layer[L%d]: melodic synth ceiling reached, "
+                          "reusing slots %u..%u", idx + 1, base, base + SEQ_TRACKS - 1);
         } else {
             s_next_melodic_synth = (uint8_t)(base + SEQ_TRACKS);
         }
@@ -194,8 +194,8 @@ uint8_t sequencer_core_add_layer(seq_layer_type_t type, uint8_t num_steps)
      * cheap and harmless — it only affects FILL/PREV continuity, never the
      * persisted per-step prob/ratchet/cond data carried in seq_layer_t itself. */
     sequencer_core_trig_reset_all();
-    ESP_LOGI(TAG, "add_layer[%d]: type=%d synth0=%d patch=%d steps=%d",
-             idx, type, layer->synth_id[0], layer->patch, layer->num_steps);
+    ESP_LOGI(TAG, "add_layer[L%d]: type=%d synth0=%d patch=%d steps=%d",
+             idx + 1, type, layer->synth_id[0], layer->patch, layer->num_steps);
     return idx;
 }
 
@@ -263,7 +263,7 @@ bool sequencer_core_delete_layer(uint8_t layer_idx)
         }
     }
 
-    ESP_LOGI(TAG, "delete_layer[%u]: %u layers remain", layer_idx, s_num_layers);
+    ESP_LOGI(TAG, "delete_layer[L%u]: %u layers remain", layer_idx + 1u, s_num_layers);
     return true;
 }
 

@@ -103,8 +103,8 @@ static void synth_ui_task(void *pvParameters)
                 /* Drop the Step Trig overlay: after compaction its cached
                  * (layer,track,step) may point at a different layer's steps. */
                 synth_ui_stepedit_close();
-                ESP_LOGI(TAG_TASK, "UI delete layer %u (%u layers remain)",
-                         del_idx, seq_state.num_layers);
+                ESP_LOGI(TAG_TASK, "UI delete layer L%u (%u layers remain)",
+                         del_idx + 1u, seq_state.num_layers);
             }
         }
 
@@ -294,8 +294,8 @@ uint8_t synth_ui_add_layer(seq_layer_type_t type, uint8_t num_steps)
     }
 
     seq_state.num_layers = li + 1;
-    ESP_LOGI(TAG_TASK, "UI layer %d added (type=%d steps=%d)",
-             li, type, layer->num_steps);
+    ESP_LOGI(TAG_TASK, "UI layer L%d added (type=%d steps=%d)",
+             li + 1, type, layer->num_steps);
     return li;
 }
 
@@ -334,8 +334,8 @@ void synth_ui_cycle_active_layer(void)
     seq_state.selected_track = 0;
     seq_state.selected_step  = 0;
     seq_state.edit_mode      = true;
-    ESP_LOGI(TAG_TASK, "Active layer -> %d (%s)",
-             seq_state.active_layer_idx,
+    ESP_LOGI(TAG_TASK, "Active layer -> L%d (%s)",
+             seq_state.active_layer_idx + 1,
              seq_state.layers[seq_state.active_layer_idx].type == SEQ_LAYER_DRUM
              ? "drum" : "melodic");
 }

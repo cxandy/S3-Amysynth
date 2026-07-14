@@ -1,5 +1,6 @@
 // algorithms.c
 #include "amy.h"
+#include "amy_simd.h"  // LOCAL EDIT (S3-Amysynth): PIE block clear/copy
 
 // Thank you MFSA for the DX7 op structure , borrowed here \/ \/ \/ 
 enum FmOperatorFlags {
@@ -74,13 +75,15 @@ const struct FmAlgorithm algorithms[33] = {
 
 // a = 0
 static inline void zero(SAMPLE* a) {
-    bzero((void *)a, AMY_BLOCK_SIZE * sizeof(SAMPLE));
+    // LOCAL EDIT (S3-Amysynth): PIE-accelerated on ESP32-S3 (see amy_simd.h).
+    AMY_BLOCK_BZERO((void *)a, AMY_BLOCK_SIZE * sizeof(SAMPLE));
 }
 
 
-// b = a 
+// b = a
 static inline void copy(SAMPLE* a, SAMPLE* b) {
-    bcopy((void *)a, (void *)b, AMY_BLOCK_SIZE * sizeof(SAMPLE));
+    // LOCAL EDIT (S3-Amysynth): PIE-accelerated on ESP32-S3 (see amy_simd.h).
+    AMY_BLOCK_BCOPY((void *)a, (void *)b, AMY_BLOCK_SIZE * sizeof(SAMPLE));
 }
 
 SAMPLE render_mod(SAMPLE *in, SAMPLE* out, uint16_t osc, SAMPLE feedback_level, uint16_t algo_osc, SAMPLE amp) {
@@ -143,7 +146,8 @@ void algo_init() {
     for(uint16_t i=0;i<AMY_CORES;i++) {
         scratch[i] = malloc_caps(sizeof(SAMPLE*)*3, amy_global.config.ram_caps_fbl);
         for(uint16_t j=0;j<3;j++) {
-            scratch[i][j] = malloc_caps(sizeof(SAMPLE)*AMY_BLOCK_SIZE, amy_global.config.ram_caps_fbl);
+            // LOCAL EDIT (S3-Amysynth): PIE zero()/copy() walk these - 16-byte aligned.
+            scratch[i][j] = malloc_caps_block(sizeof(SAMPLE)*AMY_BLOCK_SIZE, amy_global.config.ram_caps_fbl);
         }
     }
 

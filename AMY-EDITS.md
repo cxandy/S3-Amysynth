@@ -39,6 +39,49 @@ flowchart TD
 
 ## Active local edits
 
+### `src/amy_simd.h` (new) + `amy.c` / `filters.c` / `algorithms.c` — ESP32-S3 PIE (SIMD)
+
+Routes the render path's vectorizable operations through the S3's PIE unit
+(128-bit vector registers), via the local `components/pie_dsp` component.
+
+New header `src/amy_simd.h` defines `AMY_PIE_SIMD` (requires both the S3 and
+`AMY_USE_FIXEDPOINT` — the kernels are int32, so they must compile out in a
+float build) plus `AMY_BLOCK_BZERO` / `AMY_BLOCK_BCOPY`. Kept as a separate
+header so an AMY re-vendor only has to re-apply call sites, not re-untangle a
+modified `amy.h`.
+
+Call sites changed:
+
+| Site | Change |
+|------|--------|
+| `amy.c` `amy_render()` | per-bus `fbl` clear and the per-audible-oscillator `per_osc_fb` clear -> `AMY_BLOCK_BZERO` (PIE `EE.VST.128` block fill). The `per_osc_fb` clear is the hottest one: it runs once per audible oscillator per block. |
+| `amy.c` chorus mod buffer | `bzero` -> `AMY_BLOCK_BZERO` |
+| `algorithms.c` `zero()` / `copy()` | FM operator scratch (1 KB each, per operator per block) -> `AMY_BLOCK_BZERO` / `AMY_BLOCK_BCOPY` |
+| `filters.c` `scan_max()` | -> `pie_scan_absmax_s32()` (`EE.VSUBS.S32` negate + `EE.VMAX.S32`, 4 int32/iteration) |
+| `filters.c` `block_norm()` | -> `pie_block_norm_s32()`. Bit-identical: in the fixed-point build `SHIFTL`/`SHIFTR` are plain arithmetic shifts, which `EE.VSL.32`/`EE.VSR.32` reproduce exactly. |
+| `amy.c` `malloc_caps_block()` (new) + `amy.h` prototype | 16-byte-aligned allocator for the buffers PIE walks (`fbl`, `per_osc_fb`, `algorithms.c` scratch). **Deliberately not folded into `malloc_caps()`**: most AMY allocations are small structs and `heap_caps_aligned_alloc` over-allocates per block, and internal DRAM is the scarce resource here. Alignment is a correctness matter, not just speed — PIE loads/stores force the low address bits to zero, so an unaligned base silently reads the *wrong* address rather than faulting. |
+
+Scope is deliberately narrow, and that is the finding rather than a shortcut:
+PIE multiplies only on 8/16-bit lanes (`EE.VMULAS.S16` -> 40-bit QACC/ACCX),
+while `SAMPLE` is s8.23 = int32, so every hot-path multiply (`MUL8_SS`,
+`SMULR6`, `top16SMUL`) is a 32x32 product PIE cannot vectorize. On top of that
+the LUT oscillators are gather-indexed (wavetable indexed by phase accumulator;
+PIE has no gather) and the biquads/EQ/echo/chorus/reverb are all recurrence-
+bound. esp-dsp independently reaches the same conclusion: its own ESP32-S3
+biquad (`dsps_biquad_f32_aes3.S`) contains zero PIE instructions and is
+hand-scheduled scalar FPU.
+
+Not upstreamable as-is (ESP32-S3 specific).
+
+### `src/amy.c` — skip the dead dual-core bus sum
+
+`AMY_DUALCORE` is defined unconditionally for `ESP_PLATFORM`, but this build
+runs `multicore = 0`, so `amy_render()` is only ever called with `core = 0` and
+`fbl[1]` stays at its alloc-time zero fill forever. The mix-down loop was
+therefore summing 512 int32 zeros per bus, every block, for nothing. Now
+guarded on `amy_global.config.platform.multicore` — a runtime test, not
+compile-time, so the sum reappears correctly if multicore is ever enabled.
+
 ### `src/amy.h` — 48 kHz sample rate on ESP
 
 `AMY_SAMPLE_RATE` forced to 48000 in the `ESP_PLATFORM` branch (upstream's

@@ -102,9 +102,9 @@ void synth_ui_cycle_melodic_patch(int delta)
 
     const char *name = patch_name_for(applied);
     if (name) {
-        ESP_LOGI(TAG, "L%u melodic patch -> %u (%s)", (unsigned)li, (unsigned)applied, name);
+        ESP_LOGI(TAG, "L%u melodic patch -> %u (%s)", (unsigned)li + 1u, (unsigned)applied, name);
     } else {
-        ESP_LOGI(TAG, "L%u melodic patch -> %u", (unsigned)li, (unsigned)applied);
+        ESP_LOGI(TAG, "L%u melodic patch -> %u", (unsigned)li + 1u, (unsigned)applied);
     }
 }
 
@@ -134,11 +134,11 @@ void synth_ui_cycle_drum_patch(int delta)
 
         const char *pcm_name = pcm_preset_name_for(preset);
         if (pcm_name) {
-            ESP_LOGI(TAG, "drum PCM preset cycle L%u t%u -> %u (%s)",
-                     li, track, (unsigned)preset, pcm_name);
+            ESP_LOGI(TAG, "drum PCM preset cycle L%u T%u -> %u (%s)",
+                     li + 1u, track + 1u, (unsigned)preset, pcm_name);
         } else {
-            ESP_LOGI(TAG, "drum PCM preset cycle L%u t%u -> %u",
-                     li, track, (unsigned)preset);
+            ESP_LOGI(TAG, "drum PCM preset cycle L%u T%u -> %u",
+                     li + 1u, track + 1u, (unsigned)preset);
         }
         return;
     }
@@ -151,10 +151,11 @@ void synth_ui_cycle_drum_patch(int delta)
 
     const char *name = patch_name_for(applied);
     if (name) {
-        ESP_LOGI(TAG, "drum patch cycle L%u t%u -> %u (%s)",
-                 li, track, (unsigned)applied, name);
+        ESP_LOGI(TAG, "drum patch cycle L%u T%u -> %u (%s)",
+                 li + 1u, track + 1u, (unsigned)applied, name);
     } else {
-        ESP_LOGI(TAG, "drum patch cycle L%u t%u -> %u", li, track, (unsigned)applied);
+        ESP_LOGI(TAG, "drum patch cycle L%u T%u -> %u",
+                 li + 1u, track + 1u, (unsigned)applied);
     }
 }
 

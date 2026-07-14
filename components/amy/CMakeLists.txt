@@ -12,7 +12,10 @@ endif()
 idf_component_register(
     SRCS ${AMY_SRC_FILES}
     INCLUDE_DIRS "src"
-    REQUIRES esp_timer esp_driver_uart esp_driver_i2s esp_driver_i2c esp_driver_gpio espressif__tinyusb
+    # LOCAL EDIT (S3-Amysynth): pie_dsp is our local component holding the ESP32-S3 PIE
+    # (128-bit SIMD) kernels that amy_simd.h routes the per-block clears through. It
+    # vendors the two mem kernels we need rather than pulling in all of esp-dsp.
+    REQUIRES esp_timer esp_driver_uart esp_driver_i2s esp_driver_i2c esp_driver_gpio espressif__tinyusb pie_dsp
 )
 
 # Profiling mode (Kconfig: AMY_PROFILE_MODE). FULL maps to AMY's upstream

@@ -317,8 +317,8 @@ static void sequencer_refresh_track_note(uint8_t layer_idx, uint8_t track,
                         seq_preview_off_tag(layer_idx, track),
                         fire_tick + SEQ_GATE_MELODIC, 0);
 
-    ESP_LOGI(TAG, "layer %d track %d note -> %d (preview @ tick %lu)",
-             layer_idx, track, resolved_note, (unsigned long)fire_tick);
+    ESP_LOGI(TAG, "L%d T%d note -> %d (preview @ tick %lu)",
+             layer_idx + 1, track + 1, resolved_note, (unsigned long)fire_tick);
 }
 
 void sequencer_refresh_melodic_layers(bool preview)

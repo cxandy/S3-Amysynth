@@ -376,8 +376,8 @@ void synth_ui_graph_open_envelope(void)
     graph_popup_open(&s_graph_popup, GPOPUP_MODE_EDIT, NULL);
     graph_popup_set_style(&s_graph_popup, GPOPUP_STYLE_ADSR);
     s_force_redraw = true;
-    ESP_LOGI(TAG, "graph editor open: target=%d L%u row%u range=%s amp=%.2f",
-             (int)s_graph_target, s_graph_layer, s_graph_track,
+    ESP_LOGI(TAG, "graph editor open: target=%d L%u T%u range=%s amp=%.2f",
+             (int)s_graph_target, s_graph_layer + 1u, s_graph_track + 1u,
              s_graph_long_range ? "LONG" : "SHORT", (double)s_graph_amp_edit);
 }
 
@@ -944,7 +944,7 @@ void synth_ui_lfo_open(void)
                             : NULL;
     s_lfo_active   = true;
     s_force_redraw = true;
-    ESP_LOGI(TAG, "LFO editor open L%u T%u", li, tr);
+    ESP_LOGI(TAG, "LFO editor open L%u T%u", li + 1u, tr + 1u);
 }
 
 bool synth_ui_lfo_handle_encoder(long delta)

@@ -504,7 +504,7 @@ void sequencer_core_set_layer_patch(uint8_t layer_idx, uint16_t patch_number)
                                         must track the last-touched layer (see
                                         the contract in seq_core_internal.h) */
     sequencer_configure_synth(layer_idx);
-    ESP_LOGI(TAG, "L%u patch -> %u", (unsigned)layer_idx, (unsigned)patch_number);
+    ESP_LOGI(TAG, "L%u patch -> %u", (unsigned)layer_idx + 1u, (unsigned)patch_number);
 }
 
 /* ── Live FM voice edits ──────────────────────────────────────────────────── */
@@ -563,8 +563,8 @@ void sequencer_core_set_drum_patch(uint8_t layer_idx, uint8_t track,
      * when we switch back to SYNTH mode, but don't push a patch load now (it
      * would clobber the PCM osc). */
     if (s_drum_engine == SEQ_DRUM_PCM) {
-        ESP_LOGI(TAG, "drum L%u track %u patch -> %u (stored; PCM active)",
-                 layer_idx, track, (unsigned)patch_number);
+        ESP_LOGI(TAG, "drum L%u T%u patch -> %u (stored; PCM active)",
+                 layer_idx + 1u, track + 1u, (unsigned)patch_number);
         return;
     }
 
@@ -576,8 +576,8 @@ void sequencer_core_set_drum_patch(uint8_t layer_idx, uint8_t track,
     /* A drum patch is always a string, so the flush is always owed. */
     seq_flush_patch_fx(true);
 
-    ESP_LOGI(TAG, "drum L%u track %u patch -> %u",
-             layer_idx, track, (unsigned)patch_number);
+    ESP_LOGI(TAG, "drum L%u T%u patch -> %u",
+             layer_idx + 1u, track + 1u, (unsigned)patch_number);
 }
 
 uint16_t sequencer_core_get_drum_patch(uint8_t layer_idx, uint8_t track)
@@ -653,8 +653,8 @@ void sequencer_core_set_drum_pcm_preset(uint8_t layer_idx, uint8_t track,
         e->preset = preset_number;
         amy_helpers_event_send(e);
     }
-    ESP_LOGI(TAG, "drum L%u track %u PCM preset -> %u",
-             layer_idx, track, (unsigned)preset_number);
+    ESP_LOGI(TAG, "drum L%u T%u PCM preset -> %u",
+             layer_idx + 1u, track + 1u, (unsigned)preset_number);
 }
 
 uint16_t sequencer_core_cycle_drum_pcm_preset(uint8_t layer_idx, uint8_t track,

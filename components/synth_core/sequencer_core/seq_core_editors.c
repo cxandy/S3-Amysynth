@@ -90,8 +90,9 @@ void sequencer_core_set_melodic_envelope(uint8_t layer_idx, uint8_t track,
      * affects only this row. */
     layer->vp[track].env_authored = true;
     sequencer_configure_melodic_envelope_track(layer_idx, track);
-    ESP_LOGI(TAG, "env L%u row%u -> A%u D%u S%u%% R%u (authored)",
-             layer_idx, track, (unsigned)dst->attack_ms, (unsigned)dst->decay_ms,
+    ESP_LOGI(TAG, "env L%u T%u -> A%u D%u S%u%% R%u (authored)",
+             layer_idx + 1u, track + 1u,
+             (unsigned)dst->attack_ms, (unsigned)dst->decay_ms,
              (unsigned)dst->sustain_pct, (unsigned)dst->release_ms);
 #if CONFIG_SEQ_ENV_DEBUG_DUMP
     ESP_LOGW(TAG, "ENVDUMP sent to synth %u: eg_type=%u bp0=[%ums,1.0] "
@@ -138,8 +139,9 @@ void sequencer_core_set_melodic_envelope2(uint8_t layer_idx, uint8_t track,
 
     layer->vp[track].env1_authored = true;
     sequencer_configure_melodic_envelope1_track(layer_idx, track);
-    ESP_LOGI(TAG, "env1 L%u row%u -> A%u D%u S%u%% R%u (authored)",
-             layer_idx, track, (unsigned)dst->attack_ms, (unsigned)dst->decay_ms,
+    ESP_LOGI(TAG, "env1 L%u T%u -> A%u D%u S%u%% R%u (authored)",
+             layer_idx + 1u, track + 1u,
+             (unsigned)dst->attack_ms, (unsigned)dst->decay_ms,
              (unsigned)dst->sustain_pct, (unsigned)dst->release_ms);
 }
 
@@ -217,8 +219,8 @@ void sequencer_core_set_melodic_filter(uint8_t layer_idx, uint8_t track,
 
     layer->vp[track].filter_authored = true;
     sequencer_configure_melodic_filter_track(layer_idx, track);
-    ESP_LOGI(TAG, "filter L%u row%u -> type%u %.0fHz Q%.2f (authored)",
-             layer_idx, track, dst->filter_type,
+    ESP_LOGI(TAG, "filter L%u T%u -> type%u %.0fHz Q%.2f (authored)",
+             layer_idx + 1u, track + 1u, dst->filter_type,
              (double)dst->cutoff_hz, (double)dst->resonance);
 }
 
@@ -270,7 +272,7 @@ void sequencer_core_set_melodic_lfo(uint8_t layer_idx, uint8_t track,
                                      ? 0.0f
                                      : (lfo->enabled ? lfo_rate_to_hz(lfo->rate, s_bpm) : 0.0f);
         ESP_LOGI(TAG, "LFO L%u T%u %s %.2f Hz d=%u tgt=%u [native]",
-                 layer_idx, track, lfo->enabled ? "ON" : "OFF",
+                 layer_idx + 1u, track + 1u, lfo->enabled ? "ON" : "OFF",
                  (double)s_lfo_hz[layer_idx][track], lfo->depth, lfo->target);
         return;
     }
@@ -289,7 +291,7 @@ void sequencer_core_set_melodic_lfo(uint8_t layer_idx, uint8_t track,
         s_lfo_hz[layer_idx][track] = lfo_rate_to_hz(lfo->rate, s_bpm);
     }
     ESP_LOGI(TAG, "LFO L%u T%u %s %.2f Hz d=%u tgt=%u",
-             layer_idx, track, lfo->enabled ? "ON" : "OFF",
+             layer_idx + 1u, track + 1u, lfo->enabled ? "ON" : "OFF",
              (double)s_lfo_hz[layer_idx][track], lfo->depth, lfo->target);
 }
 

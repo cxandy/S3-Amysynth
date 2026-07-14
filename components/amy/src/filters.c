@@ -1,4 +1,5 @@
 #include "amy.h"
+#include "amy_simd.h"  // LOCAL EDIT (S3-Amysynth): PIE scan_max / block_norm
 #include "assert.h"
 
 #ifndef M_PI
@@ -363,12 +364,19 @@ AMY_IRAM_ATTR SAMPLE scan_max(SAMPLE* block, int len) {
     AMY_PROFILE_START(SCAN_MAX)
 
     // Find the max abs sample value in a block.
+#if AMY_PIE_SIMD
+    // LOCAL EDIT (S3-Amysynth): ESP32-S3 PIE. Contiguous, multiply-free and
+    // dependency-free (a max reduction, not a recurrence), so it vectorizes cleanly:
+    // EE.VSUBS.S32 to negate, EE.VMAX.S32 twice, 4 int32 lanes at a time.
+    SAMPLE max = pie_scan_absmax_s32(block, len);
+#else
     SAMPLE max = 0;
     while (len--) {
         SAMPLE val = *block++;
         if (val > max) max = val;
         else if ((-val) > max) max = -val;
     }
+#endif
     AMY_PROFILE_STOP(SCAN_MAX)
     return max;
 }
@@ -663,6 +671,15 @@ void check_overflow(SAMPLE* block, int osc, char *msg) {
 SAMPLE block_norm(SAMPLE* block, int len, int bits) {
     AMY_PROFILE_START(BLOCK_NORM)
 
+#if AMY_PIE_SIMD
+    // LOCAL EDIT (S3-Amysynth): ESP32-S3 PIE. Bit-identical to the scalar path below -
+    // SHIFTL/SHIFTR are plain arithmetic shifts in the fixed-point build, which
+    // EE.VSL.32/EE.VSR.32 reproduce exactly (sign-padded on the right, zero on the
+    // left). Four int32 per iteration, with the magnitude scan folded into the same pass.
+    SAMPLE max_val = pie_block_norm_s32(block, len, bits);
+    AMY_PROFILE_STOP(BLOCK_NORM)
+    return max_val;
+#else
     SAMPLE max_val = 0;
     if (bits >= 0) {
         // do this even if bits == 0 to ensure max_val is set.
@@ -694,6 +711,7 @@ SAMPLE block_norm(SAMPLE* block, int len, int bits) {
     }
     AMY_PROFILE_STOP(BLOCK_NORM)
     return max_val;
+#endif // AMY_PIE_SIMD
 }
 
 SAMPLE block_denorm(SAMPLE* block, int len, int bits) {

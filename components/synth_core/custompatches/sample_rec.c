@@ -65,7 +65,7 @@ bool sample_rec_arm(uint8_t layer_idx, uint8_t track)
     atomic_store_explicit(&s_write_index, 0, memory_order_relaxed);
     atomic_store_explicit(&s_cancel_requested, false, memory_order_relaxed);
     atomic_store_explicit(&s_state, SAMPLE_REC_ARMED, memory_order_release);
-    ESP_LOGI(TAG, "armed: layer %u track %u, %lu samples", layer_idx, track,
+    ESP_LOGI(TAG, "armed: L%u T%u, %lu samples", layer_idx + 1u, track + 1u,
              (unsigned long)SAMPLE_REC_LENGTH);
     return true;
 }
@@ -94,7 +94,7 @@ bool sample_rec_assign(void)
                                        SAMPLE_REC_PRESET_NUMBER);
     sequencer_core_set_drum_engine(SEQ_DRUM_PCM);
     atomic_store_explicit(&s_state, SAMPLE_REC_IDLE, memory_order_release);
-    ESP_LOGI(TAG, "assigned: layer %u track %u", s_target_layer, s_target_track);
+    ESP_LOGI(TAG, "assigned: L%u T%u", s_target_layer + 1u, s_target_track + 1u);
     return true;
 }
 

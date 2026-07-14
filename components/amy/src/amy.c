@@ -306,7 +306,9 @@ void dealloc_chorus_delay_lines(uint8_t bus) {
 }
 
 void alloc_chorus_delay_lines(uint8_t bus) {
-    amy_global.bus[bus]->chorus.delay_mod = (SAMPLE *)malloc_caps(sizeof(SAMPLE) * AMY_BLOCK_SIZE, amy_global.config.ram_caps_delay);
+    // LOCAL EDIT (S3-Amysynth): amy_render() PIE-clears delay_mod each block, so it is
+    // one of the buffers a PIE kernel walks - 16-byte aligned like the others.
+    amy_global.bus[bus]->chorus.delay_mod = (SAMPLE *)malloc_caps_block(sizeof(SAMPLE) * AMY_BLOCK_SIZE, amy_global.config.ram_caps_delay);
     bool success = true;
     for(int c = 0; c < AMY_NCHANS; ++c) {
         delay_line_t *delay_line = new_delay_line(DELAY_LINE_LEN, DELAY_LINE_LEN / 2, amy_global.config.ram_caps_delay);

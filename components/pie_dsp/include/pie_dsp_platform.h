@@ -10,7 +10,12 @@
 #ifndef PIE_DSP_PLATFORM_H
 #define PIE_DSP_PLATFORM_H
 
+// sdkconfig.h only exists under ESP-IDF (and the Arduino esp32 core). Guarding it
+// keeps this header - and the .S sources that include it - buildable on desktop,
+// MSVC, Emscripten and non-ESP Arduino targets, where the gate simply resolves to 0.
+#if defined(ESP_PLATFORM) || __has_include("sdkconfig.h")
 #include "sdkconfig.h"
+#endif
 
 #if defined(__XTENSA__) && defined(CONFIG_IDF_TARGET_ESP32S3)
 #define PIE_DSP_S3_ENABLED 1

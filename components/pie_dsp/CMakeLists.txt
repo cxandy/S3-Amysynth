@@ -7,7 +7,5 @@
 idf_component_register(
     SRCS "src/pie_memset_s3.S"
          "src/pie_memcpy_s3.S"
-         "src/pie_kernels_s3.S"
-         "src/pie_dsp.c"
     INCLUDE_DIRS "include"
 )

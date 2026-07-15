@@ -726,12 +726,15 @@ static void filter_load_from_target(void)
         arp_get_filter(&f);
         /* Only apply display defaults when the filter was never authored
          * (cutoff_hz == 0 from zero-init); preserve authored values even
-         * when disabled so enabled=false round-trips correctly. */
+         * when disabled so enabled=false round-trips correctly. Default to
+         * disabled (enabled=false) so the graph honestly reads "OFF" for a
+         * never-authored track — the type/cutoff/resonance below are only a
+         * sensible starting point for when the user toggles the filter on. */
         if (f.cutoff_hz <= 0.0f) {
             f.filter_type = SEQ_FILTER_LPF;
             f.cutoff_hz   = 800.0f;
             f.resonance   = 1.0f;
-            f.enabled     = true;
+            f.enabled     = false;
         }
         snprintf(s_fgraph.label, sizeof(s_fgraph.label), "ARP");
     } else {
@@ -739,12 +742,14 @@ static void filter_load_from_target(void)
         uint8_t tr = seq_state.selected_track;
         sequencer_core_get_melodic_filter(li, tr, &f);
         /* Same sentinel: zero cutoff means never-authored; disabled-but-authored
-         * keeps its authored values for correct round-trip display. */
+         * keeps its authored values for correct round-trip display. Default to
+         * disabled so the graph reads "OFF" when the track has no filter — the
+         * type/cutoff/resonance are just the starting point for enabling one. */
         if (f.cutoff_hz <= 0.0f) {
             f.filter_type = SEQ_FILTER_LPF;
             f.cutoff_hz   = 800.0f;
             f.resonance   = 1.0f;
-            f.enabled     = true;
+            f.enabled     = false;
         }
         snprintf(s_fgraph.label, sizeof(s_fgraph.label), "L%u T%u%s",
                  (unsigned)(li + 1), (unsigned)(tr + 1),

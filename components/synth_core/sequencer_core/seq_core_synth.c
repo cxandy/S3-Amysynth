@@ -259,13 +259,27 @@ static void sequencer_configure_melodic_envelope1(uint8_t layer_idx)
     }
 }
 
-/* Push the filter for every authored row in a layer (called after patch reload). */
+/* Push the filter for every authored row in a layer (called after patch reload).
+ *
+ * Unauthored rows normally keep whatever filter the just-loaded patch string
+ * baked in (built-in Juno/DX7 patches carry a G/F/R filter block, so a fresh
+ * voice inherits that patch's LPF). With CONFIG_SEQ_MELODIC_DISABLE_DEFAULT_LPF
+ * set, those unauthored rows instead get a FILTER_NONE event so the raw patch
+ * tone is heard; authored rows always take their stored filter. */
 static void sequencer_configure_melodic_filter(uint8_t layer_idx)
 {
     const seq_layer_t *layer = &s_layers[layer_idx];
     for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
         if (layer->vp[t].filter_authored) {
             sequencer_configure_melodic_filter_track(layer_idx, t);
+#if CONFIG_SEQ_MELODIC_DISABLE_DEFAULT_LPF
+        } else {
+            /* Strip the patch-baked filter from this fresh row. */
+            amy_event *e = amy_helpers_event_begin();
+            e->synth       = layer->synth_id[t];
+            e->filter_type = FILTER_NONE;
+            amy_helpers_event_send(e);
+#endif
         }
     }
 }

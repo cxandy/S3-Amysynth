@@ -63,6 +63,20 @@ config SEQ_MELODIC_PATCH_CUSTOM_START
 
 endchoice
 
+config SEQ_MELODIC_DISABLE_DEFAULT_LPF
+	bool "Strip the patch-baked filter from fresh melodic voices"
+	default n
+	help
+		Built-in AMY Juno/DX7 patch strings carry their own filter block
+		(a G/F/R command trio -> filter_type/cutoff/resonance), so a freshly
+		created melodic voice inherits that patch's low-pass filter before the
+		user has authored anything in the filter editor.
+
+		Enable this to push a FILTER_NONE event to every UNAUTHORED melodic
+		row right after the patch loads, giving the raw, unfiltered patch tone.
+		Rows the user has explicitly dialed in the filter editor
+		(filter_authored) are never touched, so authored filters still win.
+
 config SEQ_MELODIC_PATCH
 	int
 	default 14 if SEQ_MELODIC_PATCH_JUNO_EPIANO1

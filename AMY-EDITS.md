@@ -39,16 +39,16 @@ flowchart TD
 
 ## Active local edits
 
-### `src/amy_simd.h` (new) + `amy.c` / `filters.c` / `algorithms.c` — ESP32-S3 PIE (SIMD)
+### `src/amy_simd.h` (new) + `amy.c` / `algorithms.c` — ESP32-S3 PIE (SIMD)
 
-Routes the render path's vectorizable operations through the S3's PIE unit
+Routes the render path's bulk block clears and copies through the S3's PIE unit
 (128-bit vector registers), via the local `components/pie_dsp` component.
 
 New header `src/amy_simd.h` defines `AMY_PIE_SIMD` (requires both the S3 and
-`AMY_USE_FIXEDPOINT` — the kernels are int32, so they must compile out in a
-float build) plus `AMY_BLOCK_BZERO` / `AMY_BLOCK_BCOPY`. Kept as a separate
-header so an AMY re-vendor only has to re-apply call sites, not re-untangle a
-modified `amy.h`.
+`AMY_USE_FIXEDPOINT` — the aligned allocator below is only wanted in the
+fixed-point build) plus `AMY_BLOCK_BZERO` / `AMY_BLOCK_BCOPY`. Kept as a
+separate header so an AMY re-vendor only has to re-apply call sites, not
+re-untangle a modified `amy.h`.
 
 Call sites changed:
 
@@ -56,10 +56,8 @@ Call sites changed:
 |------|--------|
 | `amy.c` `amy_render()` | per-bus `fbl` clear and the per-audible-oscillator `per_osc_fb` clear -> `AMY_BLOCK_BZERO` (PIE `EE.VST.128` block fill). The `per_osc_fb` clear is the hottest one: it runs once per audible oscillator per block. |
 | `amy.c` chorus mod buffer | `bzero` -> `AMY_BLOCK_BZERO` |
-| `algorithms.c` `zero()` / `copy()` | FM operator scratch (1 KB each, per operator per block) -> `AMY_BLOCK_BZERO` / `AMY_BLOCK_BCOPY` |
-| `filters.c` `scan_max()` | -> `pie_scan_absmax_s32()` (`EE.VSUBS.S32` negate + `EE.VMAX.S32`, 4 int32/iteration) |
-| `filters.c` `block_norm()` | -> `pie_block_norm_s32()`. Bit-identical: in the fixed-point build `SHIFTL`/`SHIFTR` are plain arithmetic shifts, which `EE.VSL.32`/`EE.VSR.32` reproduce exactly. |
-| `amy.c` `malloc_caps_block()` (new) + `amy.h` prototype | 16-byte-aligned allocator for the buffers PIE walks (`fbl`, `per_osc_fb`, `algorithms.c` scratch). **Deliberately not folded into `malloc_caps()`**: most AMY allocations are small structs and `heap_caps_aligned_alloc` over-allocates per block, and internal DRAM is the scarce resource here. Alignment is a correctness matter, not just speed — PIE loads/stores force the low address bits to zero, so an unaligned base silently reads the *wrong* address rather than faulting. |
+| `algorithms.c` `zero()` / `copy()` | FM operator scratch (1 KB each, per operator per block) -> `AMY_BLOCK_BZERO` / `AMY_BLOCK_BCOPY`. This is where most of the win is: **dx7 6-op polyphony renders 10.4% cheaper** from the PIE routing alone (on-target A/B, median cycles/block; the oft-quoted 12.1% total also includes the separate dead-sum guard below). |
+| `amy.c` `malloc_caps_block()` (new) + `amy.h` prototype | 16-byte-aligned allocator for the buffers PIE walks (`fbl`, `per_osc_fb`, `chorus.delay_mod`, `algorithms.c` scratch). **Deliberately not folded into `malloc_caps()`**: most AMY allocations are small structs and `heap_caps_aligned_alloc` over-allocates per block, and internal DRAM is the scarce resource here. Alignment is a correctness matter, not just speed — PIE loads/stores force the low address bits to zero, so an unaligned base silently reads the *wrong* address rather than faulting. |
 
 Scope is deliberately narrow, and that is the finding rather than a shortcut:
 PIE multiplies only on 8/16-bit lanes (`EE.VMULAS.S16` -> 40-bit QACC/ACCX),
@@ -71,7 +69,21 @@ bound. esp-dsp independently reaches the same conclusion: its own ESP32-S3
 biquad (`dsps_biquad_f32_aes3.S`) contains zero PIE instructions and is
 hand-scheduled scalar FPU.
 
-Not upstreamable as-is (ESP32-S3 specific).
+**`filters.c` is deliberately *not* routed through PIE.** `scan_max()` and
+`block_norm()` are multiply-free reductions, so they looked eligible and an
+earlier revision vectorized them. On-target A/B said no: that bought nothing on
+any scene (four were flat to 0.00%) and cost up to 0.9% on filter-heavy ones.
+Nearly every call is on a tiny buffer — `scan_max(w, 4)`, `scan_max(w, 6)` for
+LPF24, and `scan_max`/`block_norm` over the 8-entry `filter_delay` — where the
+vector setup costs more than the scalar loop it replaces, and those buffers sit
+inside `synthinfo` so they are unaligned as well. Multiply-free is necessary but
+not sufficient: the operation also has to be *long* enough to amortise the setup,
+and in AMY only the bulk block clears and copies are. Don't re-add it.
+
+Upstream PR candidate: the fast path is ESP32-S3 specific, but every entry
+point degrades to libc memset/memcpy elsewhere (verified by host-compiling the
+headers and .S sources off-IDF), so the same patch builds for AMY's other
+targets. Pending upstream interest via issue.
 
 ### `src/amy.c` — skip the dead dual-core bus sum
 

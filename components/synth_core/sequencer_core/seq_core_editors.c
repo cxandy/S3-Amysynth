@@ -34,6 +34,23 @@ static void melodic_configure_native_lfo_track(const seq_layer_t *layer, uint8_t
 
 #endif /* CONFIG_SEQ_MELODIC_AMY_NATIVE_LFO */
 
+/* Restore the resting (neutral) coefficient for every target the LFO was
+ * driving — called when the LFO is switched off so nothing stays modulated.
+ * FILTER restores the track's own authored cutoff; the rest push a neutral
+ * constant. Iterates the full target set (multi-target LFOs). */
+static void lfo_restore_target_neutrals(const seq_layer_t *layer, uint8_t track,
+                                        const seq_lfo_t *lfo)
+{
+    for (int t = 0; t < LFO_TARGET_COUNT; t++) {
+        if (!(lfo->targets & LFO_TGT_BIT(t))) continue;
+        if (t == LFO_TARGET_FILTER)
+            sequencer_core_push_filter(layer->synth_id[track], &layer->vp[track].filter,
+                                       layer->patch == SEQ_PATCH_KS);
+        else
+            lfo_push_target_neutral(layer->synth_id[track], (lfo_target_t)t);
+    }
+}
+
 /* ── Per-row melodic envelope (runtime-editable) ─────────────────────────── */
 
 /* Push the given row's stored envelope to that row's OWN AMY synth. */
@@ -260,39 +277,30 @@ void sequencer_core_set_melodic_lfo(uint8_t layer_idx, uint8_t track,
         /* Restore static target value when disabled or on software-fallback path
          * (PAN/RANDOM): native clears COEF_MOD but doesn't push the neutral coef. */
         if (!lfo->enabled || !is_native_lfo_track(&layer->vp[track].lfo)) {
-            if (lfo->target == LFO_TARGET_FILTER)
-                sequencer_core_push_filter(layer->synth_id[track], &layer->vp[track].filter,
-                                           layer->patch == SEQ_PATCH_KS);
-            else
-                lfo_push_target_neutral(layer->synth_id[track], lfo->target);
+            lfo_restore_target_neutrals(layer, track, lfo);
         }
         /* s_lfo_hz=0 for native tracks so the service loop skips them;
          * non-zero for PAN/RANDOM fallback so the service loop picks them up. */
         s_lfo_hz[layer_idx][track] = (lfo->enabled && is_native_lfo_track(&layer->vp[track].lfo))
                                      ? 0.0f
                                      : (lfo->enabled ? lfo_rate_to_hz(lfo->rate, s_bpm) : 0.0f);
-        ESP_LOGI(TAG, "LFO L%u T%u %s %.2f Hz d=%u tgt=%u [native]",
+        ESP_LOGI(TAG, "LFO L%u T%u %s %.2f Hz d=%u tgt=0x%02x [native]",
                  layer_idx + 1u, track + 1u, lfo->enabled ? "ON" : "OFF",
-                 (double)s_lfo_hz[layer_idx][track], lfo->depth, lfo->target);
+                 (double)s_lfo_hz[layer_idx][track], lfo->depth, lfo->targets);
         return;
     }
 #endif
 
     /* Software path: non-wave patches, or native LFO disabled at compile time */
     if (!lfo->enabled) {
-        if (lfo->target == LFO_TARGET_FILTER) {
-            sequencer_core_push_filter(layer->synth_id[track], &layer->vp[track].filter,
-                                       layer->patch == SEQ_PATCH_KS);
-        } else {
-            lfo_push_target_neutral(layer->synth_id[track], lfo->target);
-        }
+        lfo_restore_target_neutrals(layer, track, lfo);
         s_lfo_hz[layer_idx][track] = 0.0f;
     } else {
         s_lfo_hz[layer_idx][track] = lfo_rate_to_hz(lfo->rate, s_bpm);
     }
-    ESP_LOGI(TAG, "LFO L%u T%u %s %.2f Hz d=%u tgt=%u",
+    ESP_LOGI(TAG, "LFO L%u T%u %s %.2f Hz d=%u tgt=0x%02x",
              layer_idx + 1u, track + 1u, lfo->enabled ? "ON" : "OFF",
-             (double)s_lfo_hz[layer_idx][track], lfo->depth, lfo->target);
+             (double)s_lfo_hz[layer_idx][track], lfo->depth, lfo->targets);
 }
 
 bool sequencer_core_get_melodic_lfo(uint8_t layer_idx, uint8_t track,
@@ -341,26 +349,21 @@ void sequencer_core_lfo_service(void)
 
             amy_event *e = amy_helpers_event_begin();
             e->synth = syn;
-            switch (lfo->target) {
-                case LFO_TARGET_FILTER: {
-                    float base = (s_layers[li].vp[tr].filter.enabled &&
-                                  s_layers[li].vp[tr].filter.cutoff_hz > 0.0f)
-                                 ? s_layers[li].vp[tr].filter.cutoff_hz : 1000.0f;
-                    e->filter_freq_coefs[COEF_CONST] =
-                        base * powf(2.0f, d * 3.0f * val);
-                    break;
-                }
-                case LFO_TARGET_AMP:
-                    e->amp_coefs[COEF_CONST] = 1.0f - d*(0.5f - 0.5f*val);
-                    break;
-                case LFO_TARGET_PITCH:
-                    e->freq_coefs[COEF_CONST] = powf(2.0f, d * val);
-                    break;
-                case LFO_TARGET_PAN:
-                    e->pan_coefs[COEF_CONST] = 0.5f + d*0.5f*val;
-                    break;
-                default: break;
+            /* Multi-target: each checked target modulates its own independent
+             * COEF_CONST from the same LFO value. (SCAN has no software analog —
+             * it needs a wavetable voice, which always takes the native path.) */
+            if (LFO_HAS_TGT(lfo, LFO_TARGET_FILTER)) {
+                float base = (s_layers[li].vp[tr].filter.enabled &&
+                              s_layers[li].vp[tr].filter.cutoff_hz > 0.0f)
+                             ? s_layers[li].vp[tr].filter.cutoff_hz : 1000.0f;
+                e->filter_freq_coefs[COEF_CONST] = base * powf(2.0f, d * 3.0f * val);
             }
+            if (LFO_HAS_TGT(lfo, LFO_TARGET_AMP))
+                e->amp_coefs[COEF_CONST] = 1.0f - d*(0.5f - 0.5f*val);
+            if (LFO_HAS_TGT(lfo, LFO_TARGET_PITCH))
+                e->freq_coefs[COEF_CONST] = powf(2.0f, d * val);
+            if (LFO_HAS_TGT(lfo, LFO_TARGET_PAN))
+                e->pan_coefs[COEF_CONST] = 0.5f + d*0.5f*val;
             amy_helpers_event_send(e);
         }
     }

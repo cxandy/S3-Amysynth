@@ -334,7 +334,7 @@ void arp_core_init(void)
     s_arp.vp.lfo.wave   = LFO_WAVE_SINE;
     s_arp.vp.lfo.rate   = LFO_RATE_1BAR;
     s_arp.vp.lfo.depth  = 50;
-    s_arp.vp.lfo.target = LFO_TARGET_FILTER;
+    s_arp.vp.lfo.targets = LFO_TGT_BIT(LFO_TARGET_FILTER);
     if (s_arp.octaves < 1) s_arp.octaves = 1;
     if (s_arp.octaves > ARP_OCT_MAX) s_arp.octaves = ARP_OCT_MAX;
     if (s_arp.scale_index >= quantizer_scale_count()) s_arp.scale_index = 0;
@@ -597,9 +597,9 @@ void arp_set_lfo(const seq_lfo_t *lfo)
         s_arp.vp.lfo_authored = true;
         arp_rebuild();
     }
-    ESP_LOGI(TAG, "arp LFO -> en=%d wave=%u rate=%u depth=%u tgt=%u",
+    ESP_LOGI(TAG, "arp LFO -> en=%d wave=%u rate=%u depth=%u tgt=0x%02x",
              lfo->enabled, (unsigned)lfo->wave, (unsigned)lfo->rate,
-             (unsigned)lfo->depth, (unsigned)lfo->target);
+             (unsigned)lfo->depth, (unsigned)lfo->targets);
 }
 
 void arp_set_slot(uint8_t idx, int16_t chromatic_note)

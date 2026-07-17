@@ -79,6 +79,13 @@ static volatile bool s_patch_held = false;
 // patch selection is the patch-hold gesture (MY_BUTTON_1 + encoder) instead.
 static volatile bool s_drum_select_held = false;
 
+// MY_BUTTON_SHIFT (GPIO47) hold-modifier state, plus a per-button latch so a
+// button chorded with SHIFT is swallowed for its whole press (its normal
+// hold/click/long behaviour never runs and the release can't leave a latch
+// stuck). Touched only from the button-dispatch task, so no volatile needed.
+static bool s_shift_held = false;
+static bool s_shift_chord_latched[MY_BUTTON_MAX] = { false };
+
 static QueueHandle_t s_button_queue = NULL;
 
 // Every button event is queued to button_task (a press produces up to three
@@ -328,14 +335,13 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
 // on the esp_timer task only if queue creation failed at startup).
 static void dispatch_button_event(my_button_id_t button_id, button_event_t event)
 {
-    /* MY_BUTTON_SHIFT (shoulder): per-view bindings. On the sequencer grid a
-     * press toggles the step under the cursor, so one hand rides the encoder
-     * while the other enters steps (tracker-style two-handed entry); on the
-     * envelope editor it flips the EG1 sweep polarity. Fires on PRESS_DOWN
-     * for zero tap latency; all SHIFT events are consumed here so they never
-     * leak into screen logic. Long-term this button is reserved as a
-     * hold-modifier (shift) layer. */
-    if (button_id == MY_BUTTON_SHIFT) {
+    /* MY_BUTTON_SHOULDER (GPIO17, original shoulder): per-view bindings. On the
+     * sequencer grid a press toggles the step under the cursor, so one hand
+     * rides the encoder while the other enters steps (tracker-style two-handed
+     * entry); on the envelope editor it flips the EG1 sweep polarity. Fires on
+     * PRESS_DOWN for zero tap latency; all events are consumed here so they
+     * never leak into screen logic. */
+    if (button_id == MY_BUTTON_SHOULDER) {
         if (event == BUTTON_PRESS_DOWN) {
             ui_view_id_t sv = synth_ui_active_view();
             if (sv == UI_VIEW_SEQ) {
@@ -349,9 +355,76 @@ static void dispatch_button_event(my_button_id_t button_id, button_event_t event
         return;
     }
 
+    /* MY_BUTTON_SHIFT (GPIO47, new shoulder): hold-modifier layer. Track the
+     * held state here; the chord interception just below turns SHIFT + digit
+     * into the "open editor" gestures that used to live on long-presses. A bare
+     * SHIFT tap does nothing. */
+    if (button_id == MY_BUTTON_SHIFT) {
+        if (event == BUTTON_PRESS_DOWN)      s_shift_held = true;
+        else if (event == BUTTON_PRESS_UP)   s_shift_held = false;
+        return;
+    }
+
+    /* SHIFT chords (replace the former open-editor long-presses):
+     *   SHIFT + MY_BUTTON_1 -> open the ADSR/graph editor (was encoder long-press)
+     *   SHIFT + MY_BUTTON_2 -> open the step probability / trig editor
+     *                          (was MY_BUTTON_3 long-press)
+     * The chord fires on the digit's PRESS_DOWN and latches that button until
+     * its NEXT press-down, swallowing the rest of the chorded press (PRESS_UP
+     * plus the trailing SINGLE_CLICK / LONG_PRESS_START) so the button's normal
+     * gesture (patch-hold on 1, drum-select on 2, and per-screen single-clicks
+     * like the TRACKOPTS layer delete) never runs. SHIFT+1 only opens where the
+     * old encoder long-press did (the mode screens); synth_ui_stepedit_open()
+     * self-gates to the sequencer screen, so SHIFT+2 elsewhere is a no-op. */
+    if (s_shift_chord_latched[button_id]) {
+        if (event == BUTTON_PRESS_DOWN) {
+            s_shift_chord_latched[button_id] = false;  /* fresh press: re-evaluate */
+        } else {
+            return;                                    /* swallow the chorded press */
+        }
+    }
+    if (s_shift_held && event == BUTTON_PRESS_DOWN &&
+        (button_id == MY_BUTTON_1 || button_id == MY_BUTTON_2)) {
+        s_shift_chord_latched[button_id] = true;
+        if (button_id == MY_BUTTON_1) {
+            ui_view_id_t sv = synth_ui_active_view();
+            if (sv == UI_VIEW_SEQ || sv == UI_VIEW_ARP ||
+                sv == UI_VIEW_DRONE || sv == UI_VIEW_DRONE_VIS) {
+                synth_ui_graph_open_envelope();
+            } else if (sv == UI_VIEW_GRAPH || sv == UI_VIEW_LFO) {
+                /* Inside the envelope/LFO editor, SHIFT+1 is the apply-to-whole-
+                 * layer scope toggle. Moved off the bare button (which now cycles
+                 * EG type) so it can't be hit by accident and wipe a layer. */
+                synth_ui_toggle_editor_apply_scope();
+            }
+        } else { /* MY_BUTTON_2 */
+            if (!synth_ui_menu_is_active()) synth_ui_stepedit_open();
+        }
+        return;
+    }
+
+    /* Project rename editor: while a project name is being typed, MY_BUTTON_1
+     * saves it and MY_BUTTON_2 discards it (MY_BUTTON_3 still closes the whole
+     * menu). synth_ui_menu_rename_active() is the authoritative gate (menu open
+     * on the projects page mid-rename) and short-circuits instantly otherwise,
+     * so this runs before the normal patch-hold / drum-select gestures without
+     * disturbing them elsewhere. Fires on PRESS_DOWN and swallows the rest. */
+    if ((button_id == MY_BUTTON_1 || button_id == MY_BUTTON_2) &&
+        synth_ui_menu_rename_active()) {
+        if (event == BUTTON_PRESS_DOWN) {
+            if (button_id == MY_BUTTON_1) synth_ui_menu_rename_save();
+            else                          synth_ui_menu_rename_discard();
+        }
+        return;
+    }
+
     // MY_BUTTON_1 is the patch-select hold button, repurposed per editor:
-    //   filter editor  → enabled on/off toggle (single press)
-    //   ADSR/LFO editor → layer-wide vs track-only commit scope toggle
+    //   filter editor    → enabled on/off toggle (single press)
+    //   envelope editor  → cycle EG curve type (Normal/Linear/DX7/Exp)
+    //   LFO editor       → unused (apply-scope moved to SHIFT+1)
+    // The apply-to-whole-layer scope toggle that used to live here is now
+    // SHIFT+1 (handled in the chord block above) so it can't be pressed by
+    // accident and overwrite the whole layer's envelope/filter config.
     if (button_id == MY_BUTTON_1) {
         if (synth_ui_filter_is_active()) {
             if (event == BUTTON_PRESS_DOWN) {
@@ -359,8 +432,14 @@ static void dispatch_button_event(my_button_id_t button_id, button_event_t event
             }
             return;
         }
-        if (event == BUTTON_PRESS_DOWN) {
-            if (synth_ui_toggle_editor_apply_scope()) return;
+        if (synth_ui_graph_is_active()) {
+            if (event == BUTTON_PRESS_DOWN) {
+                synth_ui_graph_cycle_eg_type();
+            }
+            return;
+        }
+        if (synth_ui_lfo_is_active()) {
+            return;   /* scope is now SHIFT+1; bare press is a no-op here */
         }
         /* PROG screen: MY_BUTTON_1 deletes the entry at the cursor (the patch-hold
          * gesture has no meaning here). */
@@ -521,10 +600,9 @@ static void dispatch_button_event(my_button_id_t button_id, button_event_t event
 
     // MY_BUTTON_3: while any editor (ADSR/filter/LFO) is open, single-click
     // cycles to the next editor page (EG0 -> EG1 -> filter -> LFO). The EG1
-    // sweep polarity flip lives on MY_BUTTON_SHIFT (handled above). Step Trig
-    // editor: long-press opens it, single-click closes it (moved off
-    // MY_BUTTON_2 so it no longer fires accidentally while holding
-    // MY_BUTTON_2 to transpose). Outside all of that it is the menu toggle.
+    // sweep polarity flip lives on MY_BUTTON_SHOULDER (handled above). Step Trig
+    // editor: single-click closes it; opening it moved to SHIFT+2 (the former
+    // long-press open was replaced). Outside all of that it is the menu toggle.
     if (button_id == MY_BUTTON_3) {
         /* STEPEDIT outranks GRAPH in the canonical order, so resolving via v
          * fixes the former skew where this block checked graph/filter/lfo
@@ -541,58 +619,49 @@ static void dispatch_button_event(my_button_id_t button_id, button_event_t event
             }
             return;
         }
-        if (event == BUTTON_LONG_PRESS_START) {
-            /* stepedit_open() self-gates to the sequencer screen (Phase 1), so
-             * a long-press on any other screen is a harmless no-op. */
-            if (!synth_ui_menu_is_active()) {
-                synth_ui_stepedit_open();
-            }
-            return;
-        }
+        /* Opening the step-trig editor moved to SHIFT+2 (see the chord block
+         * above); MY_BUTTON_3 here is just the menu toggle. */
         if (event == BUTTON_SINGLE_CLICK) {
             synth_ui_menu_toggle();
         }
         return;
     }
 
-    /* graph pop-up: encoder push is the editor's select/adjust + open trigger.
-     * - long press (editor closed) opens the envelope editor
-     * - short press (editor open)  toggles select<->adjust, or confirms in VIEW
+    /* graph pop-up: encoder push is the editor's select/adjust toggle only. The
+     * commit/close gesture moved off the encoder long-press onto a MY_BUTTON_0
+     * short tap (handled below) so finishing an edit is a fast tap, not a ~1.5 s
+     * hold. Opening the editor is SHIFT+1 (chord block above).
      * Remove this block to revert the integration. */
     if (button_id == MY_BUTTON_ENC) {
         /* Encoder-push is a clean per-view dispatch — the old cascade was
          * already in canonical order, so this is a direct lift onto v. For the
-         * editors long-press commits/closes and short-press cycles; the mode
-         * screens edit their focused row (long-press on arp/drone opens the
-         * bound ADSR editor). */
+         * editors the short press toggles select<->adjust (commit/close is now
+         * MY_BUTTON_0); the mode screens edit their focused row (opening the
+         * bound ADSR editor is SHIFT+1, not the encoder long-press). */
         switch (v) {
             case UI_VIEW_FILTER:
-                if (event == BUTTON_LONG_PRESS_START) synth_ui_filter_close_commit();
-                else if (event == BUTTON_PRESS_DOWN)  synth_ui_filter_handle_button(false);
+                if (event == BUTTON_PRESS_DOWN)  synth_ui_filter_handle_button(false);
                 return;
             case UI_VIEW_LFO:
-                if (event == BUTTON_LONG_PRESS_START) synth_ui_lfo_close_commit();
-                else if (event == BUTTON_PRESS_DOWN)  synth_ui_lfo_handle_button(false);
+                if (event == BUTTON_PRESS_DOWN)  synth_ui_lfo_handle_button(false);
                 return;
             case UI_VIEW_STEPEDIT:
-                if (event == BUTTON_LONG_PRESS_START) synth_ui_stepedit_close();
-                else if (event == BUTTON_PRESS_DOWN)  synth_ui_stepedit_handle_button();
+                if (event == BUTTON_PRESS_DOWN)  synth_ui_stepedit_handle_button();
                 return;
             case UI_VIEW_GRAPH:
-                if (event == BUTTON_LONG_PRESS_START) synth_ui_graph_close_commit();
-                else if (event == BUTTON_PRESS_DOWN)  synth_ui_graph_handle_button(false);
+                if (event == BUTTON_PRESS_DOWN)  synth_ui_graph_handle_button(false);
                 return;
             case UI_VIEW_MENU:
                 if (event == BUTTON_PRESS_DOWN) synth_ui_menu_handle_button();
                 return;
             case UI_VIEW_ARP:
-                if (event == BUTTON_LONG_PRESS_START) synth_ui_graph_open_envelope();
-                else if (event == BUTTON_PRESS_DOWN)  synth_ui_arp_handle_button();
+                /* Open moved to SHIFT+1; encoder push edits the focused field. */
+                if (event == BUTTON_PRESS_DOWN)  synth_ui_arp_handle_button();
                 return;
             case UI_VIEW_DRONE:
             case UI_VIEW_DRONE_VIS:
-                if (event == BUTTON_LONG_PRESS_START) synth_ui_graph_open_envelope();
-                else if (event == BUTTON_PRESS_DOWN)  synth_ui_drone_handle_button();
+                /* Open moved to SHIFT+1; encoder push edits the focused row. */
+                if (event == BUTTON_PRESS_DOWN)  synth_ui_drone_handle_button();
                 return;
             case UI_VIEW_PROG:
                 if (event == BUTTON_PRESS_DOWN) synth_ui_prog_handle_button();
@@ -608,20 +677,32 @@ static void dispatch_button_event(my_button_id_t button_id, button_event_t event
             default:  /* UI_VIEW_SEQ */
                 break;
         }
-        if (event == BUTTON_LONG_PRESS_START) {
-            synth_ui_graph_open_envelope();
-            return;
-        }
-        /* else fall through to the normal PRESS_DOWN queueing below */
+        /* Editor-open moved to SHIFT+1; on SEQ the encoder push falls through to
+         * the normal PRESS_DOWN queueing below. */
     }
 
-    /* MY_BUTTON_0 long press cancels whichever overlay editor is open. */
+    /* MY_BUTTON_0 is the open editor's commit/cancel button. Commit moved here
+     * off the encoder long-press so finishing an edit is a single fast tap
+     * instead of a ~1.5 s hold (the editing-loop bottleneck):
+     *   short tap  -> commit & close
+     *   long press -> cancel / discard (the deliberate, rarer gesture)
+     * STEPEDIT has no discard path, so both gestures just close it (it also
+     * still closes on MY_BUTTON_3, per its hint bar). All MY_BUTTON_0 events are
+     * consumed while an editor is open, so transport (play/stop) is unavailable
+     * here — already the convention for the cancel-on-hold editors. */
     if (button_id == MY_BUTTON_0 &&
-        (v == UI_VIEW_GRAPH || v == UI_VIEW_FILTER || v == UI_VIEW_LFO)) {
-        if (event == BUTTON_LONG_PRESS_START) {
-            if (v == UI_VIEW_FILTER)      synth_ui_filter_handle_button(true); /* long = cancel */
-            else if (v == UI_VIEW_LFO)    synth_ui_lfo_handle_button(true);
-            else                          synth_ui_graph_handle_button(true);
+        (v == UI_VIEW_GRAPH || v == UI_VIEW_FILTER ||
+         v == UI_VIEW_LFO   || v == UI_VIEW_STEPEDIT)) {
+        if (event == BUTTON_SINGLE_CLICK) {              /* tap = commit & close */
+            if (v == UI_VIEW_FILTER)        synth_ui_filter_close_commit();
+            else if (v == UI_VIEW_LFO)      synth_ui_lfo_close_commit();
+            else if (v == UI_VIEW_STEPEDIT) synth_ui_stepedit_close();
+            else                            synth_ui_graph_close_commit();
+        } else if (event == BUTTON_LONG_PRESS_START) {   /* hold = cancel / discard */
+            if (v == UI_VIEW_FILTER)        synth_ui_filter_handle_button(true);
+            else if (v == UI_VIEW_LFO)      synth_ui_lfo_handle_button(true);
+            else if (v == UI_VIEW_STEPEDIT) synth_ui_stepedit_close(); /* no discard path */
+            else                            synth_ui_graph_handle_button(true);
         }
         return;
     }
@@ -1052,7 +1133,7 @@ void app_main(void)
 
     ESP_LOGI(TAG, "AMY + USB Audio ready (48 kHz stereo to PC)");
 
-    // Initialize push buttons (GPIO17, GPIO18, GPIO8, GPIO42)
+    // Initialize push buttons (GPIO15, GPIO18, GPIO8, GPIO42)
     ESP_LOGI(TAG, "[startup] before my_buttons_init");
     s_button_queue = xQueueCreate(BUTTON_QUEUE_DEPTH, sizeof(button_msg_t));
     if (s_button_queue == NULL) {

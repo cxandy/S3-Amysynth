@@ -136,10 +136,10 @@ static void arp_edit_value(uint8_t cursor, int delta)
             break;
         }
         case ARP_CUR_PORTA:
-            /* 25ms/detent: ~80 turns edge-to-edge, fine enough for musical glide
-             * times without needing the full graph-popup drag UI for one scalar. */
+            /* 1ms/detent over a 0..100ms range: fine control for short, snappy
+             * glides (100 turns edge-to-edge) without a drag UI for one scalar. */
             arp_set_portamento_ms((uint16_t)SEQ_CLAMP_INT(
-                (int)arp_get_portamento_ms() + dir * 25, 0, ARP_PORTAMENTO_MAX_MS));
+                (int)arp_get_portamento_ms() + dir * 1, 0, ARP_PORTAMENTO_MAX_MS));
             break;
         default: {
             /* Slot edit: chromatic note, or clear below the floor. */

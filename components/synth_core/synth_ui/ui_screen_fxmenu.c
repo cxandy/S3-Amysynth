@@ -33,6 +33,7 @@ typedef enum {
     FXI_REVERB_DAMPING,
     FXI_REVERB_XOVER,
     FXI_PRESET_GLOBAL_FX,
+    FXI_NOTEFX,     /* dive row: opens the per-layer NoteFX (gate/glide) page */
     FXI_BACK,
     FXI_COUNT
 } fx_menu_item_id_t;
@@ -111,6 +112,11 @@ const menu_item_view_t *fx_menu_build_items(void)
     snprintf(s_fx_items[FXI_PRESET_GLOBAL_FX].value, MENU_VALUE_LEN, "%s",
              s_fx.presets_alter_global ? "ON" : "OFF");
 
+    /* Per-layer note controls (gate/glide) live on their own page to keep this
+     * global list uncluttered (ui_screen_notefx.c). */
+    snprintf(s_fx_items[FXI_NOTEFX].label, MENU_LABEL_LEN, "NoteFX");
+    snprintf(s_fx_items[FXI_NOTEFX].value, MENU_VALUE_LEN, ">");
+
     snprintf(s_fx_items[FXI_BACK].label, MENU_LABEL_LEN, "< Back");
 
     return s_fx_items;
@@ -118,12 +124,18 @@ const menu_item_view_t *fx_menu_build_items(void)
 
 bool fx_menu_item_is_value(uint8_t idx)
 {
-    return idx < FXI_BACK;   /* every row except Back holds an editable value */
+    /* Every row except the NoteFX dive and Back holds an editable value. */
+    return idx < FXI_BACK && idx != FXI_NOTEFX;
 }
 
 bool fx_menu_item_is_back(uint8_t idx)
 {
     return idx == FXI_BACK;
+}
+
+bool fx_menu_item_is_notefx(uint8_t idx)
+{
+    return idx == FXI_NOTEFX;
 }
 
 /* Step a sentinel-gated param: the first edit lifts the field from the AMY

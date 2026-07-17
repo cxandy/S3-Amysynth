@@ -49,6 +49,24 @@ static graph_target_t s_graph_target = GRAPH_TGT_MELODIC;
  * visits EG0 and EG1 as two consecutive screens before the filter editor. */
 static uint8_t s_graph_eg_index = 0;
 
+/* Display cache of the currently-shown EG's curve type (AMY ENVELOPE_*: 0=Normal,
+ * 1=Linear, 2=DX7, 3=True-exponential). Mirrors the bound target's stored eg_type;
+ * refreshed on open, on EG toggle, and on each cycle. Cycled by MY_BUTTON_1 in the
+ * envelope editor (synth_ui_graph_cycle_eg_type); folded into the view signature
+ * so the top-bar readout redraws. */
+static uint8_t s_graph_eg_type_disp = 0;
+
+/* Short top-bar code for an AMY envelope curve type (eg_type 0..3). */
+static const char *graph_eg_type_code(uint8_t eg_type)
+{
+    switch (eg_type & 3u) {
+        case 1:  return "LIN";   /* ENVELOPE_LINEAR          */
+        case 2:  return "DX7";   /* ENVELOPE_DX7             */
+        case 3:  return "EXP";   /* ENVELOPE_TRUE_EXPONENTIAL*/
+        default: return "NRM";   /* ENVELOPE_NORMAL          */
+    }
+}
+
 /* ── Time-range mapping ──────────────────────────────────────────────────────
  * The graph X axis is normalised 0..1. We map it to absolute milliseconds with
  * a switchable full-width budget so the same 3-point editor serves both plucky
@@ -128,11 +146,15 @@ static float graph_ms_to_x(uint32_t ms)
  * are used as the editor's context bar, the plot fills rows 16..63. */
 #define GRAPH_TOPBAR_H 16
 
-/* ── Auto-decay rule ─────────────────────────────────────────────────────────
- * The decay TIME is derived, not user-dragged: the sustain point's X is locked
- * (Y-only) in the widget and recomputed here from attack time + sustain level.
- * Lower sustain -> longer, more audible fall; decay also scales gently with
- * attack. Tunable constants; promote to Kconfig later if desired. */
+/* ── Auto-decay rule (derived-decay mode only) ───────────────────────────────
+ * When CONFIG_SEQ_ADSR_EXPLICIT_DECAY is OFF the decay TIME is derived, not
+ * user-dragged: the sustain point's X is locked (Y-only) in the widget and
+ * recomputed here from attack time + sustain level. Lower sustain -> longer,
+ * more audible fall; decay also scales gently with attack.
+ * When the Kconfig toggle is ON (default, industry norm) the sustain point's X
+ * is user-owned and graph_recompute_decay() is a no-op, so these constants and
+ * the whole rule are inert. */
+#if !CONFIG_SEQ_ADSR_EXPLICIT_DECAY
 #define DECAY_BASE_MS          120u //note 06-20 testing some params moving up from 40
 #define DECAY_ATTACK_K         0.5f
 #define DECAY_SUSTAIN_SPAN_MS  400.0f
@@ -150,6 +172,7 @@ static uint32_t graph_decay_ms(uint32_t attack_ms, float sustain_frac)
     if (d > (float)DECAY_MAX_MS) d = (float)DECAY_MAX_MS;
     return (uint32_t)(d + 0.5f);
 }
+#endif /* !CONFIG_SEQ_ADSR_EXPLICIT_DECAY */
 
 static void graph_popup_ensure_init(void)
 {
@@ -158,8 +181,15 @@ static void graph_popup_ensure_init(void)
     graph_popup_init(&s_graph_popup, 0, GRAPH_TOPBAR_H, 128,
                      (uint8_t)(64 - GRAPH_TOPBAR_H));
     graph_popup_set_style(&s_graph_popup, GPOPUP_STYLE_ADSR);
-    /* Sustain point is Y-only: its X (decay time) is auto-derived here. */
+#if CONFIG_SEQ_ADSR_EXPLICIT_DECAY
+    /* Explicit decay (industry norm): the sustain point is draggable on both
+     * axes - X sets the decay time (ms), Y sets the sustain level. */
+    graph_popup_set_adsr_lock_sx(&s_graph_popup, false);
+#else
+    /* Derived decay: sustain point is Y-only; its X (decay time) is auto-derived
+     * from attack + sustain via graph_recompute_decay(). */
     graph_popup_set_adsr_lock_sx(&s_graph_popup, true);
+#endif
     s_graph_popup_inited = true;
 }
 
@@ -168,6 +198,12 @@ static void graph_popup_ensure_init(void)
  * stays AMY-agnostic. Expects the standard 4-point ADSR layout. */
 static void graph_recompute_decay(void)
 {
+#if CONFIG_SEQ_ADSR_EXPLICIT_DECAY
+    /* Explicit decay: the user owns the sustain point's X (decay time), so never
+     * re-derive it. Keeps this a single guard covering every call site (seed +
+     * every encoder move). */
+    return;
+#else
     gpopup_point_t pts[GPOPUP_MAX_POINTS];
     uint8_t n = graph_popup_get_points(&s_graph_popup, pts, GPOPUP_MAX_POINTS);
     if (n < 4) return;
@@ -185,6 +221,7 @@ static void graph_recompute_decay(void)
     s_graph_popup.cursor        = saved_cursor;
     s_graph_popup.editing_value = saved_editing;
     s_graph_popup.adjust_axis_y = saved_axis_y;
+#endif /* !CONFIG_SEQ_ADSR_EXPLICIT_DECAY */
 }
 
 /* Push the bottom-margin time tick positions for the active range. Mapped
@@ -225,8 +262,9 @@ static void graph_seed_from_env(const seq_env_t *env)
     pts[2].x = graph_ms_to_x(cum_d); pts[2].y = (float)env->sustain_pct / 100.0f; /* sustain */
     pts[3].x = graph_ms_to_x(cum_r); pts[3].y = 0.0f;                       /* release end*/
     graph_popup_set_points(&s_graph_popup, pts, 4);
-    /* Snap the sustain point's X to the auto-decay rule so the opening curve
-     * already obeys it (decay time is derived, not whatever was stored). */
+    /* Derived-decay mode: snap the sustain point's X to the auto-decay rule so
+     * the opening curve already obeys it. Explicit-decay mode: no-op, so the
+     * stored decay_ms (already mapped into pts[2].x above) is shown as-is. */
     graph_recompute_decay();
 }
 
@@ -336,6 +374,7 @@ void synth_ui_graph_open_envelope(void)
     if (!graph_read_target_env(&env)) {
         env = seq_default_melodic_env();
     }
+    s_graph_eg_type_disp = env.eg_type;
 
     /* Set initial range from total env time BEFORE seeding so graph_ms_to_x()
      * uses the correct mapping when seed runs. No remap needed here since there
@@ -552,6 +591,7 @@ static void graph_toggle_eg_index(void)
         env = (s_graph_eg_index == 1) ? seq_default_melodic_env1()
                                        : seq_default_melodic_env();
     }
+    s_graph_eg_type_disp = env.eg_type;
     uint32_t total_env_ms = env.attack_ms + env.decay_ms + env.release_ms;
     s_graph_long_range = (total_env_ms >= GRAPH_RANGE_SHORT_MS);
 
@@ -560,6 +600,27 @@ static void graph_toggle_eg_index(void)
     s_graph_env_dirty = false;
     s_force_redraw = true;
     ESP_LOGI(TAG, "graph eg index -> EG%u", s_graph_eg_index);
+}
+
+/* Cycle the shown EG's curve type Normal->Linear->DX7->TrueExp->Normal (0..3).
+ * Bound to MY_BUTTON_1 in the envelope editor (the slot vacated by the apply-
+ * scope toggle, which moved to SHIFT+1). Read-modify-writes the target's stored
+ * envelope so the change is applied to AMY immediately (honoring the current
+ * layer/track apply scope); the A/D/S/R times are untouched. Any uncommitted
+ * on-screen point edits still live in the popup and win at commit, where the
+ * write-back preserves this eg_type. No-op unless the envelope editor is open. */
+void synth_ui_graph_cycle_eg_type(void)
+{
+    if (!graph_popup_is_active(&s_graph_popup)) return;
+
+    seq_env_t env;
+    if (!graph_read_target_env_idx(&env, s_graph_eg_index)) return;
+    env.eg_type = (uint8_t)((env.eg_type + 1u) & 3u);
+    graph_write_target_env_idx(&env, s_graph_eg_index);
+    s_graph_eg_type_disp = env.eg_type;
+    s_force_redraw = true;
+    ESP_LOGI(TAG, "graph EG%u type -> %s(%u)", s_graph_eg_index,
+             graph_eg_type_code(env.eg_type), (unsigned)env.eg_type);
 }
 
 /* Hint-strip b2 label for the envelope editor: MY_BUTTON_2's trim mode edits
@@ -572,8 +633,8 @@ const char *synth_ui_graph_hint_b2(void)
 }
 
 /* Flip the sign of the EG1->cutoff sweep (melodic targets only — arp uses a
- * fixed depth, the drone has no EG1 depth field). Bound to MY_BUTTON_SHIFT
- * (shoulder) while the EG1 page is showing. No-op at 0.0 depth: there is
+ * fixed depth, the drone has no EG1 depth field). Bound to MY_BUTTON_SHOULDER
+ * while the EG1 page is showing. No-op at 0.0 depth: there is
  * nothing to invert and it keeps -0.0 out of the readout. */
 void synth_ui_graph_flip_eg1_polarity(void)
 {
@@ -616,7 +677,8 @@ bool synth_ui_graph_handle_encoder(long delta)
 
     s_graph_env_dirty = true;   /* user moved an ADSR control point */
     graph_popup_handle_encoder(&s_graph_popup, delta);
-    /* Moving A (time) or the S level changes the derived decay; re-snap S.x. */
+    /* Derived-decay mode: moving A (time) or the S level changes the derived
+     * decay, so re-snap S.x. No-op in explicit-decay mode (user owns S.x). */
     graph_recompute_decay();
     /* Auto-switch range if total envelope time crosses the threshold. */
     graph_auto_range_check();
@@ -645,9 +707,9 @@ bool synth_ui_graph_handle_button(bool is_long)
     return true;
 }
 
-/* Commit the current edits and close the editor. Used by the encoder long-press
- * (symmetric with the long-press that opens it): closing keeps your work. The
- * separate discard path is synth_ui_graph_handle_button(true) (cancel). */
+/* Commit the current edits and close the editor. Bound to a MY_BUTTON_0 short
+ * tap: closing keeps your work. The separate discard path is
+ * synth_ui_graph_handle_button(true) (cancel), on a MY_BUTTON_0 long press. */
 bool synth_ui_graph_close_commit(void)
 {
     if (!graph_popup_is_active(&s_graph_popup)) return false;
@@ -755,6 +817,9 @@ static void filter_load_from_target(void)
                  (unsigned)(li + 1), (unsigned)(tr + 1),
                  s_editor_apply_all ? ">L" : ">T");
     }
+    /* Drone filter is a fixed LPF24 that is always on (cursor tops out at 1), so
+     * it hides the type/enable header controls; melodic + arp expose both. */
+    s_fgraph.show_toggles = (seq_state.ui_mode != UI_MODE_DRONE);
     s_filter_edit = f;
 }
 
@@ -910,12 +975,12 @@ uint32_t lfo_view_signature(void)
 {
     const seq_lfo_t *l = &s_lfo_view.lfo;
     return (uint32_t)l->enabled
-         | ((uint32_t)l->wave   <<  4)
-         | ((uint32_t)l->target <<  8)
-         | ((uint32_t)l->depth  << 12)
-         | ((uint32_t)l->rate   << 20)
-         | ((uint32_t)s_lfo_view.cursor  << 24)
-         | ((uint32_t)s_lfo_view.editing << 28);
+         | ((uint32_t)l->wave    <<  1)   /* 3 bits */
+         | ((uint32_t)l->rate    <<  4)   /* 3 bits */
+         | ((uint32_t)l->depth   <<  7)   /* 7 bits (0..100) */
+         | ((uint32_t)l->targets << 14)   /* 5 bits */
+         | ((uint32_t)s_lfo_view.cursor  << 19)   /* 4 bits (0..8) */
+         | ((uint32_t)s_lfo_view.editing << 23);
 }
 
 bool synth_ui_lfo_is_active(void) { return s_lfo_active; }
@@ -932,7 +997,7 @@ void synth_ui_lfo_open(void)
         .wave    = LFO_WAVE_SINE,
         .rate    = LFO_RATE_1BAR,
         .depth   = 50,
-        .target  = LFO_TARGET_FILTER,
+        .targets = LFO_TGT_BIT(LFO_TARGET_FILTER),
     };
     if (seq_state.ui_mode == UI_MODE_ARP)
         arp_get_lfo(&existing);
@@ -955,33 +1020,30 @@ void synth_ui_lfo_open(void)
 bool synth_ui_lfo_handle_encoder(long delta)
 {
     if (!s_lfo_active) return false;
-    /* 5 fields: TGT, WAV, RTE, DEP, EN  (MODE removed — RETRIG not yet impl.) */
-    const uint8_t N = 5;
+    /* Fields: 5 target checkboxes (0..LFO_TARGET_COUNT-1), then WAVE/RATE/DEPTH/EN. */
+    const uint8_t N = LFO_FLD_COUNT;
     if (!s_lfo_view.editing) {
         if (delta > 0)      s_lfo_view.cursor = (s_lfo_view.cursor + 1) % N;
         else if (delta < 0) s_lfo_view.cursor = (s_lfo_view.cursor + N - 1) % N;
         s_force_redraw = true;
         return true;
     }
+    /* Only the multi-value fields (WAVE/RATE/DEPTH) use adjust mode; checkbox
+     * and EN fields toggle on press and never set `editing`. */
     seq_lfo_t *l = &s_lfo_view.lfo;
     int d = (delta > 0) ? 1 : -1;
     switch (s_lfo_view.cursor) {
-        case 0: /* target */
-            l->target = (lfo_target_t)((l->target + LFO_TARGET_COUNT + d) % LFO_TARGET_COUNT);
-            break;
-        case 1: /* wave */
+        case LFO_FLD_WAVE:
             l->wave = (lfo_wave_t)((l->wave + LFO_WAVE_COUNT + d) % LFO_WAVE_COUNT);
             break;
-        case 2: /* rate */
+        case LFO_FLD_RATE:
             l->rate = (lfo_rate_t)((l->rate + LFO_RATE_COUNT + d) % LFO_RATE_COUNT);
             break;
-        case 3: /* depth: ±5%, clamped 0..100 */
+        case LFO_FLD_DEPTH: /* ±5%, clamped 0..100 */
             if (d > 0) l->depth = (l->depth < 95) ? l->depth + 5 : 100;
             else       l->depth = (l->depth >  5) ? l->depth - 5 : 0;
             break;
-        case 4: /* enabled */
-            l->enabled = !l->enabled;
-            break;
+        default: break;
     }
     s_force_redraw = true;
     return true;
@@ -996,7 +1058,17 @@ bool synth_ui_lfo_handle_button(bool is_long)
         ESP_LOGI(TAG, "LFO editor cancelled");
         return true;
     }
-    s_lfo_view.editing = !s_lfo_view.editing;
+    seq_lfo_t *l = &s_lfo_view.lfo;
+    uint8_t c = s_lfo_view.cursor;
+    if (c < LFO_TARGET_COUNT) {
+        l->targets ^= LFO_TGT_BIT(c);          /* toggle this target in/out of the set */
+        s_lfo_view.editing = false;
+    } else if (c == LFO_FLD_EN) {
+        l->enabled = !l->enabled;              /* boolean: toggle directly */
+        s_lfo_view.editing = false;
+    } else {
+        s_lfo_view.editing = !s_lfo_view.editing;  /* WAVE/RATE/DEPTH: adjust mode */
+    }
     s_force_redraw = true;
     return true;
 }
@@ -1092,6 +1164,7 @@ void synth_ui_cycle_editor(void)
     h = fnv1a_bytes(h, &s_graph_amp_edit, sizeof(s_graph_amp_edit));
     h = fnv1a_bytes(h, &s_graph_fenv_edit, sizeof(s_graph_fenv_edit));
     h = fnv1a_bytes(h, &s_graph_eg_index, sizeof(s_graph_eg_index));
+    h = fnv1a_bytes(h, &s_graph_eg_type_disp, sizeof(s_graph_eg_type_disp));
     h = fnv1a_bytes(h, s_graph_popup.points,
                     s_graph_popup.num_points * sizeof(gpopup_point_t));
     return h;
@@ -1146,6 +1219,13 @@ static void graph_draw_topbar(u8g2_t *u8g2)
         u8g2_SetFont(u8g2, u8g2_font_6x10_tf);
         rw = (uint8_t)u8g2_GetStrWidth(u8g2, amp_buf);
         u8g2_DrawStr(u8g2, (uint8_t)(128 - rw - 2), 8, amp_buf);
+    } else if (!mid_shown) {
+        /* Right slot idle: show the EG's curve type so the type-cycle button
+         * (MY_BUTTON_1) has a visible readout. Yields to the point/amp readouts. */
+        const char *tcode = graph_eg_type_code(s_graph_eg_type_disp);
+        u8g2_SetFont(u8g2, u8g2_font_6x10_tf);
+        rw = (uint8_t)u8g2_GetStrWidth(u8g2, tcode);
+        u8g2_DrawStr(u8g2, (uint8_t)(128 - rw - 2), 8, tcode);
     }
 
     /* Middle: live readout of the selected point's real value (ms / %). */

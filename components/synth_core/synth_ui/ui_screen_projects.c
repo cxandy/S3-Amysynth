@@ -167,6 +167,35 @@ static void commit_rename(uint8_t idx, uint8_t slot)
     s_dirty    = true;
 }
 
+/* Explicit Save/Discard for the rename editor, wired to MY_BUTTON_1 /
+ * MY_BUTTON_2 in the main input dispatch. Unlike the click path (whose return
+ * value the menu router feeds back into seq_state.menu_editing), these are
+ * reached directly from the button handler, so they must end the editing
+ * sub-state themselves. Both derive the acted-on row from the menu cursor,
+ * which stays parked on the slot being renamed for the whole edit. */
+bool projects_menu_is_renaming(void)
+{
+    return s_renaming;
+}
+
+void projects_menu_rename_commit(void)
+{
+    if (!s_renaming) return;
+    uint8_t idx  = (uint8_t)seq_state.menu_cursor;
+    uint8_t slot = (uint8_t)(idx - 2);
+    commit_rename(idx, slot);        /* clears s_renaming, sets status + s_dirty */
+    seq_state.menu_editing = false;  /* back to browsing the slot list */
+}
+
+void projects_menu_rename_cancel(void)
+{
+    if (!s_renaming) return;
+    s_renaming = false;
+    s_armed    = false;
+    seq_state.menu_editing = false;
+    set_status((uint8_t)seq_state.menu_cursor, "CANCEL");
+}
+
 void projects_menu_reset(void)
 {
     s_dirty         = true;

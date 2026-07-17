@@ -110,23 +110,25 @@ static void ser_lfo(tlv_writer_t *w, const seq_lfo_t *l)
     tlv_put_u8(w, (uint8_t)l->wave);
     tlv_put_u8(w, (uint8_t)l->rate);
     tlv_put_u8(w, l->depth);
-    tlv_put_u8(w, (uint8_t)l->target);
+    tlv_put_u8(w, l->targets);   /* section v2+: target-set bitmask (v1: index) */
 }
 
 /* Same "read everything, then validate" shape as de_filter: an out-of-range
- * enum resets the whole LFO sub-block rather than propagating a bad value. */
-static bool de_lfo(tlv_reader_t *r, seq_lfo_t *l)
+ * enum resets the whole LFO sub-block rather than propagating a bad value.
+ * The 6th byte changed meaning: section v1 stored a single target index, v2+
+ * stores a target-set bitmask. Migrate index -> bit when reading an old file. */
+static bool de_lfo(tlv_reader_t *r, seq_lfo_t *l, uint8_t ver)
 {
-    uint8_t en, mode, wave, rate, depth, target;
+    uint8_t en, mode, wave, rate, depth, tgt;
     if (!tlv_get_u8(r, &en))     return false;
     if (!tlv_get_u8(r, &mode))   return false;
     if (!tlv_get_u8(r, &wave))   return false;
     if (!tlv_get_u8(r, &rate))   return false;
     if (!tlv_get_u8(r, &depth))  return false;
-    if (!tlv_get_u8(r, &target)) return false;
+    if (!tlv_get_u8(r, &tgt))    return false;
 
     if (mode > LFO_MODE_RETRIG || wave >= LFO_WAVE_COUNT ||
-        rate >= LFO_RATE_COUNT || target >= LFO_TARGET_COUNT) {
+        rate >= LFO_RATE_COUNT) {
         *l = (seq_lfo_t){0};
         return true;
     }
@@ -135,7 +137,9 @@ static bool de_lfo(tlv_reader_t *r, seq_lfo_t *l)
     l->wave    = (lfo_wave_t)wave;
     l->rate    = (lfo_rate_t)rate;
     l->depth   = (depth > 100) ? 100 : depth;
-    l->target  = (lfo_target_t)target;
+    l->targets = (ver < 2)
+        ? ((tgt < LFO_TARGET_COUNT) ? LFO_TGT_BIT(tgt) : 0u)  /* v1 index */
+        : (uint8_t)(tgt & LFO_TGT_ALL);                       /* v2 bitmask */
     return true;
 }
 
@@ -154,13 +158,13 @@ static void ser_vp(tlv_writer_t *w, const voice_params_t *vp)
     tlv_put_f32(w, vp->amp_trim);
 }
 
-static bool de_vp(tlv_reader_t *r, voice_params_t *vp)
+static bool de_vp(tlv_reader_t *r, voice_params_t *vp, uint8_t ver)
 {
     voice_params_init_defaults(vp);   /* zeroed baseline + unity amp_trim */
     if (!de_env(r, &vp->env))       return false;
     if (!de_env(r, &vp->env1))      return false;
     if (!de_filter(r, &vp->filter)) return false;
-    if (!de_lfo(r, &vp->lfo))       return false;
+    if (!de_lfo(r, &vp->lfo, ver))  return false;
     uint8_t ea, e1a, fa, la;
     if (!tlv_get_u8(r, &ea))  return false;
     if (!tlv_get_u8(r, &e1a)) return false;
@@ -282,7 +286,8 @@ static void apply_glob(const staged_glob_t *g)
 
 static void ser_layer(tlv_writer_t *w, const seq_layer_t *L)
 {
-    size_t h = tlv_begin_section(w, TAG_LAYR, 1);
+    size_t h = tlv_begin_section(w, TAG_LAYR, 3);  /* v2: LFO target bitmask;
+                                                    * v3: +gate_pct, +portamento_ms */
     tlv_put_u8(w, (uint8_t)L->type);
     tlv_put_u8(w, L->num_steps);
     tlv_put_u16(w, L->patch);
@@ -312,6 +317,10 @@ static void ser_layer(tlv_writer_t *w, const seq_layer_t *L)
     tlv_put_bytes(w, L->step_nudge,         sizeof L->step_nudge);
     tlv_put_bytes(w, L->step_velocity_adj,  sizeof L->step_velocity_adj);
     tlv_put_bytes(w, L->step_ratchet_taper, sizeof L->step_ratchet_taper);
+    /* v3: per-layer melodic NoteFX (gate length + glide). Appended at the tail so
+     * v2 readers stop cleanly before them and v2 files parse under the ver<3 path.*/
+    tlv_put_u8(w, L->gate_pct);
+    tlv_put_u16(w, L->portamento_ms);
     tlv_end_section(w, h);
 }
 
@@ -322,7 +331,7 @@ static uint16_t clamp_patch(uint16_t patch)
     return patch;
 }
 
-static bool parse_layer(tlv_reader_t *b, seq_layer_t *L)
+static bool parse_layer(tlv_reader_t *b, seq_layer_t *L, uint8_t ver)
 {
     memset(L, 0, sizeof *L);
 
@@ -361,7 +370,7 @@ static bool parse_layer(tlv_reader_t *b, seq_layer_t *L)
         { uint8_t v; if (!tlv_get_u8(b, &v)) return false; L->repeat_rate[t] = v; }
         { uint8_t v; if (!tlv_get_u8(b, &v)) return false; L->mute[t] = v != 0; }
         { uint8_t v; if (!tlv_get_u8(b, &v)) return false; L->solo[t] = v != 0; }
-        if (!de_vp(b, &L->vp[t])) return false;
+        if (!de_vp(b, &L->vp[t], ver)) return false;
     }
 
     if (!tlv_get_bytes(b, L->grid,               sizeof L->grid))               return false;
@@ -388,6 +397,21 @@ static bool parse_layer(tlv_reader_t *b, seq_layer_t *L)
             if (L->step_transform[t][s] >= SEQ_STEP_TRANSFORM_COUNT) L->step_transform[t][s] = SEQ_STEP_TRANSFORM_NONE;
         }
     }
+
+    /* v3: per-layer melodic NoteFX. Pre-v3 files predate the fields — default to
+     * the legacy gate (glide off). Clamp to the live control ranges either way. */
+    if (ver >= 3) {
+        if (!tlv_get_u8(b, &L->gate_pct)) return false;
+        if (!tlv_get_u16(b, &L->portamento_ms)) return false;
+    } else {
+        L->gate_pct      = SEQ_MELODIC_GATE_DEFAULT_PCT;
+        L->portamento_ms = 0;
+    }
+    if (L->gate_pct < 10)  L->gate_pct = 10;
+    if (L->gate_pct > 100) L->gate_pct = 100;
+    if (L->portamento_ms > SEQ_MELODIC_PORTAMENTO_MAX_MS)
+        L->portamento_ms = SEQ_MELODIC_PORTAMENTO_MAX_MS;
+
     return true;
 }
 
@@ -414,7 +438,7 @@ typedef struct {
 
 static void ser_arp(tlv_writer_t *w)
 {
-    size_t h = tlv_begin_section(w, TAG_ARP, 1);
+    size_t h = tlv_begin_section(w, TAG_ARP, 2);  /* v2: LFO target is a bitmask */
     tlv_put_u8(w, arp_get_enabled() ? 1 : 0);
     tlv_put_u8(w, (uint8_t)arp_get_source());
     tlv_put_u16(w, arp_get_wave());
@@ -435,7 +459,7 @@ static void ser_arp(tlv_writer_t *w)
     tlv_end_section(w, h);
 }
 
-static bool parse_arp(tlv_reader_t *b, staged_arp_t *a)
+static bool parse_arp(tlv_reader_t *b, staged_arp_t *a, uint8_t ver)
 {
     uint8_t v;
     if (!tlv_get_u8(b, &v)) return false;
@@ -470,7 +494,7 @@ static bool parse_arp(tlv_reader_t *b, staged_arp_t *a)
     if (!de_env(b, &a->env))       return false;
     if (!de_env(b, &a->env2))      return false;
     if (!de_filter(b, &a->filter)) return false;
-    if (!de_lfo(b, &a->lfo))       return false;
+    if (!de_lfo(b, &a->lfo, ver))  return false;
     return true;
 }
 
@@ -757,13 +781,13 @@ bool project_snapshot_load(uint8_t slot)
             got_glob = ok;
             break;
         case TAG_LAYR:
-            if (ver != 1 || staged_layer_count >= MAX_LAYERS) { ok = false; break; }
-            ok = parse_layer(&body, &staged_layers[staged_layer_count]);
+            if (ver < 1 || ver > 3 || staged_layer_count >= MAX_LAYERS) { ok = false; break; }
+            ok = parse_layer(&body, &staged_layers[staged_layer_count], ver);
             if (ok) staged_layer_count++;
             break;
         case TAG_ARP:
-            if (got_arp || ver != 1) { ok = false; break; }
-            ok = parse_arp(&body, &staged_arp);
+            if (got_arp || ver < 1 || ver > 2) { ok = false; break; }
+            ok = parse_arp(&body, &staged_arp, ver);
             got_arp = ok;
             break;
         case TAG_DRON:

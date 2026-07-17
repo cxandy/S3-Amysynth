@@ -196,6 +196,28 @@ config SEQ_MELODIC_ENV_RELEASE_MS
 	range 0 10000
 	default 200
 
+config SEQ_ADSR_EXPLICIT_DECAY
+	bool "Explicit decay control in the ADSR editor (industry-norm)"
+	default y
+	help
+		Controls how the DECAY time is handled in the graph ADSR editors
+		(EG0 and EG1, across melodic/drone/arp targets).
+
+		Enabled (default, industry norm): decay is a first-class control.
+		The sustain point becomes draggable on BOTH axes - horizontal sets
+		the decay TIME (in ms, read out on the top bar as "D ..ms") and
+		vertical sets the sustain LEVEL. The encoder button cycles the
+		sustain point between level and decay-time while adjusting. The
+		stored per-voice decay_ms is shown and edited literally.
+
+		Disabled: the legacy behaviour where decay TIME is derived, not
+		dragged. The sustain point is level-only (Y) and its decay time is
+		auto-computed from the attack time and sustain level
+		(decay = clamp(120 + 0.5*attack + 400*(1-sustain), 20, 2000) ms).
+
+		This is a compile-time behaviour switch; changing it requires a
+		clean rebuild so the ADSR editor picks up the new mode.
+
 config SEQ_ENV_DEBUG_DUMP
 	bool "Log envelope events sent to AMY on commit"
 	default n

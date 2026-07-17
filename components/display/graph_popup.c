@@ -187,19 +187,31 @@ static bool adsr_x_editable(const gpopup_t *p, uint8_t idx)
     return true;
 }
 
-/* In ADSR style each point moves on exactly one axis (A/R = time/X, S = level/Y
- * with S.x host-owned), so there is nothing to toggle: the editor auto-selects
- * the axis the selected point can actually move on. Returns true if the encoder
- * should adjust Y for this point, false for X. Y-editable wins when both happen
- * to be free (e.g. lock_sx off); falls back to the manual axis flag for the
- * generic (non-ADSR) curve editor. */
+/* True when a point can move on BOTH axes: the explicit-decay sustain point
+ * (lock_sx off) is X (decay time) and Y (sustain level) at once. In the derived
+ * decay mode (lock_sx on) no point is ever dual-free, so all the two-axis
+ * handling below stays dormant and behaviour is byte-identical to before. */
+static bool adsr_point_dual_free(const gpopup_t *p, uint8_t idx)
+{
+    return p->style == GPOPUP_STYLE_ADSR
+        && adsr_x_editable(p, idx) && adsr_y_editable(p, idx);
+}
+
+/* In ADSR style each single-axis point moves on exactly one axis (A/R = time/X,
+ * S = level/Y when its X is host-owned), so there is nothing to toggle: the
+ * editor auto-selects the axis the selected point can actually move on. Returns
+ * true if the encoder should adjust Y for this point, false for X. For the
+ * dual-free sustain point (explicit decay) the manual axis flag decides, so the
+ * user can switch between sustain level (Y) and decay time (X). Also the
+ * fallback for the generic (non-ADSR) curve editor. */
 static bool adsr_effective_axis_is_y(const gpopup_t *p, uint8_t idx)
 {
     if (p->style != GPOPUP_STYLE_ADSR) return p->adjust_axis_y;
     if (adsr_y_editable(p, idx) && !adsr_x_editable(p, idx)) return true;
     if (adsr_x_editable(p, idx) && !adsr_y_editable(p, idx)) return false;
-    /* Both free (unlocked sustain) or neither (origin): prefer Y. */
-    return true;
+    /* Both free (explicit-decay sustain): honour the axis flag. Neither free
+     * (origin): value is irrelevant, default to Y. */
+    return p->adjust_axis_y;
 }
 
 void graph_popup_close(gpopup_t *p)
@@ -330,6 +342,16 @@ void graph_popup_draw(u8g2_t *u8g2, const gpopup_t *p)
         }
     }
 
+    /* ADSR: level tick marks on the left (Y) axis at the quarter divisions, so
+     * both box edges carry a scale reference — time along the bottom, amplitude
+     * up the side (0%/100% are the axis ends). Drawn in the 2px left margin. */
+    if (adsr && plot_x >= 2) {
+        for (uint8_t i = 1; i < 4; ++i) {   /* 25%, 50%, 75% */
+            int tyy = (int)plot_y + (int)((4u - i) * (plot_h - 1)) / 4;
+            u8g2_DrawHLine(u8g2, (uint8_t)(plot_x - 2), (uint8_t)tyy, 2);
+        }
+    }
+
     /* Edit-mode markers + cursor highlight. */
     if (p->mode == GPOPUP_MODE_EDIT) {
         /* ADSR letter labels for the editable points (A, D/S, R). */
@@ -339,9 +361,17 @@ void graph_popup_draw(u8g2_t *u8g2, const gpopup_t *p)
             int cx, cy;
             point_to_px(p, &p->points[i], plot_x, plot_y, plot_w, plot_h, &cx, &cy);
 
-            /* Label above-left of the point (ADSR style, skip the origin). */
-            if (adsr && i > 0 && i < 4 && adsr_letters[i]) {
-                char lb[2] = { adsr_letters[i], 0 };
+            /* Label above-left of the point (ADSR style, skip the origin).
+             * The sustain marker reads 'D' while its decay-time (X) axis is the
+             * one being adjusted, 'S' otherwise, so the dual-axis point shows
+             * which value the encoder currently moves. */
+            char letter = adsr_letters[i];
+            if (i == 2 && i == p->cursor && p->editing_value
+                && adsr_point_dual_free(p, i) && !adsr_effective_axis_is_y(p, i)) {
+                letter = 'D';
+            }
+            if (adsr && i > 0 && i < 4 && letter) {
+                char lb[2] = { letter, 0 };
                 u8g2_SetFont(u8g2, u8g2_font_5x7_tr);
                 int lx = cx - 2;
                 int ly = cy - 4;            /* sit above the disc */
@@ -440,7 +470,22 @@ gpopup_result_t graph_popup_handle_button(gpopup_t *p)
         /* VIEW mode: short press confirms (dismiss the preview). */
         return GPOPUP_RESULT_CONFIRMED;
     }
-    /* EDIT mode: toggle select <-> adjust on the current point. */
+    /* EDIT mode. A dual-axis point (the explicit-decay sustain point) carries
+     * two independent values on one marker, so a single toggle can't reach both.
+     * Cycle it: select -> adjust level (Y) -> adjust decay time (X) -> select.
+     * Single-axis points keep the plain select <-> adjust toggle. */
+    if (adsr_point_dual_free(p, p->cursor)) {
+        if (!p->editing_value) {
+            p->editing_value = true;
+            p->adjust_axis_y = true;    /* start on the sustain level */
+        } else if (p->adjust_axis_y) {
+            p->adjust_axis_y = false;   /* switch to the decay time */
+        } else {
+            p->editing_value = false;   /* back to point selection */
+            p->adjust_axis_y = true;    /* reset default for the next entry */
+        }
+        return GPOPUP_RESULT_NONE;
+    }
     p->editing_value = !p->editing_value;
     return GPOPUP_RESULT_NONE;
 }

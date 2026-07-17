@@ -234,13 +234,18 @@ static void sequencer_configure_melodic_wave_track(uint8_t synth_id,
 static void sequencer_configure_melodic_envelope(uint8_t layer_idx)
 {
     const seq_layer_t *layer = &s_layers[layer_idx];
-    /* KS has no patch envelope of its own (it's a raw-wave primitive), so an
-     * unauthored row would otherwise keep whatever envelope was last on that
-     * synth slot. Force the push so the KS attack/sustain override always
-     * lands, regardless of authored state. */
-    bool force_ks = (layer->patch == SEQ_PATCH_KS);
+    /* Raw-wave primitives (SINE..KS, wavetables) carry no patch envelope of
+     * their own. With no envelope pushed, the carrier's COEF_EG0 stays a
+     * constant 1.0: AMY reads an empty breakpoint set as a permanently open
+     * gate (envelope.c) and a velocity-0 note-off never zeroes it (amy.c), so
+     * the oscillator rings forever — surviving both patch changes and pause,
+     * which both silence voices via that same velocity-0 note-off. Force the
+     * default melodic envelope onto every such unauthored row so a note-off
+     * actually releases it. (KS/NOISE additionally get their sustain floor
+     * applied downstream in sequencer_configure_melodic_envelope_track.) */
+    bool force_wave = sequencer_core_is_wave_patch(layer->patch);
     for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
-        if (layer->vp[t].env_authored || force_ks) {
+        if (layer->vp[t].env_authored || force_wave) {
             sequencer_configure_melodic_envelope_track(layer_idx, t);
         }
     }
@@ -458,6 +463,9 @@ void sequencer_configure_synth(uint8_t layer_idx)
     sequencer_configure_melodic_envelope1(layer_idx);
     sequencer_configure_melodic_filter(layer_idx);
     sequencer_configure_melodic_lfo(layer_idx);
+    /* Glide is an AMY per-osc setting that a voice rebuild clears, so reassert
+     * it here after the pool/patch has been (re)built. */
+    sequencer_core_push_melodic_portamento(layer_idx);
 }
 
 /* ── Public API — melodic patch ─────────────────────────────────────── */
@@ -825,6 +833,21 @@ void sequencer_core_push_envelope_eg1(uint8_t synth, uint8_t osc, const seq_env_
     e->eg1_times[2]  = env->release_ms;
     e->eg1_values[2] = 0.0f;
     amy_helpers_event_send(e);
+}
+
+/* Push the layer's melodic glide time to each row's synth slot. Mirrors
+ * arp_push_portamento(): a bare portamento_ms event (no velocity) fans out to
+ * every voice's base osc, where AMY applies portamento_alpha as a logfreq
+ * low-pass. 0 ms = off. Drum layers never call this (melodic-only config path).*/
+void sequencer_core_push_melodic_portamento(uint8_t layer_idx)
+{
+    const seq_layer_t *layer = &s_layers[layer_idx];
+    for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
+        amy_event *e = amy_helpers_event_begin();
+        e->synth         = layer->synth_id[t];
+        e->portamento_ms = layer->portamento_ms;
+        amy_helpers_event_send(e);
+    }
 }
 
 void sequencer_core_arp_configure(uint16_t patch_number, uint8_t num_voices,

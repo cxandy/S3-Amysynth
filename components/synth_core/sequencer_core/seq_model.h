@@ -128,9 +128,19 @@ typedef struct {
     lfo_mode_t   mode;
     lfo_wave_t   wave;
     lfo_rate_t   rate;
-    uint8_t      depth;    /* 0..100 % */
-    lfo_target_t target;
+    uint8_t      depth;    /* 0..100 %, shared across all active targets      */
+    uint8_t      targets;  /* bitmask of (1 << lfo_target_t): one AMY mod
+                              carrier drives every checked target for free —
+                              amplitude of osc1 is the shared depth, each
+                              target's COEF_MOD scaled by its own constant.   */
 } seq_lfo_t;
+
+/* Target-set helpers. The single mod-source oscillator can feed any subset of
+ * targets simultaneously (AMY sums the COEF_MOD contributions), so the target
+ * is a set, not a scalar. */
+#define LFO_TGT_BIT(t)     ((uint8_t)(1u << (t)))
+#define LFO_TGT_ALL        ((uint8_t)((1u << LFO_TARGET_COUNT) - 1u))
+#define LFO_HAS_TGT(l, t)  (((l)->targets & LFO_TGT_BIT(t)) != 0)
 
 /* ── ADSR envelope (one AMY EG0 breakpoint set) ──
  * Stored as concrete ms/percent so it survives patch changes and can be edited
@@ -197,6 +207,18 @@ typedef struct {
                                             step at emit time. 0 = straight
                                             (default; memset-zeroed in
                                             sequencer_core_add_layer).        */
+    uint8_t   gate_pct;                  /* melodic note-hold as % of the step
+                                            (10..100), the NoteFX GATE control.
+                                            Drum layers ignore it (they use the
+                                            fixed SEQ_GATE_DRUM). Defaults to
+                                            SEQ_MELODIC_GATE_DEFAULT_PCT in
+                                            sequencer_core_add_layer — memset 0
+                                            would silence every melodic note.   */
+    uint16_t  portamento_ms;             /* melodic glide time between step
+                                            pitches (0..100 ms, NoteFX Glide),
+                                            0 = off. AMY-native portamento_alpha;
+                                            re-pushed on every voice rebuild
+                                            because osc reset clears it.        */
     uint8_t  synth_id[SEQ_TRACKS];   /* one AMY synth per row (both melodic and
                                         drum layers: each track has its own slot */
     uint16_t patch;                  /* shared timbre across the layer's rows

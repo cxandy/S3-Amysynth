@@ -17,16 +17,17 @@ extern "C" {
 /**
  * @brief Button identifiers
  * 
- * GPIO3 is a strapping pin on ESP32-S3, so we use GPIO17, GPIO18, GPIO8 and
+ * GPIO3 is a strapping pin on ESP32-S3, so we use GPIO15, GPIO18, GPIO8 and
  * substitute GPIO42 for the fourth button instead.
  */
 typedef enum {
-    MY_BUTTON_0 = 0,  // GPIO17 → play/pause
+    MY_BUTTON_0 = 0,  // GPIO15 → play/pause + layer cycle (pin swapped with MY_BUTTON_SHOULDER)
     MY_BUTTON_1,      // GPIO18 → step toggle
     MY_BUTTON_2,      // GPIO8
     MY_BUTTON_3,      // GPIO42 (GPIO3 is strapping pin, avoided)
-    MY_BUTTON_ENC,    // GPIO16 → encoder push button (step toggle)
-    MY_BUTTON_SHIFT,  //GPIO15 → Shoulder button as shift
+    MY_BUTTON_ENC,      // GPIO16 → encoder push button (step toggle)
+    MY_BUTTON_SHOULDER, // GPIO17 → original shoulder button, per-view bindings (pin swapped with MY_BUTTON_0)
+    MY_BUTTON_SHIFT,    // GPIO47 → new shoulder button, reserved as shift modifier
     MY_BUTTON_MAX
 } my_button_id_t;
 
@@ -42,7 +43,7 @@ typedef void (*my_button_event_cb_t)(my_button_id_t button_id, button_event_t ev
 /**
  * @brief Initialize all buttons
  * 
- * Creates GPIO buttons on pins 17, 18, 8, 42 with active low configuration
+ * Creates GPIO buttons on pins 15, 18, 8, 42 with active low configuration
  * and internal pull-ups enabled.
  * 
  * @return ESP_OK on success, error code otherwise

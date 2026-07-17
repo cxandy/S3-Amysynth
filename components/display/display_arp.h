@@ -12,18 +12,19 @@ extern "C" {
  * Like the menu, the arp logic lives in the synth_core component (arp_core).
  * synth_ui populates this flat view each frame; the renderer just draws it.
  *
- * Layout (matches the user's sketch):
- *   ARP: ON  | MODE: UP   | OCT: 2     <- macro row 1
- *   RATE: 1/16  | GATE: 75%  | SRC:P   <- macro row 2 (right = source/wave/patch)
- *   [C3]  E3   G3   B3   --   --  ...  <- 8 note slots
+ * Layout (everything visible at once — no multiplexed slots):
+ *   ARP:ON | MODE | OCT:2 |      R:1/16   <- macro row 1 (cursor 0..3, L→R)
+ *   GATE:75% |  W:SAW/P12  |      GL:200   <- macro row 2 (cursor 4..7, L→R)
+ *   [C3]  E3   G3   B3   --   --  ...      <- 8 note slots
  *
  * Cursor index space:
  *   0=ARP enable, 1=MODE, 2=OCT, 3=RATE, 4=GATE,
  *   5=SOURCE, 6=WAVE (skipped in PATCH mode), 7=GLIDE, 8..15 = slots 0..7.
  *
- * GLIDE (portamento) shares the row-2 right-hand slot with SOURCE/WAVE/patch:
- * there is no spare pixel row on this screen, so — like that cluster — only
- * the field matching the current cursor position is drawn there. */
+ * The row-2 centre indicator shows the source implicitly (W: = wave engine,
+ * P = patch); on the SOURCE cursor it reads SRC:W / SRC:P. GLIDE (portamento)
+ * now has its own permanent right-aligned readout rather than borrowing the
+ * indicator slot, so no field is hidden behind the cursor position. */
 
 #define ARP_VIEW_SLOTS 8
 

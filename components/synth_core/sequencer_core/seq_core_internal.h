@@ -65,11 +65,18 @@ static inline uint8_t seq_playhead_step(const seq_layer_t *layer, uint32_t ticks
  * path so the two can never drift. */
 static inline uint16_t seq_step_gate(const seq_layer_t *layer, uint8_t step)
 {
-    uint16_t gate = (layer->type == SEQ_LAYER_DRUM) ? SEQ_GATE_DRUM
-                                                    : SEQ_GATE_MELODIC;
-    if (layer->type == SEQ_LAYER_MELODIC && (step % 2) == 1 && gate > 2) {
+    if (layer->type == SEQ_LAYER_DRUM) return SEQ_GATE_DRUM;
+
+    /* Melodic note-hold is now a per-layer % of the step (the NoteFX GATE
+     * control). Round pct->ticks so the default (SEQ_MELODIC_GATE_DEFAULT_PCT)
+     * reproduces the legacy fixed gate exactly; 100% yields a full-step
+     * (legato) hold. Off-beat 8ths are still shortened a touch for groove. */
+    uint16_t gate = (uint16_t)(((uint32_t)SEQ_TICKS_PER_STEP * layer->gate_pct
+                                + 50u) / 100u);
+    if ((step % 2) == 1 && gate > 2) {
         gate -= 2;
     }
+    if (gate < 1) gate = 1;   /* never zero — the note must sound */
     return gate;
 }
 
@@ -147,6 +154,9 @@ uint32_t sequencer_bars_elapsed(void);
 /* From seq_core_synth.c */
 void      sequencer_configure_synth(uint8_t layer_idx);
 void      sequencer_kill_synth_voices(uint8_t synth_id);
+/* Push the layer's melodic glide (portamento_ms) to every row synth. AMY clears
+ * portamento_alpha on osc reset, so this is reasserted on every voice rebuild. */
+void      sequencer_core_push_melodic_portamento(uint8_t layer_idx);
 seq_env_t *seq_layer_env(uint8_t layer_idx, uint8_t track);
 seq_env_t *seq_layer_env1(uint8_t layer_idx, uint8_t track);
 

@@ -97,13 +97,10 @@ static void     draw_fm(u8g2_t *g, ui_view_vw_t *vw) { display_menu_draw_frame_t
 
 /* ─── Dynamic hint labels (state the view id does not carry) ─────────────
  * Reproduces the former synth_ui_hint.c ladder for exactly the cells that
- * varied on ui_mode: the scope/patch b1 of the two scope-capable editors, and
- * the LFO editor's b2 (which fell through to the underlying screen). */
-static const char *hint_scope_or_patch(void)   /* LFO + GRAPH b1 */
-{
-    return (seq_state.ui_mode != UI_MODE_ARP && seq_state.ui_mode != UI_MODE_DRONE)
-         ? "Scope" : "Patch";
-}
+ * varied on ui_mode: the LFO editor's b2 (which fell through to the underlying
+ * screen). The envelope editor's b1 now cycles EG type (static "Type"); the
+ * apply-to-layer scope toggle moved to SHIFT+1 (chords aren't shown on the
+ * 3-button strip, matching the other SHIFT gestures). */
 static const char *hint_lfo_b2(void)
 {
     switch (seq_state.ui_mode) {
@@ -114,14 +111,26 @@ static const char *hint_lfo_b2(void)
         default:                return "Pitch";
     }
 }
+/* MENU b1/b2: swap the browsing labels for Save/Discard while a project name is
+ * being edited on the Projects page (the only menu sub-state that repurposes
+ * buttons 1/2). synth_ui_menu_rename_active() resolves to false when the project
+ * store is compiled out. */
+static const char *hint_menu_b1(void)
+{
+    return synth_ui_menu_rename_active() ? "Save" : "Patch";
+}
+static const char *hint_menu_b2(void)
+{
+    return synth_ui_menu_rename_active() ? "Disc" : "Pitch";
+}
 
 /* ─── The table: one row per view, indexed by ui_view_id_t ─────────────── */
 const ui_view_desc_t ui_view_table[UI_VIEW_COUNT] = {
     [UI_VIEW_FILTER]    = { "FILTER", sig_filter,    draw_filter,    "On/Off", "-",     "Next",  NULL,               NULL },
-    [UI_VIEW_LFO]       = { "LFO",    sig_lfo,       draw_lfo,       NULL,     NULL,    "Next",  hint_scope_or_patch, hint_lfo_b2 },
+    [UI_VIEW_LFO]       = { "LFO",    sig_lfo,       draw_lfo,       "-",      NULL,    "Next",  NULL,               hint_lfo_b2 },
     [UI_VIEW_STEPEDIT]  = { "STEP",   sig_stepedit,  draw_stepedit,  "Patch",  "-",     "Close", NULL,               NULL },
-    [UI_VIEW_GRAPH]     = { "GRAPH",  sig_graph,     draw_graph,     NULL,     NULL,    "Next",  hint_scope_or_patch, synth_ui_graph_hint_b2 },
-    [UI_VIEW_MENU]      = { "MENU",   sig_menu,      draw_menu,      "Patch",  "Pitch", "Menu",  NULL,               NULL },
+    [UI_VIEW_GRAPH]     = { "GRAPH",  sig_graph,     draw_graph,     "Type",   NULL,    "Next",  NULL,               synth_ui_graph_hint_b2 },
+    [UI_VIEW_MENU]      = { "MENU",   sig_menu,      draw_menu,      NULL,     NULL,    "Menu",  hint_menu_b1,       hint_menu_b2 },
     [UI_VIEW_ARP]       = { "ARP",    sig_arp,       draw_arp,       "Patch",  "-",     "Menu",  NULL,               NULL },
     [UI_VIEW_DRONE_VIS] = { "DRONEV", sig_drone,     draw_drone_vis, "Patch",  "-",     "Menu",  NULL,               NULL },
     [UI_VIEW_DRONE]     = { "DRONE",  sig_drone,     draw_drone,     "Patch",  "-",     "Menu",  NULL,               NULL },

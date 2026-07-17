@@ -28,6 +28,7 @@ idf_component_register(SRCS "amy_helpers.c" "amy_fx.c" "arp_core.c" "quantizer.c
                             "synth_ui/ui_patch_cycle.c"
                             "synth_ui/ui_screen_menu.c"
                             "synth_ui/ui_screen_fxmenu.c"
+                            "synth_ui/ui_screen_notefx.c"
                             "synth_ui/ui_screen_projects.c"
                             "synth_ui/ui_screen_arp.c"
                             "synth_ui/ui_screen_drone.c"

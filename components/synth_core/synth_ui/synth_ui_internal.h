@@ -109,8 +109,18 @@ const menu_item_view_t *fx_menu_build_items(void);
 uint8_t  fx_menu_item_count(void);
 bool     fx_menu_item_is_value(uint8_t idx);
 bool     fx_menu_item_is_back(uint8_t idx);
+bool     fx_menu_item_is_notefx(uint8_t idx);  /* dive row into the NoteFX page */
 void     fx_menu_edit_value(uint8_t idx, int delta);
 const char *menu_page_title(void);   /* header-bar title for the active page */
+
+/* ─── NoteFX page: per-layer melodic gate + glide (item model in
+ *     ui_screen_notefx.c; page state and input routing live in
+ *     ui_screen_menu.c). Reached from a dive row on the global-FX page. ──── */
+const menu_item_view_t *notefx_menu_build_items(void);
+uint8_t  notefx_menu_item_count(void);
+bool     notefx_menu_item_is_value(uint8_t idx);
+bool     notefx_menu_item_is_back(uint8_t idx);
+void     notefx_menu_edit_value(uint8_t idx, int delta);
 
 /* ─── Projects storage page (item model in ui_screen_projects.c; page state
  *     and input routing live in ui_screen_menu.c). Declared unconditionally
@@ -125,6 +135,11 @@ bool     projects_menu_handle_click(uint8_t idx);
 void     projects_menu_edit_value(uint8_t idx, int delta);
 void     projects_menu_reset(void);
 void     projects_menu_service(void);   /* drains the deferred load/save */
+/* Rename-editor primitives, composed by the menu overlay's public
+ * synth_ui_menu_rename_* hooks (which add the page-state gating). */
+bool     projects_menu_is_renaming(void);
+void     projects_menu_rename_commit(void);
+void     projects_menu_rename_cancel(void);
 
 /* ─── Draw wrappers (encapsulate private s_fgraph/s_lfo_view/s_graph_popup) */
 void     synth_ui_graph_view_draw(u8g2_t *u8g2);

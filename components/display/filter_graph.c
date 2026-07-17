@@ -131,46 +131,73 @@ void filter_graph_draw(u8g2_t *u8g2, const filter_graph_t *fg)
         u8g2_SetFont(u8g2, u8g2_font_5x7_tr);
         uint8_t vw = (uint8_t)u8g2_GetStrWidth(u8g2, val_buf);
         uint8_t vx = (uint8_t)(126 - vw);
-        /* Frame the readout when the matching cursor is editing. */
-        if (fg->editing && (fg->cursor == 0 || fg->cursor == 1)) {
-            u8g2_DrawRFrame(u8g2, (uint8_t)(vx - 2), 0, (uint8_t)(vw + 4), 11, 1);
-        }
-        u8g2_DrawStr(u8g2, vx, 8, val_buf);
-    }
-
-    /* Centre: filter type name (cursor=2) or EN toggle (cursor=3). */
-    {
-        u8g2_SetFont(u8g2, u8g2_font_5x7_tr);
-        if (fg->cursor == 3) {
-            /* Toggle cursor: show the state centred in the top bar. */
-            const char *en_str = fg->enabled ? "EN:ON" : "EN:OFF";
-            uint8_t ew = (uint8_t)u8g2_GetStrWidth(u8g2, en_str);
-            uint8_t ex = (uint8_t)((128 - ew) / 2);
+        /* Selection feedback matches the type/EN fields: an outline frame when
+         * the cutoff (0) or resonance (1) cursor is selected, inverted fill
+         * while it is being adjusted. Previously the readout only framed when
+         * editing, so selecting frequency/Q gave no visual cue. */
+        if (fg->cursor == 0 || fg->cursor == 1) {
             if (fg->editing) {
-                u8g2_DrawBox(u8g2, (uint8_t)(ex - 2), 0, (uint8_t)(ew + 4), 11);
+                u8g2_DrawBox(u8g2, (uint8_t)(vx - 2), 0, (uint8_t)(vw + 4), 11);
                 u8g2_SetDrawColor(u8g2, 0);
-                u8g2_DrawStr(u8g2, ex, 8, en_str);
+                u8g2_DrawStr(u8g2, vx, 8, val_buf);
                 u8g2_SetDrawColor(u8g2, 1);
             } else {
-                u8g2_DrawRFrame(u8g2, (uint8_t)(ex - 2), 0, (uint8_t)(ew + 4), 11, 1);
-                u8g2_DrawStr(u8g2, ex, 8, en_str);
+                u8g2_DrawRFrame(u8g2, (uint8_t)(vx - 2), 0, (uint8_t)(vw + 4), 11, 1);
+                u8g2_DrawStr(u8g2, vx, 8, val_buf);
             }
         } else {
-            uint8_t tw = (uint8_t)u8g2_GetStrWidth(u8g2, type_name);
-            uint8_t tx = (uint8_t)((128 - tw) / 2);
-            if (fg->cursor == 2) {
-                if (fg->editing) {
-                    /* Inverted box = value is live. */
-                    u8g2_DrawBox(u8g2, (uint8_t)(tx - 2), 0, (uint8_t)(tw + 4), 11);
-                    u8g2_SetDrawColor(u8g2, 0);
-                    u8g2_DrawStr(u8g2, tx, 8, type_name);
-                    u8g2_SetDrawColor(u8g2, 1);
-                } else {
-                    u8g2_DrawRFrame(u8g2, (uint8_t)(tx - 2), 0, (uint8_t)(tw + 4), 11, 1);
-                    u8g2_DrawStr(u8g2, tx, 8, type_name);
-                }
-            } else {
+            u8g2_DrawStr(u8g2, vx, 8, val_buf);
+        }
+    }
+
+    /* Centre: filter type name plus a compact enable checkbox, drawn as one
+     * horizontally-centred group so BOTH stay visible regardless of the cursor
+     * (they used to share this slot, so type and EN were mutually exclusive).
+     * The checkbox is only drawn for toggle-capable targets (melodic/arp); the
+     * drone shows a plain, fixed LPF24 with no checkbox. */
+    {
+        u8g2_SetFont(u8g2, u8g2_font_5x7_tr);
+        uint8_t tw = (uint8_t)u8g2_GetStrWidth(u8g2, type_name);
+
+        const uint8_t CB_W = 7;    /* enable checkbox outer width */
+        const uint8_t CB_GAP = 4;  /* gap between type name and checkbox */
+        uint8_t group_w = fg->show_toggles ? (uint8_t)(tw + CB_GAP + CB_W) : tw;
+        uint8_t tx = (uint8_t)((128 - group_w) / 2);
+
+        /* Type name — cursor 2 highlight only where the type is selectable. */
+        if (fg->show_toggles && fg->cursor == 2) {
+            if (fg->editing) {
+                /* Inverted box = value is live. */
+                u8g2_DrawBox(u8g2, (uint8_t)(tx - 2), 0, (uint8_t)(tw + 4), 11);
+                u8g2_SetDrawColor(u8g2, 0);
                 u8g2_DrawStr(u8g2, tx, 8, type_name);
+                u8g2_SetDrawColor(u8g2, 1);
+            } else {
+                u8g2_DrawRFrame(u8g2, (uint8_t)(tx - 2), 0, (uint8_t)(tw + 4), 11, 1);
+                u8g2_DrawStr(u8g2, tx, 8, type_name);
+            }
+        } else {
+            u8g2_DrawStr(u8g2, tx, 8, type_name);
+        }
+
+        /* Enable checkbox — always shows the on/off state (filled = on); cursor
+         * 3 selects it (outline highlight, inverted while toggling). Its state
+         * mirrors the plot's OFF/curve, so enable is legible without scrolling. */
+        if (fg->show_toggles) {
+            uint8_t bx = (uint8_t)(tx + tw + CB_GAP);
+            const uint8_t by = 2, bh = 7;   /* checkbox rows 2..8, aligned to text */
+            bool sel = (fg->cursor == 3);
+
+            if (sel && fg->editing) {
+                u8g2_DrawBox(u8g2, (uint8_t)(bx - 2), 0, (uint8_t)(CB_W + 4), 11);
+                u8g2_SetDrawColor(u8g2, 0);
+                u8g2_DrawFrame(u8g2, bx, by, CB_W, bh);
+                if (fg->enabled) u8g2_DrawBox(u8g2, (uint8_t)(bx + 2), (uint8_t)(by + 2), 3, 3);
+                u8g2_SetDrawColor(u8g2, 1);
+            } else {
+                if (sel) u8g2_DrawRFrame(u8g2, (uint8_t)(bx - 2), 0, (uint8_t)(CB_W + 4), 11, 1);
+                u8g2_DrawFrame(u8g2, bx, by, CB_W, bh);
+                if (fg->enabled) u8g2_DrawBox(u8g2, (uint8_t)(bx + 2), (uint8_t)(by + 2), 3, 3);
             }
         }
     }

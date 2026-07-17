@@ -172,7 +172,11 @@ float arp_get_amp_scale(void);
  * every source/patch/wave change. */
 void     arp_set_portamento_ms(uint16_t ms);
 uint16_t arp_get_portamento_ms(void);
-#define ARP_PORTAMENTO_MAX_MS 2000u   /* generous glide ceiling for a lead line */
+#define ARP_PORTAMENTO_MAX_MS 100u    /* glide ceiling, ms (1 ms/detent). Matches
+                                       * the melodic NoteFX Glide range so both
+                                       * share the same fine-resolution feel;
+                                       * projects saved with a longer glide clamp
+                                       * to this on load. */
 
 #define ARP_OCT_MAX 4
 

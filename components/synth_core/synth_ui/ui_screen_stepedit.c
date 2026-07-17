@@ -40,7 +40,7 @@ bool synth_ui_stepedit_is_active(void)
 void synth_ui_stepedit_open(void)
 {
     /* Refuse to open from any non-sequencer screen (or with the menu up): a
-     * long-press elsewhere would otherwise latch s_se_active onto a hidden
+     * SHIFT+2 chord elsewhere would otherwise latch s_se_active onto a hidden
      * grid cursor, editing an unseen step. Mirrors the is_active() gate. */
     if (seq_state.ui_mode != UI_MODE_SEQUENCER || seq_state.menu_open) {
         return;

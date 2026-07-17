@@ -71,10 +71,12 @@ void voice_apply_native_lfo(uint8_t synth, const seq_lfo_t *lfo, uint16_t bpm)
 {
     amy_event *e;
 
-    if (lfo && lfo->enabled) {
+    if (lfo && lfo->enabled && lfo->targets) {
         /* osc 0: wire mod_source to osc 1 (voice-local — AMY adds the base_osc
          * offset, so it resolves within each voice) and set the COEF_MOD depth
-         * for the chosen target, clearing every sibling first. */
+         * for every checked target, clearing every sibling first. One carrier
+         * feeds all targets; each gets the shared depth scaled by its own
+         * normalizing constant. */
         float d = (float)lfo->depth / 100.0f;
         e = amy_helpers_event_begin();
         e->synth      = synth;
@@ -85,18 +87,15 @@ void voice_apply_native_lfo(uint8_t synth, const seq_lfo_t *lfo, uint16_t bpm)
         e->freq_coefs[COEF_MOD]        = 0.0f;
         e->duty_coefs[COEF_MOD]        = 0.0f;
         e->pan_coefs[COEF_MOD]         = 0.0f;
-        switch (lfo->target) {
-            case LFO_TARGET_FILTER: e->filter_freq_coefs[COEF_MOD] = d * VOICE_LFO_DEPTH_FILTER; break;
-            case LFO_TARGET_AMP:    e->amp_coefs[COEF_MOD]         = d * VOICE_LFO_DEPTH_AMP;    break;
-            case LFO_TARGET_PITCH:  e->freq_coefs[COEF_MOD]        = d * VOICE_LFO_DEPTH_PITCH;  break;
-            case LFO_TARGET_SCAN:   e->duty_coefs[COEF_MOD]        = d * VOICE_LFO_DEPTH_SCAN;   break;
-            case LFO_TARGET_PAN:
-                /* Pan is [0,1], not bipolar: set the center baseline and swing
-                 * COEF_MOD around it in the same event. */
-                e->pan_coefs[COEF_CONST] = 0.5f;
-                e->pan_coefs[COEF_MOD]   = d * VOICE_LFO_DEPTH_PAN;
-                break;
-            default: break;
+        if (LFO_HAS_TGT(lfo, LFO_TARGET_FILTER)) e->filter_freq_coefs[COEF_MOD] = d * VOICE_LFO_DEPTH_FILTER;
+        if (LFO_HAS_TGT(lfo, LFO_TARGET_AMP))    e->amp_coefs[COEF_MOD]         = d * VOICE_LFO_DEPTH_AMP;
+        if (LFO_HAS_TGT(lfo, LFO_TARGET_PITCH))  e->freq_coefs[COEF_MOD]        = d * VOICE_LFO_DEPTH_PITCH;
+        if (LFO_HAS_TGT(lfo, LFO_TARGET_SCAN))   e->duty_coefs[COEF_MOD]        = d * VOICE_LFO_DEPTH_SCAN;
+        if (LFO_HAS_TGT(lfo, LFO_TARGET_PAN)) {
+            /* Pan is [0,1], not bipolar: set the center baseline and swing
+             * COEF_MOD around it in the same event. */
+            e->pan_coefs[COEF_CONST] = 0.5f;
+            e->pan_coefs[COEF_MOD]   = d * VOICE_LFO_DEPTH_PAN;
         }
         amy_helpers_event_send(e);
 

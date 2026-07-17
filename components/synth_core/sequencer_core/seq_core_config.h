@@ -56,11 +56,24 @@
  * the patch's own release tail still plays out after note-off. Tunable via
  * Kconfig (default 1/2 step). */
 #define SEQ_GATE_DRUM         ((SEQ_TICKS_PER_STEP * CONFIG_SEQ_DRUM_GATE_NUMERATOR) / CONFIG_SEQ_DRUM_GATE_DENOMINATOR)
+/* Default per-layer melodic gate (the NoteFX GATE control), as a % of the step.
+ * Derived from the same fraction as the legacy fixed SEQ_GATE_MELODIC (num/den)
+ * so a fresh layer holds notes exactly as before — seq_step_gate() rounds
+ * pct->ticks, making this round-trip lossless. Defined from the fraction, NOT
+ * SEQ_TICKS_PER_STEP, so it stays PPQ-independent and usable in TUs that don't
+ * include amy.h (e.g. project_snapshot.c). Control spans 10..100% (100% = legato).*/
 #if CONFIG_SEQ_MELODIC_EXPRESSIVE_DEFAULTS
 #define SEQ_GATE_MELODIC      ((SEQ_TICKS_PER_STEP * CONFIG_SEQ_MELODIC_GATE_NUMERATOR) / CONFIG_SEQ_MELODIC_GATE_DENOMINATOR)
+#define SEQ_MELODIC_GATE_DEFAULT_PCT \
+    ((100u * CONFIG_SEQ_MELODIC_GATE_NUMERATOR + CONFIG_SEQ_MELODIC_GATE_DENOMINATOR / 2u) \
+     / CONFIG_SEQ_MELODIC_GATE_DENOMINATOR)
 #else
-#define SEQ_GATE_MELODIC      ((SEQ_TICKS_PER_STEP * 2) / 3)
+#define SEQ_GATE_MELODIC              ((SEQ_TICKS_PER_STEP * 2) / 3)
+#define SEQ_MELODIC_GATE_DEFAULT_PCT  67u   /* round(100 * 2/3) */
 #endif
+/* Melodic glide (NoteFX Glide) ceiling, ms. Matches the arp's re-capped range
+ * (ARP_PORTAMENTO_MAX_MS) so both glide controls share the same 1 ms/100 ms feel.*/
+#define SEQ_MELODIC_PORTAMENTO_MAX_MS  100u
 #define SEQ_MIN_BPM           40
 #define SEQ_MAX_BPM           300
 /* SEQ_DEFAULT_BPM is declared in sequencer_core.h (shared with synth_ui). */

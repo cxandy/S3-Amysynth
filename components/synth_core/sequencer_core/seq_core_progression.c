@@ -3,7 +3,7 @@
 /* ── State definitions — owns chord progression ──────────────────────── */
 chord_progression_t s_prog = {
     .entries = {
-        { .root = 0, .chord_type = CHORD_MAJ7, .duration_bars = 4 },
+        { .root = 0, .chord_type = CHORD_MAJ7, .duration_bars = 1 },  /* 1st chord -> 1b */
     },
     .count   = 1,
     .current = 0,
@@ -175,15 +175,20 @@ uint8_t sequencer_core_progression_bars_in_current(void)
     return (uint8_t)(bars - s_prog.entry_start_bar);
 }
 
-/* Append a default entry (Cmaj, 4 bars) if room remains. Returns true on success. */
+/* Append a default entry (Cmaj) if room remains. Returns true on success.
+ * Convenience: the Nth chord defaults to an N-bar duration (1st=1b, 2nd=2b, …),
+ * so a fresh progression staircases 1/2/3/4 bars without manual editing. Beyond
+ * the 4th entry the duration clamps to 4 bars — 5/6/7 aren't in the selectable
+ * duration set {1,2,3,4,8,16}, and the user still edits any of these by hand. */
 bool sequencer_core_progression_add_entry(void)
 {
     if (s_prog.count >= CHORD_PROG_MAX_ENTRIES) return false;
     uint8_t idx = s_prog.count;
+    uint8_t entry_num = (uint8_t)(idx + 1);         /* 1-based position */
     s_prog.entries[idx].root          = 0;          /* C */
     s_prog.entries[idx].chord_type    = CHORD_MAJ;
-    s_prog.entries[idx].duration_bars = 4;
-    s_prog.count = (uint8_t)(idx + 1);
+    s_prog.entries[idx].duration_bars = entry_num <= 4 ? entry_num : 4;
+    s_prog.count = entry_num;
     return true;
 }
 

@@ -64,6 +64,10 @@ static menu_item_view_t s_menu_items[MI_COUNT];
  * cursor is parked here while the FX page is open so Back restores it. */
 static bool    s_fx_page = false;
 static uint8_t s_main_cursor = 0;
+/* NoteFX is a sub-page of the FX page (per-layer gate/glide). The FX-page
+ * cursor is parked here while it is open so Back restores it. */
+static bool    s_notefx_page = false;
+static uint8_t s_fx_cursor = 0;
 #if CONFIG_SYNTH_PROJECT_STORE
 static bool    s_projects_page = false;
 #endif
@@ -71,6 +75,7 @@ static bool    s_projects_page = false;
 /* Title for the menu overlay's header bar (drawn by ui_view_resolve.c). */
 const char *menu_page_title(void)
 {
+    if (s_notefx_page) return "NOTE FX";
     if (s_fx_page) return "GLOBAL FX";
 #if CONFIG_SYNTH_PROJECT_STORE
     if (s_projects_page) return "PROJECTS";
@@ -81,6 +86,13 @@ const char *menu_page_title(void)
 /* Format the current value of each menu item into the flat view array. */
 void menu_build_view(menu_view_t *out)
 {
+    if (s_notefx_page) {
+        out->items   = notefx_menu_build_items();
+        out->count   = notefx_menu_item_count();
+        out->cursor  = seq_state.menu_cursor;
+        out->editing = seq_state.menu_editing;
+        return;
+    }
     if (s_fx_page) {
         out->items   = fx_menu_build_items();
         out->count   = fx_menu_item_count();
@@ -307,6 +319,7 @@ void synth_ui_menu_toggle(void)
     if (seq_state.menu_open) {
         /* Always reopen on the main page so the menu lands somewhere known. */
         s_fx_page = false;
+        s_notefx_page = false;
 #if CONFIG_SYNTH_PROJECT_STORE
         s_projects_page = false;
 #endif
@@ -321,13 +334,44 @@ bool synth_ui_menu_is_active(void)
     return seq_state.menu_open;
 }
 
+/* Projects-page rename hooks (see synth_ui.h). The menu overlay owns the page
+ * state, so it gates the projects module's rename flag with menu_open +
+ * s_projects_page here - both authoritative and reset on menu-open, so a rename
+ * left un-committed by a menu-close can never leak onto another screen. The
+ * button dispatch and hint bar therefore poll a single, always-coherent
+ * predicate. Bodies compile to false/no-op when the project store is off. */
+bool synth_ui_menu_rename_active(void)
+{
+#if CONFIG_SYNTH_PROJECT_STORE
+    return seq_state.menu_open && s_projects_page && projects_menu_is_renaming();
+#else
+    return false;
+#endif
+}
+
+void synth_ui_menu_rename_save(void)
+{
+#if CONFIG_SYNTH_PROJECT_STORE
+    if (synth_ui_menu_rename_active()) projects_menu_rename_commit();
+#endif
+}
+
+void synth_ui_menu_rename_discard(void)
+{
+#if CONFIG_SYNTH_PROJECT_STORE
+    if (synth_ui_menu_rename_active()) projects_menu_rename_cancel();
+#endif
+}
+
 bool synth_ui_menu_handle_encoder(long delta)
 {
     if (!seq_state.menu_open) return false;
     if (delta == 0) return true;
 
     if (seq_state.menu_editing) {
-        if (s_fx_page) {
+        if (s_notefx_page) {
+            notefx_menu_edit_value(seq_state.menu_cursor, (int)delta);
+        } else if (s_fx_page) {
             fx_menu_edit_value(seq_state.menu_cursor, (int)delta);
 #if CONFIG_SYNTH_PROJECT_STORE
         } else if (s_projects_page) {
@@ -337,7 +381,8 @@ bool synth_ui_menu_handle_encoder(long delta)
             menu_edit_value((menu_item_id_t)seq_state.menu_cursor, (int)delta);
         }
     } else {
-        int n = s_fx_page ? (int)fx_menu_item_count() :
+        int n = s_notefx_page ? (int)notefx_menu_item_count() :
+                s_fx_page ? (int)fx_menu_item_count() :
 #if CONFIG_SYNTH_PROJECT_STORE
                 s_projects_page ? (int)projects_menu_item_count() :
 #endif
@@ -355,9 +400,31 @@ bool synth_ui_menu_handle_button(void)
 {
     if (!seq_state.menu_open) return false;
 
+    if (s_notefx_page) {
+        uint8_t idx = seq_state.menu_cursor;
+        if (notefx_menu_item_is_value(idx)) {
+            seq_state.menu_editing = !seq_state.menu_editing;
+        } else if (notefx_menu_item_is_back(idx)) {
+            /* Back returns to the FX page it was dived from. */
+            s_notefx_page = false;
+            s_fx_page = true;
+            seq_state.menu_cursor  = s_fx_cursor;
+            seq_state.menu_editing = false;
+        }
+        s_force_redraw = true;
+        return true;
+    }
+
     if (s_fx_page) {
         uint8_t idx = seq_state.menu_cursor;
-        if (fx_menu_item_is_value(idx)) {
+        if (fx_menu_item_is_notefx(idx)) {
+            /* Dive into the per-layer NoteFX page; park the FX cursor. */
+            s_fx_cursor = seq_state.menu_cursor;
+            s_fx_page = false;
+            s_notefx_page = true;
+            seq_state.menu_cursor  = 0;
+            seq_state.menu_editing = false;
+        } else if (fx_menu_item_is_value(idx)) {
             seq_state.menu_editing = !seq_state.menu_editing;
         } else if (fx_menu_item_is_back(idx)) {
             s_fx_page = false;

@@ -32,65 +32,78 @@ void display_arp_draw_frame(u8g2_t *u8g2, const arp_view_t *view)
     char buf[16];
     u8g2_SetFont(u8g2, u8g2_font_5x7_tr);
 
-    /* ── Macro row 1: ARP | MODE | OCT ── */
+    /* ── Macro row 1 (yellow header): ARP | MODE | OCT | RATE ──
+     * Compacted from the old 3-field row so it also carries RATE; that frees
+     * row 2 to show the whole sound cluster (gate + source/wave + glide) with
+     * nothing hidden. Cursor order 0..3 runs left-to-right along this row.
+     * RATE is right-aligned so the triplet names ("1/16T") can't run off-edge. */
     snprintf(buf, sizeof(buf), "ARP:%s", view->enabled ? "ON" : "OFF");
-    draw_field(u8g2, 2, 8, buf,
-               view->cursor == ARP_CUR_ENABLE, view->editing);
+    draw_field(u8g2, 2, 8, buf, view->cursor == ARP_CUR_ENABLE, view->editing);
 
     snprintf(buf, sizeof(buf), "%s", view->mode_str ? view->mode_str : "UP");
-    draw_field(u8g2, 52, 8, buf,
-               view->cursor == ARP_CUR_MODE, view->editing);
+    draw_field(u8g2, 40, 8, buf, view->cursor == ARP_CUR_MODE, view->editing);
 
     snprintf(buf, sizeof(buf), "OCT:%u", (unsigned)view->octaves);
-    draw_field(u8g2, 96, 8, buf,
-               view->cursor == ARP_CUR_OCT, view->editing);
+    draw_field(u8g2, 62, 8, buf, view->cursor == ARP_CUR_OCT, view->editing);
 
-    /* ── Macro row 2: RATE | GATE ──
-     * Row 1 (baseline 8) sits in the yellow header as an ARP/MODE/OCT status
-     * strip; this second control row drops to baseline 25 so it clears the 16px
-     * yellow/blue seam (text and cursor frames stay wholly in the blue region). */
-    snprintf(buf, sizeof(buf), "RATE:%s", view->rate_str ? view->rate_str : "?");
-    draw_field(u8g2, 2, 25, buf,
-               view->cursor == ARP_CUR_RATE, view->editing);
-
-    snprintf(buf, sizeof(buf), "GATE:%u%%", (unsigned)view->gate_pct);
-    draw_field(u8g2, 56, 25, buf,
-               view->cursor == ARP_CUR_GATE, view->editing);
-
-    /* Right area of row 2: SOURCE cursor, WAVE cursor, GLIDE cursor, or the
-     * patch/wave indicator. In WAVE mode the waveform name replaces the patch
-     * number. GLIDE (portamento) has no spare row of its own, so it borrows
-     * this same slot, matching the SOURCE/WAVE cursor-swap convention. */
+    snprintf(buf, sizeof(buf), "R:%s", view->rate_str ? view->rate_str : "?");
     {
-        bool sel_src   = (view->cursor == ARP_CUR_SOURCE);
-        bool sel_wave  = (view->cursor == ARP_CUR_WAVE);
-        bool sel_porta = (view->cursor == ARP_CUR_PORTA);
-        char rbuf[12];
-        if (sel_src) {
-            snprintf(rbuf, sizeof(rbuf), "SRC:%s",
-                     view->wave_mode ? "WAVE" : "PTCH");
-        } else if (sel_wave) {
-            snprintf(rbuf, sizeof(rbuf), "%s",
-                     view->wave_str ? view->wave_str : "?");
-        } else if (sel_porta) {
-            snprintf(rbuf, sizeof(rbuf), "GLIDE:%u", (unsigned)view->portamento_ms);
-        } else if (view->wave_mode) {
-            snprintf(rbuf, sizeof(rbuf), "W:%s",
-                     view->wave_str ? view->wave_str : "?");
-        } else {
-            snprintf(rbuf, sizeof(rbuf), "P%u", (unsigned)view->patch);
-        }
-        uint8_t rw = (uint8_t)u8g2_GetStrWidth(u8g2, rbuf);
+        uint8_t rw = (uint8_t)u8g2_GetStrWidth(u8g2, buf);
         uint8_t rx = (rw < 126u) ? (uint8_t)(126u - rw) : 0u;
-        if (sel_src || sel_wave || sel_porta) {
-            draw_field(u8g2, rx, 25, rbuf, true, view->editing);
-        } else if (!view->wave_mode && view->patch_select) {
-            u8g2_DrawRFrame(u8g2, (uint8_t)(rx - 2), 17,
-                            (uint8_t)(rw + 4), 11, 1);
-            u8g2_DrawStr(u8g2, rx, 25, rbuf);
+        draw_field(u8g2, rx, 8, buf, view->cursor == ARP_CUR_RATE, view->editing);
+    }
+
+    /* ── Macro row 2 (blue): GATE | SOURCE/WAVE-or-PATCH | GLIDE ──
+     * All three are always visible now (they used to share one multiplexed
+     * slot). Cursor order 4..7 runs left-to-right. Baseline 25 clears the 16px
+     * yellow/blue seam so text and cursor frames stay in the blue region. */
+    snprintf(buf, sizeof(buf), "GATE:%u%%", (unsigned)view->gate_pct);
+    draw_field(u8g2, 2, 25, buf, view->cursor == ARP_CUR_GATE, view->editing);
+
+    /* Sound source / waveform / patch indicator. The source state is implied by
+     * the prefix (W: = wave engine, P = patch program); on the SOURCE cursor the
+     * field instead reads SRC:W / SRC:P and toggling flips between them. The WAVE
+     * cursor (reachable in wave mode only) selects this same field to change the
+     * waveform, so both cursors land here but show distinct text. */
+    {
+        const uint8_t ix = 52;
+        bool sel_src  = (view->cursor == ARP_CUR_SOURCE);
+        bool sel_wave = (view->cursor == ARP_CUR_WAVE);
+        char ibuf[12];
+        if (sel_src) {
+            snprintf(ibuf, sizeof(ibuf), "SRC:%s", view->wave_mode ? "W" : "P");
+        } else if (view->wave_mode) {
+            snprintf(ibuf, sizeof(ibuf), "W:%s",
+                     view->wave_str ? view->wave_str : "?");
         } else {
-            u8g2_DrawStr(u8g2, rx, 25, rbuf);
+            snprintf(ibuf, sizeof(ibuf), "P%u", (unsigned)view->patch);
         }
+        if (sel_src || sel_wave) {
+            draw_field(u8g2, ix, 25, ibuf, true, view->editing);
+        } else if (!view->wave_mode && view->patch_select) {
+            /* Patch hold+turn: frame the number (full name banners over grid). */
+            uint8_t iw = (uint8_t)u8g2_GetStrWidth(u8g2, ibuf);
+            u8g2_DrawRFrame(u8g2, (uint8_t)(ix - 2), 17, (uint8_t)(iw + 4), 11, 1);
+            u8g2_DrawStr(u8g2, ix, 25, ibuf);
+        } else {
+            u8g2_DrawStr(u8g2, ix, 25, ibuf);
+        }
+    }
+
+    /* GLIDE (portamento) — permanent readout, right-aligned. Shown in raw ms
+     * ("GL:200"), or "GL:off" at zero. Selected on the PORTA cursor. This is the
+     * field that used to be fully hidden unless selected. */
+    {
+        char gbuf[12];
+        uint16_t ms = view->portamento_ms;
+        if (ms == 0) {
+            snprintf(gbuf, sizeof(gbuf), "GL:off");
+        } else {
+            snprintf(gbuf, sizeof(gbuf), "GL:%u", (unsigned)ms);
+        }
+        uint8_t gw = (uint8_t)u8g2_GetStrWidth(u8g2, gbuf);
+        uint8_t gx = (gw < 126u) ? (uint8_t)(126u - gw) : 0u;
+        draw_field(u8g2, gx, 25, gbuf, view->cursor == ARP_CUR_PORTA, view->editing);
     }
 
     u8g2_DrawHLine(u8g2, 0, 28, 128);

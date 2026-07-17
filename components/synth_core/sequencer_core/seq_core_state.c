@@ -109,6 +109,10 @@ uint8_t sequencer_core_add_layer(seq_layer_type_t type, uint8_t num_steps)
     layer->num_steps  = (num_steps == SEQ_MAX_STEPS) ? SEQ_MAX_STEPS : SEQ_STEPS;
     layer->num_tracks = SEQ_TRACKS;
     layer->step_page  = 0;
+    /* Melodic NoteFX defaults: gate reproduces the legacy fixed hold, glide off.
+     * memset above zeroed gate_pct — a 0% gate would silence every note. */
+    layer->gate_pct       = SEQ_MELODIC_GATE_DEFAULT_PCT;
+    layer->portamento_ms  = 0;
 
     if (type == SEQ_LAYER_DRUM) {
         /* Drums are now a per-track Juno-patch layer: each track gets its own

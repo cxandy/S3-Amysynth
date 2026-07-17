@@ -52,6 +52,18 @@ bool synth_ui_menu_is_active(void);
 bool synth_ui_menu_handle_encoder(long delta); /* true if consumed */
 bool synth_ui_menu_handle_button(void);        /* true if consumed */
 
+/* Projects-page rename editor: while a project name is being typed, MY_BUTTON_1
+ * saves it and MY_BUTTON_2 discards it (so the user never has to walk the cursor
+ * to the end of the field or dial the '#' sentinel). These belong to the menu
+ * overlay, which composes the projects module's rename state with its own page
+ * tracking - so _active() is authoritative (false unless the menu is open on the
+ * projects page mid-rename) and the button dispatch can gate on it without any
+ * cross-module stale-flag cleanup. _active() also drives the naming-aware hint
+ * labels. All three are safe no-ops when CONFIG_SYNTH_PROJECT_STORE is off. */
+bool synth_ui_menu_rename_active(void);
+void synth_ui_menu_rename_save(void);
+void synth_ui_menu_rename_discard(void);
+
 /* ── Arp screen ──────────────────────────────────────────────────────────
  * Active when seq_state.ui_mode == UI_MODE_ARP and no overlay is up. */
 bool synth_ui_arp_is_active(void);
@@ -142,10 +154,16 @@ bool synth_ui_graph_toggle_range(void);
  * editor close (confirm) and reset on every editor open. */
 void synth_ui_graph_toggle_amp_mode(void);
 
-/* Flip the sign of the melodic EG1->cutoff sweep depth — MY_BUTTON_SHIFT
- * (shoulder) while the envelope editor's EG1 page is showing. No-op on the
+/* Flip the sign of the melodic EG1->cutoff sweep depth — MY_BUTTON_SHOULDER
+ * while the envelope editor's EG1 page is showing. No-op on the
  * EG0 page, for non-melodic targets, and at 0.0 depth. */
 void synth_ui_graph_flip_eg1_polarity(void);
+
+/* Cycle the shown EG's curve type Normal->Linear->DX7->TrueExp (AMY eg_type
+ * 0..3) — MY_BUTTON_1 while the envelope editor is open. Applies to AMY
+ * immediately, honoring the current apply scope; A/D/S/R times are untouched.
+ * (The apply-scope toggle that used to be on MY_BUTTON_1 moved to SHIFT+1.) */
+void synth_ui_graph_cycle_eg_type(void);
 
 /* ── Filter editor (per-synth LPF/HPF/BPF/LPF24 curve editor) ───────────────
  * Opened by long-press encoder (same as ADSR); toggled with MY_BUTTON_3 while

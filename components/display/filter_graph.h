@@ -31,6 +31,10 @@ typedef struct {
     uint8_t cursor;          /* 0=cutoff, 1=resonance, 2=type, 3=enable */
     bool    editing;         /* cursor is currently being adjusted */
     bool    enabled;         /* false → draw flat line + "OFF" */
+    bool    show_toggles;    /* target exposes the type(2)/enable(3) cursors —
+                              * true for melodic/arp, false for the drone (fixed
+                              * LPF24, always on): drives the header type name +
+                              * compact enable checkbox. */
     char    label[16];       /* left side of top bar, e.g. "L1 T2" or "ARP" */
 } filter_graph_t;
 

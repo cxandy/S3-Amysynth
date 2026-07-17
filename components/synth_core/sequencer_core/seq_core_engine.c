@@ -315,7 +315,7 @@ static void sequencer_refresh_track_note(uint8_t layer_idx, uint8_t track,
                         seq_preview_tag(layer_idx, track), fire_tick, 0);
     amy_helpers_note_send(layer->synth_id[track], resolved_note, 0.0f,
                         seq_preview_off_tag(layer_idx, track),
-                        fire_tick + SEQ_GATE_MELODIC, 0);
+                        fire_tick + seq_step_gate(layer, 0), 0);
 
     ESP_LOGI(TAG, "L%d T%d note -> %d (preview @ tick %lu)",
              layer_idx + 1, track + 1, resolved_note, (unsigned long)fire_tick);
@@ -506,6 +506,46 @@ uint8_t sequencer_core_get_layer_swing(uint8_t layer_idx)
 {
     if (layer_idx >= s_num_layers) return 0;
     return s_layers[layer_idx].swing_pct;
+}
+
+/* ── Per-layer melodic NoteFX: gate length + glide (portamento) ────────────
+ * Both are per-layer scalars edited from the NoteFX menu page. Gate is applied
+ * at emit time (seq_step_gate), so a change must re-emit the layer's steps so
+ * the new note-off ticks take effect immediately, exactly like swing. Glide is
+ * an AMY per-osc setting, pushed straight to the row synths. Both are no-ops on
+ * drum layers (gate uses the fixed SEQ_GATE_DRUM; drums don't glide). */
+void sequencer_core_set_melodic_gate_pct(uint8_t layer_idx, uint8_t gate_pct)
+{
+    if (layer_idx >= s_num_layers) return;
+    seq_layer_t *layer = &s_layers[layer_idx];
+    if (layer->type != SEQ_LAYER_MELODIC) return;
+    uint8_t clamped = (uint8_t)SEQ_CLAMP_U8((int)gate_pct, 10, 100);
+    if (layer->gate_pct == clamped) return;
+    layer->gate_pct = clamped;
+    sequencer_resync_layer(layer_idx);   /* re-emit: gate changes note-off ticks */
+}
+
+uint8_t sequencer_core_get_melodic_gate_pct(uint8_t layer_idx)
+{
+    if (layer_idx >= s_num_layers) return 0;
+    return s_layers[layer_idx].gate_pct;
+}
+
+void sequencer_core_set_melodic_portamento_ms(uint8_t layer_idx, uint16_t ms)
+{
+    if (layer_idx >= s_num_layers) return;
+    seq_layer_t *layer = &s_layers[layer_idx];
+    if (layer->type != SEQ_LAYER_MELODIC) return;
+    uint16_t clamped = (uint16_t)SEQ_CLAMP_U16((int)ms, 0, SEQ_MELODIC_PORTAMENTO_MAX_MS);
+    if (layer->portamento_ms == clamped) return;
+    layer->portamento_ms = clamped;
+    sequencer_core_push_melodic_portamento(layer_idx);
+}
+
+uint16_t sequencer_core_get_melodic_portamento_ms(uint8_t layer_idx)
+{
+    if (layer_idx >= s_num_layers) return 0;
+    return s_layers[layer_idx].portamento_ms;
 }
 
 void sequencer_core_set_track_mute(uint8_t layer_idx, uint8_t track, bool mute)

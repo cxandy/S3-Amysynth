@@ -16,7 +16,9 @@ enum {
     LFO_FLD_WAVE = LFO_TARGET_COUNT,
     LFO_FLD_RATE,
     LFO_FLD_DEPTH,
-    LFO_FLD_EN,
+    LFO_FLD_WOB_RATE,         /* WOBBLE (second-order LFO) rate               */
+    LFO_FLD_WOB_DEPTH,        /* WOBBLE amount, 0 % = off                     */
+    LFO_FLD_EN,               /* drawn as a header chip, not a panel row      */
     LFO_FLD_COUNT,            /* total navigable fields */
 };
 

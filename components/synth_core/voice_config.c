@@ -100,7 +100,16 @@ void voice_apply_native_lfo(uint8_t synth, const seq_lfo_t *lfo, uint16_t bpm)
         amy_helpers_event_send(e);
 
         /* osc 1: BPM-synced carrier — no pitch tracking, no velocity, no
-         * envelope; amp CONST=1 so AMY computes a mod value every block. */
+         * envelope; amp CONST=1 so AMY computes a mod value every block.
+         * WOBBLE (second-order LFO): osc2 is chained as osc1's own mod_source
+         * (AMY resolves the relative index within the voice), targeting BOTH
+         * the carrier's amplitude (= modulation depth breathing) and its
+         * log-frequency (= rate wobble), per the chained-modulator semantics
+         * (see AMY mod_osc_would_cause_loop / compute_mod_scale). Both coefs
+         * are ALWAYS written so a stale wobble from a previous config can
+         * never keep modulating after it is turned off (same clear-siblings
+         * contract as the target coefs above). */
+        float w = (float)lfo->wob_depth / 100.0f;
         e = amy_helpers_event_begin();
         e->synth                  = synth;
         e->osc                    = 1;
@@ -109,6 +118,23 @@ void voice_apply_native_lfo(uint8_t synth, const seq_lfo_t *lfo, uint16_t bpm)
         e->freq_coefs[COEF_NOTE]  = 0.0f;
         e->freq_coefs[COEF_BEND]  = 0.0f;
         e->amp_coefs[COEF_CONST]  = 1.0f;
+        e->amp_coefs[COEF_VEL]    = 0.0f;
+        e->amp_coefs[COEF_EG0]    = 0.0f;
+        e->mod_source             = 2;
+        e->amp_coefs[COEF_MOD]    = w * VOICE_WOB_DEPTH_AMP;
+        e->freq_coefs[COEF_MOD]   = w * VOICE_WOB_DEPTH_RATE;
+        amy_helpers_event_send(e);
+
+        /* osc 2: the wobble modulator itself — fixed TRIANGLE (smooth, no
+         * steps on the depth/rate rails), BPM-synced, dormant at 0 %. */
+        e = amy_helpers_event_begin();
+        e->synth                  = synth;
+        e->osc                    = 2;
+        e->wave                   = TRIANGLE;
+        e->freq_coefs[COEF_CONST] = lfo_rate_to_hz((lfo_rate_t)lfo->wob_rate, bpm);
+        e->freq_coefs[COEF_NOTE]  = 0.0f;
+        e->freq_coefs[COEF_BEND]  = 0.0f;
+        e->amp_coefs[COEF_CONST]  = (lfo->wob_depth > 0) ? 1.0f : 0.0f;
         e->amp_coefs[COEF_VEL]    = 0.0f;
         e->amp_coefs[COEF_EG0]    = 0.0f;
         amy_helpers_event_send(e);
@@ -128,6 +154,14 @@ void voice_apply_native_lfo(uint8_t synth, const seq_lfo_t *lfo, uint16_t bpm)
         e->synth                 = synth;
         e->osc                   = 1;
         e->amp_coefs[COEF_CONST] = 0.0f;  /* dormant */
+        e->amp_coefs[COEF_MOD]   = 0.0f;  /* clear wobble depth coupling */
+        e->freq_coefs[COEF_MOD]  = 0.0f;  /* clear wobble rate coupling  */
+        amy_helpers_event_send(e);
+
+        e = amy_helpers_event_begin();
+        e->synth                 = synth;
+        e->osc                   = 2;
+        e->amp_coefs[COEF_CONST] = 0.0f;  /* wobble modulator dormant */
         amy_helpers_event_send(e);
     }
 }

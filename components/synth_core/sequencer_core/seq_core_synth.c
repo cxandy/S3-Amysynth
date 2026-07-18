@@ -200,7 +200,8 @@ static void sequencer_configure_melodic_wave_track(uint8_t synth_id,
         .synth                = synth_id,
         .num_voices           = (uint8_t)num_voices,
 #if CONFIG_SEQ_MELODIC_AMY_NATIVE_LFO
-        .oscs_per_voice       = 2,   /* osc 1 reserved as native LFO carrier */
+        .oscs_per_voice       = 3,   /* osc1 = native LFO carrier, osc2 = its
+                                        wobble modulator (chained mod_source) */
 #else
         .oscs_per_voice       = 1,
 #endif
@@ -470,6 +471,27 @@ void sequencer_configure_synth(uint8_t layer_idx)
 
 /* ── Public API — melodic patch ─────────────────────────────────────── */
 
+/* Reconfigure a layer's synths with its scheduled events paused.
+ *
+ * The grid steps are repeating events inside AMY's sequencer, fired
+ * autonomously from the 500 us sequencer poll task — leaving them live while
+ * a patch load rebuilds the voice/osc tables lets a note-on resolve against
+ * half-updated mappings and strand an osc as AUDIBLE outside any voice, where
+ * no later kill can reach it (kills resolve through the CURRENT voice map).
+ * That is the intermittent "ringing that survives patch changes" heard when
+ * rapidly cycling patches on a playing layer. Same discipline as
+ * arp_rebuild(): clear the schedule, rebuild (configure kills sounding voices
+ * per track — mandatory, their note-offs were just cleared too), re-emit.
+ * sequencer_emit_step() is s_playing-gated, so the resync is a no-op while
+ * paused. Cost: the layer goes quiet for the events cleared mid-flight; the
+ * re-emit restores the same absolute tick positions, so groove phase is kept. */
+static void sequencer_reconfigure_layer_paused(uint8_t layer_idx)
+{
+    sequencer_clear_layer_tags(layer_idx);
+    sequencer_configure_synth(layer_idx);
+    sequencer_resync_layer(layer_idx);
+}
+
 void sequencer_core_set_melodic_patch(uint16_t patch_number)
 {
     /* 0..127: Juno, 128..255: DX7, 256: built-in piano.
@@ -491,7 +513,7 @@ void sequencer_core_set_melodic_patch(uint16_t patch_number)
             continue;
         }
         layer->patch = s_melodic_patch;
-        sequencer_configure_synth(i);
+        sequencer_reconfigure_layer_paused(i);
     }
 
     ESP_LOGI(TAG, "melodic patch -> %u", (unsigned)s_melodic_patch);
@@ -525,7 +547,7 @@ void sequencer_core_set_layer_patch(uint8_t layer_idx, uint16_t patch_number)
                                         doubles as the display fallback, which
                                         must track the last-touched layer (see
                                         the contract in seq_core_internal.h) */
-    sequencer_configure_synth(layer_idx);
+    sequencer_reconfigure_layer_paused(layer_idx);
     ESP_LOGI(TAG, "L%u patch -> %u", (unsigned)layer_idx + 1u, (unsigned)patch_number);
 }
 
@@ -537,7 +559,7 @@ void sequencer_core_reload_layer_synth(uint8_t layer_idx)
 {
     if (layer_idx >= s_num_layers) return;
     if (s_layers[layer_idx].type != SEQ_LAYER_MELODIC) return;
-    sequencer_configure_synth(layer_idx);
+    sequencer_reconfigure_layer_paused(layer_idx);
     ESP_LOGI(TAG, "L%u synth reloaded (preview cancel)", (unsigned)layer_idx + 1u);
 }
 
@@ -602,10 +624,14 @@ void sequencer_core_set_drum_patch(uint8_t layer_idx, uint8_t track,
         return;
     }
 
-    /* Reload only this track's synth slot with the new patch. */
+    /* Reload only this track's synth slot with the new patch — with the
+     * layer's schedule paused around the load (see
+     * sequencer_reconfigure_layer_paused for why); resynced below. */
+    sequencer_clear_layer_tags(layer_idx);
     sequencer_kill_synth_voices(layer->synth_id[track]);
     amy_send_patch(layer->synth_id[track], patch_number,
                    layer->num_voices, layer->synth_flags);
+    sequencer_resync_layer(layer_idx);
 
     /* A drum patch is always a string, so the flush is always owed. */
     seq_flush_patch_fx(true);
@@ -657,7 +683,7 @@ void sequencer_core_set_drum_engine(seq_drum_engine_t engine)
      * pattern keeps playing — only the per-track sound source swaps. */
     for (uint8_t i = 0; i < s_num_layers; i++) {
         if (s_layers[i].type == SEQ_LAYER_DRUM) {
-            sequencer_configure_synth(i);
+            sequencer_reconfigure_layer_paused(i);
         }
     }
     ESP_LOGI(TAG, "drum engine -> %s",

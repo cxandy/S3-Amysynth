@@ -113,6 +113,7 @@ uint8_t sequencer_core_add_layer(seq_layer_type_t type, uint8_t num_steps)
      * memset above zeroed gate_pct — a 0% gate would silence every note. */
     layer->gate_pct       = SEQ_MELODIC_GATE_DEFAULT_PCT;
     layer->portamento_ms  = 0;
+    layer->groove_pct     = 100;   /* full accent curve = legacy feel */
 
     if (type == SEQ_LAYER_DRUM) {
         /* Drums are now a per-track Juno-patch layer: each track gets its own

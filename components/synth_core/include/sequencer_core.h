@@ -479,15 +479,20 @@ seq_repeat_rate_t sequencer_core_get_track_repeat_rate(uint8_t layer_idx,
 void    sequencer_core_set_layer_swing(uint8_t layer_idx, uint8_t swing_pct);
 uint8_t sequencer_core_get_layer_swing(uint8_t layer_idx);
 
-/* ── Per-layer melodic NoteFX (gate length + glide) ───────────────────────────
+/* ── Per-layer melodic NoteFX (gate length + glide + groove) ──────────────────
  * GATE: melodic note-hold as a % of the step (10..100; 100 = full-step legato),
  * applied at emit time. GLIDE: AMY-native portamento between step pitches
- * (0..SEQ_MELODIC_PORTAMENTO_MAX_MS, 0 = off). Both are per-layer and no-op on
- * drum layers. Edited from the NoteFX menu page (ui_screen_notefx.c). */
+ * (0..SEQ_MELODIC_PORTAMENTO_MAX_MS, 0 = off). GROOVE: how much of the baked
+ * accent/humanize velocity curve applies (0..100; 100 = full legacy feel,
+ * 0 = flat velocity 1.0), scaled at emit time in sequencer_step_velocity().
+ * All are per-layer and no-op on drum layers. Edited from the NoteFX menu page
+ * (ui_screen_notefx.c). */
 void     sequencer_core_set_melodic_gate_pct(uint8_t layer_idx, uint8_t gate_pct);
 uint8_t  sequencer_core_get_melodic_gate_pct(uint8_t layer_idx);
 void     sequencer_core_set_melodic_portamento_ms(uint8_t layer_idx, uint16_t ms);
 uint16_t sequencer_core_get_melodic_portamento_ms(uint8_t layer_idx);
+void     sequencer_core_set_melodic_groove_pct(uint8_t layer_idx, uint8_t groove_pct);
+uint8_t  sequencer_core_get_melodic_groove_pct(uint8_t layer_idx);
 
 /* ── Per-track mute / solo ────────────────────────────────────────────────
  * Scoped per layer: solo only compares against the other tracks of the SAME

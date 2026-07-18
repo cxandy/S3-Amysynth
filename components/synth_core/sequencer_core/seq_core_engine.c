@@ -108,6 +108,11 @@ float sequencer_step_velocity(const seq_layer_t *layer,
     velocity += jitter[step & 3];
 
     velocity = SEQ_CLAMP_F32(velocity, 0.45f, 1.0f);
+
+    /* NoteFX GROOVE: blend between the full accent curve (100%) and flat
+     * velocity 1.0 (0%). Applied after the clamp so 0% is exactly 1.0 and
+     * 100% is bit-identical to the legacy curve. */
+    velocity = 1.0f - ((float)layer->groove_pct * 0.01f) * (1.0f - velocity);
     return velocity;
 #endif
 }
@@ -555,6 +560,23 @@ uint16_t sequencer_core_get_melodic_portamento_ms(uint8_t layer_idx)
 {
     if (layer_idx >= s_num_layers) return 0;
     return s_layers[layer_idx].portamento_ms;
+}
+
+void sequencer_core_set_melodic_groove_pct(uint8_t layer_idx, uint8_t groove_pct)
+{
+    if (layer_idx >= s_num_layers) return;
+    seq_layer_t *layer = &s_layers[layer_idx];
+    if (layer->type != SEQ_LAYER_MELODIC) return;
+    uint8_t clamped = (uint8_t)SEQ_CLAMP_U8((int)groove_pct, 0, 100);
+    if (layer->groove_pct == clamped) return;
+    layer->groove_pct = clamped;
+    sequencer_resync_layer(layer_idx);   /* re-emit: velocity is baked at emit */
+}
+
+uint8_t sequencer_core_get_melodic_groove_pct(uint8_t layer_idx)
+{
+    if (layer_idx >= s_num_layers) return 0;
+    return s_layers[layer_idx].groove_pct;
 }
 
 void sequencer_core_set_track_mute(uint8_t layer_idx, uint8_t track, bool mute)

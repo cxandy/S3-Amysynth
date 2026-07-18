@@ -557,7 +557,7 @@ void synth_ui_graph_open_envelope(void)
 
     graph_seed_from_env(&env);
 
-    /* Seed the EG1 filter-env depth scratch (melodic rows only). */
+    /* Seed the EG1 filter-env depth scratch (melodic rows + arp). */
     s_graph_fenv_dirty = false;
     s_graph_fenv_edit  = 0.0f;
     if (s_graph_target == GRAPH_TGT_MELODIC) {
@@ -565,6 +565,10 @@ void synth_ui_graph_open_envelope(void)
         if (sequencer_core_get_melodic_filter(s_graph_layer, s_graph_track, &f)) {
             s_graph_fenv_edit = f.filter_env_amount;
         }
+    } else if (s_graph_target == GRAPH_TGT_ARP) {
+        seq_filter_t f;
+        arp_get_filter(&f);
+        s_graph_fenv_edit = f.filter_env_amount;
     }
 
     graph_update_ticks();
@@ -664,6 +668,14 @@ static void graph_live_push_env(void)
 /* EG1 sweep depth: stored filter + the scratch depth, previewed per row. */
 static void graph_live_push_fenv(void)
 {
+    if (s_graph_target == GRAPH_TGT_ARP) {
+        seq_filter_t f;
+        arp_get_filter(&f);
+        f.filter_env_amount = s_graph_fenv_edit;
+        arp_preview_filter(&f);
+        s_graph_live_fenv = true;
+        return;
+    }
     if (s_graph_target != GRAPH_TGT_MELODIC) return;
     uint8_t t0 = s_editor_apply_all ? 0 : s_graph_track;
     uint8_t t1 = s_editor_apply_all ? (uint8_t)(SEQ_TRACKS - 1) : s_graph_track;
@@ -759,6 +771,12 @@ static void graph_live_cancel_restore(void)
             }
         }
     } else {
+        if (s_graph_live_fenv && s_graph_target == GRAPH_TGT_ARP) {
+            /* Re-push the stored filter so the previewed sweep depth reverts. */
+            seq_filter_t f;
+            arp_get_filter(&f);
+            arp_preview_filter(&f);
+        }
         seq_env_t env;
         if (s_graph_live_env && graph_read_target_env_idx(&env, s_graph_eg_index)) {
             if (s_graph_target == GRAPH_TGT_ARP) {
@@ -816,6 +834,13 @@ static void graph_commit_to_env(void)
      * modify-write through the public filter API so the COEF_EG1 push, the
      * guaranteed EG1 breakpoints, the 0..8 clamp, and filter_authored all
      * stay in the engine. Honors the layer/track scope. */
+    if (s_graph_fenv_dirty && s_graph_target == GRAPH_TGT_ARP) {
+        seq_filter_t f;
+        arp_get_filter(&f);
+        f.filter_env_amount = s_graph_fenv_edit;
+        arp_set_filter(&f);
+        s_graph_fenv_dirty = false;
+    }
     if (s_graph_fenv_dirty && s_graph_target == GRAPH_TGT_MELODIC) {
         uint8_t t0 = s_editor_apply_all ? 0 : s_graph_track;
         uint8_t t1 = s_editor_apply_all ? (uint8_t)(SEQ_TRACKS - 1) : s_graph_track;
@@ -909,6 +934,11 @@ void synth_ui_graph_toggle_amp_mode(void)
 static void graph_toggle_eg_index(void)
 {
     if (!graph_popup_is_active(&s_graph_popup)) return;
+    /* The free-running drone never sees another note-on after its enable gate,
+     * so EG1 would fire once and park at its sustain level forever — a static
+     * offset masquerading as an envelope. Hide the whole EG1 page for it (the
+     * stutter drone keeps it: its stutter gates are real note-ons). */
+    if (s_graph_target == GRAPH_TGT_DRONE_STD) return;
 
     if (s_graph_env_dirty) {
         graph_write_points_to_env(s_graph_eg_index);
@@ -1025,14 +1055,15 @@ const char *synth_ui_graph_hint_b2(void)
          ? "Env" : "Amp";
 }
 
-/* Flip the sign of the EG1->cutoff sweep (melodic targets only — arp uses a
- * fixed depth, the drone has no EG1 depth field). Bound to MY_BUTTON_SHOULDER
- * while the EG1 page is showing. No-op at 0.0 depth: there is
+/* Flip the sign of the EG1->cutoff sweep (melodic rows + arp — the drones
+ * have no EG1 depth field). Bound to MY_BUTTON_SHOULDER while the EG1 page is
+ * showing. No-op at 0.0 depth: there is
  * nothing to invert and it keeps -0.0 out of the readout. */
 void synth_ui_graph_flip_eg1_polarity(void)
 {
     if (!graph_popup_is_active(&s_graph_popup)) return;
-    if (s_graph_eg_index != 1 || s_graph_target != GRAPH_TGT_MELODIC) return;
+    if (s_graph_eg_index != 1) return;
+    if (s_graph_target != GRAPH_TGT_MELODIC && s_graph_target != GRAPH_TGT_ARP) return;
     if (s_graph_fenv_edit == 0.0f) return;
     s_graph_fenv_edit  = -s_graph_fenv_edit;
     s_graph_fenv_dirty = true;
@@ -1047,7 +1078,8 @@ bool synth_ui_graph_handle_encoder(long delta)
     if (!graph_popup_is_active(&s_graph_popup)) return false;
 
     if (s_graph_amp_mode) {
-        if (s_graph_eg_index == 1 && s_graph_target == GRAPH_TGT_MELODIC) {
+        if (s_graph_eg_index == 1 && (s_graph_target == GRAPH_TGT_MELODIC ||
+                                      s_graph_target == GRAPH_TGT_ARP)) {
             /* EG1 page: encoder adjusts EG1->cutoff depth, 0.25 oct/detent.
              * Bipolar -8..+8; negative = inverted/downward sweep (same range
              * as the filter editor's EG cursor — one shared field). */
@@ -1559,6 +1591,13 @@ bool synth_ui_lfo_handle_encoder(long delta)
             if (d > 0) l->depth = (l->depth < 95) ? l->depth + 5 : 100;
             else       l->depth = (l->depth >  5) ? l->depth - 5 : 0;
             break;
+        case LFO_FLD_WOB_RATE:
+            l->wob_rate = (uint8_t)((l->wob_rate + LFO_RATE_COUNT + d) % LFO_RATE_COUNT);
+            break;
+        case LFO_FLD_WOB_DEPTH: /* ±5%, clamped 0..100; 0 = wobble off */
+            if (d > 0) l->wob_depth = (l->wob_depth < 95) ? l->wob_depth + 5 : 100;
+            else       l->wob_depth = (l->wob_depth >  5) ? l->wob_depth - 5 : 0;
+            break;
         default: break;
     }
     s_force_redraw = true;
@@ -1583,7 +1622,7 @@ bool synth_ui_lfo_handle_button(bool is_long)
         l->enabled = !l->enabled;              /* boolean: toggle directly */
         s_lfo_view.editing = false;
     } else {
-        s_lfo_view.editing = !s_lfo_view.editing;  /* WAVE/RATE/DEPTH: adjust mode */
+        s_lfo_view.editing = !s_lfo_view.editing;  /* WAVE/RATE/DEPTH/WOB: adjust mode */
     }
     s_force_redraw = true;
     return true;
@@ -1735,7 +1774,8 @@ static void graph_draw_topbar(u8g2_t *u8g2)
      * middle readout is idle, so the shoulder-button polarity flip has a
      * visible readout. */
     uint8_t rw = 0;
-    bool eg1_melodic = (s_graph_eg_index == 1 && s_graph_target == GRAPH_TGT_MELODIC);
+    bool eg1_fenv = (s_graph_eg_index == 1 && (s_graph_target == GRAPH_TGT_MELODIC ||
+                                               s_graph_target == GRAPH_TGT_ARP));
     if (type_flash) {
         /* Inverted pad so the transient name reads as an event, not a label. */
         const char *tname = graph_eg_type_name(s_graph_eg_type_disp);
@@ -1745,9 +1785,9 @@ static void graph_draw_topbar(u8g2_t *u8g2)
         u8g2_SetDrawColor(u8g2, 0);
         u8g2_DrawStr(u8g2, (uint8_t)(128 - rw - 2), 8, tname);
         u8g2_SetDrawColor(u8g2, 1);
-    } else if (s_graph_amp_mode || (eg1_melodic && !mid_shown)) {
+    } else if (s_graph_amp_mode || (eg1_fenv && !mid_shown)) {
         char amp_buf[10];
-        if (eg1_melodic) {
+        if (eg1_fenv) {
             snprintf(amp_buf, sizeof(amp_buf), "ENV%+.2f", (double)s_graph_fenv_edit);
         } else {
             snprintf(amp_buf, sizeof(amp_buf), "AMP%d%%",

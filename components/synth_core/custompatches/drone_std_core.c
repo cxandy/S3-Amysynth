@@ -29,7 +29,8 @@ static const char *TAG = "drone_std";
 /* ── Synth slots (above the stutter drone's 64/65; needs max_synths >= 68) ── */
 #define DRONE_STD_SYNTH_MAIN  66
 #define DRONE_STD_SYNTH_SUB   67
-#define DRONE_STD_OSCS_PER_VC 2     /* osc0 = carrier, osc1 = native LFO carrier */
+#define DRONE_STD_OSCS_PER_VC 3     /* osc0 = carrier, osc1 = native LFO carrier,
+                                       osc2 = wobble modulator (chained mod)   */
 #define DRONE_STD_SUB_VOICES  1
 
 #define DRONE_STD_GATE_VEL    1.0f

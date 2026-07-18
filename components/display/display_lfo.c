@@ -104,6 +104,21 @@ void lfo_view_draw(u8g2_t *u8g2, const lfo_view_t *v)
                  v->layer_idx + 1u, v->track_idx + 1u, v->apply_all ? ">L" : ">T");
     }
     u8g2_DrawStr(u8g2, 1, 10, hdr);
+    /* En indicator chip lives in the header (the right panel is full with the
+     * five parameter rows). Cursor on LFO_FLD_EN highlights the chip. */
+    {
+        bool en_sel = (v->cursor == LFO_FLD_EN);
+        const char *en_txt = l->enabled ? "ON" : "--";
+        uint8_t tw = (uint8_t)u8g2_GetStrWidth(u8g2, en_txt);
+        if (en_sel) {
+            u8g2_DrawBox(u8g2, (uint8_t)(127 - tw - 4), 1, (uint8_t)(tw + 4), 11);
+            u8g2_SetDrawColor(u8g2, 0);
+        } else {
+            u8g2_DrawFrame(u8g2, (uint8_t)(127 - tw - 4), 1, (uint8_t)(tw + 4), 11);
+        }
+        u8g2_DrawStr(u8g2, (uint8_t)(127 - tw - 2), 10, en_txt);
+        if (en_sel) u8g2_SetDrawColor(u8g2, 1);
+    }
     u8g2_DrawHLine(u8g2, 0, 13, 128);
     u8g2_DrawVLine(u8g2, LFO_DIV_X, 15, 42);
 
@@ -128,27 +143,32 @@ void lfo_view_draw(u8g2_t *u8g2, const lfo_view_t *v)
         if (selected) u8g2_SetDrawColor(u8g2, 1);
     }
 
-    /* ── Right panel: shared LFO parameters ── */
+    /* ── Right panel: shared LFO parameters (5 compact rows, 8 px pitch, so
+     * the WOBBLE pair fits above the hint strip; En moved to the header). ── */
     char buf[12];
 
     /* WAVE row: label + live waveform icon */
     bool wav_sel = (v->cursor == LFO_FLD_WAVE);
     if (wav_sel) {
         u8g2_SetDrawColor(u8g2, 1);
-        u8g2_DrawBox(u8g2, LFO_DIV_X + 1, 15, 127 - LFO_DIV_X, 12);
+        u8g2_DrawBox(u8g2, LFO_DIV_X + 1, 15, 127 - LFO_DIV_X, 9);
         u8g2_SetDrawColor(u8g2, 0);
     }
-    u8g2_DrawStr(u8g2, LFO_RCOL_X, 24, "Wav");
-    if (wav_sel && v->editing) u8g2_DrawBox(u8g2, 123, 17, 3, 6);  /* color 0 while selected */
-    draw_wave_icon(u8g2, 92, 20, l->wave, wav_sel);                /* restores color 1 */
+    u8g2_DrawStr(u8g2, LFO_RCOL_X, 22, "Wav");
+    if (wav_sel && v->editing) u8g2_DrawBox(u8g2, 123, 16, 3, 6);  /* color 0 while selected */
+    draw_wave_icon(u8g2, 92, 16, l->wave, wav_sel);                /* restores color 1 */
     if (wav_sel) u8g2_SetDrawColor(u8g2, 1);
 
     snprintf(buf, sizeof(buf), "Rte %s", rate_label(l->rate));
-    draw_right_row(u8g2, 36, buf, v->cursor == LFO_FLD_RATE, v->editing);
+    draw_right_row(u8g2, 31, buf, v->cursor == LFO_FLD_RATE, v->editing);
 
     snprintf(buf, sizeof(buf), "Dep %u%%", (unsigned)l->depth);
-    draw_right_row(u8g2, 45, buf, v->cursor == LFO_FLD_DEPTH, v->editing);
+    draw_right_row(u8g2, 39, buf, v->cursor == LFO_FLD_DEPTH, v->editing);
 
-    snprintf(buf, sizeof(buf), "En  %s", l->enabled ? "ON" : "--");
-    draw_right_row(u8g2, 54, buf, v->cursor == LFO_FLD_EN, false);
+    /* WOBBLE: second-order LFO chained onto the carrier (depth + rate). */
+    snprintf(buf, sizeof(buf), "WRt %s", rate_label((lfo_rate_t)l->wob_rate));
+    draw_right_row(u8g2, 47, buf, v->cursor == LFO_FLD_WOB_RATE, v->editing);
+
+    snprintf(buf, sizeof(buf), "Wob %u%%", (unsigned)l->wob_depth);
+    draw_right_row(u8g2, 55, buf, v->cursor == LFO_FLD_WOB_DEPTH, v->editing);
 }

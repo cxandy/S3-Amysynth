@@ -11,8 +11,10 @@
  * page (page state and input routing live in ui_screen_menu.c; this file only
  * builds the rows and applies encoder edits). Two controls, both acting on the
  * currently ACTIVE melodic layer (seq_state.active_layer_idx):
- *   GATE  — note-hold as % of the step (10..100; 100 = full-step legato)
- *   GLIDE — AMY-native portamento between step pitches (0..cap ms)
+ *   GATE   — note-hold as % of the step (10..100; 100 = full-step legato)
+ *   GLIDE  — AMY-native portamento between step pitches (0..cap ms)
+ *   GROOVE — how much of the baked accent/humanize velocity curve applies
+ *            (0..100%; 100 = full legacy feel, 0 = flat velocity 1.0)
  * Kept off the crowded global-FX list because these are per-layer, not global.
  *
  * When the active layer is a drum layer (or otherwise not melodic) there is
@@ -22,6 +24,7 @@
 typedef enum {
     NFX_GATE = 0,
     NFX_GLIDE,
+    NFX_GROOVE,
     NFX_BACK,
     NFX_COUNT
 } notefx_item_id_t;
@@ -50,16 +53,20 @@ const menu_item_view_t *notefx_menu_build_items(void)
 
     uint8_t li = notefx_active_melodic_layer();
 
-    snprintf(s_nfx_items[NFX_GATE].label,  MENU_LABEL_LEN, "Gate");
-    snprintf(s_nfx_items[NFX_GLIDE].label, MENU_LABEL_LEN, "Glide");
+    snprintf(s_nfx_items[NFX_GATE].label,   MENU_LABEL_LEN, "Gate");
+    snprintf(s_nfx_items[NFX_GLIDE].label,  MENU_LABEL_LEN, "Glide");
+    snprintf(s_nfx_items[NFX_GROOVE].label, MENU_LABEL_LEN, "Groove");
     if (li == 0xFF) {
-        snprintf(s_nfx_items[NFX_GATE].value,  MENU_VALUE_LEN, "--");
-        snprintf(s_nfx_items[NFX_GLIDE].value, MENU_VALUE_LEN, "--");
+        snprintf(s_nfx_items[NFX_GATE].value,   MENU_VALUE_LEN, "--");
+        snprintf(s_nfx_items[NFX_GLIDE].value,  MENU_VALUE_LEN, "--");
+        snprintf(s_nfx_items[NFX_GROOVE].value, MENU_VALUE_LEN, "--");
     } else {
-        snprintf(s_nfx_items[NFX_GATE].value,  MENU_VALUE_LEN, "%u%%",
+        snprintf(s_nfx_items[NFX_GATE].value,   MENU_VALUE_LEN, "%u%%",
                  (unsigned)sequencer_core_get_melodic_gate_pct(li));
-        snprintf(s_nfx_items[NFX_GLIDE].value, MENU_VALUE_LEN, "%ums",
+        snprintf(s_nfx_items[NFX_GLIDE].value,  MENU_VALUE_LEN, "%ums",
                  (unsigned)sequencer_core_get_melodic_portamento_ms(li));
+        snprintf(s_nfx_items[NFX_GROOVE].value, MENU_VALUE_LEN, "%u%%",
+                 (unsigned)sequencer_core_get_melodic_groove_pct(li));
     }
 
     snprintf(s_nfx_items[NFX_BACK].label, MENU_LABEL_LEN, "< Back");
@@ -69,7 +76,7 @@ const menu_item_view_t *notefx_menu_build_items(void)
 
 bool notefx_menu_item_is_value(uint8_t idx)
 {
-    return idx < NFX_BACK;   /* Gate and Glide are editable; Back is not */
+    return idx < NFX_BACK;   /* Gate/Glide/Groove are editable; Back is not */
 }
 
 bool notefx_menu_item_is_back(uint8_t idx)
@@ -99,6 +106,13 @@ void notefx_menu_edit_value(uint8_t idx, int delta)
                 (int)sequencer_core_get_melodic_portamento_ms(li) + dir * 1,
                 0, (int)SEQ_MELODIC_PORTAMENTO_MAX_MS);
             sequencer_core_set_melodic_portamento_ms(li, (uint16_t)v);
+            break;
+        }
+        case NFX_GROOVE: {
+            /* 5%/detent, matching GATE. */
+            int v = SEQ_CLAMP_INT(
+                (int)sequencer_core_get_melodic_groove_pct(li) + dir * 5, 0, 100);
+            sequencer_core_set_melodic_groove_pct(li, (uint8_t)v);
             break;
         }
         default:

@@ -133,6 +133,12 @@ typedef struct {
                               carrier drives every checked target for free —
                               amplitude of osc1 is the shared depth, each
                               target's COEF_MOD scaled by its own constant.   */
+    uint8_t      wob_rate; /* lfo_rate_t of the WOBBLE (second-order) LFO —
+                              osc2 modulating the osc1 carrier's depth AND
+                              rate via chained mod_source (breathing wobble,
+                              varying vibrato, non-repeating movement).       */
+    uint8_t      wob_depth;/* 0..100 % wobble amount; 0 = wobble off (osc2
+                              dormant). Zero-init default = off.              */
 } seq_lfo_t;
 
 /* Target-set helpers. The single mod-source oscillator can feed any subset of
@@ -219,6 +225,14 @@ typedef struct {
                                             0 = off. AMY-native portamento_alpha;
                                             re-pushed on every voice rebuild
                                             because osc reset clears it.        */
+    uint8_t   groove_pct;                /* NoteFX GROOVE: how much of the
+                                            baked accent/humanize velocity curve
+                                            applies (0..100). 100 = full curve
+                                            (legacy feel), 0 = flat velocity 1.0.
+                                            Defaults to 100 in add_layer —
+                                            memset 0 would silently flatten
+                                            dynamics. Scales at emit time in
+                                            sequencer_step_velocity().          */
     uint8_t  synth_id[SEQ_TRACKS];   /* one AMY synth per row (both melodic and
                                         drum layers: each track has its own slot */
     uint16_t patch;                  /* shared timbre across the layer's rows

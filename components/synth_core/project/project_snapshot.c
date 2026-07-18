@@ -111,21 +111,31 @@ static void ser_lfo(tlv_writer_t *w, const seq_lfo_t *l)
     tlv_put_u8(w, (uint8_t)l->rate);
     tlv_put_u8(w, l->depth);
     tlv_put_u8(w, l->targets);   /* section v2+: target-set bitmask (v1: index) */
+    tlv_put_u8(w, l->wob_rate);  /* LAYR v5+ / ARP v3+: WOBBLE second-order LFO */
+    tlv_put_u8(w, l->wob_depth);
 }
 
 /* Same "read everything, then validate" shape as de_filter: an out-of-range
  * enum resets the whole LFO sub-block rather than propagating a bad value.
  * The 6th byte changed meaning: section v1 stored a single target index, v2+
  * stores a target-set bitmask. Migrate index -> bit when reading an old file. */
-static bool de_lfo(tlv_reader_t *r, seq_lfo_t *l, uint8_t ver)
+/* `wobble`: whether this file version carries the two WOBBLE bytes — the
+ * threshold differs per containing section (LAYR v5+, ARP v3+), so the caller
+ * resolves it rather than this shared codec guessing from `ver`. */
+static bool de_lfo(tlv_reader_t *r, seq_lfo_t *l, uint8_t ver, bool wobble)
 {
     uint8_t en, mode, wave, rate, depth, tgt;
+    uint8_t wrate = 0, wdepth = 0;
     if (!tlv_get_u8(r, &en))     return false;
     if (!tlv_get_u8(r, &mode))   return false;
     if (!tlv_get_u8(r, &wave))   return false;
     if (!tlv_get_u8(r, &rate))   return false;
     if (!tlv_get_u8(r, &depth))  return false;
     if (!tlv_get_u8(r, &tgt))    return false;
+    if (wobble) {
+        if (!tlv_get_u8(r, &wrate))  return false;
+        if (!tlv_get_u8(r, &wdepth)) return false;
+    }
 
     if (mode > LFO_MODE_RETRIG || wave >= LFO_WAVE_COUNT ||
         rate >= LFO_RATE_COUNT) {
@@ -140,6 +150,8 @@ static bool de_lfo(tlv_reader_t *r, seq_lfo_t *l, uint8_t ver)
     l->targets = (ver < 2)
         ? ((tgt < LFO_TARGET_COUNT) ? LFO_TGT_BIT(tgt) : 0u)  /* v1 index */
         : (uint8_t)(tgt & LFO_TGT_ALL);                       /* v2 bitmask */
+    l->wob_rate  = (wrate < LFO_RATE_COUNT) ? wrate : 0;
+    l->wob_depth = (wdepth > 100) ? 100 : wdepth;
     return true;
 }
 
@@ -164,7 +176,7 @@ static bool de_vp(tlv_reader_t *r, voice_params_t *vp, uint8_t ver)
     if (!de_env(r, &vp->env))       return false;
     if (!de_env(r, &vp->env1))      return false;
     if (!de_filter(r, &vp->filter)) return false;
-    if (!de_lfo(r, &vp->lfo, ver))  return false;
+    if (!de_lfo(r, &vp->lfo, ver, ver >= 5))  return false;   /* LAYR: wobble v5+ */
     uint8_t ea, e1a, fa, la;
     if (!tlv_get_u8(r, &ea))  return false;
     if (!tlv_get_u8(r, &e1a)) return false;
@@ -286,8 +298,10 @@ static void apply_glob(const staged_glob_t *g)
 
 static void ser_layer(tlv_writer_t *w, const seq_layer_t *L)
 {
-    size_t h = tlv_begin_section(w, TAG_LAYR, 3);  /* v2: LFO target bitmask;
-                                                    * v3: +gate_pct, +portamento_ms */
+    size_t h = tlv_begin_section(w, TAG_LAYR, 5);  /* v2: LFO target bitmask;
+                                                    * v3: +gate_pct, +portamento_ms;
+                                                    * v4: +groove_pct;
+                                                    * v5: LFO +wob_rate/+wob_depth */
     tlv_put_u8(w, (uint8_t)L->type);
     tlv_put_u8(w, L->num_steps);
     tlv_put_u16(w, L->patch);
@@ -321,6 +335,8 @@ static void ser_layer(tlv_writer_t *w, const seq_layer_t *L)
      * v2 readers stop cleanly before them and v2 files parse under the ver<3 path.*/
     tlv_put_u8(w, L->gate_pct);
     tlv_put_u16(w, L->portamento_ms);
+    /* v4: NoteFX GROOVE (accent-curve amount), same tail-append pattern. */
+    tlv_put_u8(w, L->groove_pct);
     tlv_end_section(w, h);
 }
 
@@ -412,6 +428,15 @@ static bool parse_layer(tlv_reader_t *b, seq_layer_t *L, uint8_t ver)
     if (L->portamento_ms > SEQ_MELODIC_PORTAMENTO_MAX_MS)
         L->portamento_ms = SEQ_MELODIC_PORTAMENTO_MAX_MS;
 
+    /* v4: NoteFX GROOVE. Pre-v4 files predate the control — default to the full
+     * legacy accent curve so old projects keep their feel. */
+    if (ver >= 4) {
+        if (!tlv_get_u8(b, &L->groove_pct)) return false;
+    } else {
+        L->groove_pct = 100;
+    }
+    if (L->groove_pct > 100) L->groove_pct = 100;
+
     return true;
 }
 
@@ -438,7 +463,8 @@ typedef struct {
 
 static void ser_arp(tlv_writer_t *w)
 {
-    size_t h = tlv_begin_section(w, TAG_ARP, 2);  /* v2: LFO target is a bitmask */
+    size_t h = tlv_begin_section(w, TAG_ARP, 3);  /* v2: LFO target is a bitmask;
+                                                   * v3: LFO +wob_rate/+wob_depth */
     tlv_put_u8(w, arp_get_enabled() ? 1 : 0);
     tlv_put_u8(w, (uint8_t)arp_get_source());
     tlv_put_u16(w, arp_get_wave());
@@ -494,7 +520,7 @@ static bool parse_arp(tlv_reader_t *b, staged_arp_t *a, uint8_t ver)
     if (!de_env(b, &a->env))       return false;
     if (!de_env(b, &a->env2))      return false;
     if (!de_filter(b, &a->filter)) return false;
-    if (!de_lfo(b, &a->lfo, ver))  return false;
+    if (!de_lfo(b, &a->lfo, ver, ver >= 3))  return false;   /* ARP: wobble v3+ */
     return true;
 }
 

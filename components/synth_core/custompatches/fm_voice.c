@@ -82,7 +82,15 @@ void fm_voice_configure_track(uint8_t synth_id, uint16_t num_voices,
         e->ratio                 = voice->op_ratio[i];
         e->freq_coefs[COEF_NOTE] = 1.0f;
         e->amp_coefs[COEF_CONST] = voice->op_level[i];
-        e->amp_coefs[COEF_VEL]   = 1.0f;
+        /* VEL must be 0 on operators: AMY never delivers velocity to
+         * SYNTH_IS_ALGO_SOURCE oscs (amy.c play_delta VELOCITY skips them),
+         * so their velocity input stays 0 forever. Under the dB amp-combine
+         * a nonzero VEL coef with a zero velocity input contributes -60 dB
+         * and amp_combine_controls floors the result to exactly 0 — every
+         * operator renders silence. Velocity sensitivity comes from the ALGO
+         * control osc (osc 0, VEL=1 above), whose amp scales the carriers in
+         * render_algo. Same convention as the built-in DX7 patch strings. */
+        e->amp_coefs[COEF_VEL]   = 0.0f;
         e->amp_coefs[COEF_EG0]   = 1.0f;
         e->eg_type[0]            = ENVELOPE_NORMAL;
         e->eg0_times[0]  = FM_OP_ATTACK_MS;  e->eg0_values[0] = 1.0f;

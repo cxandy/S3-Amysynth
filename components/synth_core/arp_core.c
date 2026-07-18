@@ -170,6 +170,52 @@ void arp_core_clear_all(void)
     }
 }
 
+/* All-notes-off for the arp synth. MUST follow every arp_core_clear_all() that
+ * can run while notes are sounding: clearing removes the scheduled note-OFF
+ * tags too, so any note already ringing has just lost the only event that
+ * would ever silence it — without this it hangs at its sustain level forever
+ * (the "arp keeps ringing after I turn it off" bug). */
+static void arp_kill_voices(void)
+{
+    amy_event *e = amy_helpers_event_begin();
+    e->synth    = sequencer_core_arp_synth();
+    e->velocity = 0.0f;
+    amy_helpers_event_send(e);
+}
+
+/* Push the arp filter including the bipolar EG1->cutoff sweep depth
+ * (filter_env_amount, octaves, -8..+8 — same field and range as the melodic
+ * rows). Mirrors melodic_filter_apply(): the coef is wired only when the
+ * filter is enabled with a nonzero amount, and valid EG1 breakpoints are
+ * pushed alongside so filter_freq_coefs[COEF_EG1] never reads a stuck
+ * permanent 1.0 (AMY treats a never-configured breakpoint set as an
+ * always-open unity gate). */
+static void arp_apply_filter(const seq_filter_t *f)
+{
+    if (!f) return;
+    amy_event *e = amy_helpers_event_begin();
+    e->synth = sequencer_core_arp_synth();
+    if (f->enabled) {
+        e->filter_type = f->filter_type;
+        e->filter_freq_coefs[COEF_CONST] = f->cutoff_hz;
+        e->resonance = f->resonance;
+        if (f->filter_env_amount != 0.0f) {
+            e->filter_freq_coefs[COEF_EG1] = f->filter_env_amount;
+        }
+    } else {
+        e->filter_type = FILTER_NONE;
+    }
+    if (s_arp.wave == KS) {
+        e->feedback = sequencer_core_ks_feedback_from_q(f->resonance);
+    }
+    amy_helpers_event_send(e);
+
+    if (f->enabled && f->filter_env_amount != 0.0f) {
+        sequencer_core_push_envelope_eg1(sequencer_core_arp_synth(), 0,
+                                         &s_arp.vp.env1);
+    }
+}
+
 /* ── Source configuration helpers ────────────────────────────────────── */
 
 /* Configure the arp's AMY synth slot as a bare oscillator (WAVE mode).
@@ -193,7 +239,7 @@ static void arp_configure_wave_synth(void)
     voice_wave_cfg_t cfg = {
         .synth                = synth,
         .num_voices           = voices,
-        .oscs_per_voice       = 2,
+        .oscs_per_voice       = 3,   /* osc1 = LFO carrier, osc2 = wobble mod */
         .wave                 = s_arp.wave,
         .osc0_amp_const       = 1.0f,
         .osc0_amp_vel         = 1.0f,
@@ -203,18 +249,9 @@ static void arp_configure_wave_synth(void)
     };
     voice_build_wave(&cfg);
 
-    /* Plucky amp (EG0 in the skeleton) / slower independent filter sweep
-     * (EG1): only wired once the user has authored+enabled a filter, so a
-     * stock arp voice with no filter is unaffected. arp_rebuild() pushes valid
-     * EG1 breakpoints alongside this so the coef never reads a stuck 1.0 (AMY
-     * treats a never-configured breakpoint set as a permanent unity gate). */
-    if (s_arp.vp.filter_authored && s_arp.vp.filter.enabled) {
-        amy_event *e = amy_helpers_event_begin();
-        e->synth = synth;
-        e->osc   = 0;
-        e->filter_freq_coefs[COEF_EG1] = ARP_FILTER_EG1_DEPTH_OCT;
-        amy_helpers_event_send(e);
-    }
+    /* The EG1->cutoff sweep is wired by arp_apply_filter() (from the stored
+     * bipolar filter_env_amount) when arp_rebuild() re-imposes the authored
+     * filter below — no fixed-depth wiring here anymore. */
 
     /* Native LFO routing (shared applier): active => osc0 mod coupling +
      * osc1 carrier; inactive => coupling cleared, carrier dormant. */
@@ -239,6 +276,14 @@ void arp_core_refresh_lfo_freq(void)
     e->freq_coefs[COEF_CONST] = lfo_rate_to_hz(s_arp.vp.lfo.rate,
                                                      sequencer_core_get_bpm());
     amy_helpers_event_send(e);
+
+    /* Keep the wobble modulator (osc 2) BPM-synced as well. */
+    e = amy_helpers_event_begin();
+    e->synth                  = sequencer_core_arp_synth();
+    e->osc                    = 2;
+    e->freq_coefs[COEF_CONST] = lfo_rate_to_hz((lfo_rate_t)s_arp.vp.lfo.wob_rate,
+                                                     sequencer_core_get_bpm());
+    amy_helpers_event_send(e);
 }
 
 /* Push the current glide time straight to the arp synth. e->osc is left unset
@@ -253,9 +298,22 @@ static void arp_push_portamento(void)
 }
 
 /* (Re)build the arp synth slot for the current source and params, then
- * re-impose any authored ADSR / filter.  Mirrors drone_rebuild(). */
+ * re-impose any authored ADSR / filter.  Mirrors drone_rebuild().
+ *
+ * The scheduled repeating events are cleared FIRST and re-emitted afterwards
+ * (via arp_mark_dirty at the end): AMY's 500 µs sequencer poll runs on its own
+ * task and fires arp note-ons autonomously, so leaving the schedule live while
+ * a patch load rebuilds the voice/osc tables lets a note-on resolve against
+ * half-updated mappings. That strands an osc as AUDIBLE outside any voice —
+ * unreachable by every later kill (kills resolve through the CURRENT voice
+ * map) — which is the "foreign oscillator inside the DX7 patch" / permanent
+ * ringing heard when scrolling arp patches. Cost: the arp goes quiet for at
+ * most one UI frame (~50 ms) around a rebuild. */
 static void arp_rebuild(void)
 {
+    arp_core_clear_all();
+    arp_kill_voices();
+
     if (s_arp.source == ARP_SRC_WAVE) {
         arp_configure_wave_synth();
         /* WAVE mode has no patch envelope; always push the arp's env (authored
@@ -275,24 +333,25 @@ static void arp_rebuild(void)
             sequencer_core_push_envelope(sequencer_core_arp_synth(), &s_arp.vp.env);
         }
     }
-    /* Filter re-apply is source-agnostic: both WAVE and PATCH respect it. */
+    /* Filter re-apply is source-agnostic: both WAVE and PATCH respect it,
+     * including the bipolar EG1->cutoff sweep (arp_apply_filter also pushes
+     * the EG1 breakpoints whenever it wires the coef). */
     if (s_arp.vp.filter_authored) {
-        sequencer_core_push_filter(sequencer_core_arp_synth(), &s_arp.vp.filter,
-                                   s_arp.wave == KS);
+        arp_apply_filter(&s_arp.vp.filter);
     }
-    /* EG1 (independent second envelope): push whenever the user has authored
-     * one directly, OR whenever WAVE mode just wired filter_freq_coefs[COEF_EG1]
-     * above (that coef must never read a stuck permanent 1.0). PATCH mode with
-     * no authored EG1 is left alone — if the loaded patch already routes its
-     * own bp1, its own patch-string values keep driving it. */
-    bool wave_filter_eg1 = (s_arp.source == ARP_SRC_WAVE) &&
-                           s_arp.vp.filter_authored && s_arp.vp.filter.enabled;
-    if (s_arp.vp.env1_authored || wave_filter_eg1) {
+    /* EG1 (independent second envelope): push when authored directly. PATCH
+     * mode with no authored EG1 is otherwise left alone — if the loaded patch
+     * routes its own bp1, its patch-string values keep driving it. */
+    if (s_arp.vp.env1_authored) {
         sequencer_core_push_envelope_eg1(sequencer_core_arp_synth(), 0, &s_arp.vp.env1);
     }
     /* Any reconfigure above (patch load or WAVE pool re-init) resets AMY's
      * per-osc portamento_alpha to 0 — reassert regardless of source. */
     arp_push_portamento();
+
+    /* Re-emit the schedule cleared at the top (coalesced on the next
+     * arp_core_service() frame; no-op while the arp is disabled). */
+    arp_mark_dirty();
 }
 
 /* ── Public API ──────────────────────────────────────────────────────── */
@@ -301,6 +360,10 @@ void arp_core_init(void)
 {
     memset(&s_arp, 0, sizeof(s_arp));
     voice_params_init_defaults(&s_arp.vp);   /* unauthored, amp trim at unity */
+    /* Seed the bipolar EG1->cutoff sweep with the legacy fixed WAVE-mode depth
+     * so an enabled arp filter keeps its established plucky-sweep character;
+     * the graph editor's EG1 page now edits this (-8..+8 oct, 0 = no sweep). */
+    s_arp.vp.filter.filter_env_amount = ARP_FILTER_EG1_DEPTH_OCT;
     s_arp.enabled     = CONFIG_SEQ_ARP_DEFAULT_ENABLED;
     s_arp.dir         = ARP_UP;
     s_arp.octaves     = CONFIG_SEQ_ARP_DEFAULT_OCTAVES;
@@ -352,6 +415,10 @@ void arp_core_init(void)
 void arp_core_refresh(void)
 {
     arp_core_clear_all();
+    /* The clear above just deleted the scheduled note-offs of anything still
+     * sounding — silence those notes now or they hang forever. On disable this
+     * is the only note-off they will ever get. */
+    arp_kill_voices();
 
     if (!s_arp.enabled) {
         return;
@@ -586,8 +653,7 @@ void arp_preview_envelope2(const seq_env_t *env)
 
 void arp_preview_filter(const seq_filter_t *f)
 {
-    if (!f) return;
-    sequencer_core_push_filter(sequencer_core_arp_synth(), f, s_arp.wave == KS);
+    arp_apply_filter(f);
 }
 
 void arp_set_filter(const seq_filter_t *f)
@@ -595,8 +661,7 @@ void arp_set_filter(const seq_filter_t *f)
     if (!f) return;
     s_arp.vp.filter = *f;
     s_arp.vp.filter_authored = true;
-    sequencer_core_push_filter(sequencer_core_arp_synth(), &s_arp.vp.filter,
-                               s_arp.wave == KS);
+    arp_apply_filter(&s_arp.vp.filter);
     ESP_LOGI(TAG, "arp filter -> type%u %.0fHz Q%.2f en=%d",
              s_arp.vp.filter.filter_type, (double)s_arp.vp.filter.cutoff_hz,
              (double)s_arp.vp.filter.resonance, s_arp.vp.filter.enabled);

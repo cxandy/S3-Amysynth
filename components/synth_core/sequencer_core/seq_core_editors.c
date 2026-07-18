@@ -426,6 +426,12 @@ void melodic_lfo_refresh_native_freq(void)
             e->osc                    = 1;
             e->freq_coefs[COEF_CONST] = lfo_rate_to_hz(lfo->rate, s_bpm);
             amy_helpers_event_send(e);
+            /* Keep the wobble modulator (osc 2) BPM-synced as well. */
+            e = amy_helpers_event_begin();
+            e->synth                  = layer->synth_id[tr];
+            e->osc                    = 2;
+            e->freq_coefs[COEF_CONST] = lfo_rate_to_hz((lfo_rate_t)lfo->wob_rate, s_bpm);
+            amy_helpers_event_send(e);
         }
     }
 #endif

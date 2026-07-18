@@ -18,6 +18,13 @@
 #define VOICE_LFO_DEPTH_SCAN   0.5f
 #define VOICE_LFO_DEPTH_PAN    0.5f  /* swing around the 0.5 center baseline */
 
+/* WOBBLE (second-order LFO): osc2 chained as the osc1 carrier's mod_source.
+ * AMP rides the dB combine (contribution is linear in the exponent: amp
+ * multiplier = 10^(3 * coef * wob) => 0.15 ~ +/-9 dB depth breathing at full
+ * wobble). RATE is linear in log2-frequency: 1.0 => +/-1 octave rate swing. */
+#define VOICE_WOB_DEPTH_AMP    0.15f
+#define VOICE_WOB_DEPTH_RATE   1.0f
+
 /* Reset a voice_params_t (defined in seq_model.h) to its defaults: everything
  * zeroed/unauthored, amp_trim at unity. The single place the trim gets its
  * non-zero default — kills the "must re-set to 1.0 after memset" footgun that

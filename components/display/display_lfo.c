@@ -5,10 +5,12 @@
 
 /* Two-panel layout (128x64): a left checklist of the 5 modulation targets
  * (each an independent checkbox — the one LFO carrier drives every checked
- * one) and a right column with the shared WAVE/RATE/DEPTH/EN parameters. */
+ * one) and a right column with the shared WAVE/RATE/DEPTH/EN parameters.
+ * Both panels use the 5x7 font at a tight pitch so every row (incl. the
+ * last target and the En row) ends above the hint strip at y=57. */
 #define LFO_DIV_X      60      /* vertical divider between the two panels */
-#define LFO_ROW0_Y     24      /* first checklist row baseline            */
-#define LFO_ROW_DY      9      /* checklist row pitch                      */
+#define LFO_ROW0_Y     21      /* first checklist row baseline            */
+#define LFO_ROW_DY      8      /* checklist row pitch                      */
 #define LFO_RCOL_X     64      /* right-column text x                      */
 
 /* Precomputed y-offsets (from icon center) for 16-pixel-wide wave icons.
@@ -77,7 +79,7 @@ static void draw_right_row(u8g2_t *u8g2, uint8_t baseline, const char *text,
 {
     if (selected) {
         u8g2_SetDrawColor(u8g2, 1);
-        u8g2_DrawBox(u8g2, LFO_DIV_X + 1, baseline - 8, 127 - LFO_DIV_X, 10);
+        u8g2_DrawBox(u8g2, LFO_DIV_X + 1, baseline - 7, 127 - LFO_DIV_X, 9);
         u8g2_SetDrawColor(u8g2, 0);
     }
     u8g2_DrawStr(u8g2, LFO_RCOL_X, baseline, text);
@@ -103,7 +105,10 @@ void lfo_view_draw(u8g2_t *u8g2, const lfo_view_t *v)
     }
     u8g2_DrawStr(u8g2, 1, 10, hdr);
     u8g2_DrawHLine(u8g2, 0, 13, 128);
-    u8g2_DrawVLine(u8g2, LFO_DIV_X, 15, 49);
+    u8g2_DrawVLine(u8g2, LFO_DIV_X, 15, 42);
+
+    /* Panels use the compact font so all rows clear the hint strip. */
+    u8g2_SetFont(u8g2, u8g2_font_5x7_tr);
 
     /* ── Left panel: target checklist ── */
     for (int t = 0; t < LFO_TARGET_COUNT; t++) {
@@ -113,13 +118,13 @@ void lfo_view_draw(u8g2_t *u8g2, const lfo_view_t *v)
 
         if (selected) {
             u8g2_SetDrawColor(u8g2, 1);
-            u8g2_DrawBox(u8g2, 0, base - 8, LFO_DIV_X, 9);
+            u8g2_DrawBox(u8g2, 0, base - 7, LFO_DIV_X, 9);
             u8g2_SetDrawColor(u8g2, 0);
         }
         /* checkbox: filled when the target is active, framed when not */
-        if (on) u8g2_DrawBox(u8g2, 2, base - 7, 7, 7);
-        else    u8g2_DrawFrame(u8g2, 2, base - 7, 7, 7);
-        u8g2_DrawStr(u8g2, 12, base, target_name(t));
+        if (on) u8g2_DrawBox(u8g2, 2, base - 6, 6, 6);
+        else    u8g2_DrawFrame(u8g2, 2, base - 6, 6, 6);
+        u8g2_DrawStr(u8g2, 11, base, target_name(t));
         if (selected) u8g2_SetDrawColor(u8g2, 1);
     }
 
@@ -133,17 +138,17 @@ void lfo_view_draw(u8g2_t *u8g2, const lfo_view_t *v)
         u8g2_DrawBox(u8g2, LFO_DIV_X + 1, 15, 127 - LFO_DIV_X, 12);
         u8g2_SetDrawColor(u8g2, 0);
     }
-    u8g2_DrawStr(u8g2, LFO_RCOL_X, 25, "Wav");
+    u8g2_DrawStr(u8g2, LFO_RCOL_X, 24, "Wav");
     if (wav_sel && v->editing) u8g2_DrawBox(u8g2, 123, 17, 3, 6);  /* color 0 while selected */
     draw_wave_icon(u8g2, 92, 20, l->wave, wav_sel);                /* restores color 1 */
     if (wav_sel) u8g2_SetDrawColor(u8g2, 1);
 
     snprintf(buf, sizeof(buf), "Rte %s", rate_label(l->rate));
-    draw_right_row(u8g2, 38, buf, v->cursor == LFO_FLD_RATE, v->editing);
+    draw_right_row(u8g2, 36, buf, v->cursor == LFO_FLD_RATE, v->editing);
 
     snprintf(buf, sizeof(buf), "Dep %u%%", (unsigned)l->depth);
-    draw_right_row(u8g2, 50, buf, v->cursor == LFO_FLD_DEPTH, v->editing);
+    draw_right_row(u8g2, 45, buf, v->cursor == LFO_FLD_DEPTH, v->editing);
 
     snprintf(buf, sizeof(buf), "En  %s", l->enabled ? "ON" : "--");
-    draw_right_row(u8g2, 62, buf, v->cursor == LFO_FLD_EN, false);
+    draw_right_row(u8g2, 54, buf, v->cursor == LFO_FLD_EN, false);
 }

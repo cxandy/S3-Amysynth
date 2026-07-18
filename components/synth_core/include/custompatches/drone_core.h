@@ -131,6 +131,12 @@ void drone_set_envelope(const seq_env_t *env);
 void drone_get_envelope2(seq_env_t *out);
 void drone_set_envelope2(const seq_env_t *env);
 
+/* ── Editor live-preview (AMY only; drone store + authored flags untouched) ──
+ * Audition scratch editor values on the drone's main (and, when enabled, sub)
+ * synth. Cancel restores by calling these again with the stored values. */
+void drone_preview_envelope(const seq_env_t *env);
+void drone_preview_envelope2(const seq_env_t *env);
+
 /* ── Getters (for the list UI) ── */
 bool           drone_get_enabled(void);
 drone_source_t drone_get_source(void);

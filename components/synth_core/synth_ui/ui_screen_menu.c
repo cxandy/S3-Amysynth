@@ -4,6 +4,7 @@
 #include "sequencer_core.h"
 #include "arp_core.h"
 #include "custompatches/drone_core.h"
+#include "custompatches/drone_std_core.h"
 #include "custompatches/sample_rec.h"
 #include "quantizer.h"
 #include "amy_fx.h"
@@ -44,7 +45,8 @@ typedef enum {
     MI_QUANT_SCALE,
     MI_QUANT_ROOT,
     MI_ARP_ENABLED,
-    MI_DRONE_ENABLED,
+    MI_DRONE_ENABLED,     /* normal drone (drone_std_core) */
+    MI_STUTTER_ENABLED,   /* stutter drone (drone_core)    */
     MI_DRUM_ENGINE,
     MI_ADD_LAYER,
     MI_REMOVE_LAYER,
@@ -75,7 +77,16 @@ static bool    s_projects_page = false;
 /* Title for the menu overlay's header bar (drawn by ui_view_resolve.c). */
 const char *menu_page_title(void)
 {
-    if (s_notefx_page) return "NOTE FX";
+    if (s_notefx_page) {
+        /* NoteFX is bound to the ACTIVE layer, so the title names it — always,
+         * even with a single layer ("L1/1"), so it's discoverable that every
+         * layer added gets its own Gate/Glide values on this page. */
+        static char s_nfx_title[20];
+        snprintf(s_nfx_title, sizeof(s_nfx_title), "NOTE FX  L%u/%u",
+                 (unsigned)(seq_state.active_layer_idx + 1u),
+                 (unsigned)seq_state.num_layers);
+        return s_nfx_title;
+    }
     if (s_fx_page) return "GLOBAL FX";
 #if CONFIG_SYNTH_PROJECT_STORE
     if (s_projects_page) return "PROJECTS";
@@ -152,6 +163,10 @@ void menu_build_view(menu_view_t *out)
 
     snprintf(s_menu_items[MI_DRONE_ENABLED].label, MENU_LABEL_LEN, "Drone");
     snprintf(s_menu_items[MI_DRONE_ENABLED].value, MENU_VALUE_LEN, "%s",
+             drone_std_get_enabled() ? "ON" : "OFF");
+
+    snprintf(s_menu_items[MI_STUTTER_ENABLED].label, MENU_LABEL_LEN, "Stutter");
+    snprintf(s_menu_items[MI_STUTTER_ENABLED].value, MENU_VALUE_LEN, "%s",
              drone_get_enabled() ? "ON" : "OFF");
 
     snprintf(s_menu_items[MI_DRUM_ENGINE].label, MENU_LABEL_LEN, "Drum Bank");
@@ -243,6 +258,7 @@ static bool menu_item_is_value(menu_item_id_t id)
         case MI_QUANT_ROOT:
         case MI_ARP_ENABLED:
         case MI_DRONE_ENABLED:
+        case MI_STUTTER_ENABLED:
         case MI_DRUM_ENGINE:
         case MI_VOLUME:
             return true;
@@ -281,6 +297,9 @@ static void menu_edit_value(menu_item_id_t id, int delta)
             if (dir != 0) arp_set_enabled(!arp_get_enabled());
             break;
         case MI_DRONE_ENABLED:
+            if (dir != 0) drone_std_set_enabled(!drone_std_get_enabled());
+            break;
+        case MI_STUTTER_ENABLED:
             if (dir != 0) drone_set_enabled(!drone_get_enabled());
             break;
         case MI_DRUM_ENGINE:
@@ -467,7 +486,9 @@ bool synth_ui_menu_handle_button(void)
                 seq_state.menu_open = false;
                 break;
             case MI_SCREEN_DRONE:
-                seq_state.ui_mode = UI_MODE_DRONE;
+                /* Opens the normal drone; its STUTTER row dives to the
+                 * stutter screen (UI_MODE_DRONE). */
+                seq_state.ui_mode = UI_MODE_DRONE_STD;
                 seq_state.menu_open = false;
                 break;
             case MI_SCREEN_PROG:

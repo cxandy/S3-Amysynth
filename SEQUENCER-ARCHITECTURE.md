@@ -303,14 +303,18 @@ decorated-step trig path consult it.
 
 | Button | Event | Action |
 |---|---|---|
-| MY_BUTTON_0 (GPIO17) | single click | Cycle active layer; resets cursor to track 0, step 0, edit mode |
-| MY_BUTTON_0 (GPIO17) | long press | Toggle play / stop (or cancel an open editor) |
+| MY_BUTTON_SHOULDER (GPIO17) | single click | Cycle active layer; resets cursor to track 0, step 0, edit mode |
+| MY_BUTTON_SHOULDER (GPIO17) | long press | Toggle play / stop (or cancel an open editor) |
 | MY_BUTTON_ENC (GPIO16) | single click | Toggle focused step (edit mode) / toggle play (non-edit mode) |
 | MY_BUTTON_ENC (GPIO16) | long press | Open ADSR graph editor (bound to selected track) |
 | MY_BUTTON_1 (GPIO18) | held + encoder | Cycle patch for selected track |
 | MY_BUTTON_2 (GPIO8) | held + encoder | Transpose base note for selected track (semitones) |
 | MY_BUTTON_3 (GPIO42) | single click | Open / close main menu overlay (cycles editor tabs while an editor is open) |
 | MY_BUTTON_3 (GPIO42) | long press | Open the Step Trig popup for the cursor step (sequencer screen); toggle EG0/EG1 while the ADSR editor is open |
+| MY_BUTTON_0 (GPIO15) |  |  |
+| MY_BUTTON_SHIFT (GPIO47) | held | Shift-key modifier for combinations |
+
+**TODO: Add all controls**
 
 BPM is set via the menu overlay's `BPM` item, or with a bare encoder turn when
 `edit_mode=false`. All button events are queued from the callback to

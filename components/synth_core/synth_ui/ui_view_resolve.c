@@ -24,6 +24,7 @@ ui_view_id_t synth_ui_active_view(void)
     switch (seq_state.ui_mode) {
         case UI_MODE_ARP:       return UI_VIEW_ARP;
         case UI_MODE_DRONE:     return s_drone_vis_open ? UI_VIEW_DRONE_VIS : UI_VIEW_DRONE;
+        case UI_MODE_DRONE_STD: return UI_VIEW_DRONE_STD;
         case UI_MODE_PROG:      return UI_VIEW_PROG;
         case UI_MODE_TRACKOPTS: return UI_VIEW_TRACKOPTS;
 #if CONFIG_SYNTH_CUSTOM_FM
@@ -41,6 +42,7 @@ static uint32_t sig_graph(ui_view_vw_t *vw)     { (void)vw; return graph_view_si
 static uint32_t sig_menu(ui_view_vw_t *vw)      { return menu_view_signature(&vw->menu); }
 static uint32_t sig_arp(ui_view_vw_t *vw)       { return arp_view_signature(&vw->arp); }
 static uint32_t sig_drone(ui_view_vw_t *vw)     { return drone_view_signature(&vw->drone); }
+static uint32_t sig_drone_std(ui_view_vw_t *vw) { return drone_std_view_signature(&vw->drone); }
 static uint32_t sig_prog(ui_view_vw_t *vw)      { return prog_view_signature(&vw->prog); }
 static uint32_t sig_trackopts(ui_view_vw_t *vw) { return trackopts_view_signature(&vw->trackopts); }
 static uint32_t sig_seq(ui_view_vw_t *vw)       { (void)vw; return seq_view_signature(); }
@@ -52,7 +54,8 @@ static void draw_stepedit(u8g2_t *g, ui_view_vw_t *vw)  { display_stepedit_draw_
 static void draw_graph(u8g2_t *g, ui_view_vw_t *vw)     { (void)vw; synth_ui_graph_view_draw(g); }
 static void draw_menu(u8g2_t *g, ui_view_vw_t *vw)      { display_menu_draw_frame_titled(g, menu_page_title(), &vw->menu); }
 static void draw_arp(u8g2_t *g, ui_view_vw_t *vw)       { display_arp_draw_frame(g, &vw->arp); }
-static void draw_drone(u8g2_t *g, ui_view_vw_t *vw)     { display_drone_draw_frame(g, &vw->drone); }
+static void draw_drone(u8g2_t *g, ui_view_vw_t *vw)     { display_drone_draw_frame_titled(g, "STUTTER", &vw->drone); }
+static void draw_drone_std(u8g2_t *g, ui_view_vw_t *vw) { display_drone_draw_frame_titled(g, "DRONE", &vw->drone); }
 static void draw_prog(u8g2_t *g, ui_view_vw_t *vw)      { display_prog_draw_frame(g, &vw->prog); }
 static void draw_trackopts(u8g2_t *g, ui_view_vw_t *vw) { display_trackopts_draw_frame(g, &vw->trackopts); }
 static void draw_seq(u8g2_t *g, ui_view_vw_t *vw)       { (void)vw; display_seq_draw_frame(g, &seq_state, seq_get_bpm()); }
@@ -99,13 +102,14 @@ static void     draw_fm(u8g2_t *g, ui_view_vw_t *vw) { display_menu_draw_frame_t
  * Reproduces the former synth_ui_hint.c ladder for exactly the cells that
  * varied on ui_mode: the LFO editor's b2 (which fell through to the underlying
  * screen). The envelope editor's b1 now cycles EG type (static "Type"); the
- * apply-to-layer scope toggle moved to SHIFT+1 (chords aren't shown on the
+ * apply-to-layer scope toggle moved to SHIFT+3 (chords aren't shown on the
  * 3-button strip, matching the other SHIFT gestures). */
 static const char *hint_lfo_b2(void)
 {
     switch (seq_state.ui_mode) {
         case UI_MODE_ARP:
-        case UI_MODE_DRONE:     return "-";
+        case UI_MODE_DRONE:
+        case UI_MODE_DRONE_STD: return "-";
         case UI_MODE_PROG:      return "+Add";
         case UI_MODE_TRACKOPTS: return "DelLy";
         default:                return "Pitch";
@@ -134,6 +138,7 @@ const ui_view_desc_t ui_view_table[UI_VIEW_COUNT] = {
     [UI_VIEW_ARP]       = { "ARP",    sig_arp,       draw_arp,       "Patch",  "-",     "Menu",  NULL,               NULL },
     [UI_VIEW_DRONE_VIS] = { "DRONEV", sig_drone,     draw_drone_vis, "Patch",  "-",     "Menu",  NULL,               NULL },
     [UI_VIEW_DRONE]     = { "DRONE",  sig_drone,     draw_drone,     "Patch",  "-",     "Menu",  NULL,               NULL },
+    [UI_VIEW_DRONE_STD] = { "DRONST", sig_drone_std, draw_drone_std, "Patch",  "-",     "Menu",  NULL,               NULL },
     [UI_VIEW_PROG]      = { "PROG",   sig_prog,      draw_prog,      "Del",    "+Add",  "Menu",  NULL,               NULL },
     [UI_VIEW_TRACKOPTS] = { "TRKOPT", sig_trackopts, draw_trackopts, "Patch",  "DelLy", "Menu",  NULL,               NULL },
 #if CONFIG_SYNTH_CUSTOM_FM

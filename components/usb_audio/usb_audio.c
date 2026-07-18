@@ -14,6 +14,10 @@
 #define CONFIG_USB_AUDIO_DIAGNOSTICS 0
 #endif
 
+#ifndef CONFIG_OUTPUT_WATCHDOG
+#define CONFIG_OUTPUT_WATCHDOG 0
+#endif
+
 static const char *TAG = "usb_audio";
 
 // ~170 ms buffer @ 48 kHz stereo 16-bit → very safe for drum prototyping
@@ -65,6 +69,40 @@ static size_t s_peak_fill_samples = 0;
 static int16_t s_peak_abs_sample = 0;
 // Consumer-owned counter (written only by uac_input_cb).
 static uint32_t s_underrun_events = 0;
+#endif
+
+#if CONFIG_OUTPUT_WATCHDOG
+// Third-party PEEK reader (output-level watchdog, UI task on Core 0). Does not
+// participate in the SPSC index protocol: it never stores either index, only
+// acquire-loads s_write_idx so every sample behind it is committed. The region
+// [w - n, w) is the most recently produced audio; the producer cannot rewrite
+// it until the write index wraps the entire ring (~170 ms), so a short scan at
+// UI cadence cannot observe torn data.
+bool usb_audio_peek_levels(size_t n_samples, int32_t *peak_abs,
+                           int32_t *mean_abs, size_t *write_idx)
+{
+    *peak_abs = 0;
+    *mean_abs = 0;
+    *write_idx = 0;
+    if (!s_initialized || n_samples == 0) return false;
+    // Cap the window so the |sample| accumulator cannot overflow int32 and the
+    // scan stays deep inside the not-yet-rewritable region behind the index.
+    if (n_samples > RING_BUFFER_SIZE / 4) n_samples = RING_BUFFER_SIZE / 4;
+
+    size_t w = atomic_load_explicit(&s_write_idx, memory_order_acquire);
+    size_t start = (w + RING_BUFFER_SIZE - n_samples) % RING_BUFFER_SIZE;
+    int32_t peak = 0, acc = 0;
+    for (size_t i = 0; i < n_samples; ++i) {
+        int32_t v = s_ring_buffer[(start + i) & (RING_BUFFER_SIZE - 1)];
+        if (v < 0) v = -v;
+        acc += v;
+        if (v > peak) peak = v;
+    }
+    *peak_abs = peak;
+    *mean_abs = acc / (int32_t)n_samples;
+    *write_idx = w;
+    return true;
+}
 #endif
 
 // Advisory fill level for diagnostics. Loads both indices relaxed; the result
@@ -160,6 +198,9 @@ esp_err_t usb_audio_init(void)
                  (unsigned)(RING_BUFFER_SIZE * sizeof(int16_t)));
         return ESP_ERR_NO_MEM;
     }
+    // Zero the ring so neither a level peek nor the host's first read can ever
+    // observe uninitialized PSRAM as (loud) audio.
+    memset(s_ring_buffer, 0, RING_BUFFER_SIZE * sizeof(int16_t));
 
     atomic_store_explicit(&s_write_idx, 0, memory_order_relaxed);
     atomic_store_explicit(&s_read_idx, 0, memory_order_relaxed);

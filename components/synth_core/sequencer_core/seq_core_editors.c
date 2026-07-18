@@ -72,7 +72,7 @@ void sequencer_configure_melodic_envelope_track(uint8_t layer_idx, uint8_t track
     e->eg0_values[0] = 1.0f;
     e->eg0_times[1] = env.decay_ms;
     e->eg0_values[1] = sustain;
-    e->eg0_times[2] = env.release_ms;
+    e->eg0_times[2] = (env.release_ms < 5) ? 5 : env.release_ms;  /* 5 ms declick floor */
     e->eg0_values[2] = 0.0f;
     amy_helpers_event_send(e);
 #else
@@ -98,7 +98,7 @@ void sequencer_core_set_melodic_envelope(uint8_t layer_idx, uint8_t track,
     dst->attack_ms   = SEQ_CLAMP_U32(env->attack_ms,  2, 60000);
     dst->decay_ms    = SEQ_CLAMP_U32(env->decay_ms,   0, 60000);
     dst->sustain_pct = SEQ_CLAMP_U8(env->sustain_pct, 0, 100);
-    dst->release_ms  = SEQ_CLAMP_U32(env->release_ms, 0, 60000);
+    dst->release_ms  = SEQ_CLAMP_U32(env->release_ms, 5, 60000);  /* 5 ms declick floor */
     dst->eg_type     = env->eg_type;
 
     /* Committing in the graph editor establishes this row's authority over the
@@ -151,7 +151,7 @@ void sequencer_core_set_melodic_envelope2(uint8_t layer_idx, uint8_t track,
     dst->attack_ms   = SEQ_CLAMP_U32(env->attack_ms,  2, 60000);
     dst->decay_ms    = SEQ_CLAMP_U32(env->decay_ms,   0, 60000);
     dst->sustain_pct = SEQ_CLAMP_U8(env->sustain_pct, 0, 100);
-    dst->release_ms  = SEQ_CLAMP_U32(env->release_ms, 0, 60000);
+    dst->release_ms  = SEQ_CLAMP_U32(env->release_ms, 5, 60000);  /* 5 ms declick floor */
     dst->eg_type     = env->eg_type;
 
     layer->vp[track].env1_authored = true;
@@ -175,10 +175,13 @@ float sequencer_core_ks_feedback_from_q(float q)
 }
 
 /* Push one row's stored filter to its own AMY synth. */
-void sequencer_configure_melodic_filter_track(uint8_t layer_idx, uint8_t track)
+/* Apply one filter config to a row's AMY synth. Shared by the stored-state
+ * configure below and the live-preview push: the caller decides whether `f`
+ * is the row's committed filter or an editor's scratch copy. */
+static void melodic_filter_apply(uint8_t layer_idx, uint8_t track,
+                                 const seq_filter_t *f)
 {
-    const seq_layer_t   *layer = &s_layers[layer_idx];
-    const seq_filter_t  *f     = &layer->vp[track].filter;
+    const seq_layer_t *layer = &s_layers[layer_idx];
     amy_event *e = amy_helpers_event_begin();
     e->synth       = layer->synth_id[track];
     if (f->enabled) {
@@ -211,6 +214,11 @@ void sequencer_configure_melodic_filter_track(uint8_t layer_idx, uint8_t track)
         sequencer_core_push_envelope_eg1(layer->synth_id[track], 0,
                                          seq_layer_env1(layer_idx, track));
     }
+}
+
+void sequencer_configure_melodic_filter_track(uint8_t layer_idx, uint8_t track)
+{
+    melodic_filter_apply(layer_idx, track, &s_layers[layer_idx].vp[track].filter);
 }
 
 bool sequencer_core_get_melodic_filter(uint8_t layer_idx, uint8_t track,
@@ -291,6 +299,9 @@ void sequencer_core_set_melodic_lfo(uint8_t layer_idx, uint8_t track,
     }
 #endif
 
+
+
+
     /* Software path: non-wave patches, or native LFO disabled at compile time */
     if (!lfo->enabled) {
         lfo_restore_target_neutrals(layer, track, lfo);
@@ -311,7 +322,7 @@ bool sequencer_core_get_melodic_lfo(uint8_t layer_idx, uint8_t track,
     return true;
 }
 
-void sequencer_core_lfo_service(void)
+void __attribute__((optimize("O3", "unroll-loops", "fast-math"))) sequencer_core_lfo_service(void) 
 {
     const float DT = 0.05f; /* 20 Hz */
     for (int li = 0; li < s_num_layers; li++) {
@@ -449,4 +460,58 @@ void sequencer_core_set_melodic_amp_scale(uint8_t layer_idx, uint8_t track,
     seq_layer_t *layer = &s_layers[layer_idx];
     for (uint8_t s = 0; s < layer->num_steps; s++)
         sequencer_emit_step(layer_idx, track, s);
+}
+
+/* ── Live-preview pushes (AMY only; the store is untouched) ──────────────────
+ * The editors audition scratch values against the running engine while the
+ * committed store stays the single source of truth. Cancel restores by
+ * re-pushing the stored state (or reloading the layer's patch when the row was
+ * never authored); confirm goes through the normal setters. Authored flags are
+ * never modified by a preview. */
+
+void sequencer_core_preview_melodic_envelope(uint8_t layer_idx, uint8_t track,
+                                             const seq_env_t *env)
+{
+    if (!env || layer_idx >= s_num_layers || track >= SEQ_TRACKS) return;
+    const seq_layer_t *layer = &s_layers[layer_idx];
+    seq_env_t tmp = *env;
+    voice_env_apply_ks_noise_floor(&tmp,
+                                   layer->patch == SEQ_PATCH_KS,
+                                   layer->patch == SEQ_PATCH_NOISE);
+    sequencer_core_push_envelope(layer->synth_id[track], &tmp);
+}
+
+void sequencer_core_preview_melodic_envelope2(uint8_t layer_idx, uint8_t track,
+                                              const seq_env_t *env)
+{
+    if (!env || layer_idx >= s_num_layers || track >= SEQ_TRACKS) return;
+    sequencer_core_push_envelope_eg1(s_layers[layer_idx].synth_id[track], 0, env);
+}
+
+void sequencer_core_preview_melodic_filter(uint8_t layer_idx, uint8_t track,
+                                           const seq_filter_t *f)
+{
+    if (!f || layer_idx >= s_num_layers || track >= SEQ_TRACKS) return;
+    /* Same clamps the committing setter applies, so the audition matches what
+     * confirm would store. */
+    seq_filter_t tmp = *f;
+    tmp.filter_type       = (f->filter_type < 5) ? f->filter_type : FILTER_NONE;
+    tmp.cutoff_hz         = SEQ_CLAMP_F32(f->cutoff_hz,  65.0f, 8000.0f);
+    tmp.resonance         = SEQ_CLAMP_F32(f->resonance,  0.51f, 8.0f);
+    tmp.filter_env_amount = SEQ_CLAMP_F32(f->filter_env_amount, -8.0f, 8.0f);
+    melodic_filter_apply(layer_idx, track, &tmp);
+}
+
+bool sequencer_core_melodic_env_authored(uint8_t layer_idx, uint8_t track,
+                                         uint8_t eg_index)
+{
+    if (layer_idx >= s_num_layers || track >= SEQ_TRACKS) return false;
+    const voice_params_t *vp = &s_layers[layer_idx].vp[track];
+    return (eg_index == 1) ? vp->env1_authored : vp->env_authored;
+}
+
+bool sequencer_core_melodic_filter_authored(uint8_t layer_idx, uint8_t track)
+{
+    if (layer_idx >= s_num_layers || track >= SEQ_TRACKS) return false;
+    return s_layers[layer_idx].vp[track].filter_authored;
 }

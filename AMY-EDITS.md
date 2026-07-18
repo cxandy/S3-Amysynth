@@ -390,6 +390,28 @@ gamma9001_pcm_mount()`) needs the exact blob size to flash-mmap it (a whole-
 partition mmap exhausts data-cache MMU pages under PSRAM XIP) or to size the
 PSRAM fallback copy. Upstream PR candidate (tiny, platform-neutral).
 
+### `filters.c` — full-precision biquad multiply `SMUL64R` (LOCAL EDIT)
+
+`FILT_MUL_SS` was `SMULR6`, which truncates both operands to 12 fractional
+bits before multiplying. For low-cutoff biquads the split-feedback pole
+corrections `e = 2 + a1`, `f = 1 - a2` are ~2^-10, so they retained only 2-3
+significant bits and the pole landed almost randomly around its target:
+
+- sub-150 Hz HPF/BPF with Q >= 2 rang up ~+12 dB into sustained full-scale
+  clipping (or, depending on where the quantized pole fell, lost its
+  resonance entirely — the failure was value-dependent and felt erratic);
+- the sub-100 Hz LPF numerator `(1-c)/2 ≈ 3e-5` rounded to zero, producing
+  silent output.
+
+Replaced (fixed-point build only) with `SMUL64R`, an exact 32x32->64 rounding
+multiply. Host-side A/B against a double-precision reference (fc=10..1000 Hz,
+Q=0.7..8, HPF+LPF, with/without EG1 sweeps) matches to 3 decimals everywhere;
+evidence and method in `docs/filter-fixedpoint-instability-2026-07-18.md`.
+Cost: ~2 extra Xtensa instructions per multiply in the biquad kernels (incl.
+parametric EQ). Hardware-verified 2026-07-18: original repro gone, resonant
+low-frequency filters audibly better tuned across the board. Upstream PR
+candidate (universal fixed-point logic bug).
+
 ## Deferred / needs porting
 
 | Edit | Status |

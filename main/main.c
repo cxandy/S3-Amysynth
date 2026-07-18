@@ -366,16 +366,21 @@ static void dispatch_button_event(my_button_id_t button_id, button_event_t event
     }
 
     /* SHIFT chords (replace the former open-editor long-presses):
-     *   SHIFT + MY_BUTTON_1 -> open the ADSR/graph editor (was encoder long-press)
-     *   SHIFT + MY_BUTTON_2 -> open the step probability / trig editor
-     *                          (was MY_BUTTON_3 long-press)
+     *   SHIFT + MY_BUTTON_1 -> from a mode screen: open the ADSR/graph editor;
+     *                          inside an editor: close+commit it (graph/LFO/filter)
+     *   SHIFT + MY_BUTTON_2 -> toggle the step probability / trig editor
+     *                          (open, or close+commit if already open;
+     *                           open was the former MY_BUTTON_3 long-press)
+     *   SHIFT + MY_BUTTON_3 -> inside the envelope/LFO editor: apply-to-whole-
+     *                          layer scope toggle (moved off SHIFT+1 so that
+     *                          combo can both open and close the editor); a
+     *                          no-op elsewhere
      * The chord fires on the digit's PRESS_DOWN and latches that button until
      * its NEXT press-down, swallowing the rest of the chorded press (PRESS_UP
      * plus the trailing SINGLE_CLICK / LONG_PRESS_START) so the button's normal
-     * gesture (patch-hold on 1, drum-select on 2, and per-screen single-clicks
-     * like the TRACKOPTS layer delete) never runs. SHIFT+1 only opens where the
-     * old encoder long-press did (the mode screens); synth_ui_stepedit_open()
-     * self-gates to the sequencer screen, so SHIFT+2 elsewhere is a no-op. */
+     * gesture (patch-hold on 1, drum-select on 2, menu toggle / editor-page
+     * cycle on 3) never runs. synth_ui_stepedit_open() self-gates to the
+     * sequencer screen, so SHIFT+2 elsewhere is a no-op. */
     if (s_shift_chord_latched[button_id]) {
         if (event == BUTTON_PRESS_DOWN) {
             s_shift_chord_latched[button_id] = false;  /* fresh press: re-evaluate */
@@ -384,21 +389,40 @@ static void dispatch_button_event(my_button_id_t button_id, button_event_t event
         }
     }
     if (s_shift_held && event == BUTTON_PRESS_DOWN &&
-        (button_id == MY_BUTTON_1 || button_id == MY_BUTTON_2)) {
+        (button_id == MY_BUTTON_1 || button_id == MY_BUTTON_2 ||
+         button_id == MY_BUTTON_3)) {
         s_shift_chord_latched[button_id] = true;
+        ui_view_id_t sv = synth_ui_active_view();
         if (button_id == MY_BUTTON_1) {
-            ui_view_id_t sv = synth_ui_active_view();
+            /* From a mode screen SHIFT+1 opens the ADSR/graph editor; inside an
+             * open editor the same chord closes+commits it (mirrors the
+             * MY_BUTTON_0 tap). The former in-editor apply-scope toggle moved to
+             * SHIFT+3 so this one combo both opens and closes the editor. */
             if (sv == UI_VIEW_SEQ || sv == UI_VIEW_ARP ||
-                sv == UI_VIEW_DRONE || sv == UI_VIEW_DRONE_VIS) {
+                sv == UI_VIEW_DRONE || sv == UI_VIEW_DRONE_VIS ||
+                sv == UI_VIEW_DRONE_STD) {
                 synth_ui_graph_open_envelope();
-            } else if (sv == UI_VIEW_GRAPH || sv == UI_VIEW_LFO) {
-                /* Inside the envelope/LFO editor, SHIFT+1 is the apply-to-whole-
-                 * layer scope toggle. Moved off the bare button (which now cycles
-                 * EG type) so it can't be hit by accident and wipe a layer. */
+            } else if (sv == UI_VIEW_GRAPH) {
+                synth_ui_graph_close_commit();
+            } else if (sv == UI_VIEW_LFO) {
+                synth_ui_lfo_close_commit();
+            } else if (sv == UI_VIEW_FILTER) {
+                synth_ui_filter_close_commit();
+            }
+        } else if (button_id == MY_BUTTON_2) {
+            /* Same chord toggles: SHIFT+2 closes the step editor when it is
+             * already open, in addition to the existing MY_BUTTON_0 tap /
+             * MY_BUTTON_3 close. stepedit has no discard path, so close ==
+             * commit. */
+            if (synth_ui_stepedit_is_active())   synth_ui_stepedit_close();
+            else if (!synth_ui_menu_is_active()) synth_ui_stepedit_open();
+        } else { /* MY_BUTTON_3 */
+            /* SHIFT+3: apply-to-whole-layer scope toggle inside the envelope/LFO
+             * editor (moved off SHIFT+1). Kept a chord so it can't be hit by an
+             * accidental bare press and overwrite the whole layer's config. */
+            if (sv == UI_VIEW_GRAPH || sv == UI_VIEW_LFO) {
                 synth_ui_toggle_editor_apply_scope();
             }
-        } else { /* MY_BUTTON_2 */
-            if (!synth_ui_menu_is_active()) synth_ui_stepedit_open();
         }
         return;
     }
@@ -421,9 +445,9 @@ static void dispatch_button_event(my_button_id_t button_id, button_event_t event
     // MY_BUTTON_1 is the patch-select hold button, repurposed per editor:
     //   filter editor    → enabled on/off toggle (single press)
     //   envelope editor  → cycle EG curve type (Normal/Linear/DX7/Exp)
-    //   LFO editor       → unused (apply-scope moved to SHIFT+1)
+    //   LFO editor       → unused (apply-scope moved to SHIFT+3)
     // The apply-to-whole-layer scope toggle that used to live here is now
-    // SHIFT+1 (handled in the chord block above) so it can't be pressed by
+    // SHIFT+3 (handled in the chord block above) so it can't be pressed by
     // accident and overwrite the whole layer's envelope/filter config.
     if (button_id == MY_BUTTON_1) {
         if (synth_ui_filter_is_active()) {
@@ -439,7 +463,7 @@ static void dispatch_button_event(my_button_id_t button_id, button_event_t event
             return;
         }
         if (synth_ui_lfo_is_active()) {
-            return;   /* scope is now SHIFT+1; bare press is a no-op here */
+            return;   /* scope is now SHIFT+3; bare press is a no-op here */
         }
         /* PROG screen: MY_BUTTON_1 deletes the entry at the cursor (the patch-hold
          * gesture has no meaning here). */
@@ -546,7 +570,7 @@ static void dispatch_button_event(my_button_id_t button_id, button_event_t event
      * drone's own input (encoder nav + MY_BUTTON_ENC row edit + MY_BUTTON_1
      * patch hold/turn in PATCH mode) is handled elsewhere; the menu toggle
      * (MY_BUTTON_3) and play/pause (MY_BUTTON_0 long-press) stay live. */
-    if (synth_ui_drone_is_active()) {
+    if (synth_ui_drone_is_active() || synth_ui_drone_std_is_active()) {
         switch (button_id) {
             case MY_BUTTON_2:
                 s_drum_select_held = false;
@@ -663,6 +687,9 @@ static void dispatch_button_event(my_button_id_t button_id, button_event_t event
                 /* Open moved to SHIFT+1; encoder push edits the focused row. */
                 if (event == BUTTON_PRESS_DOWN)  synth_ui_drone_handle_button();
                 return;
+            case UI_VIEW_DRONE_STD:
+                if (event == BUTTON_PRESS_DOWN)  synth_ui_drone_std_handle_button();
+                return;
             case UI_VIEW_PROG:
                 if (event == BUTTON_PRESS_DOWN) synth_ui_prog_handle_button();
                 return;
@@ -777,6 +804,8 @@ static void encoder_task(void *pvParameters)
                 // per-track Juno patches now).
                 if (v == UI_VIEW_DRONE || v == UI_VIEW_DRONE_VIS) {
                     synth_ui_drone_cycle_patch((int)steps);
+                } else if (v == UI_VIEW_DRONE_STD) {
+                    synth_ui_drone_std_cycle_patch((int)steps);
                 } else if (v == UI_VIEW_ARP) {
                     synth_ui_arp_cycle_patch((int)steps);
                 } else if (sequencer_core_get_layer_type(seq_get_active_layer_idx())
@@ -788,6 +817,8 @@ static void encoder_task(void *pvParameters)
             } else if (v == UI_VIEW_DRONE || v == UI_VIEW_DRONE_VIS) {
                 // Drone screen: encoder moves the cursor / edits the focused row.
                 synth_ui_drone_handle_encoder(steps);
+            } else if (v == UI_VIEW_DRONE_STD) {
+                synth_ui_drone_std_handle_encoder(steps);
             } else if (s_drum_select_held) {
                 // Pitch-edit mode: hold MY_BUTTON_2 + turn encoder edits the
                 // selected track's pitch (works for both drum and melodic).
@@ -1049,13 +1080,15 @@ void app_main(void)
      * seq_core_config.h). 1200 no longer covers that — raised to 1280 to
      * clear SEQ_RATCHET_TAG_MAX (1247) with the same +2 off-by-one margin. */
     amy_cfg.max_sequencer_tags = 1280;
-    /* Raise the instrument table from the default 64 so the standalone drone
-     * synth (custompatches/drone_core) can claim dedicated slots above the
-     * existing map (drum 6..9, melodic 11..62, arp 63). The drone uses slots
-     * DRONE_SYNTH_MAIN=64 and DRONE_SYNTH_SUB=65. instruments_init() sizes the
-     * table from this value. AMY's default 250 oscs leave ample headroom for the
-     * drone's 2 voices x 2 oscs. Keep in sync with drone_core.c. */
-    amy_cfg.max_synths = 66;
+    /* Raise the instrument table from the default 64 so the standalone drones
+     * (custompatches/drone_core + drone_std_core) can claim dedicated slots
+     * above the existing map (drum 6..9, melodic 11..62, arp 63). The stutter
+     * drone uses DRONE_SYNTH_MAIN=64 / DRONE_SYNTH_SUB=65; the normal drone
+     * DRONE_STD_SYNTH_MAIN=66 / DRONE_STD_SYNTH_SUB=67, so both can sound at
+     * once. instruments_init() sizes the table from this value. AMY's default
+     * 250 oscs leave ample headroom for both drones' voices. Keep in sync with
+     * drone_core.c / drone_std_core.c. */
+    amy_cfg.max_synths = 68;
 #ifdef GAMMA9001
     gamma9001_pcm_mount();
 #endif

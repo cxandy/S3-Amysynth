@@ -168,7 +168,24 @@ int8_t dsps_biquad_gen_bpf_f32(SAMPLE *coeffs, float f, float qFactor)
 }
 
 // Stick to the faster mult for biquad, hpf etc, since the parameters aren't so sensitive, and parametric_eq was chewing major CPU.
+/* LOCAL EDIT (upstream PR candidate): SMULR6 keeps only 12 fractional bits of
+ * each operand. For low-cutoff biquads the split-feedback corrections e,f are
+ * ~2^-10, so they retain just 2-3 significant bits and the pole lands almost
+ * randomly around its target: sub-150 Hz HPF/BPF at Q>=2 rings up ~+12 dB
+ * into sustained clipping (or, depending on where the pole falls, loses the
+ * resonance), and the sub-100 Hz LPF numerator rounds to zero (silent
+ * output). A full 32x32->64 rounding multiply restores exact s8.23 products
+ * for a couple of extra instructions per multiply; host-side A/B against a
+ * double-precision reference matches to 3 decimals across fc=10..1000 Hz,
+ * Q=0.7..8 (see docs/filter-fixedpoint-instability-2026-07-18.md). */
+#ifdef AMY_USE_FIXEDPOINT
+static inline SAMPLE SMUL64R(SAMPLE a, SAMPLE b) {
+    return (SAMPLE)((((int64_t)a * (int64_t)b) + (1 << (S_FRAC_BITS - 1))) >> S_FRAC_BITS);
+}
+#define FILT_MUL_SS(a, b) SMUL64R(a, b)
+#else
 #define FILT_MUL_SS(a, b) SMULR6(a, b)
+#endif
 
 #define FILTER_SCALEUP_BITS 0  // Apply this gain to input before filtering to avoid underflow in intermediate value.
 #define FILTER_BIQUAD_SCALEUP_BITS 0  // Apply this gain to input before filtering to avoid underflow in intermediate value.

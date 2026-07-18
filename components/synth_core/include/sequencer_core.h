@@ -281,6 +281,23 @@ void sequencer_core_set_melodic_filter(uint8_t layer_idx, uint8_t track,
  * intrinsic to the oscillator, not the optional post-render filter). */
 void sequencer_core_push_filter(uint8_t synth, const seq_filter_t *f, bool is_ks);
 
+/* ── Editor live-preview (AMY only; the store and authored flags are untouched) ──
+ * Audition scratch editor values against the running engine. Cancel restores by
+ * re-pushing the stored state through these same calls — or, for rows never
+ * authored (whose live state came from the patch itself), by
+ * sequencer_core_reload_layer_synth(), which re-applies the patch and every
+ * stored parameter to the layer's slots (brief voice restart). */
+void sequencer_core_preview_melodic_envelope(uint8_t layer_idx, uint8_t track,
+                                             const seq_env_t *env);
+void sequencer_core_preview_melodic_envelope2(uint8_t layer_idx, uint8_t track,
+                                              const seq_env_t *env);
+void sequencer_core_preview_melodic_filter(uint8_t layer_idx, uint8_t track,
+                                           const seq_filter_t *f);
+bool sequencer_core_melodic_env_authored(uint8_t layer_idx, uint8_t track,
+                                         uint8_t eg_index);
+bool sequencer_core_melodic_filter_authored(uint8_t layer_idx, uint8_t track);
+void sequencer_core_reload_layer_synth(uint8_t layer_idx);
+
 /* Map a Q value (same [0.51, 8.0] range enforced by sequencer_core_set_melodic_filter)
  * linearly onto AMY's KS oscillator feedback range [0.0, 1.0]. Q=8.0 -> feedback=1.0
  * is the verified-safe ceiling (lossless two-tap averaging filter, the classic

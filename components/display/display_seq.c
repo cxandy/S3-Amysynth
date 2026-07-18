@@ -2,6 +2,13 @@
 #include "patch_names.h"
 #include <stdio.h>
 
+/* Static role labels for the four drum tracks, by purpose/frequency range
+ * (low body, mid attack, high tick, percussive accent). The loaded preset
+ * is shown by name in the patch-select overlay instead. */
+static const char *const drum_track_labels[SEQ_TRACKS] = {
+    "LOW", "MID", "TOP", "PERC"
+};
+
 /* Produce a 3-char null-terminated note name: "C4", "C#4", "D4" … */
 static void note_name_str(uint8_t midi_note, char buf[4])
 {
@@ -87,20 +94,16 @@ void display_seq_draw_frame(u8g2_t *u8g2, const display_seq_state_t *state, uint
     for (int t = 0; t < SEQ_TRACKS; t++) {
         int y = grid_top + t * row_h;
 
-        /* Track label: drums show the per-track patch NUMBER (SYNTH engine)
-         * or the PCM preset with a 'P' prefix (PCM engine); melodic shows
-         * the pitch name. */
-        char label[8];
+        /* Track label: drums show the track's static role (the assigned
+         * preset is browsed by name in the patch-select overlay); melodic
+         * shows the pitch name. */
+        char note_buf[4];
+        const char *label;
         if (layer->type == SEQ_LAYER_DRUM) {
-            if (state->drum_pcm) {
-                snprintf(label, sizeof(label), "P%u",
-                         (unsigned)layer->track_pcm_preset[t]);
-            } else {
-                snprintf(label, sizeof(label), "%u",
-                         (unsigned)layer->track_patch[t]);
-            }
+            label = drum_track_labels[t];
         } else {
-            note_name_str(layer->track_base_note[t], label);
+            note_name_str(layer->track_base_note[t], note_buf);
+            label = note_buf;
         }
 
         if (state->drum_select_mode && t == (int)state->selected_track) {

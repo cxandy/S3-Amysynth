@@ -843,6 +843,7 @@ void drone_set_envelope(const seq_env_t *env)
     if (!env) return;
     s_d.vp.env = *env;
     if (s_d.vp.env.attack_ms < 2) s_d.vp.env.attack_ms = 2;  /* 2 ms floor */
+    if (s_d.vp.env.release_ms < 5) s_d.vp.env.release_ms = 5;  /* 5 ms declick floor */
     s_d.vp.env_authored = true;
     seq_env_t env_to_push = s_d.vp.env;
     /* Attack-floor only, matching drone_rebuild(): no KS sustain zeroing. */
@@ -857,6 +858,30 @@ void drone_set_envelope(const seq_env_t *env)
              (unsigned)s_d.vp.env.sustain_pct, (unsigned)s_d.vp.env.release_ms);
 }
 
+/* ── Editor live-preview (AMY only; drone store + authored flags untouched) ── */
+
+void drone_preview_envelope(const seq_env_t *env)
+{
+    if (!env) return;
+    seq_env_t tmp = *env;
+    /* Same onset-floor treatment as drone_set_envelope's push. */
+    voice_env_apply_ks_noise_floor(&tmp, false,
+                                   s_d.wave == KS || s_d.wave == NOISE);
+    sequencer_core_push_envelope(DRONE_SYNTH_MAIN, &tmp);
+    if (s_d.sub_enabled) {
+        sequencer_core_push_envelope(DRONE_SYNTH_SUB, &tmp);
+    }
+}
+
+void drone_preview_envelope2(const seq_env_t *env)
+{
+    if (!env) return;
+    sequencer_core_push_envelope_eg1(DRONE_SYNTH_MAIN, 0, env);
+    if (s_d.sub_enabled) {
+        sequencer_core_push_envelope_eg1(DRONE_SYNTH_SUB, 0, env);
+    }
+}
+
 void drone_get_envelope2(seq_env_t *out)
 {
     if (out) *out = s_d.vp.env1;
@@ -867,6 +892,7 @@ void drone_set_envelope2(const seq_env_t *env)
     if (!env) return;
     s_d.vp.env1 = *env;
     if (s_d.vp.env1.attack_ms < 2) s_d.vp.env1.attack_ms = 2;  /* 2 ms floor */
+    if (s_d.vp.env1.release_ms < 5) s_d.vp.env1.release_ms = 5;  /* 5 ms declick floor */
     s_d.vp.env1_authored = true;
     sequencer_core_push_envelope_eg1(DRONE_SYNTH_MAIN, 0, &s_d.vp.env1);
     if (s_d.sub_enabled) {

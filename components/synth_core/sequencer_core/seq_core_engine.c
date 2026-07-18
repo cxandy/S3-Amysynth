@@ -309,9 +309,14 @@ static void sequencer_refresh_track_note(uint8_t layer_idx, uint8_t track,
     }
 
     /* One-shot preview: fires a few ticks from now using the same tag slot.
-     * Rapid scrolling overwrites the slot so only the last change is heard. */
+     * Rapid scrolling overwrites the slot so only the last change is heard.
+     * Velocity matches what a real downbeat step on this track would play
+     * (groove velocity x amp trim) so the preview is honest about level. */
+    float preview_vel = sequencer_step_velocity(layer, track, 0)
+                        * layer->vp[track].amp_trim;
+    if (preview_vel > 1.0f) preview_vel = 1.0f;
     uint32_t fire_tick = sequencer_ticks() + SEQ_PREVIEW_DELAY_TICKS;
-    amy_helpers_note_send(layer->synth_id[track], resolved_note, 1.0f,
+    amy_helpers_note_send(layer->synth_id[track], resolved_note, preview_vel,
                         seq_preview_tag(layer_idx, track), fire_tick, 0);
     amy_helpers_note_send(layer->synth_id[track], resolved_note, 0.0f,
                         seq_preview_off_tag(layer_idx, track),
@@ -394,7 +399,11 @@ void sequencer_core_set_playing(bool p)
         /* Bug 1.2: silence only the sequencer's own synth slots (melodic/drum
          * per-layer, plus arp slot 63). Drone slots 64-65 are intentionally
          * spared — they manage their own lifecycle and do not auto-resume, so
-         * a global notes-off would permanently silence the drone. */
+         * a global notes-off would permanently silence the drone.
+         
+         This is dumb - God
+         
+         */
         for (uint8_t i = 0; i < s_num_layers; i++) {
             seq_layer_t *layer = &s_layers[i];
             for (uint8_t t = 0; t < layer->num_tracks; t++) {

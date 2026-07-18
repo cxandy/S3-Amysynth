@@ -1,0 +1,86 @@
+#pragma once
+
+#include <stdbool.h>
+#include <stdint.h>
+#include "seq_model.h"     /* seq_env_t, seq_filter_t, seq_lfo_t */
+#include "chord_types.h"   /* chord_type_t */
+#include "custompatches/drone_core.h"   /* drone_source_t, drone_patch_excluded() */
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* ── Normal (free-running) drone ──────────────────────────────────────────
+ * The stutter drone's sibling: the same chord voicing (one voice per chord
+ * note on the main synth) and mono sub an interval below the root, but with
+ * a plain sustained output — no stutter gate, no peak/duck amp coupling, no
+ * pattern/blip/swing service and no tempo-locked filter sweep.
+ *
+ * In their place it exposes the standard per-voice toolset the melodic
+ * tracks and the arp already have:
+ *   - a free filter (seq_filter_t: type/cutoff/resonance/enable) edited in
+ *     the full filter graph editor and pushed via sequencer_core_push_filter;
+ *   - a free AMY-native LFO (seq_lfo_t) applied with voice_apply_native_lfo
+ *     (WAVE mode only — PATCH-mode instruments own their osc topology);
+ *   - the shared ADSR/EG1 graph editor storage.
+ *
+ * It owns AMY synth slots 66/67 (above the stutter drone's 64/65) so both
+ * drones can sound simultaneously; amy_cfg.max_synths must be >= 68.
+ * All AMY interaction goes through amy_helpers deltas (never amy_queue_lock),
+ * matching drone_core's concurrency model. */
+
+/* ── Lifecycle ── */
+void drone_std_core_init(void);
+
+/* Per-UI-frame service: drains the coalesced rebuild and keeps the native
+ * LFO carrier BPM-synced. Cheap no-op when nothing changed. */
+void drone_std_core_service(void);
+
+/* Re-push the native LFO carrier frequency after a BPM change (called from
+ * sequencer_core_set_bpm, mirroring arp_core_refresh_lfo_freq). */
+void drone_std_core_refresh_lfo_freq(void);
+
+/* ── Parameter setters ── */
+void drone_std_set_enabled(bool on);           /* sustained note-on/off        */
+void drone_std_set_source(drone_source_t src); /* WAVE <-> PATCH               */
+void drone_std_set_wave(uint16_t amy_wave);    /* carrier wave (WAVE mode)     */
+void drone_std_set_chord(chord_type_t chord);
+void drone_std_set_root_note(uint8_t midi_note);
+void drone_std_set_level(float v);             /* 0..1 linear output level     */
+void drone_std_set_patch(uint16_t patch);      /* PATCH-mode preset            */
+void drone_std_set_sub_enabled(bool on);
+void drone_std_set_sub_interval(int8_t st);    /* semitones, -36..0            */
+void drone_std_set_amp_trim(float v);          /* graph-editor amp mode 0..1   */
+
+/* ── Envelopes (shared graph editor; deferred authority) ── */
+void drone_std_get_envelope(seq_env_t *out);
+void drone_std_set_envelope(const seq_env_t *env);
+void drone_std_get_envelope2(seq_env_t *out);
+void drone_std_set_envelope2(const seq_env_t *env);
+void drone_std_preview_envelope(const seq_env_t *env);
+void drone_std_preview_envelope2(const seq_env_t *env);
+
+/* ── Free filter (full filter editor) ── */
+void drone_std_get_filter(seq_filter_t *out);
+void drone_std_set_filter(const seq_filter_t *f);
+void drone_std_preview_filter(const seq_filter_t *f);  /* AMY only, store untouched */
+
+/* ── Free LFO (shared LFO editor; WAVE mode only takes effect) ── */
+void drone_std_get_lfo(seq_lfo_t *out);
+void drone_std_set_lfo(const seq_lfo_t *lfo);
+
+/* ── Getters (for the list UI) ── */
+bool           drone_std_get_enabled(void);
+drone_source_t drone_std_get_source(void);
+uint16_t       drone_std_get_wave(void);
+chord_type_t   drone_std_get_chord(void);
+uint8_t        drone_std_get_root_note(void);
+float          drone_std_get_level(void);
+uint16_t       drone_std_get_patch(void);
+bool           drone_std_get_sub_enabled(void);
+int8_t         drone_std_get_sub_interval(void);
+float          drone_std_get_amp_trim(void);
+
+#ifdef __cplusplus
+}
+#endif

@@ -83,6 +83,15 @@ void synth_ui_drone_handle_button(void);
 /* Cycle the drone's PATCH-mode preset (hold+turn gesture on the drone screen). */
 void synth_ui_drone_cycle_patch(int delta);
 
+/* ── Normal drone screen ─────────────────────────────────────────────────
+ * Free-running drone (custompatches/drone_std_core). Active when
+ * seq_state.ui_mode == UI_MODE_DRONE_STD and no overlay is up. Same list
+ * model as the stutter screen; its STUTTER row dives to UI_MODE_DRONE. */
+bool synth_ui_drone_std_is_active(void);
+void synth_ui_drone_std_handle_encoder(long delta);
+void synth_ui_drone_std_handle_button(void);
+void synth_ui_drone_std_cycle_patch(int delta);
+
 /* Chord-progression screen — active when seq_state.ui_mode == UI_MODE_PROG and no
  * overlay (menu/graph) is up.  Returns false if not active (caller should fall through). */
 bool synth_ui_prog_is_active(void);
@@ -230,6 +239,7 @@ typedef enum {
     UI_VIEW_ARP,
     UI_VIEW_DRONE_VIS,
     UI_VIEW_DRONE,
+    UI_VIEW_DRONE_STD,
     UI_VIEW_PROG,
     UI_VIEW_TRACKOPTS,
     UI_VIEW_FM,

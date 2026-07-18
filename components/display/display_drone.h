@@ -30,8 +30,11 @@ typedef struct {
     bool    editing;    /* true => value of cursor row is editing */
 } drone_view_t;
 
-/* Draw the full drone screen (clears + sends the buffer). */
+/* Draw the full drone screen (clears + sends the buffer). The titled variant
+ * lets the stutter and normal drone screens share this renderer. */
 void display_drone_draw_frame(u8g2_t *u8g2, const drone_view_t *view);
+void display_drone_draw_frame_titled(u8g2_t *u8g2, const char *title,
+                                     const drone_view_t *view);
 
 /* ── Drone visualiser overlay ───────────────────────────────────────────────
  * Plain data snapshot passed from synth_ui (which owns drone_core access).

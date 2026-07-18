@@ -539,6 +539,7 @@ void arp_set_envelope(const seq_env_t *env)
     if (!env) return;
     s_arp.vp.env = *env;
     if (s_arp.vp.env.attack_ms < 2) s_arp.vp.env.attack_ms = 2;  /* 2 ms floor */
+    if (s_arp.vp.env.release_ms < 5) s_arp.vp.env.release_ms = 5;  /* 5 ms declick floor */
     s_arp.vp.env_authored = true;
     sequencer_core_push_envelope(sequencer_core_arp_synth(), &s_arp.vp.env);
     ESP_LOGI(TAG, "arp env -> A%u D%u S%u%% R%u",
@@ -556,6 +557,7 @@ void arp_set_envelope2(const seq_env_t *env)
     if (!env) return;
     s_arp.vp.env1 = *env;
     if (s_arp.vp.env1.attack_ms < 2) s_arp.vp.env1.attack_ms = 2;  /* 2 ms floor */
+    if (s_arp.vp.env1.release_ms < 5) s_arp.vp.env1.release_ms = 5;  /* 5 ms declick floor */
     s_arp.vp.env1_authored = true;
     sequencer_core_push_envelope_eg1(sequencer_core_arp_synth(), 0, &s_arp.vp.env1);
     ESP_LOGI(TAG, "arp env1 -> A%u D%u S%u%% R%u",
@@ -566,6 +568,26 @@ void arp_set_envelope2(const seq_env_t *env)
 void arp_get_filter(seq_filter_t *out)
 {
     if (out) *out = s_arp.vp.filter;
+}
+
+/* ── Editor live-preview (AMY only; arp store + authored flags untouched) ── */
+
+void arp_preview_envelope(const seq_env_t *env)
+{
+    if (!env) return;
+    sequencer_core_push_envelope(sequencer_core_arp_synth(), env);
+}
+
+void arp_preview_envelope2(const seq_env_t *env)
+{
+    if (!env) return;
+    sequencer_core_push_envelope_eg1(sequencer_core_arp_synth(), 0, env);
+}
+
+void arp_preview_filter(const seq_filter_t *f)
+{
+    if (!f) return;
+    sequencer_core_push_filter(sequencer_core_arp_synth(), f, s_arp.wave == KS);
 }
 
 void arp_set_filter(const seq_filter_t *f)

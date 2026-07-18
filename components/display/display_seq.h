@@ -13,10 +13,11 @@ extern "C" {
 typedef enum {
     UI_MODE_SEQUENCER = 0,
     UI_MODE_ARP       = 1,
-    UI_MODE_DRONE     = 2,
+    UI_MODE_DRONE     = 2,   /* stutter drone screen */
     UI_MODE_PROG      = 3,
     UI_MODE_TRACKOPTS = 4,
     UI_MODE_FM        = 5,
+    UI_MODE_DRONE_STD = 6,   /* normal (free-running) drone screen */
 } ui_mode_t;
 
 /* ── Global sequencer display/UI state ── */

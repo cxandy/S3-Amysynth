@@ -128,6 +128,18 @@ void graph_popup_set_adsr_lock_sx(gpopup_t *p, bool lock)
     p->adsr_lock_sx = lock;
 }
 
+void graph_popup_set_shape(gpopup_t *p, gpopup_shape_fn fn)
+{
+    if (!p) return;
+    p->shape = fn;
+}
+
+void graph_popup_set_xstep(gpopup_t *p, gpopup_xstep_fn fn)
+{
+    if (!p) return;
+    p->xstep = fn;
+}
+
 /* ── ADSR role-aware constraints ─────────────────────────────────────────────
  * Points are [origin, A(attack peak), D(decay end / sustain level), R(release
  * end)]. Enforce a musically-valid shape so the user cannot create nonsensical
@@ -136,7 +148,10 @@ void graph_popup_set_adsr_lock_sx(gpopup_t *p, bool lock)
  *   - origin pinned to (0,0); A.y pinned to 1.0; R.y pinned to 0.0.
  *   - only the D point's Y (the sustain level) is freely movable.
  * Index roles assume the standard 4-point ADSR seed used by the host. */
-#define GPOPUP_MIN_X_GAP 0.02f   /* minimum normalised spacing between points */
+/* Minimum normalised spacing between points. Sub-pixel on a 128px plot: only
+ * prevents exact crossing/collapse, so a fine-grained (audio-taper) host step
+ * can bring segments down to a few ms without the spacing rule fighting it. */
+#define GPOPUP_MIN_X_GAP 0.004f
 
 static void adsr_apply_constraints(gpopup_t *p)
 {
@@ -257,6 +272,15 @@ static int curve_y_at_col(const gpopup_t *p, int col,
         if (col <= px1) {
             int span = px1 - px0;
             if (span <= 0) return py1;
+            if (p->shape) {
+                /* Shaped segment: evaluate in normalised level space so the
+                 * callback sees the same v0/v1/t domain the synth engine uses,
+                 * then map the result back to a pixel row. */
+                float t  = (float)(col - px0) / (float)span;
+                float yn = p->shape(clampf01(p->points[i - 1].y),
+                                    clampf01(p->points[i].y), t);
+                return (int)(plot_y + (1.0f - clampf01(yn)) * (plot_h - 1));
+            }
             /* Linear interpolation between the two bracketing points. */
             return py0 + ((py1 - py0) * (col - px0)) / span;
         }
@@ -320,16 +344,35 @@ void graph_popup_draw(u8g2_t *u8g2, const gpopup_t *p)
         }
     }
 
-    /* Curve: connect consecutive points (drawn on top of any fill). */
-    int prev_x = 0, prev_y = 0;
-    for (uint8_t i = 0; i < p->num_points; ++i) {
-        int cx, cy;
-        point_to_px(p, &p->points[i], plot_x, plot_y, plot_w, plot_h, &cx, &cy);
-        if (i > 0) {
-            u8g2_DrawLine(u8g2, prev_x, prev_y, cx, cy);
+    /* Curve: drawn on top of any fill. With a shape callback the path is
+     * evaluated per column so non-linear segments render their true profile;
+     * adjacent columns are joined with short lines to keep steep runs solid.
+     * Without one, straight segments between points as before. */
+    if (p->shape && p->num_points > 1) {
+        int fx, fy, lx, ly;
+        point_to_px(p, &p->points[0], plot_x, plot_y, plot_w, plot_h, &fx, &fy);
+        point_to_px(p, &p->points[p->num_points - 1], plot_x, plot_y,
+                    plot_w, plot_h, &lx, &ly);
+        int prev_cx = fx, prev_cy = fy;
+        for (int cx = fx; cx <= lx; ++cx) {
+            int cy = curve_y_at_col(p, cx, plot_x, plot_y, plot_w, plot_h);
+            if (cy < (int)plot_y) cy = (int)plot_y;
+            if (cy > baseline) cy = baseline;
+            u8g2_DrawLine(u8g2, prev_cx, prev_cy, cx, cy);
+            prev_cx = cx;
+            prev_cy = cy;
         }
-        prev_x = cx;
-        prev_y = cy;
+    } else {
+        int prev_x = 0, prev_y = 0;
+        for (uint8_t i = 0; i < p->num_points; ++i) {
+            int cx, cy;
+            point_to_px(p, &p->points[i], plot_x, plot_y, plot_w, plot_h, &cx, &cy);
+            if (i > 0) {
+                u8g2_DrawLine(u8g2, prev_x, prev_y, cx, cy);
+            }
+            prev_x = cx;
+            prev_y = cy;
+        }
     }
 
     /* ADSR: minimal time tick marks in the bottom margin (just under the axis).
@@ -452,9 +495,15 @@ gpopup_result_t graph_popup_handle_encoder(gpopup_t *p, long delta)
                 pt->y = clampf01(pt->y + step);
             }
         } else {
-            /* Locked points (origin, host-owned S.x) ignore X nudges. */
+            /* Locked points (origin, host-owned S.x) ignore X nudges. The host
+             * xstep override (audio-taper time stride) wins over the fixed
+             * normalised step when installed. */
             if (adsr_x_editable(p, p->cursor)) {
-                pt->x = clampf01(pt->x + step);
+                if (p->xstep) {
+                    pt->x = clampf01(p->xstep(p->cursor, pt->x, delta));
+                } else {
+                    pt->x = clampf01(pt->x + step);
+                }
             }
         }
         /* Re-impose ADSR validity (monotonic time, role-fixed levels). */

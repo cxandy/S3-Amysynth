@@ -3,6 +3,7 @@
 #include "sequencer_core.h"
 #include "arp_core.h"
 #include "custompatches/drone_core.h"
+#include "custompatches/drone_std_core.h"
 #include "graph_popup.h"
 #include "filter_graph.h"
 #include "display_lfo.h"
@@ -36,9 +37,10 @@ uint8_t  s_graph_track = 0;
  * route to the right envelope store (melodic row, the drone, or the arp). The
  * same widget + range mapping + commit math serve all three. */
 typedef enum {
-    GRAPH_TGT_MELODIC = 0,
-    GRAPH_TGT_DRONE   = 1,
-    GRAPH_TGT_ARP     = 2,
+    GRAPH_TGT_MELODIC   = 0,
+    GRAPH_TGT_DRONE     = 1,
+    GRAPH_TGT_ARP       = 2,
+    GRAPH_TGT_DRONE_STD = 3,
 } graph_target_t;
 static graph_target_t s_graph_target = GRAPH_TGT_MELODIC;
 
@@ -65,6 +67,79 @@ static const char *graph_eg_type_code(uint8_t eg_type)
         case 3:  return "EXP";   /* ENVELOPE_TRUE_EXPONENTIAL*/
         default: return "NRM";   /* ENVELOPE_NORMAL          */
     }
+}
+
+/* Full name for the transient top-bar readout shown right after a type cycle. */
+static const char *graph_eg_type_name(uint8_t eg_type)
+{
+    switch (eg_type & 3u) {
+        case 1:  return "LINEAR";
+        case 2:  return "DX7";
+        case 3:  return "TRUE EXP";
+        default: return "NORMAL";
+    }
+}
+
+/* Type-cycle flash: after MY_BUTTON_1 changes the curve type, the top bar shows
+ * the full type name for a short window (the right slot is otherwise owned by
+ * the point readout). Expiry is tick-based; the derived active flag is folded
+ * into the view signature so the bar redraws when the window closes. */
+#define GRAPH_TYPE_FLASH_MS 1200u
+static TickType_t s_graph_type_flash_until = 0;
+
+static bool graph_type_flash_active(void)
+{
+    return (int32_t)(s_graph_type_flash_until - xTaskGetTickCount()) > 0;
+}
+
+/* ── Curve-type preview shaping ──────────────────────────────────────────────
+ * Per-segment shape callback for the ADSR plot: a float mirror of AMY's
+ * compute_breakpoint_scale() segment math (envelope.c), evaluated in the
+ * widget's normalised 0..1 level space, so the drawn curve matches what the
+ * selected eg_type will actually sound like. Runs only while the editor is
+ * open, on the 50 ms UI tick — nowhere near the render path. */
+#define GRAPH_ENV_EPS 0.0002f   /* BREAKPOINT_EPS: floor for the log-domain types */
+
+static float graph_env_shape(float v0, float v1, float t)
+{
+    uint8_t eg_type = (uint8_t)(s_graph_eg_type_disp & 3u);
+
+    if (eg_type == 1) {         /* ENVELOPE_LINEAR */
+        return v0 + (v1 - v0) * t;
+    }
+
+    if (eg_type == 2 || eg_type == 3) {   /* DX7 / TRUE_EXPONENTIAL */
+        float a = (v0 > GRAPH_ENV_EPS) ? v0 : GRAPH_ENV_EPS;
+        float b = (v1 > GRAPH_ENV_EPS) ? v1 : GRAPH_ENV_EPS;
+        if (eg_type == 2 && b > a) {
+            /* DX7 attack law. Levels map linear->DX7 (log2 + 12.375), then
+             * through the attack-range curve; segment time is normalised so
+             * only the ratio matters. Degenerate spans fall through to the
+             * true-exp branch below. */
+            float l0 = log2f(a) + 12.375f;
+            float l1 = log2f(b) + 12.375f;
+            float m0 = 1.0f - ((l0 > 4.25f) ? (l0 - 4.25f) : 0.0f) / 9.375f;
+            float m1 = 1.0f - ((l1 > 4.25f) ? (l1 - 4.25f) : 0.0f) / 9.375f;
+            float dl = log2f(m0) - log2f(m1);
+            if (dl > 1e-6f) {
+                float t_const = 1.0f / dl;
+                float my_t0   = -t_const * log2f(m0);
+                float level   = 4.25f
+                    + 9.375f * (1.0f - exp2f(-(my_t0 + t) / t_const));
+                return exp2f(level - 12.375f);
+            }
+        }
+        /* TRUE_EXPONENTIAL, and DX7 decay/release (also plain true-exp). */
+        float la = log2f(a), lb = log2f(b);
+        return exp2f(la + (lb - la) * t);
+    }
+
+    /* ENVELOPE_NORMAL: overshoot-compensated "false exponential". */
+    const float rate      = -4.328085f;   /* EXP_RATE_VAL */
+    const float overshoot = 1.0f / (1.0f - exp2f(rate));
+    float y = v0 + (v1 - v0) * overshoot * (1.0f - exp2f(rate * t));
+    if (y < 0.0f) y = 0.0f;
+    return y;
 }
 
 /* ── Time-range mapping ──────────────────────────────────────────────────────
@@ -101,6 +176,16 @@ static bool  s_graph_fenv_dirty = false;
  * MY_BUTTON_1 while the ADSR graph or LFO editor is open.  The filter editor
  * repurposes MY_BUTTON_1 for enable/disable, so scope is set there or in LFO. */
 static bool s_editor_apply_all = false;
+
+/* Live-preview bookkeeping (see the "Live preview while editing" block below):
+ * which parts of the open editor session have pushed scratch state to AMY, and
+ * the amp value/throttle needed to restore or pace those pushes. */
+static bool       s_graph_live_env  = false; /* env points/type live-pushed   */
+static bool       s_graph_live_fenv = false; /* EG1 sweep depth live-pushed   */
+static bool       s_amp_live_applied = false;/* a live amp apply landed       */
+static bool       s_amp_live_pending = false;
+static float      s_graph_amp_open  = 1.0f;  /* amp trim at open (cancel)     */
+static TickType_t s_amp_live_last_apply = 0;
 
 /* log(1 + GRAPH_LONG_SQUASH), the constant normaliser of the long-range
  * squash curve — hoisted so the mapping helpers below don't recompute it on
@@ -142,6 +227,48 @@ static float graph_ms_to_x(uint32_t ms)
     return logf(1.0f + k * t) / graph_log1p_squash();
 }
 
+/* Audio-taper encoder stride for the envelope points' X axis (installed as the
+ * popup's xstep hook). Envelope time knobs are conventionally exponential:
+ * each detent scales the SEGMENT duration (time since the previous point, i.e.
+ * the A/D/R value itself — not the point's cumulative axis position) by ~8%,
+ * with a minimum stride so the bottom of the range is reachable at fine
+ * resolution. A fixed normalised step (2% of a linear 2 s axis = 40 ms) made
+ * the smallest attack move 2→40 ms, which under the log-domain curve types
+ * (DX7/EXP, back-loaded attacks) silences short notes outright.
+ * Per-role feel: the attack is where a few ms decide pluck vs pad, so it gets
+ * a finer ratio and stride than decay, and release coarser still — sweeping a
+ * long tail shouldn't take a hundred detents. */
+static const float grx_ratio[4]  = { 1.08f, 1.04f, 1.08f, 1.10f }; /* -,A,D,R */
+static const float grx_stride[4] = { 1.0f,  1.0f,  1.0f,  2.0f  }; /* min ms  */
+
+static float graph_xstep(uint8_t idx, float x, long delta)
+{
+    uint32_t prev_ms = 0;
+    if (idx > 0 && idx <= s_graph_popup.num_points) {
+        prev_ms = graph_x_to_ms(s_graph_popup.points[idx - 1].x);
+    }
+    uint32_t cum_ms = graph_x_to_ms(x);
+    float seg = (cum_ms > prev_ms) ? (float)(cum_ms - prev_ms) : 0.0f;
+
+    float ratio  = grx_ratio[idx & 3u];
+    float stride = grx_stride[idx & 3u];
+    for (long n = delta; n > 0; --n) {
+        float g = seg * ratio;
+        seg = (g > seg + stride) ? g : seg + stride;
+    }
+    for (long n = delta; n < 0; ++n) {
+        float g = seg / ratio;
+        seg = (g < seg - stride) ? g : seg - stride;
+    }
+    if (seg < 0.0f) seg = 0.0f;
+
+    float range = s_graph_long_range ? (float)GRAPH_RANGE_LONG_MS
+                                     : (float)GRAPH_RANGE_SHORT_MS;
+    float cum = (float)prev_ms + seg;
+    if (cum > range) cum = range;
+    return graph_ms_to_x((uint32_t)(cum + 0.5f));
+}
+
 /* Yellow top-bar height on the dual-colour panel: rows 0..15 render yellow and
  * are used as the editor's context bar, the plot fills rows 16..63. */
 #define GRAPH_TOPBAR_H 16
@@ -181,6 +308,11 @@ static void graph_popup_ensure_init(void)
     graph_popup_init(&s_graph_popup, 0, GRAPH_TOPBAR_H, 128,
                      (uint8_t)(64 - GRAPH_TOPBAR_H));
     graph_popup_set_style(&s_graph_popup, GPOPUP_STYLE_ADSR);
+    /* Draw the curve with the bound EG's real per-type shape (reads
+     * s_graph_eg_type_disp at draw time, so type cycles retint instantly). */
+    graph_popup_set_shape(&s_graph_popup, graph_env_shape);
+    /* Audio-taper time stride for A/D/R edits (see graph_xstep). */
+    graph_popup_set_xstep(&s_graph_popup, graph_xstep);
 #if CONFIG_SEQ_ADSR_EXPLICIT_DECAY
     /* Explicit decay (industry norm): the sustain point is draggable on both
      * axes - X sets the decay time (ms), Y sets the sustain level. */
@@ -278,6 +410,9 @@ static bool graph_read_target_env_idx(seq_env_t *env, uint8_t eg_index)
             case GRAPH_TGT_DRONE:
                 drone_get_envelope2(env);
                 return true;
+            case GRAPH_TGT_DRONE_STD:
+                drone_std_get_envelope2(env);
+                return true;
             case GRAPH_TGT_ARP:
                 arp_get_envelope2(env);
                 return true;
@@ -290,6 +425,9 @@ static bool graph_read_target_env_idx(seq_env_t *env, uint8_t eg_index)
     switch (s_graph_target) {
         case GRAPH_TGT_DRONE:
             drone_get_envelope(env);
+            return true;
+        case GRAPH_TGT_DRONE_STD:
+            drone_std_get_envelope(env);
             return true;
         case GRAPH_TGT_ARP:
             arp_get_envelope(env);
@@ -309,6 +447,9 @@ static void graph_write_target_env_idx(const seq_env_t *env, uint8_t eg_index)
             case GRAPH_TGT_DRONE:
                 drone_set_envelope2(env);
                 break;
+            case GRAPH_TGT_DRONE_STD:
+                drone_std_set_envelope2(env);
+                break;
             case GRAPH_TGT_ARP:
                 arp_set_envelope2(env);
                 break;
@@ -327,6 +468,9 @@ static void graph_write_target_env_idx(const seq_env_t *env, uint8_t eg_index)
     switch (s_graph_target) {
         case GRAPH_TGT_DRONE:
             drone_set_envelope(env);
+            break;
+        case GRAPH_TGT_DRONE_STD:
+            drone_std_set_envelope(env);
             break;
         case GRAPH_TGT_ARP:
             arp_set_envelope(env);
@@ -358,6 +502,8 @@ void synth_ui_graph_open_envelope(void)
 
     if (seq_state.ui_mode == UI_MODE_DRONE) {
         s_graph_target = GRAPH_TGT_DRONE;
+    } else if (seq_state.ui_mode == UI_MODE_DRONE_STD) {
+        s_graph_target = GRAPH_TGT_DRONE_STD;
     } else if (seq_state.ui_mode == UI_MODE_ARP) {
         s_graph_target = GRAPH_TGT_ARP;
     } else {
@@ -375,6 +521,12 @@ void synth_ui_graph_open_envelope(void)
         env = seq_default_melodic_env();
     }
     s_graph_eg_type_disp = env.eg_type;
+    s_graph_type_flash_until = 0;   /* no stale type flash from a prior session */
+    /* Fresh live-preview session: nothing pushed yet. */
+    s_graph_live_env   = false;
+    s_graph_live_fenv  = false;
+    s_amp_live_applied = false;
+    s_amp_live_pending = false;
 
     /* Set initial range from total env time BEFORE seeding so graph_ms_to_x()
      * uses the correct mapping when seed runs. No remap needed here since there
@@ -389,6 +541,9 @@ void synth_ui_graph_open_envelope(void)
         case GRAPH_TGT_DRONE:
             s_graph_amp_edit = drone_get_amp_trim();
             break;
+        case GRAPH_TGT_DRONE_STD:
+            s_graph_amp_edit = drone_std_get_amp_trim();
+            break;
         case GRAPH_TGT_ARP:
             s_graph_amp_edit = arp_get_amp_scale();
             break;
@@ -398,6 +553,7 @@ void synth_ui_graph_open_envelope(void)
                 s_graph_layer, s_graph_track);
             break;
     }
+    s_graph_amp_open = s_graph_amp_edit;   /* cancel restores this value */
 
     graph_seed_from_env(&env);
 
@@ -424,11 +580,16 @@ void synth_ui_graph_open_envelope(void)
  * eg_index's store on the bound target. Shared by graph_commit_to_env() (the
  * currently-shown eg_index) and graph_toggle_eg_index() (writes the
  * DEPARTING eg_index through before switching the view). */
-static void graph_write_points_to_env(uint8_t eg_index)
+/* Convert the current popup points into `env`'s ADSR fields, plus the shown
+ * curve type from s_graph_eg_type_disp (the editor's scratch — the type is
+ * previewed live and persisted on commit, like the points). `env` should be
+ * pre-seeded from the target so any non-ADSR fields carry through. Returns
+ * false when the popup has no full ADSR point set. */
+static bool graph_points_to_env(seq_env_t *env)
 {
     gpopup_point_t pts[GPOPUP_MAX_POINTS];
     uint8_t n = graph_popup_get_points(&s_graph_popup, pts, GPOPUP_MAX_POINTS);
-    if (n < 4) return;   /* expect origin + A + D + R */
+    if (n < 4) return false;   /* expect origin + A + D + R */
 
     uint32_t cum_a = graph_x_to_ms(pts[1].x);
     uint32_t cum_d = graph_x_to_ms(pts[2].x);
@@ -437,17 +598,183 @@ static void graph_write_points_to_env(uint8_t eg_index)
     /* Convert cumulative times back to per-segment durations (clamp monotonic). */
     uint32_t a = cum_a;
     if (a < 2) a = 2;  /* minimum 2 ms attack prevents DAC pop on trigger */
-    uint32_t d = (cum_d > cum_a) ? (cum_d - cum_a) : 0;
-    uint32_t r = (cum_r > cum_d) ? (cum_r - cum_d) : 0;
+    env->attack_ms   = a;
+    env->decay_ms    = (cum_d > cum_a) ? (cum_d - cum_a) : 0;
+    env->release_ms  = (cum_r > cum_d) ? (cum_r - cum_d) : 0;
+    env->sustain_pct = (uint8_t)(pts[2].y * 100.0f + 0.5f);
+    env->eg_type     = s_graph_eg_type_disp;
+    return true;
+}
 
+static void graph_write_points_to_env(uint8_t eg_index)
+{
     seq_env_t env;
-    if (!graph_read_target_env_idx(&env, eg_index)) return;  /* keep eg_type from the target */
-    env.attack_ms   = a;
-    env.decay_ms    = d;
-    env.release_ms  = r;
-    env.sustain_pct = (uint8_t)(pts[2].y * 100.0f + 0.5f);
-
+    if (!graph_read_target_env_idx(&env, eg_index)) return;
+    if (!graph_points_to_env(&env)) return;
     graph_write_target_env_idx(&env, eg_index);
+}
+
+/* ── Live preview while editing ──────────────────────────────────────────────
+ * Every edit is auditioned immediately: scratch values are pushed to AMY only
+ * (preview calls — the committed store never changes until confirm), so cancel
+ * restores by re-pushing the store, or — for melodic rows that were never
+ * authored, whose live state came from the patch string itself — by reloading
+ * the layer's patch. Amp trim is the one exception: it lives in the step-emit
+ * path, so its live apply goes through the real setter (throttled, since each
+ * melodic apply re-emits the track's scheduled steps) and cancel restores the
+ * value captured at editor open. State lives with the other editor statics
+ * near the top of the file. */
+#define GRAPH_AMP_LIVE_MS 200u               /* min spacing of amp re-emits   */
+
+static void graph_live_push_env(void)
+{
+    seq_env_t env;
+    if (!graph_read_target_env_idx(&env, s_graph_eg_index)) return;
+    if (!graph_points_to_env(&env)) return;
+    switch (s_graph_target) {
+        case GRAPH_TGT_DRONE:
+            if (s_graph_eg_index == 1) drone_preview_envelope2(&env);
+            else                       drone_preview_envelope(&env);
+            break;
+        case GRAPH_TGT_DRONE_STD:
+            if (s_graph_eg_index == 1) drone_std_preview_envelope2(&env);
+            else                       drone_std_preview_envelope(&env);
+            break;
+        case GRAPH_TGT_ARP:
+            if (s_graph_eg_index == 1) arp_preview_envelope2(&env);
+            else                       arp_preview_envelope(&env);
+            break;
+        case GRAPH_TGT_MELODIC:
+        default: {
+            uint8_t t0 = s_editor_apply_all ? 0 : s_graph_track;
+            uint8_t t1 = s_editor_apply_all ? (uint8_t)(SEQ_TRACKS - 1)
+                                            : s_graph_track;
+            for (uint8_t t = t0; t <= t1; ++t) {
+                if (s_graph_eg_index == 1)
+                    sequencer_core_preview_melodic_envelope2(s_graph_layer, t, &env);
+                else
+                    sequencer_core_preview_melodic_envelope(s_graph_layer, t, &env);
+            }
+            break;
+        }
+    }
+    s_graph_live_env = true;
+}
+
+/* EG1 sweep depth: stored filter + the scratch depth, previewed per row. */
+static void graph_live_push_fenv(void)
+{
+    if (s_graph_target != GRAPH_TGT_MELODIC) return;
+    uint8_t t0 = s_editor_apply_all ? 0 : s_graph_track;
+    uint8_t t1 = s_editor_apply_all ? (uint8_t)(SEQ_TRACKS - 1) : s_graph_track;
+    for (uint8_t t = t0; t <= t1; ++t) {
+        seq_filter_t f;
+        if (!sequencer_core_get_melodic_filter(s_graph_layer, t, &f)) continue;
+        f.filter_env_amount = s_graph_fenv_edit;
+        sequencer_core_preview_melodic_filter(s_graph_layer, t, &f);
+    }
+    s_graph_live_fenv = true;
+}
+
+static void graph_amp_live_set(float v)
+{
+    switch (s_graph_target) {
+        case GRAPH_TGT_DRONE:     drone_set_amp_trim(v);     break;
+        case GRAPH_TGT_DRONE_STD: drone_std_set_amp_trim(v); break;
+        case GRAPH_TGT_ARP:       arp_set_amp_scale(v);      break;
+        case GRAPH_TGT_MELODIC:
+        default: {
+            uint8_t t0 = s_editor_apply_all ? 0 : s_graph_track;
+            uint8_t t1 = s_editor_apply_all ? (uint8_t)(SEQ_TRACKS - 1)
+                                            : s_graph_track;
+            for (uint8_t t = t0; t <= t1; ++t)
+                sequencer_core_set_melodic_amp_scale(s_graph_layer, t, v);
+            break;
+        }
+    }
+}
+
+/* Apply a pending amp edit if the throttle window has passed. Called on each
+ * detent (leading edge) and from the UI task's tick (trailing flush), so the
+ * final value always lands within ~GRAPH_AMP_LIVE_MS of the last detent. */
+static void graph_amp_live_flush(bool force)
+{
+    if (!s_amp_live_pending) return;
+    if (!graph_popup_is_active(&s_graph_popup)) {
+        s_amp_live_pending = false;
+        return;
+    }
+    if (!force && (int32_t)(xTaskGetTickCount() - s_amp_live_last_apply)
+                      < (int32_t)pdMS_TO_TICKS(GRAPH_AMP_LIVE_MS)) {
+        return;
+    }
+    s_amp_live_last_apply = xTaskGetTickCount();
+    s_amp_live_pending = false;
+    s_amp_live_applied = true;
+    graph_amp_live_set(s_graph_amp_edit);
+}
+
+/* Undo every live push on cancel: amp back to its open value, and the
+ * previewed envelope/depth back to the store — or a full layer reload when a
+ * touched melodic row was never authored (only the patch knows its state). */
+static void graph_live_cancel_restore(void)
+{
+    s_amp_live_pending = false;
+    if (s_amp_live_applied) {
+        graph_amp_live_set(s_graph_amp_open);
+        s_amp_live_applied = false;
+    }
+    if (!s_graph_live_env && !s_graph_live_fenv) return;
+
+    if (s_graph_target == GRAPH_TGT_MELODIC) {
+        uint8_t t0 = s_editor_apply_all ? 0 : s_graph_track;
+        uint8_t t1 = s_editor_apply_all ? (uint8_t)(SEQ_TRACKS - 1) : s_graph_track;
+        bool need_reload = false;
+        for (uint8_t t = t0; t <= t1; ++t) {
+            if (s_graph_live_env &&
+                !sequencer_core_melodic_env_authored(s_graph_layer, t, s_graph_eg_index))
+                need_reload = true;
+            if (s_graph_live_fenv &&
+                !sequencer_core_melodic_filter_authored(s_graph_layer, t))
+                need_reload = true;
+        }
+        if (need_reload) {
+            sequencer_core_reload_layer_synth(s_graph_layer);
+        } else {
+            seq_env_t env;
+            if (s_graph_live_env && graph_read_target_env_idx(&env, s_graph_eg_index)) {
+                for (uint8_t t = t0; t <= t1; ++t) {
+                    if (s_graph_eg_index == 1)
+                        sequencer_core_preview_melodic_envelope2(s_graph_layer, t, &env);
+                    else
+                        sequencer_core_preview_melodic_envelope(s_graph_layer, t, &env);
+                }
+            }
+            if (s_graph_live_fenv) {
+                for (uint8_t t = t0; t <= t1; ++t) {
+                    seq_filter_t f;
+                    if (sequencer_core_get_melodic_filter(s_graph_layer, t, &f))
+                        sequencer_core_preview_melodic_filter(s_graph_layer, t, &f);
+                }
+            }
+        }
+    } else {
+        seq_env_t env;
+        if (s_graph_live_env && graph_read_target_env_idx(&env, s_graph_eg_index)) {
+            if (s_graph_target == GRAPH_TGT_ARP) {
+                if (s_graph_eg_index == 1) arp_preview_envelope2(&env);
+                else                       arp_preview_envelope(&env);
+            } else if (s_graph_target == GRAPH_TGT_DRONE_STD) {
+                if (s_graph_eg_index == 1) drone_std_preview_envelope2(&env);
+                else                       drone_std_preview_envelope(&env);
+            } else {
+                if (s_graph_eg_index == 1) drone_preview_envelope2(&env);
+                else                       drone_preview_envelope(&env);
+            }
+        }
+    }
+    s_graph_live_env  = false;
+    s_graph_live_fenv = false;
 }
 
 /* Read the edited points back, convert X->ms via the active range mapping, and
@@ -465,6 +792,9 @@ static void graph_commit_to_env(void)
     switch (s_graph_target) {
         case GRAPH_TGT_DRONE:
             drone_set_amp_trim(s_graph_amp_edit);
+            break;
+        case GRAPH_TGT_DRONE_STD:
+            drone_std_set_amp_trim(s_graph_amp_edit);
             break;
         case GRAPH_TGT_ARP:
             arp_set_amp_scale(s_graph_amp_edit);
@@ -602,25 +932,88 @@ static void graph_toggle_eg_index(void)
     ESP_LOGI(TAG, "graph eg index -> EG%u", s_graph_eg_index);
 }
 
+/* ── Perceived-duration equivalence across curve types ───────────────────────
+ * Fraction of a segment's nominal time at which each type has covered its
+ * first/last 40 dB — where a falling segment becomes effectively silent, or a
+ * rising one becomes audible. Derived from envelope.c: EXP/DX7 move linearly
+ * in dB down to the -74 dB BREAKPOINT_EPS floor, so -40 dB lands at ~40/74 of
+ * T; NORMAL's RC shape crosses it at ~0.94 T; LINEAR at 0.99 T; the DX7
+ * attack law is RC-like by design. Cycling types rescales each segment by
+ * g_old/g_new so the AUDIBLE length is preserved even though the stored ms
+ * (and the drawn point positions) change — without this, LIN→EXP at fixed ms
+ * turns a long ringing release into a fast pluck. */
+static const float graph_g_fall[4] = { 0.94f, 0.99f, 0.54f, 0.54f }; /* NRM LIN DX7 EXP */
+static const float graph_g_rise[4] = { 0.94f, 0.99f, 0.94f, 0.54f };
+
+static void graph_rescale_points_for_type(uint8_t old_type, uint8_t new_type)
+{
+    gpopup_point_t pts[GPOPUP_MAX_POINTS];
+    uint8_t n = graph_popup_get_points(&s_graph_popup, pts, GPOPUP_MAX_POINTS);
+    if (n < 4) return;
+
+    float cum_a = (float)graph_x_to_ms(pts[1].x);
+    float cum_d = (float)graph_x_to_ms(pts[2].x);
+    float cum_r = (float)graph_x_to_ms(pts[3].x);
+    float a = cum_a;
+    float d = (cum_d > cum_a) ? (cum_d - cum_a) : 0.0f;
+    float r = (cum_r > cum_d) ? (cum_r - cum_d) : 0.0f;
+
+    a *= graph_g_rise[old_type & 3u] / graph_g_rise[new_type & 3u];
+    float kf = graph_g_fall[old_type & 3u] / graph_g_fall[new_type & 3u];
+    d *= kf;
+    r *= kf;
+    if (a < 2.0f) a = 2.0f;
+
+    /* Grow into the LONG range up front so a lengthening rescale isn't clipped
+     * by the SHORT axis; the auto-range check below shrinks back when a
+     * shortening rescale allows it. */
+    if (!s_graph_long_range && (a + d + r) >= (float)GRAPH_RANGE_SHORT_MS) {
+        graph_set_range(true);
+    }
+    float range = s_graph_long_range ? (float)GRAPH_RANGE_LONG_MS
+                                     : (float)GRAPH_RANGE_SHORT_MS;
+    float ca = (a > range) ? range : a;
+    float cd = (ca + d > range) ? range : (ca + d);
+    float cr = (cd + r > range) ? range : (cd + r);
+    pts[1].x = graph_ms_to_x((uint32_t)(ca + 0.5f));
+    pts[2].x = graph_ms_to_x((uint32_t)(cd + 0.5f));
+    pts[3].x = graph_ms_to_x((uint32_t)(cr + 0.5f));
+
+    uint8_t saved_cursor  = s_graph_popup.cursor;
+    bool    saved_editing = s_graph_popup.editing_value;
+    bool    saved_axis_y  = s_graph_popup.adjust_axis_y;
+    graph_popup_set_points(&s_graph_popup, pts, n);
+    s_graph_popup.cursor        = saved_cursor;
+    s_graph_popup.editing_value = saved_editing;
+    s_graph_popup.adjust_axis_y = saved_axis_y;
+
+    graph_recompute_decay();
+    graph_update_ticks();
+    graph_auto_range_check();
+}
+
 /* Cycle the shown EG's curve type Normal->Linear->DX7->TrueExp->Normal (0..3).
  * Bound to MY_BUTTON_1 in the envelope editor (the slot vacated by the apply-
- * scope toggle, which moved to SHIFT+1). Read-modify-writes the target's stored
- * envelope so the change is applied to AMY immediately (honoring the current
- * layer/track apply scope); the A/D/S/R times are untouched. Any uncommitted
- * on-screen point edits still live in the popup and win at commit, where the
- * write-back preserves this eg_type. No-op unless the envelope editor is open. */
+ * scope toggle, which moved to SHIFT+3). The new type is auditioned as a live
+ * preview (AMY only) like every other edit — the store keeps the old type
+ * until commit, and cancel restores it. Segment times are rescaled to keep the
+ * perceived envelope length (see graph_rescale_points_for_type above). No-op
+ * unless the envelope editor is open. */
 void synth_ui_graph_cycle_eg_type(void)
 {
     if (!graph_popup_is_active(&s_graph_popup)) return;
 
-    seq_env_t env;
-    if (!graph_read_target_env_idx(&env, s_graph_eg_index)) return;
-    env.eg_type = (uint8_t)((env.eg_type + 1u) & 3u);
-    graph_write_target_env_idx(&env, s_graph_eg_index);
-    s_graph_eg_type_disp = env.eg_type;
+    uint8_t old_type = s_graph_eg_type_disp;
+    s_graph_eg_type_disp = (uint8_t)((s_graph_eg_type_disp + 1u) & 3u);
+    graph_rescale_points_for_type(old_type, s_graph_eg_type_disp);
+    s_graph_env_dirty = true;   /* commit persists the type with the points */
+    graph_live_push_env();
+    s_graph_type_flash_until =
+        xTaskGetTickCount() + pdMS_TO_TICKS(GRAPH_TYPE_FLASH_MS);
     s_force_redraw = true;
-    ESP_LOGI(TAG, "graph EG%u type -> %s(%u)", s_graph_eg_index,
-             graph_eg_type_code(env.eg_type), (unsigned)env.eg_type);
+    ESP_LOGI(TAG, "graph EG%u type -> %s(%u) (preview)", s_graph_eg_index,
+             graph_eg_type_code(s_graph_eg_type_disp),
+             (unsigned)s_graph_eg_type_disp);
 }
 
 /* Hint-strip b2 label for the envelope editor: MY_BUTTON_2's trim mode edits
@@ -663,25 +1056,32 @@ bool synth_ui_graph_handle_encoder(long delta)
             if (v >  8.0f) v =  8.0f;
             s_graph_fenv_edit  = v;
             s_graph_fenv_dirty = true;
+            graph_live_push_fenv();
             s_force_redraw = true;
             return true;
         }
-        /* Amp mode: encoder adjusts per-target amplitude trim in 5% steps. */
+        /* Amp mode: encoder adjusts per-target amplitude trim in 5% steps.
+         * Applied live but throttled (melodic applies re-emit the track). */
         float v = s_graph_amp_edit + (float)delta * 0.05f;
         if (v < 0.0f) v = 0.0f;
         if (v > 1.0f) v = 1.0f;
         s_graph_amp_edit = v;
+        s_amp_live_pending = true;
+        graph_amp_live_flush(false);
         s_force_redraw = true;
         return true;
     }
 
     s_graph_env_dirty = true;   /* user moved an ADSR control point */
+    bool adjusting = s_graph_popup.editing_value;
     graph_popup_handle_encoder(&s_graph_popup, delta);
     /* Derived-decay mode: moving A (time) or the S level changes the derived
      * decay, so re-snap S.x. No-op in explicit-decay mode (user owns S.x). */
     graph_recompute_decay();
     /* Auto-switch range if total envelope time crosses the threshold. */
     graph_auto_range_check();
+    /* Point actually moved (not just cursor selection): audition it. */
+    if (adjusting) graph_live_push_env();
     return true;
 }
 
@@ -701,7 +1101,8 @@ bool synth_ui_graph_handle_button(bool is_long)
         graph_commit_to_env();
         graph_popup_close(&s_graph_popup);
     } else if (r == GPOPUP_RESULT_CANCELLED) {
-        ESP_LOGI(TAG, "graph popup cancelled (envelope unchanged)");
+        ESP_LOGI(TAG, "graph popup cancelled (restoring stored state)");
+        graph_live_cancel_restore();
         graph_popup_close(&s_graph_popup);
     }
     return true;
@@ -783,6 +1184,17 @@ static void filter_load_from_target(void)
         f.resonance   = drone_get_resonance();
         f.enabled     = true;
 
+        snprintf(s_fgraph.label, sizeof(s_fgraph.label), "STUTR");
+    } else if (seq_state.ui_mode == UI_MODE_DRONE_STD) {
+        drone_std_get_filter(&f);
+        /* Same never-authored sentinel handling as the arp: seed sensible
+         * starting values but honestly read "OFF" until the user enables. */
+        if (f.cutoff_hz <= 0.0f) {
+            f.filter_type = SEQ_FILTER_LPF;
+            f.cutoff_hz   = 1200.0f;
+            f.resonance   = 1.0f;
+            f.enabled     = false;
+        }
         snprintf(s_fgraph.label, sizeof(s_fgraph.label), "DRONE");
     } else if (seq_state.ui_mode == UI_MODE_ARP) {
         arp_get_filter(&f);
@@ -823,6 +1235,88 @@ static void filter_load_from_target(void)
     s_filter_edit = f;
 }
 
+/* ── Filter live preview ─────────────────────────────────────────────────────
+ * Same model as the envelope editor: each edit pushes the scratch filter to
+ * AMY only; cancel re-pushes the store (or reloads the layer when a touched
+ * melodic row was never authored). The drone has no preview path — its sweep
+ * window/resonance are live drone state — so its values are snapshotted at
+ * open and re-set on cancel. */
+static bool  s_filter_live = false;      /* any live push this session       */
+static float s_fdrone_open_lo, s_fdrone_open_hi, s_fdrone_open_res;
+
+static void filter_live_push(void)
+{
+    if (seq_state.ui_mode == UI_MODE_DRONE) {
+        /* Same midpoint math as commit: move the sweep window, keep width. */
+        float lo   = drone_get_sweep_lo();
+        float hi   = drone_get_sweep_hi();
+        float half = (hi - lo) * 0.5f;
+        float mid  = filter_norm_to_hz(s_fgraph.cutoff_norm);
+        drone_set_sweep_lo(SEQ_CLAMP_F32(mid - half, 65.0f, 7900.0f));
+        drone_set_sweep_hi(SEQ_CLAMP_F32(mid + half, 100.0f, 8000.0f));
+        drone_set_resonance(s_filter_edit.resonance);
+    } else if (seq_state.ui_mode == UI_MODE_DRONE_STD) {
+        drone_std_preview_filter(&s_filter_edit);
+    } else if (seq_state.ui_mode == UI_MODE_ARP) {
+        arp_preview_filter(&s_filter_edit);
+    } else {
+        uint8_t li = seq_state.active_layer_idx;
+        if (s_editor_apply_all) {
+            for (uint8_t t = 0; t < SEQ_TRACKS; ++t)
+                sequencer_core_preview_melodic_filter(li, t, &s_filter_edit);
+        } else {
+            sequencer_core_preview_melodic_filter(li, seq_state.selected_track,
+                                                  &s_filter_edit);
+        }
+    }
+    s_filter_live = true;
+}
+
+static void filter_live_cancel_restore(void)
+{
+    if (!s_filter_live) return;
+    s_filter_live = false;
+
+    if (seq_state.ui_mode == UI_MODE_DRONE) {
+        drone_set_sweep_lo(s_fdrone_open_lo);
+        drone_set_sweep_hi(s_fdrone_open_hi);
+        drone_set_resonance(s_fdrone_open_res);
+        return;
+    }
+    if (seq_state.ui_mode == UI_MODE_DRONE_STD) {
+        /* Re-push the stored filter (bypass when it was never enabled). */
+        seq_filter_t f;
+        drone_std_get_filter(&f);
+        drone_std_preview_filter(&f);
+        return;
+    }
+    if (seq_state.ui_mode == UI_MODE_ARP) {
+        /* Best effort: re-push the stored filter. A never-authored PATCH-mode
+         * arp keeps the previewed bypass until its next patch reload. */
+        seq_filter_t f;
+        arp_get_filter(&f);
+        arp_preview_filter(&f);
+        return;
+    }
+    uint8_t li = seq_state.active_layer_idx;
+    uint8_t t0 = s_editor_apply_all ? 0 : seq_state.selected_track;
+    uint8_t t1 = s_editor_apply_all ? (uint8_t)(SEQ_TRACKS - 1)
+                                    : seq_state.selected_track;
+    bool need_reload = false;
+    for (uint8_t t = t0; t <= t1; ++t) {
+        if (!sequencer_core_melodic_filter_authored(li, t)) need_reload = true;
+    }
+    if (need_reload) {
+        sequencer_core_reload_layer_synth(li);
+        return;
+    }
+    for (uint8_t t = t0; t <= t1; ++t) {
+        seq_filter_t f;
+        if (sequencer_core_get_melodic_filter(li, t, &f))
+            sequencer_core_preview_melodic_filter(li, t, &f);
+    }
+}
+
 bool synth_ui_filter_is_active(void)
 {
     return s_filter_active;
@@ -836,6 +1330,12 @@ void synth_ui_filter_open(void)
     /* Drone filter is always LPF24 (type fixed) — skip the type cursor. */
     s_fgraph.enabled = s_filter_edit.enabled;
     filter_sync_fgraph();
+    s_filter_live = false;
+    if (seq_state.ui_mode == UI_MODE_DRONE) {
+        s_fdrone_open_lo  = drone_get_sweep_lo();
+        s_fdrone_open_hi  = drone_get_sweep_hi();
+        s_fdrone_open_res = drone_get_resonance();
+    }
     s_filter_active = true;
     s_force_redraw  = true;
     ESP_LOGI(TAG, "filter editor open: %s type%u %.0fHz Q%.2f",
@@ -902,6 +1402,7 @@ bool synth_ui_filter_handle_encoder(long delta)
         default: break;
     }
     filter_sync_fgraph();
+    filter_live_push();
     s_force_redraw = true;
     return true;
 }
@@ -910,7 +1411,8 @@ bool synth_ui_filter_handle_button(bool is_long)
 {
     if (!s_filter_active) return false;
     if (is_long) {
-        /* Long press = cancel: reload original. */
+        /* Long press = cancel: restore the target's state, reload display. */
+        filter_live_cancel_restore();
         filter_load_from_target();
         filter_sync_fgraph();
         s_filter_active = false;
@@ -929,6 +1431,7 @@ void synth_ui_filter_toggle_enabled(void)
     if (!s_filter_active) return;
     s_filter_edit.enabled = !s_filter_edit.enabled;
     s_fgraph.enabled      = s_filter_edit.enabled;
+    filter_live_push();
     s_force_redraw = true;
     ESP_LOGI(TAG, "filter enabled -> %d", (int)s_filter_edit.enabled);
 }
@@ -948,6 +1451,12 @@ bool synth_ui_filter_close_commit(void)
         drone_set_resonance(s_filter_edit.resonance);
         ESP_LOGI(TAG, "filter commit drone: sweepMid=%.0f Q=%.2f",
                  (double)new_mid, (double)s_filter_edit.resonance);
+    } else if (seq_state.ui_mode == UI_MODE_DRONE_STD) {
+        drone_std_set_filter(&s_filter_edit);
+        ESP_LOGI(TAG, "filter commit drone_std: type%u %.0fHz Q%.2f en=%d",
+                 s_filter_edit.filter_type,
+                 (double)s_filter_edit.cutoff_hz, (double)s_filter_edit.resonance,
+                 (int)s_filter_edit.enabled);
     } else if (seq_state.ui_mode == UI_MODE_ARP) {
         arp_set_filter(&s_filter_edit);
         ESP_LOGI(TAG, "filter commit arp: type%u %.0fHz Q%.2f",
@@ -965,6 +1474,11 @@ bool synth_ui_filter_close_commit(void)
     s_filter_active = false;
     s_force_redraw  = true;
     return true;
+}
+
+void synth_ui_editors_live_service(void)
+{
+    graph_amp_live_flush(false);
 }
 
 /* ── Filter editor: end ──────────────────────────────────────────────────── */
@@ -1001,6 +1515,8 @@ void synth_ui_lfo_open(void)
     };
     if (seq_state.ui_mode == UI_MODE_ARP)
         arp_get_lfo(&existing);
+    else if (seq_state.ui_mode == UI_MODE_DRONE_STD)
+        drone_std_get_lfo(&existing);
     else
         sequencer_core_get_melodic_lfo(li, tr, &existing);
     s_lfo_view.lfo          = existing;
@@ -1009,8 +1525,8 @@ void synth_ui_lfo_open(void)
     s_lfo_view.layer_idx    = li;
     s_lfo_view.track_idx    = tr;
     s_lfo_view.apply_all    = s_editor_apply_all;
-    s_lfo_view.target_label = (seq_state.ui_mode == UI_MODE_ARP)   ? "ARP"
-                            : (seq_state.ui_mode == UI_MODE_DRONE) ? "DRONE"
+    s_lfo_view.target_label = (seq_state.ui_mode == UI_MODE_ARP)       ? "ARP"
+                            : (seq_state.ui_mode == UI_MODE_DRONE_STD) ? "DRONE"
                             : NULL;
     s_lfo_active   = true;
     s_force_redraw = true;
@@ -1076,9 +1592,11 @@ bool synth_ui_lfo_handle_button(bool is_long)
 bool synth_ui_lfo_close_commit(void)
 {
     if (!s_lfo_active) return false;
-    if (seq_state.ui_mode == UI_MODE_DRONE) return false; // drone has no free LFO editor
+    if (seq_state.ui_mode == UI_MODE_DRONE) return false; // stutter drone has no free LFO editor
     if (seq_state.ui_mode == UI_MODE_ARP) {
         arp_set_lfo(&s_lfo_view.lfo);
+    } else if (seq_state.ui_mode == UI_MODE_DRONE_STD) {
+        drone_std_set_lfo(&s_lfo_view.lfo);
     } else if (s_editor_apply_all) {
         for (uint8_t t = 0; t < SEQ_TRACKS; ++t)
             sequencer_core_set_melodic_lfo(s_lfo_view.layer_idx, t, &s_lfo_view.lfo);
@@ -1099,7 +1617,8 @@ bool synth_ui_lfo_close_commit(void)
  * ARP and DRONE modes have no "apply to all tracks" concept — no-op there. */
 bool synth_ui_toggle_editor_apply_scope(void)
 {
-    if (seq_state.ui_mode == UI_MODE_ARP || seq_state.ui_mode == UI_MODE_DRONE)
+    if (seq_state.ui_mode == UI_MODE_ARP || seq_state.ui_mode == UI_MODE_DRONE ||
+        seq_state.ui_mode == UI_MODE_DRONE_STD)
         return false;
     bool graph_open = graph_popup_is_active(&s_graph_popup);
     if (!graph_open && !s_lfo_active) return false;
@@ -1165,6 +1684,10 @@ void synth_ui_cycle_editor(void)
     h = fnv1a_bytes(h, &s_graph_fenv_edit, sizeof(s_graph_fenv_edit));
     h = fnv1a_bytes(h, &s_graph_eg_index, sizeof(s_graph_eg_index));
     h = fnv1a_bytes(h, &s_graph_eg_type_disp, sizeof(s_graph_eg_type_disp));
+    /* Tick-derived: flips once when the type-cycle flash window closes, so the
+     * top bar reverts without any other state change (polled at the UI rate). */
+    uint8_t type_flash = graph_type_flash_active() ? 1u : 0u;
+    h = fnv1a_bytes(h, &type_flash, sizeof(type_flash));
     h = fnv1a_bytes(h, s_graph_popup.points,
                     s_graph_popup.num_points * sizeof(gpopup_point_t));
     return h;
@@ -1184,6 +1707,8 @@ static void graph_draw_topbar(u8g2_t *u8g2)
     if (s_graph_target == GRAPH_TGT_ARP) {
         snprintf(buf, sizeof(buf), "ARP %s", eg_tag);
     } else if (s_graph_target == GRAPH_TGT_DRONE) {
+        snprintf(buf, sizeof(buf), "STUTR %s", eg_tag);
+    } else if (s_graph_target == GRAPH_TGT_DRONE_STD) {
         snprintf(buf, sizeof(buf), "DRONE %s", eg_tag);
     } else {
         snprintf(buf, sizeof(buf), "L%u T%u %s%s",
@@ -1199,7 +1724,10 @@ static void graph_draw_topbar(u8g2_t *u8g2)
     gpopup_point_t pts[GPOPUP_MAX_POINTS];
     uint8_t n = graph_popup_get_points(&s_graph_popup, pts, GPOPUP_MAX_POINTS);
     uint8_t c = s_graph_popup.cursor;
-    bool mid_shown = (!s_graph_amp_mode && n >= 4 && c >= 1 && c <= 3);
+    /* Right after a type cycle the full type name takes the shared band; the
+     * point readout yields for the flash window so the change is unmissable. */
+    bool type_flash = graph_type_flash_active();
+    bool mid_shown = (!type_flash && !s_graph_amp_mode && n >= 4 && c >= 1 && c <= 3);
 
     /* Right: amp indicator when in amp mode (replaces the old "S/L" range flag
      * which is now set automatically and no longer meaningful to the user).
@@ -1208,7 +1736,16 @@ static void graph_draw_topbar(u8g2_t *u8g2)
      * visible readout. */
     uint8_t rw = 0;
     bool eg1_melodic = (s_graph_eg_index == 1 && s_graph_target == GRAPH_TGT_MELODIC);
-    if (s_graph_amp_mode || (eg1_melodic && !mid_shown)) {
+    if (type_flash) {
+        /* Inverted pad so the transient name reads as an event, not a label. */
+        const char *tname = graph_eg_type_name(s_graph_eg_type_disp);
+        u8g2_SetFont(u8g2, u8g2_font_6x10_tf);
+        rw = (uint8_t)u8g2_GetStrWidth(u8g2, tname);
+        u8g2_DrawBox(u8g2, (uint8_t)(128 - rw - 4), 0, (uint8_t)(rw + 4), 11);
+        u8g2_SetDrawColor(u8g2, 0);
+        u8g2_DrawStr(u8g2, (uint8_t)(128 - rw - 2), 8, tname);
+        u8g2_SetDrawColor(u8g2, 1);
+    } else if (s_graph_amp_mode || (eg1_melodic && !mid_shown)) {
         char amp_buf[10];
         if (eg1_melodic) {
             snprintf(amp_buf, sizeof(amp_buf), "ENV%+.2f", (double)s_graph_fenv_edit);
@@ -1219,14 +1756,10 @@ static void graph_draw_topbar(u8g2_t *u8g2)
         u8g2_SetFont(u8g2, u8g2_font_6x10_tf);
         rw = (uint8_t)u8g2_GetStrWidth(u8g2, amp_buf);
         u8g2_DrawStr(u8g2, (uint8_t)(128 - rw - 2), 8, amp_buf);
-    } else if (!mid_shown) {
-        /* Right slot idle: show the EG's curve type so the type-cycle button
-         * (MY_BUTTON_1) has a visible readout. Yields to the point/amp readouts. */
-        const char *tcode = graph_eg_type_code(s_graph_eg_type_disp);
-        u8g2_SetFont(u8g2, u8g2_font_6x10_tf);
-        rw = (uint8_t)u8g2_GetStrWidth(u8g2, tcode);
-        u8g2_DrawStr(u8g2, (uint8_t)(128 - rw - 2), 8, tcode);
     }
+    /* No idle-slot fallback: the persistent curve-type code lives in the plot
+     * corner (see synth_ui_graph_view_draw), since the point readout occupies
+     * this band whenever the ADSR cursor sits on a point — i.e. always. */
 
     /* Middle: live readout of the selected point's real value (ms / %). */
     if (mid_shown) {
@@ -1261,6 +1794,20 @@ void synth_ui_graph_view_draw(u8g2_t *u8g2)
     u8g2_SetDrawColor(u8g2, 1);
     graph_draw_topbar(u8g2);
     graph_popup_draw(u8g2, &s_graph_popup);
+
+    /* Persistent curve-type code, top-right of the plot area. The top bar's
+     * right slot is owned by the point readout, so this corner is the one spot
+     * where the type stays visible while editing. A cleared pad keeps it
+     * legible on the rare frames the curve passes underneath. */
+    const char *tcode = graph_eg_type_code(s_graph_eg_type_disp);
+    u8g2_SetFont(u8g2, u8g2_font_4x6_tr);
+    uint8_t tw = (uint8_t)u8g2_GetStrWidth(u8g2, tcode);
+    uint8_t tx = (uint8_t)(128 - tw - 2);
+    uint8_t ty = (uint8_t)(GRAPH_TOPBAR_H + 8);
+    u8g2_SetDrawColor(u8g2, 0);
+    u8g2_DrawBox(u8g2, (uint8_t)(tx - 1), (uint8_t)(ty - 6), (uint8_t)(tw + 3), 8);
+    u8g2_SetDrawColor(u8g2, 1);
+    u8g2_DrawStr(u8g2, tx, ty, tcode);
 }
 
 void synth_ui_filter_view_draw(u8g2_t *u8g2)

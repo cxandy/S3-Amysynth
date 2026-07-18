@@ -73,6 +73,21 @@ typedef enum {
     GPOPUP_STYLE_ADSR  = 1,
 } gpopup_style_t;
 
+/* Optional per-segment curve shaping. Called per plot column with the segment's
+ * endpoint levels v0/v1 (normalised 0..1) and the position t (0..1) within the
+ * segment; returns the curve level at t. NULL = straight-line segments. Lets
+ * the host render the true shape of a non-linear envelope (exponential, DX7)
+ * while the widget itself stays domain-agnostic: points remain the editable
+ * anchors, only the drawn path between them changes. */
+typedef float (*gpopup_shape_fn)(float v0, float v1, float t);
+
+/* Optional X-axis stepping override for point editing. Called with the point
+ * index, its current normalised X and the encoder detent count; returns the new
+ * normalised X (clamped to 0..1 by the widget). Lets the host implement a
+ * non-linear (e.g. audio-taper time) stride in its own domain units instead of
+ * the widget's fixed normalised step. NULL = fixed linear step. */
+typedef float (*gpopup_xstep_fn)(uint8_t idx, float x, long delta);
+
 typedef struct {
     bool           active;
     gpopup_mode_t  mode;
@@ -93,6 +108,10 @@ typedef struct {
      * (decay time) is owned by the host (auto-derived), never user-draggable.
      * Removes the hidden decay-time control and the A/S marker overlap. */
     bool           adsr_lock_sx;
+    /* Optional segment shaping for the drawn curve (see gpopup_shape_fn). */
+    gpopup_shape_fn shape;
+    /* Optional X-axis stepping override for edits (see gpopup_xstep_fn). */
+    gpopup_xstep_fn xstep;
 } gpopup_t;
 
 /* ── Lifecycle ──────────────────────────────────────────────────────────── */
@@ -120,6 +139,14 @@ void graph_popup_set_ticks(gpopup_t *p, const float *xs, uint8_t n);
  * The host derives and writes S.x (e.g. from attack time + sustain level). The
  * sustain point remains Y-editable (level). No-op outside ADSR style. */
 void graph_popup_set_adsr_lock_sx(gpopup_t *p, bool lock);
+
+/* Install (or clear, with NULL) the segment-shaping callback used when drawing
+ * the curve and its under-fill. Editing/points are unaffected. */
+void graph_popup_set_shape(gpopup_t *p, gpopup_shape_fn fn);
+
+/* Install (or clear, with NULL) the X-axis stepping override used when the
+ * encoder adjusts a point's X. Y stepping keeps the fixed normalised stride. */
+void graph_popup_set_xstep(gpopup_t *p, gpopup_xstep_fn fn);
 
 /* Close the pop-up (sets active = false). Points are retained. */
 void graph_popup_close(gpopup_t *p);

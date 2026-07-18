@@ -3,6 +3,7 @@
 #include "sequencer_core.h"
 #include "arp_core.h"
 #include "custompatches/drone_core.h"
+#include "custompatches/drone_std_core.h"
 #include "patch_names.h"
 #include "patch_cycle.h"
 #include "sdkconfig.h"
@@ -190,6 +191,24 @@ void synth_ui_drone_cycle_patch(int delta)
         ESP_LOGI(TAG, "drone patch cycle -> %u (%s)", (unsigned)next, name);
     } else {
         ESP_LOGI(TAG, "drone patch cycle -> %u", (unsigned)next);
+    }
+    s_force_redraw = true;
+}
+
+/* Same gesture on the normal drone screen; the two drones share the patch
+ * domain (identical exclusion predicate), only the store differs. */
+void synth_ui_drone_std_cycle_patch(int delta)
+{
+    if (delta == 0) return;
+    int dir = (delta > 0) ? 1 : -1;
+    uint16_t next = patch_domain_step(&s_drone_domain, drone_std_get_patch(), dir);
+    drone_std_set_patch(next);
+
+    const char *name = patch_name_for(next);
+    if (name) {
+        ESP_LOGI(TAG, "drone_std patch cycle -> %u (%s)", (unsigned)next, name);
+    } else {
+        ESP_LOGI(TAG, "drone_std patch cycle -> %u", (unsigned)next);
     }
     s_force_redraw = true;
 }

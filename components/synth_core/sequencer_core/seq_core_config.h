@@ -54,7 +54,9 @@
 /* Drum gate: fraction of a step the note is held before its note-off. Now that
  * drums are real Juno patches (note-offs honored), this controls choke vs. ring;
  * the patch's own release tail still plays out after note-off. Tunable via
- * Kconfig (default 1/2 step). */
+ * Kconfig (default 1/2 step). 
+ * Drums are no longer Synths with the addition of Gamma banks
+ */
 #define SEQ_GATE_DRUM         ((SEQ_TICKS_PER_STEP * CONFIG_SEQ_DRUM_GATE_NUMERATOR) / CONFIG_SEQ_DRUM_GATE_DENOMINATOR)
 /* Default per-layer melodic gate (the NoteFX GATE control), as a % of the step.
  * Derived from the same fraction as the legacy fixed SEQ_GATE_MELODIC (num/den)
@@ -104,10 +106,9 @@
 #define SEQ_MEL_PATCH         CONFIG_SEQ_MELODIC_PATCH
 /* Wave-patch ID constants (SEQ_PATCH_WAVE_BASE, SEQ_PATCH_WAVE_MAX, etc.)
  * are now in sequencer_core.h so arp_core and drone_core can use them. */
-/* One AMY synth PER ROW (per track). A row only ever sounds one pitch at a
- * time, so a single voice suffices; bump to 2 to give note-off/note-on overlap
- * headroom at the boundary (2x osc cost). AMY default budget is 250 oscs. */
-#define SEQ_MEL_VOICES        1
+/* One AMY synth PER ROW (per track); count now Kconfig-driven (see
+ * CONFIG_SEQ_MEL_VOICES help for the osc-cost rationale). */
+#define SEQ_MEL_VOICES        CONFIG_SEQ_MEL_VOICES
 #define SEQ_MEL_SYNTH_BASE    11    /* first melodic synth slot (drum = 10) */
 #define SEQ_MAX_SYNTH         62    /* melodic ceiling; slot 63 reserved for arp */
 #define SEQ_MEL_NOTE_MIN      24    /* C1 */

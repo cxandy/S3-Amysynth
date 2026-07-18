@@ -19,9 +19,20 @@ config USB_AUDIO_BLOCKING_WRITE
         If enabled, the AMY render task will wait (retry with backoff) until 
         the USB ring buffer has space, effectively slave-clocking the synth
         to the PC's consumption rate. 
-        If disabled (default), the task will drop overflowed blocks to 
+        If disabled (default), the task will drop overflowed blocks to
         maintain real-time AMY clock alignment regardless of USB health,
         which can result in 'honky' percussive artifacts if transport is poor.
+
+config OUTPUT_WATCHDOG
+    bool "Output level watchdog (UI badge on stuck-loud / clipping output)"
+    default y
+    help
+        Detects output that is continuously at clipping level (~0.5 s) or
+        sustained near full scale (~2.5 s, e.g. filter self-oscillation or a
+        stuck voice) and shows a small CLIP/LOUD badge in the UI. The check
+        peeks at the most recent audio already committed to the USB ring
+        buffer from the UI task on Core 0 every 50 ms; the render task and
+        Core 1 do no extra work.
 
 endmenu
 

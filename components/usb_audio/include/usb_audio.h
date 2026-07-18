@@ -48,6 +48,25 @@ esp_err_t usb_audio_write_mono(const int16_t *data, size_t num_samples);
 bool usb_audio_consumer_active(void);
 
 /**
+ * @brief Lock-free advisory peek at the most recent audio committed to the ring.
+ *
+ * Computes the peak and mean absolute sample value over the n_samples
+ * interleaved samples immediately behind the write index, and stores a
+ * snapshot of the write index in *write_idx (compare across calls to detect
+ * "no new audio has been produced").
+ *
+ * Safe from any task/core without touching the SPSC contract: the acquire
+ * load of the write index guarantees every sample behind it is committed,
+ * and the producer cannot rewrite that region until it has wrapped the whole
+ * ring (~170 ms of audio), far longer than one scan. Only compiled with
+ * CONFIG_OUTPUT_WATCHDOG.
+ *
+ * @return false if the driver is not initialized (outputs are zeroed).
+ */
+bool usb_audio_peek_levels(size_t n_samples, int32_t *peak_abs,
+                           int32_t *mean_abs, size_t *write_idx);
+
+/**
  * @brief Get a snapshot of USB audio diagnostic counters and buffer state.
  */
 void usb_audio_diag_get_snapshot(usb_audio_diag_snapshot_t *snapshot);

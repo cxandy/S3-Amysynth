@@ -90,6 +90,17 @@ config SEQ_MELODIC_PATCH
 	help
 		Resolved AMY patch number for melodic layer initialization.
 
+config SEQ_MEL_VOICES
+	int "Voices per melodic row"
+	range 1 4
+	default 1
+	help
+		One AMY synth is allocated PER ROW (per track). A row only ever
+		sounds one pitch at a time, so a single voice suffices. Bump to 2
+		to give note-off/note-on overlap headroom at the step boundary, at
+		2x oscillator cost per row. Melodic rows span slots 11..62, so
+		higher values multiply oscillator use against AMY's 250-osc budget.
+
 choice SEQ_PATCH_BROWSE_MODE
 	prompt "Runtime melodic patch browse mode"
 	default SEQ_PATCH_BROWSE_PRESELECTED

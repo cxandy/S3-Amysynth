@@ -9,14 +9,15 @@
 #define DRONE_FIRST_ROW  25
 #define DRONE_VIS_ROWS   3
 
-void display_drone_draw_frame(u8g2_t *u8g2, const drone_view_t *view)
+void display_drone_draw_frame_titled(u8g2_t *u8g2, const char *title,
+                                     const drone_view_t *view)
 {
     u8g2_ClearBuffer(u8g2);
     u8g2_SetDrawColor(u8g2, 1);
 
     /* Title bar. */
     u8g2_SetFont(u8g2, u8g2_font_6x10_tf);
-    u8g2_DrawStr(u8g2, 2, DRONE_TITLE_Y, "DRONE");
+    u8g2_DrawStr(u8g2, 2, DRONE_TITLE_Y, title ? title : "DRONE");
     u8g2_DrawHLine(u8g2, 0, 15, 128);
 
     if (view == NULL || view->count == 0) {
@@ -68,6 +69,11 @@ void display_drone_draw_frame(u8g2_t *u8g2, const drone_view_t *view)
     if (last < view->count) {
         u8g2_DrawTriangle(u8g2, 118, 2, 126, 2, 122, 8);
     }
+}
+
+void display_drone_draw_frame(u8g2_t *u8g2, const drone_view_t *view)
+{
+    display_drone_draw_frame_titled(u8g2, "DRONE", view);
 }
 
 /* ── Drone visualiser overlay ───────────────────────────────────────────────

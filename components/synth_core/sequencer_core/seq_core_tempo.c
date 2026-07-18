@@ -1,4 +1,5 @@
 #include "sequencer_core/seq_core_internal.h"
+#include "custompatches/drone_std_core.h"   /* drone_std_core_refresh_lfo_freq */
 
 /* ── State definitions — owns BPM and quantizer ─────────────────────── */
 uint16_t s_bpm = SEQ_DEFAULT_BPM;
@@ -74,6 +75,8 @@ void sequencer_core_set_bpm(uint16_t new_bpm)
     }
     /* Sync the arp WAVE-mode LFO carrier to the new BPM (no-op when not active). */
     arp_core_refresh_lfo_freq();
+    /* Same for the normal drone's native LFO carrier. */
+    drone_std_core_refresh_lfo_freq();
     /* Sync native LFO carriers on all melodic wave-patch tracks. */
     melodic_lfo_refresh_native_freq();
 }

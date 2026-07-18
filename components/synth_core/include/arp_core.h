@@ -126,6 +126,13 @@ void arp_set_envelope2(const seq_env_t *env);
 void arp_get_filter(seq_filter_t *out);
 void arp_set_filter(const seq_filter_t *f);
 
+/* ── Editor live-preview (AMY only; store + authored flags untouched) ──
+ * Audition scratch editor values on the arp synth. Cancel restores by calling
+ * these again with the stored values. */
+void arp_preview_envelope(const seq_env_t *env);
+void arp_preview_envelope2(const seq_env_t *env);
+void arp_preview_filter(const seq_filter_t *f);
+
 /* ── Native AMY LFO (WAVE mode only) ──
  * Uses a voice-local osc 1 as the LFO carrier (mod_source=1 on osc 0).
  * PATCH mode: setter is a no-op on AMY (LFO state stored for persistence). */

@@ -529,6 +529,18 @@ void sequencer_core_set_layer_patch(uint8_t layer_idx, uint16_t patch_number)
     ESP_LOGI(TAG, "L%u patch -> %u", (unsigned)layer_idx + 1u, (unsigned)patch_number);
 }
 
+/* Re-apply the layer's current patch and every stored/authored parameter to
+ * its synth slots — the exact-state restore used when an editor's live
+ * preview is cancelled on a row whose target state came from the patch itself
+ * (never authored) and so cannot be re-pushed from the store. */
+void sequencer_core_reload_layer_synth(uint8_t layer_idx)
+{
+    if (layer_idx >= s_num_layers) return;
+    if (s_layers[layer_idx].type != SEQ_LAYER_MELODIC) return;
+    sequencer_configure_synth(layer_idx);
+    ESP_LOGI(TAG, "L%u synth reloaded (preview cancel)", (unsigned)layer_idx + 1u);
+}
+
 /* ── Live FM voice edits ──────────────────────────────────────────────────── */
 
 #if CONFIG_SYNTH_CUSTOM_FM
@@ -806,11 +818,12 @@ void sequencer_core_push_envelope(uint8_t synth, const seq_env_t *env)
     e->bp_is_set[0]  = 1;
     e->eg_type[0]    = env->eg_type;
     uint32_t attack_ms = (env->attack_ms < 2) ? 2 : env->attack_ms;  /* 2 ms floor */
+    uint32_t release_ms = (env->release_ms < 5) ? 5 : env->release_ms;  /* 5 ms declick floor */
     e->eg0_times[0]  = attack_ms;
     e->eg0_values[0] = 1.0f;
     e->eg0_times[1]  = env->decay_ms;
     e->eg0_values[1] = sustain;
-    e->eg0_times[2]  = env->release_ms;
+    e->eg0_times[2]  = release_ms;
     e->eg0_values[2] = 0.0f;
     amy_helpers_event_send(e);
 }
@@ -826,11 +839,12 @@ void sequencer_core_push_envelope_eg1(uint8_t synth, uint8_t osc, const seq_env_
     e->bp_is_set[1]  = 1;
     e->eg_type[1]    = env->eg_type;
     uint32_t attack_ms = (env->attack_ms < 2) ? 2 : env->attack_ms;  /* 2 ms floor */
+    uint32_t release_ms = (env->release_ms < 5) ? 5 : env->release_ms;  /* 5 ms declick floor */
     e->eg1_times[0]  = attack_ms;
     e->eg1_values[0] = 1.0f;
     e->eg1_times[1]  = env->decay_ms;
     e->eg1_values[1] = sustain;
-    e->eg1_times[2]  = env->release_ms;
+    e->eg1_times[2]  = release_ms;
     e->eg1_values[2] = 0.0f;
     amy_helpers_event_send(e);
 }

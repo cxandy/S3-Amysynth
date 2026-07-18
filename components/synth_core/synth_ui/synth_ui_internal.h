@@ -57,6 +57,7 @@ uint32_t lfo_view_signature(void);
 uint32_t arp_view_signature(arp_view_t *out);
 uint32_t menu_view_signature(menu_view_t *out);
 uint32_t drone_view_signature(drone_view_t *out);
+uint32_t drone_std_view_signature(drone_view_t *out);
 uint32_t prog_view_signature(prog_view_t *out);
 uint32_t trackopts_view_signature(trackopts_view_t *out);
 uint32_t stepedit_view_signature(stepedit_view_t *out);
@@ -96,6 +97,7 @@ const char *synth_ui_graph_hint_b2(void);
 
 /* ─── Build-view helpers called from synth_ui_task draw switch ────────── */
 void     drone_build_view(drone_view_t *out);
+void     drone_std_build_view(drone_view_t *out);
 void     prog_build_view(prog_view_t *out);
 void     trackopts_build_view(trackopts_view_t *out);
 void     menu_build_view(menu_view_t *out);
@@ -140,6 +142,12 @@ void     projects_menu_service(void);   /* drains the deferred load/save */
 bool     projects_menu_is_renaming(void);
 void     projects_menu_rename_commit(void);
 void     projects_menu_rename_cancel(void);
+
+/* Editor live-preview service: flushes any pending throttled apply (currently
+ * only the graph editor's amp trim, whose melodic apply re-emits the track's
+ * steps). Called from synth_ui_task's 50 ms loop; no-op when no editor is
+ * open or nothing is pending. */
+void     synth_ui_editors_live_service(void);
 
 /* ─── Draw wrappers (encapsulate private s_fgraph/s_lfo_view/s_graph_popup) */
 void     synth_ui_graph_view_draw(u8g2_t *u8g2);

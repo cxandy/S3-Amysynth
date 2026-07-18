@@ -177,7 +177,7 @@ int8_t dsps_biquad_gen_bpf_f32(SAMPLE *coeffs, float f, float qFactor)
  * output). A full 32x32->64 rounding multiply restores exact s8.23 products
  * for a couple of extra instructions per multiply; host-side A/B against a
  * double-precision reference matches to 3 decimals across fc=10..1000 Hz,
- * Q=0.7..8 (see docs/filter-fixedpoint-instability-2026-07-18.md). */
+ * Q=0.7..8 */
 #ifdef AMY_USE_FIXEDPOINT
 static inline SAMPLE SMUL64R(SAMPLE a, SAMPLE b) {
     return (SAMPLE)((((int64_t)a * (int64_t)b) + (1 << (S_FRAC_BITS - 1))) >> S_FRAC_BITS);

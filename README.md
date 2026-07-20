@@ -1,3 +1,9 @@
+
+
+
+
+
+
 # S3-Amysynth
 
 A pocket-sized groovebox built on the ESP32-S3. Drums, melodic step
@@ -19,8 +25,12 @@ of this project interesting.
 ## Prototype Video
 
 
-<video src="https://rt-rtos.github.io/assets/amybox.mp4" poster="assets/1.jpg" controls muted loop playsinline width="640">
-  <a href="https://rt-rtos.github.io/assets/amybox.mp4"><img src="assets/1.jpg" alt="S3-Amysynth prototype demo" width="640"></a>
+
+
+
+
+<video src="https://github.com/user-attachments/assets/18ee83c0-162c-4c39-9f19-2d1f17abcdaa" poster="assets/1.jpg" controls loop playsinline width="640">
+</a>
 </video>
 
 > Video not playing? [Watch the prototype demo](https://rt-rtos.github.io/assets/amybox.mp4)

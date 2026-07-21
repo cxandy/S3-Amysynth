@@ -1,4 +1,5 @@
 #include "display_drone.h"
+#include "seq_clamp.h"
 #include <stdio.h>
 
 /* Layout mirrors the menu overlay: a yellow header bar (rows 0..15) with the
@@ -91,10 +92,12 @@ void display_drone_draw_frame(u8g2_t *u8g2, const drone_view_t *view)
  *  Y 45-60  PAT    8 step squares; gate fill height per active step
  */
 
-/* Clamp a float to [0,1] without pulling in math.h. */
+/* Clamp a float to [0,1]. Delegates to seq_clamp_f32 so a NaN degrades to 0.0f
+ * instead of propagating into the pixel arithmetic, and so the display shares
+ * one clamping semantic with the rest of the tree. */
 static inline float vis_clamp01(float v)
 {
-    return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
+    return SEQ_CLAMP_F32(v, 0.0f, 1.0f);
 }
 
 /* Rate names mirroring drone_core.c s_rate_names (display-only copy). */

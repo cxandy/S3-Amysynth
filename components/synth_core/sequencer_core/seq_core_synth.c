@@ -1,5 +1,6 @@
 #include "sequencer_core/seq_core_internal.h"
 #include "voice_config.h"
+#include "seq_clamp.h"
 
 /* ── State definitions — owns drum engine selector ──────────────────── */
 /* Drum sound source for the whole drum layer. SYNTH = tonal AMY patches (Juno/

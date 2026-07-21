@@ -1,4 +1,5 @@
 #include "quantizer.h"
+#include "seq_clamp.h"
 #include <stddef.h>
 
 static const musical_scale_t s_scales[] = {
@@ -42,13 +43,9 @@ const musical_scale_t *quantizer_get_scale(uint8_t scale_index)
 
 uint8_t quantizer_clamp_midi(int32_t midi_note)
 {
-    if (midi_note < 0) {
-        return 0;
-    }
-    if (midi_note > 127) {
-        return 127;
-    }
-    return (uint8_t)midi_note;
+    /* seq_clamp_u8 widens to int64_t before comparing, so a negative note
+     * clamps to 0 rather than wrapping through uint8_t on the way in. */
+    return SEQ_CLAMP_U8(midi_note, 0, 127);
 }
 
 /* Convert a scale degree (which step of the scale, can be negative or beyond

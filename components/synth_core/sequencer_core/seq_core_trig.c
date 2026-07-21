@@ -1,4 +1,5 @@
 #include "sequencer_core/seq_core_internal.h"
+#include "seq_clamp.h"
 
 /* ════════════════════════════════════════════════════════════════════════
  *  Per-step probability / ratchet / conditional-trig engine
@@ -87,8 +88,7 @@ static uint8_t trig_transform_note(uint8_t layer_idx, const seq_layer_t *layer,
     }
 
     int transformed = (int)base + offset;
-    if (transformed < 0)   transformed = 0;
-    if (transformed > 127) transformed = 127;
+    transformed = SEQ_CLAMP_INT(transformed, 0, 127);
 
     if (layer->step_quant_bypass[track][step]) {
         return sequencer_clamp_layer_note(layer, (uint8_t)transformed);
@@ -188,8 +188,7 @@ static void trig_schedule_ratchets(uint8_t layer_idx, const seq_layer_t *layer,
                                    uint8_t track, uint8_t step, uint32_t now_ticks)
 {
     uint8_t n = layer->step_ratchet[track][step];
-    if (n < 1) n = 1;
-    if (n > SEQ_MAX_RATCHET) n = SEQ_MAX_RATCHET;
+    n = SEQ_CLAMP_U8(n, 1, SEQ_MAX_RATCHET);
 
     uint16_t sub_ticks;
     uint16_t gate;
@@ -206,8 +205,7 @@ static void trig_schedule_ratchets(uint8_t layer_idx, const seq_layer_t *layer,
     /* Per-step velocity offset (patch-06): signed percentage points, default 0.
      * Applied here as well as the plain path so decorated steps match. */
     velocity += (float)layer->step_velocity_adj[track][step] * 0.01f;
-    if (velocity < 0.0f) velocity = 0.0f;
-    if (velocity > 1.0f) velocity = 1.0f;
+    velocity = SEQ_CLAMP_F32(velocity, 0.0f, 1.0f);
     /* Single per-fire pitch source for both ratchet sub-hits and the plain
      * decorated (n==1) path: apply any per-step note transform here so every
      * sub-hit of one fire shares the same transformed pitch. */
@@ -222,8 +220,7 @@ static void trig_schedule_ratchets(uint8_t layer_idx, const seq_layer_t *layer,
     int8_t taper = layer->step_ratchet_taper[track][step];
     for (uint8_t k = 0; k < n; k++) {
         float scale = 1.0f - (float)taper * 0.01f * (float)k;
-        if (scale < 0.0f) scale = 0.0f;
-        if (scale > 1.0f) scale = 1.0f;
+        scale = SEQ_CLAMP_F32(scale, 0.0f, 1.0f);
         float v = velocity * scale;
         uint32_t tick_on  = now_ticks + 1u + (uint32_t)k * sub_ticks;
         uint32_t tick_off = tick_on + gate;

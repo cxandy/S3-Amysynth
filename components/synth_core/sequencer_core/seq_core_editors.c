@@ -1,5 +1,6 @@
 #include "sequencer_core/seq_core_internal.h"
 #include "voice_config.h"
+#include "seq_clamp.h"
 
 /* ── State definitions — owns LFO phase accumulators ────────────────── */
 /* Software LFO state (phase accumulator, per-layer/track) */
@@ -459,8 +460,7 @@ void sequencer_core_set_melodic_amp_scale(uint8_t layer_idx, uint8_t track,
                                           float v)
 {
     if (layer_idx >= s_num_layers || track >= SEQ_TRACKS) return;
-    if (v < 0.0f) v = 0.0f;
-    if (v > 1.0f) v = 1.0f;
+    v = SEQ_CLAMP_F32(v, 0.0f, 1.0f);
     s_layers[layer_idx].vp[track].amp_trim = v;
     /* Re-emit all steps so the new amplitude takes effect immediately. */
     seq_layer_t *layer = &s_layers[layer_idx];

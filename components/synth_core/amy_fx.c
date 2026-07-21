@@ -9,6 +9,7 @@
 #include "amy.h"
 #include "amy_helpers.h"
 #include "sdkconfig.h"
+#include "seq_clamp.h"
 
 /* ── Default initialisation guards ─────────────────────────────────────── */
 #ifndef CONFIG_SEQ_FX_DEFAULT_ECHO
@@ -120,8 +121,7 @@ void synth_ui_fx_reassert_global(void)
 
 void amy_fx_set_master_volume(float v)
 {
-    if (v < 0.0f) v = 0.0f;
-    if (v > 2.0f) v = 2.0f;
+    v = SEQ_CLAMP_F32(v, 0.0f, 2.0f);
     s_master_volume = v;
     /* Write directly to amy_global.volume[] — an aligned float store,
      * atomic on Xtensa.  Called from synth_ui_task (not the render body),

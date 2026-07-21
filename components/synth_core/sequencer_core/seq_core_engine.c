@@ -1,4 +1,5 @@
 #include "sequencer_core/seq_core_internal.h"
+#include "seq_clamp.h"
 
 /* ── State definitions — owns step cache, source notes, bar baseline ── */
 uint8_t  s_cached_step[MAX_LAYERS];
@@ -225,8 +226,7 @@ void sequencer_emit_step(uint8_t layer_idx, uint8_t track, uint8_t step)
     note_velocity *= layer->vp[track].amp_trim;
     /* Per-step velocity offset (patch-06): signed percentage points, default 0. */
     note_velocity += (float)layer->step_velocity_adj[track][step] * 0.01f;
-    if (note_velocity < 0.0f) note_velocity = 0.0f;
-    if (note_velocity > 1.0f) note_velocity = 1.0f;
+    note_velocity = SEQ_CLAMP_F32(note_velocity, 0.0f, 1.0f);
     if (tick_off == 0) tick_off = 1; /* avoid the reserved tick 0 */
 
     /* If stopped, this step is off, the track is muted/soloed-out, or the

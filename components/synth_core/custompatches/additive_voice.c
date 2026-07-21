@@ -1,6 +1,7 @@
 #include "custompatches/additive_voice.h"
 #include "amy.h"           /* BYO_PARTIALS, PARTIAL, COEF_*, ENVELOPE_* */
 #include "amy_helpers.h"   /* amy_helpers_event_begin/send */
+#include "seq_clamp.h"
 #include <math.h>          /* log2f */
 
 /* The live-editable "custom" additive voice — see additive_voice.h for the
@@ -36,8 +37,7 @@ void additive_voice_configure_track(uint8_t synth_id, uint16_t num_voices,
 {
     if (!voice) return;
     uint8_t n = voice->num_partials;
-    if (n < 1) n = 1;
-    if (n > ADD_MAX_PARTIALS) n = ADD_MAX_PARTIALS;
+    n = SEQ_CLAMP_U8(n, 1, ADD_MAX_PARTIALS);
 
     /* 1) Allocate the voice: 1 control osc + N partial oscs. */
     amy_event *e = amy_helpers_event_begin();
@@ -96,8 +96,7 @@ void additive_voice_push_live(uint8_t synth_id, const additive_voice_t *voice)
 {
     if (!voice) return;
     uint8_t n = voice->num_partials;
-    if (n < 1) n = 1;
-    if (n > ADD_MAX_PARTIALS) n = ADD_MAX_PARTIALS;
+    n = SEQ_CLAMP_U8(n, 1, ADD_MAX_PARTIALS);
 
     for (uint8_t i = 0; i < n; i++) {
         amy_event *e = amy_helpers_event_begin();

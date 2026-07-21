@@ -1,4 +1,5 @@
 #include "filter_graph.h"
+#include "seq_clamp.h"
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -83,7 +84,7 @@ static float filter_display_mag(uint8_t type, float f, float fc, float Q)
             mag = FG_PASSBAND_NORM;
             break;
     }
-    return mag > 1.0f ? 1.0f : (mag < 0.0f ? 0.0f : mag);
+    return SEQ_CLAMP_F32(mag, 0.0f, 1.0f);
 }
 
 /* Convert normalised cutoff 0..1 → Hz. */

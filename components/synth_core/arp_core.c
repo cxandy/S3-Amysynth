@@ -398,8 +398,7 @@ void arp_core_init(void)
     s_arp.vp.lfo.rate   = LFO_RATE_1BAR;
     s_arp.vp.lfo.depth  = 50;
     s_arp.vp.lfo.targets = LFO_TGT_BIT(LFO_TARGET_FILTER);
-    if (s_arp.octaves < 1) s_arp.octaves = 1;
-    if (s_arp.octaves > ARP_OCT_MAX) s_arp.octaves = ARP_OCT_MAX;
+    s_arp.octaves = SEQ_CLAMP_U8(s_arp.octaves, 1, ARP_OCT_MAX);
     if (s_arp.scale_index >= quantizer_scale_count()) s_arp.scale_index = 0;
     for (uint8_t i = 0; i < ARP_MAX_SLOTS; i++) s_arp.slots[i] = -1;
 
@@ -785,8 +784,7 @@ uint8_t arp_active_step_count(void)
 
 void arp_set_amp_scale(float v)
 {
-    if (v < 0.0f) v = 0.0f;
-    if (v > 1.0f) v = 1.0f;
+    v = SEQ_CLAMP_F32(v, 0.0f, 1.0f);
     if (fabsf(s_arp.vp.amp_trim - v) < 0.001f) return;
     s_arp.vp.amp_trim = v;
     arp_mark_dirty();   /* coalesced re-emit on next arp_core_service() */

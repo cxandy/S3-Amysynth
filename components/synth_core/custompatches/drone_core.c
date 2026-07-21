@@ -189,8 +189,7 @@ static inline float s_amp_peak_lin(void)
      * editor amp mode. Fold it into amp_peak here so all callers automatically
      * pick up the trimmed level (single source of truth rule applies). */
     float v = s_d.amp_peak * s_d.vp.amp_trim;
-    if (v < 0.0f) v = 0.0f;
-    if (v > 1.0f) v = 1.0f;
+    v = SEQ_CLAMP_F32(v, 0.0f, 1.0f);
     return v;
 }
 
@@ -965,8 +964,7 @@ const char *drone_pattern_name(drone_pattern_t p)
 
 void drone_set_amp_trim(float v)
 {
-    if (v < 0.0f) v = 0.0f;
-    if (v > 1.0f) v = 1.0f;
+    v = SEQ_CLAMP_F32(v, 0.0f, 1.0f);
     if (fabsf(s_d.vp.amp_trim - v) < 0.001f) return;
     s_d.vp.amp_trim = v;
     /* s_amp_peak_lin() is called by drone_configure_wave_synth() via drone_rebuild(),

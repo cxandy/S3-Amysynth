@@ -29,6 +29,7 @@
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "seq_clamp.h"
 #include <string.h>
 
 static const char *TAG = "project_snapshot";
@@ -187,8 +188,7 @@ static bool de_vp(tlv_reader_t *r, voice_params_t *vp, uint8_t ver)
     vp->filter_authored = fa  != 0;
     vp->lfo_authored    = la  != 0;
     if (!tlv_get_f32(r, &vp->amp_trim)) return false;
-    if (vp->amp_trim < 0.0f) vp->amp_trim = 0.0f;
-    if (vp->amp_trim > 1.0f) vp->amp_trim = 1.0f;
+    vp->amp_trim = SEQ_CLAMP_F32(vp->amp_trim, 0.0f, 1.0f);
     return true;
 }
 
@@ -366,8 +366,7 @@ static bool parse_layer(tlv_reader_t *b, seq_layer_t *L, uint8_t ver)
     if (!tlv_get_u8(b, &L->num_voices))   return false;
     /* AMY's instrument_init() aborts outside 1..MAX_VOICES_PER_INSTRUMENT
      * (32); a CRC-valid but hand-edited file must not crash the load. */
-    if (L->num_voices < 1)  L->num_voices = 1;
-    if (L->num_voices > 32) L->num_voices = 32;
+    L->num_voices = SEQ_CLAMP_U8(L->num_voices, 1, 32);
     { uint8_t v; if (!tlv_get_u8(b, &v)) return false; L->chord_mode = v != 0; }
     if (!tlv_get_u8(b, &L->chord_root)) return false;
     { uint8_t v; if (!tlv_get_u8(b, &v)) return false;
@@ -406,8 +405,7 @@ static bool parse_layer(tlv_reader_t *b, seq_layer_t *L, uint8_t ver)
             L->grid[t][s]              = L->grid[t][s] ? 1 : 0;
             L->step_quant_bypass[t][s] = L->step_quant_bypass[t][s] ? 1 : 0;
             if (L->step_prob[t][s] > 100) L->step_prob[t][s] = 100;
-            if (L->step_ratchet[t][s] < 1) L->step_ratchet[t][s] = 1;
-            if (L->step_ratchet[t][s] > SEQ_MAX_RATCHET) L->step_ratchet[t][s] = SEQ_MAX_RATCHET;
+            L->step_ratchet[t][s] = SEQ_CLAMP_U8(L->step_ratchet[t][s], 1, SEQ_MAX_RATCHET);
             if (L->step_cond_type[t][s] >= SEQ_STEP_COND_COUNT) L->step_cond_type[t][s] = SEQ_STEP_COND_NONE;
             if (L->step_cond_param[t][s] > 8) L->step_cond_param[t][s] = 8;  /* FILL divisor caps at 8 */
             if (L->step_transform[t][s] >= SEQ_STEP_TRANSFORM_COUNT) L->step_transform[t][s] = SEQ_STEP_TRANSFORM_NONE;
@@ -423,8 +421,7 @@ static bool parse_layer(tlv_reader_t *b, seq_layer_t *L, uint8_t ver)
         L->gate_pct      = SEQ_MELODIC_GATE_DEFAULT_PCT;
         L->portamento_ms = 0;
     }
-    if (L->gate_pct < 10)  L->gate_pct = 10;
-    if (L->gate_pct > 100) L->gate_pct = 100;
+    L->gate_pct = SEQ_CLAMP_U8(L->gate_pct, 10, 100);
     if (L->portamento_ms > SEQ_MELODIC_PORTAMENTO_MAX_MS)
         L->portamento_ms = SEQ_MELODIC_PORTAMENTO_MAX_MS;
 
@@ -498,21 +495,18 @@ static bool parse_arp(tlv_reader_t *b, staged_arp_t *a, uint8_t ver)
     if (!tlv_get_u8(b, &v)) return false;
     a->dir = (v >= ARP_DIR_COUNT) ? ARP_UP : (arp_dir_t)v;
     if (!tlv_get_u8(b, &a->octaves)) return false;
-    if (a->octaves < 1) a->octaves = 1;
-    if (a->octaves > ARP_OCT_MAX) a->octaves = ARP_OCT_MAX;
+    a->octaves = SEQ_CLAMP_U8(a->octaves, 1, ARP_OCT_MAX);
     if (!tlv_get_u8(b, &v)) return false;
     a->rate = (v >= ARP_RATE_COUNT) ? ARP_RATE_1_4 : (arp_rate_t)v;
     if (!tlv_get_u8(b, &a->gate_pct)) return false;
-    if (a->gate_pct < 10)  a->gate_pct = 10;
-    if (a->gate_pct > 100) a->gate_pct = 100;
+    a->gate_pct = SEQ_CLAMP_U8(a->gate_pct, 10, 100);
     if (!tlv_get_u8(b, &a->scale)) return false;
     if (a->scale >= quantizer_scale_count()) a->scale = 0;
     if (!tlv_get_u8(b, &a->root)) return false;
     if (!tlv_get_u16(b, &a->portamento_ms)) return false;
     if (a->portamento_ms > ARP_PORTAMENTO_MAX_MS) a->portamento_ms = ARP_PORTAMENTO_MAX_MS;
     if (!tlv_get_f32(b, &a->amp_scale)) return false;
-    if (a->amp_scale < 0.0f) a->amp_scale = 0.0f;
-    if (a->amp_scale > 1.0f) a->amp_scale = 1.0f;
+    a->amp_scale = SEQ_CLAMP_F32(a->amp_scale, 0.0f, 1.0f);
     for (int i = 0; i < ARP_MAX_SLOTS; i++) {
         if (!tlv_get_i16(b, &a->slots[i])) return false;
         if (a->slots[i] < ARP_REST || a->slots[i] > 127) a->slots[i] = -1;
@@ -614,14 +608,11 @@ static bool parse_drone(tlv_reader_t *b, staged_drone_t *d)
     d->patch = clamp_patch(d->patch);
     if (!tlv_get_f32(b, &d->resonance)) return false;
     if (!tlv_get_f32(b, &d->amp_peak))  return false;
-    if (d->amp_peak < 0.0f) d->amp_peak = 0.0f;
-    if (d->amp_peak > 1.0f) d->amp_peak = 1.0f;
+    d->amp_peak = SEQ_CLAMP_F32(d->amp_peak, 0.0f, 1.0f);
     if (!tlv_get_f32(b, &d->amp_duck))  return false;
-    if (d->amp_duck < 0.0f) d->amp_duck = 0.0f;
-    if (d->amp_duck > 1.0f) d->amp_duck = 1.0f;
+    d->amp_duck = SEQ_CLAMP_F32(d->amp_duck, 0.0f, 1.0f);
     if (!tlv_get_f32(b, &d->amp_trim))  return false;
-    if (d->amp_trim < 0.0f) d->amp_trim = 0.0f;
-    if (d->amp_trim > 1.0f) d->amp_trim = 1.0f;
+    d->amp_trim = SEQ_CLAMP_F32(d->amp_trim, 0.0f, 1.0f);
     if (!tlv_get_u8(b, &v)) return false;
     d->rate = (v >= DRONE_RATE_COUNT) ? DRONE_RATE_1_4 : (drone_rate_t)v;
     { uint8_t se; if (!tlv_get_u8(b, &se)) return false; d->sub_enabled = se != 0; }
@@ -630,13 +621,11 @@ static bool parse_drone(tlv_reader_t *b, staged_drone_t *d)
     if (!tlv_get_f32(b, &d->sweep_hi)) return false;
     if (!tlv_get_u8(b, &d->sweep_bars)) return false;
     if (!tlv_get_f32(b, &d->gate_len)) return false;
-    if (d->gate_len < 0.05f) d->gate_len = 0.05f;
-    if (d->gate_len > 0.95f) d->gate_len = 0.95f;
+    d->gate_len = SEQ_CLAMP_F32(d->gate_len, 0.05f, 0.95f);
     if (!tlv_get_u8(b, &d->swing)) return false;
     if (d->swing > 66) d->swing = 66;   /* mirrors the private SEQ/DRONE_SWING_MAX ceiling */
     if (!tlv_get_f32(b, &d->blip)) return false;
-    if (d->blip < 0.0f) d->blip = 0.0f;
-    if (d->blip > 1.0f) d->blip = 1.0f;
+    d->blip = SEQ_CLAMP_F32(d->blip, 0.0f, 1.0f);
     if (!tlv_get_u8(b, &v)) return false;
     d->pattern = (v >= DRONE_PAT_COUNT) ? DRONE_PAT_FULL : (drone_pattern_t)v;
     if (!de_env(b, &d->env))  return false;

@@ -1,5 +1,6 @@
 #include "sequencer_core/seq_core_internal.h"
 #include "custompatches/drone_std_core.h"   /* drone_std_core_refresh_lfo_freq */
+#include "seq_clamp.h"
 
 /* ── State definitions — owns BPM and quantizer ─────────────────────── */
 uint16_t s_bpm = SEQ_DEFAULT_BPM;

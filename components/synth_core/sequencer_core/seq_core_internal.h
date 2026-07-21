@@ -12,7 +12,6 @@
 #include "amy_helpers.h"
 #include "sequencer.h"
 #include "quantizer.h"
-#include "seq_clamp.h"
 #include "seq_defaults.h"
 #include "sdkconfig.h"
 #include "esp_log.h"

@@ -334,8 +334,7 @@ void graph_popup_draw(u8g2_t *u8g2, const gpopup_t *p)
         }
         for (int cx = (int)plot_x; cx <= last_x; ++cx) {
             int cy = curve_y_at_col(p, cx, plot_x, plot_y, plot_w, plot_h);
-            if (cy < (int)plot_y) cy = (int)plot_y;
-            if (cy > baseline) cy = baseline;
+            cy = SEQ_CLAMP_INT(cy, (int)plot_y, baseline);
             if (baseline - cy > 0) {
                 u8g2_DrawVLine(u8g2, (uint8_t)cx, (uint8_t)cy,
                                (uint8_t)(baseline - cy));
@@ -355,8 +354,7 @@ void graph_popup_draw(u8g2_t *u8g2, const gpopup_t *p)
         int prev_cx = fx, prev_cy = fy;
         for (int cx = fx; cx <= lx; ++cx) {
             int cy = curve_y_at_col(p, cx, plot_x, plot_y, plot_w, plot_h);
-            if (cy < (int)plot_y) cy = (int)plot_y;
-            if (cy > baseline) cy = baseline;
+            cy = SEQ_CLAMP_INT(cy, (int)plot_y, baseline);
             u8g2_DrawLine(u8g2, prev_cx, prev_cy, cx, cy);
             prev_cx = cx;
             prev_cy = cy;
@@ -418,8 +416,7 @@ void graph_popup_draw(u8g2_t *u8g2, const gpopup_t *p)
                 int lx = cx - 2;
                 int ly = cy - 4;            /* sit above the disc */
                 if (ly < (int)plot_y + 6) ly = cy + 11; /* flip below if cramped */
-                if (lx < (int)plot_x) lx = (int)plot_x;
-                if (lx > (int)(plot_x + plot_w - 5)) lx = (int)(plot_x + plot_w - 5);
+                lx = SEQ_CLAMP_INT(lx, (int)plot_x, (int)(plot_x + plot_w - 5));
                 if (i == p->cursor) {
                     /* Emphasise the selected label with an inverted pad. */
                     u8g2_DrawBox(u8g2, (uint8_t)(lx - 1), (uint8_t)(ly - 6), 7, 8);
@@ -479,8 +476,7 @@ gpopup_result_t graph_popup_handle_encoder(gpopup_t *p, long delta)
     if (!p->editing_value) {
         /* Selecting: move the cursor between points, clamped to ends. */
         long idx = (long)p->cursor + delta;
-        if (idx < min_idx) idx = min_idx;
-        if (idx > (long)p->num_points - 1) idx = (long)p->num_points - 1;
+        idx = SEQ_CLAMP_INT(idx, min_idx, (long)p->num_points - 1);
         p->cursor = (uint8_t)idx;
     } else {
         /* Adjusting: change the selected point along its editable axis. In ADSR

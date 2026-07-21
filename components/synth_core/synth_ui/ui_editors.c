@@ -200,8 +200,7 @@ static float graph_log1p_squash(void)
 /* Normalised X (0..1) -> milliseconds, range/curve aware. */
 static uint32_t graph_x_to_ms(float x)
 {
-    if (x < 0.0f) x = 0.0f;
-    if (x > 1.0f) x = 1.0f;
+    x = SEQ_CLAMP_F32(x, 0.0f, 1.0f);
     if (!s_graph_long_range) {
         return (uint32_t)(x * (float)GRAPH_RANGE_SHORT_MS + 0.5f);
     }
@@ -221,8 +220,7 @@ static float graph_ms_to_x(uint32_t ms)
     }
     float k = GRAPH_LONG_SQUASH;
     float t = (float)ms / (float)GRAPH_RANGE_LONG_MS;   /* 0..1 linear time */
-    if (t < 0.0f) t = 0.0f;
-    if (t > 1.0f) t = 1.0f;
+    t = SEQ_CLAMP_F32(t, 0.0f, 1.0f);
     /* Compress: more pixels to small t, fewer to the long tail. */
     return logf(1.0f + k * t) / graph_log1p_squash();
 }
@@ -290,13 +288,11 @@ static float graph_xstep(uint8_t idx, float x, long delta)
 
 static uint32_t graph_decay_ms(uint32_t attack_ms, float sustain_frac)
 {
-    if (sustain_frac < 0.0f) sustain_frac = 0.0f;
-    if (sustain_frac > 1.0f) sustain_frac = 1.0f;
+    sustain_frac = SEQ_CLAMP_F32(sustain_frac, 0.0f, 1.0f);
     float d = (float)DECAY_BASE_MS
             + (float)attack_ms * DECAY_ATTACK_K
             + (1.0f - sustain_frac) * DECAY_SUSTAIN_SPAN_MS;
-    if (d < (float)DECAY_MIN_MS) d = (float)DECAY_MIN_MS;
-    if (d > (float)DECAY_MAX_MS) d = (float)DECAY_MAX_MS;
+    d = SEQ_CLAMP_F32(d, (float)DECAY_MIN_MS, (float)DECAY_MAX_MS);
     return (uint32_t)(d + 0.5f);
 }
 #endif /* !CONFIG_SEQ_ADSR_EXPLICIT_DECAY */
@@ -1084,8 +1080,7 @@ bool synth_ui_graph_handle_encoder(long delta)
              * Bipolar -8..+8; negative = inverted/downward sweep (same range
              * as the filter editor's EG cursor — one shared field). */
             float v = s_graph_fenv_edit + (float)delta * 0.25f;
-            if (v < -8.0f) v = -8.0f;
-            if (v >  8.0f) v =  8.0f;
+            v = SEQ_CLAMP_F32(v, -8.0f, 8.0f);
             s_graph_fenv_edit  = v;
             s_graph_fenv_dirty = true;
             graph_live_push_fenv();
@@ -1095,8 +1090,7 @@ bool synth_ui_graph_handle_encoder(long delta)
         /* Amp mode: encoder adjusts per-target amplitude trim in 5% steps.
          * Applied live but throttled (melodic applies re-emit the track). */
         float v = s_graph_amp_edit + (float)delta * 0.05f;
-        if (v < 0.0f) v = 0.0f;
-        if (v > 1.0f) v = 1.0f;
+        v = SEQ_CLAMP_F32(v, 0.0f, 1.0f);
         s_graph_amp_edit = v;
         s_amp_live_pending = true;
         graph_amp_live_flush(false);
@@ -1168,8 +1162,7 @@ static lfo_view_t s_lfo_view;
 /* Normalisation helpers shared between open and commit. */
 static float filter_hz_to_norm(float hz)
 {
-    if (hz < FGRAPH_CUTOFF_HZ_MIN) hz = FGRAPH_CUTOFF_HZ_MIN;
-    if (hz > FGRAPH_CUTOFF_HZ_MAX) hz = FGRAPH_CUTOFF_HZ_MAX;
+    hz = SEQ_CLAMP_F32(hz, FGRAPH_CUTOFF_HZ_MIN, FGRAPH_CUTOFF_HZ_MAX);
     return log2f(hz / FGRAPH_CUTOFF_HZ_MIN) /
            log2f(FGRAPH_CUTOFF_HZ_MAX / FGRAPH_CUTOFF_HZ_MIN);
 }

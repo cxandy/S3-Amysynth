@@ -54,7 +54,7 @@ uint8_t fx_menu_item_count(void)
 
 const menu_item_view_t *fx_menu_build_items(void)
 {
-    for (uint8_t i = 0; i < FXI_COUNT; i++) {
+    for (int i = 0; i < FXI_COUNT; i++) {
         s_fx_items[i].value[0] = '\0';
     }
 

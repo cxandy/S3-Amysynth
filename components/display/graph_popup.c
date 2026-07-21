@@ -10,12 +10,11 @@
 
 /* ── File-local helpers ─────────────────────────────────────────────────── */
 
-static inline float clampf01(float v)
-{
-    if (v < 0.0f) return 0.0f;
-    if (v > 1.0f) return 1.0f;
-    return v;
-}
+/* Normalised-coordinate clamp. Delegates to seq_clamp_f32 rather than testing
+ * the bounds directly so that a NaN degrades to 0.0f instead of propagating:
+ * several of these results feed an (int) cast on the way to the draw path, and
+ * converting NaN to int is undefined behaviour. */
+static inline float clampf01(float v) { return SEQ_CLAMP_F32(v, 0.0f, 1.0f); }
 
 /* Inset (in px) of the plot region inside the box border. Leaves room for the
  * frame and an optional title strip at the top. */

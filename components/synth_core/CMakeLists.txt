@@ -55,7 +55,10 @@ idf_component_register(SRCS "amy_helpers.c" "amy_fx.c" "arp_core.c" "quantizer.c
                        PRIV_INCLUDE_DIRS "."
                        REQUIRES u8g2 display amy
                        PRIV_REQUIRES seq_clamp project_store usb_audio)
-target_compile_options(${COMPONENT_LIB} PRIVATE "-Wstack-usage=1024")
+# -Wstack-usage is GCC-only; clang rejects the unknown warning option under -Werror.
+if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(${COMPONENT_LIB} PRIVATE "-Wstack-usage=1024")
+endif()
 set_source_files_properties(
     "${CMAKE_CURRENT_LIST_DIR}/synth_ui/synth_ui_state.c"
     "${CMAKE_CURRENT_LIST_DIR}/synth_ui/synth_ui_task.c"

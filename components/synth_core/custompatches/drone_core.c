@@ -36,13 +36,6 @@
 
 static const char *TAG = "drone_core";
 
-/* AMY's monotonic sequencer tick counter (48 PPQ, AMY_SEQUENCER_PPQ), advanced
- * by the audio-rate sequencer. This is the same musical-time clock the sequencer
- * and arp ride; the filter sweep derives its phase from it so the sweep is
- * frame-rate-independent and genuinely beat-locked (not tied to how often the UI
- * task happens to call drone_core_service()). */
-extern uint32_t sequencer_ticks(void);
-
 /* ── Synth slots (above the existing 0..63 map; needs amy_cfg.max_synths>=66) ── */
 #define DRONE_SYNTH_MAIN   64
 #define DRONE_SYNTH_SUB    65
@@ -549,6 +542,9 @@ void drone_core_service(void)
      * advance with tempo automatically and stay coherent with the sequencer/arp
      * bar grid across BPM changes. */
     const uint32_t bar_ticks = (uint32_t)(AMY_SEQUENCER_PPQ * 4);   /* 192 */
+    /* AMY's monotonic tick counter (48 PPQ, AMY_SEQUENCER_PPQ), advanced by the
+     * audio-rate sequencer: the same musical-time clock the sequencer and arp
+     * ride. Declared in amy/src/sequencer.h, reached here via amy.h. */
     uint32_t now = sequencer_ticks();
 
     /* (a) Slow bar-length sweep = the BASE cutoff. */

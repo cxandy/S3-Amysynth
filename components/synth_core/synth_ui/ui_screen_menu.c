@@ -121,7 +121,7 @@ void menu_build_view(menu_view_t *out)
     }
 #endif
 
-    for (uint8_t i = 0; i < MI_COUNT; i++) {
+    for (int i = 0; i < MI_COUNT; i++) {
         s_menu_items[i].value[0] = '\0';
     }
 

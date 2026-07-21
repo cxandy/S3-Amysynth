@@ -89,19 +89,23 @@ static inline float seq_clamp_f32(float value, float min_value, float max_value)
 
 #ifndef __cplusplus
 /* Generic dispatch on the value's type. Notes:
- * - On xtensa-esp-elf, uint32_t is 'unsigned long', so 'unsigned int' needs
- *   its own association; on a toolchain where the two coincide the duplicate
- *   entries fail to compile, which is the desired loud signal to revisit.
+ * - uint32_t is a typedef whose underlying type is toolchain-dependent:
+ *   'unsigned long' on xtensa-esp-elf-gcc, 'unsigned int' on esp-clang, for
+ *   the same target. Associating on uint32_t itself therefore duplicates
+ *   whichever of the two it happens to alias, which is a constraint violation.
+ *   'unsigned int' and 'unsigned long' are always distinct types in C even
+ *   when they share a width, so naming both is unambiguous everywhere and
+ *   covers uint32_t whichever one it resolves to.
  * - 'double' routes to the float helper (arguments convert implicitly):
  *   a stray double promotion must never fall into the int default, where it
  *   would truncate before clamping. */
 #define SEQ_CLAMP(value, min_val, max_val) _Generic((value), \
-    uint8_t:      seq_clamp_u8,  \
-    uint16_t:     seq_clamp_u16, \
-    uint32_t:     seq_clamp_u32, \
-    unsigned int: seq_clamp_u32, \
-    float:        seq_clamp_f32, \
-    double:       seq_clamp_f32, \
-    default:      seq_clamp_int  \
+    uint8_t:       seq_clamp_u8,  \
+    uint16_t:      seq_clamp_u16, \
+    unsigned int:  seq_clamp_u32, \
+    unsigned long: seq_clamp_u32, \
+    float:         seq_clamp_f32, \
+    double:        seq_clamp_f32, \
+    default:       seq_clamp_int  \
 )((value), (min_val), (max_val))
 #endif

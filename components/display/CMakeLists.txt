@@ -8,4 +8,7 @@ idf_component_register(
     REQUIRES esp_driver_i2c esp_driver_gpio u8g2 synth_core
     PRIV_REQUIRES seq_clamp
 )
-target_compile_options(${COMPONENT_LIB} PRIVATE "-Wstack-usage=1024")
+# -Wstack-usage is GCC-only; clang rejects the unknown warning option under -Werror.
+if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(${COMPONENT_LIB} PRIVATE "-Wstack-usage=1024")
+endif()

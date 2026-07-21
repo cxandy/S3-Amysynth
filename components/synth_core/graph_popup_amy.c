@@ -14,15 +14,13 @@
  */
 
 #include "graph_popup.h"
-
+#include "seq_clamp.h"
 #include <stdint.h>
 
-static inline float clampf01(float v)
-{
-    if (v < 0.0f) return 0.0f;
-    if (v > 1.0f) return 1.0f;
-    return v;
-}
+/* Normalised-coordinate clamp. Delegates to seq_clamp_f32 so a NaN degrades to
+ * 0.0f instead of propagating into the point and time conversions below, and so
+ * this shares one clamping semantic with the display-side graph code. */
+static inline float clampf01(float v) { return SEQ_CLAMP_F32(v, 0.0f, 1.0f); }
 
 uint8_t gpopup_points_from_envelope(gpopup_point_t *out, uint8_t max_out,
                                     const uint32_t *times_ms,

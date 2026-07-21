@@ -1380,7 +1380,12 @@ bool synth_ui_filter_handle_encoder(long delta)
     if (!s_filter_active) return false;
     bool drone = (seq_state.ui_mode == UI_MODE_DRONE);
 
-    bool arp = (seq_state.ui_mode == UI_MODE_ARP);
+    /* Arp currently takes the same cursor map and the same edit branches as
+     * melodic (see case 2/3 below), so it needs no separate predicate; the
+     * arp-specific EG1 sweep depth is the fixed ARP_FILTER_EG1_DEPTH_OCT rather
+     * than an editable field. Kept commented as the hook to restore if arp ever
+     * regains its own filter-edit behaviour. */
+    /* bool arp = (seq_state.ui_mode == UI_MODE_ARP); */
 
     if (!s_fgraph.editing) {
         /* Not editing: scroll cursor position.

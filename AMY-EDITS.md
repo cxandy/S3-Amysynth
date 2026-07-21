@@ -390,7 +390,7 @@ gamma9001_pcm_mount()`) needs the exact blob size to flash-mmap it (a whole-
 partition mmap exhausts data-cache MMU pages under PSRAM XIP) or to size the
 PSRAM fallback copy. Upstream PR candidate (tiny, platform-neutral).
 
-### `filters.c` — full-precision biquad multiply `SMUL64R` (LOCAL EDIT)
+### `filters.c` — full-precision biquad multiply `SMUL64R` + BFP-free LPF24 (upstream #951)
 
 `FILT_MUL_SS` was `SMULR6`, which truncates both operands to 12 fractional
 bits before multiplying. For low-cutoff biquads the split-feedback pole
@@ -403,14 +403,35 @@ significant bits and the pole landed almost randomly around its target:
 - the sub-100 Hz LPF numerator `(1-c)/2 ≈ 3e-5` rounded to zero, producing
   silent output.
 
-Replaced (fixed-point build only) with `SMUL64R`, an exact 32x32->64 rounding
-multiply. Host-side A/B against a double-precision reference (fc=10..1000 Hz,
-Q=0.7..8, HPF+LPF, with/without EG1 sweeps) matches to 3 decimals everywhere;
+`FILT_MUL_SS` now resolves to `SMUL64R`, an exact 32x32->64 rounding multiply,
+whenever `AMY_HAS_MUL64` is defined (`AMY_USE_FIXEDPOINT` and either ESP32-S3
+or a desktop host); other fixed-point MCUs keep `SMULR6`. LPF24 additionally
+gets `dsps_biquad_f32_ansi_split_fb_twice_nobfp_fixedzeros`, which drops the
+block-floating-point `top16SMUL` gymnastics in favour of direct `SMUL64R`
+multiplies — the 64x64->64 product is faster than the 32x32 + shift dance on
+the S3 while removing the block-floating-point shift-change artifacts.
+
+This is no longer a divergence: it tracks upstream `shorepine/amy` PR #951
+("filters.c uses SMUL64R (direct 64x64->64) on desktop and ESP32S3", merged
+2026-07-20), which itself adopted the earlier `SMUL64R` fix from #950. The
+region now matches upstream; retire this note on the next full vendor sync.
+Cost: ~2 extra Xtensa instructions per biquad multiply. Original hardware
+repro (2026-07-18): resonant low-frequency filters audibly better tuned;
 evidence and method in `docs/filter-fixedpoint-instability-2026-07-18.md`.
-Cost: ~2 extra Xtensa instructions per multiply in the biquad kernels (incl.
-parametric EQ). Hardware-verified 2026-07-18: original repro gone, resonant
-low-frequency filters audibly better tuned across the board. Upstream PR
-candidate (universal fixed-point logic bug).
+Hardware re-verify of the new LPF24 fast path pending.
+
+### `src/amy.c` — mod_source cycle guard (chained modulators) (LOCAL EDIT)
+
+Port of the upstream PR branch `feat/chained-mod-osc`. Modulators can
+themselves be modulated (chained modulators — the WOBBLE second-order LFO
+uses osc2 as the osc1 LFO carrier's `mod_source`): `hold_and_modify()`
+evaluates `mod_source` recursively, so the topology works natively, but the
+`MOD_SOURCE` delta handler stored assignments unvalidated and a cycle
+(a->b->a) recursed unboundedly — host-verified stack-overflow crash on
+pristine upstream. Added `mod_osc_would_cause_loop()` (mirroring
+`chained_osc_would_cause_loop`) plus range+cycle validation in the handler;
+rejected assignments unset `mod_source`, matching the `CHAINED_OSC`
+convention. Retire on the next vendor sync once the PR lands upstream.
 
 ## Deferred / needs porting
 

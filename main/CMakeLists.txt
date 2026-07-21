@@ -11,5 +11,10 @@ target_compile_options(${COMPONENT_TARGET} PUBLIC
     -Wno-uninitialized
     -DESP_PLATFORM
 )
-target_compile_options(${COMPONENT_LIB} PRIVATE "-Wstack-usage=1024")
+# -Wstack-usage is GCC-only; clang rejects the unknown warning option and IDF
+# builds with -Werror, so it must not reach a clang build. The 1 KB stack budget
+# check still applies under the shipping toolchain.
+if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(${COMPONENT_LIB} PRIVATE "-Wstack-usage=1024")
+endif()
 # `amy.c` needs relaxed strict-aliasing warnings; handled by the `amy` component.

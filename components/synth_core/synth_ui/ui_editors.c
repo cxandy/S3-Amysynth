@@ -10,6 +10,7 @@
 #include "seq_defaults.h"
 #include "amy_helpers.h"
 #include "seq_clamp.h"
+#include "voice_config.h"  /* shared voice constants incl. envelope bounds */
 #include "esp_log.h"
 #include <math.h>
 #include <string.h>
@@ -225,6 +226,16 @@ static float graph_ms_to_x(uint32_t ms)
     return logf(1.0f + k * t) / graph_log1p_squash();
 }
 
+/* Push the engine's attack floor into the widget as its minimum point spacing.
+ * The widget works in normalised X and cannot know what a millisecond is worth,
+ * so without this it would enforce a legibility-derived gap that is stricter
+ * than VOICE_ENV_ATTACK_MIN_MS — and by a different amount per range, since the
+ * long axis is log-compressed. Re-sync whenever the range changes. */
+static void graph_sync_min_gap(void)
+{
+    graph_popup_set_min_x_gap(&s_graph_popup, graph_ms_to_x(VOICE_ENV_ATTACK_MIN_MS));
+}
+
 /* Audio-taper encoder stride for the envelope points' X axis (installed as the
  * popup's xstep hook). Envelope time knobs are conventionally exponential:
  * each detent scales the SEGMENT duration (time since the previous point, i.e.
@@ -304,6 +315,7 @@ static void graph_popup_ensure_init(void)
     graph_popup_init(&s_graph_popup, 0, GRAPH_TOPBAR_H, 128,
                      (uint8_t)(64 - GRAPH_TOPBAR_H));
     graph_popup_set_style(&s_graph_popup, GPOPUP_STYLE_ADSR);
+    graph_sync_min_gap();
     /* Draw the curve with the bound EG's real per-type shape (reads
      * s_graph_eg_type_disp at draw time, so type cycles retint instantly). */
     graph_popup_set_shape(&s_graph_popup, graph_env_shape);
@@ -596,8 +608,7 @@ static bool graph_points_to_env(seq_env_t *env)
     uint32_t cum_r = graph_x_to_ms(pts[3].x);
 
     /* Convert cumulative times back to per-segment durations (clamp monotonic). */
-    uint32_t a = cum_a;
-    if (a < 2) a = 2;  /* minimum 2 ms attack prevents DAC pop on trigger */
+    uint32_t a = SEQ_CLAMP_U32(cum_a, VOICE_ENV_ATTACK_MIN_MS, VOICE_ENV_TIME_MAX_MS);
     env->attack_ms   = a;
     env->decay_ms    = (cum_d > cum_a) ? (cum_d - cum_a) : 0;
     env->release_ms  = (cum_r > cum_d) ? (cum_r - cum_d) : 0;
@@ -866,6 +877,7 @@ static void graph_set_range(bool long_range)
     for (uint8_t i = 0; i < n; ++i) ms[i] = graph_x_to_ms(pts[i].x);
 
     s_graph_long_range = long_range;
+    graph_sync_min_gap();   /* the floor's normalised width moves with the axis */
 
     for (uint8_t i = 0; i < n; ++i) pts[i].x = graph_ms_to_x(ms[i]);
     uint8_t saved_cursor  = s_graph_popup.cursor;
@@ -927,14 +939,21 @@ void synth_ui_graph_toggle_amp_mode(void)
  * becomes authored now) so flipping tabs never silently discards work. The
  * curve is then fully reseeded (and range re-derived) from the other
  * eg_index's own stored envelope — the two can have very different shapes. */
+/* Does the bound target expose an EG1 page? The free-running drone never sees
+ * another note-on after its enable gate, so EG1 would fire once and park at its
+ * sustain level forever — a static offset masquerading as an envelope. Hide the
+ * whole EG1 page for it (the stutter drone keeps it: its stutter gates are real
+ * note-ons). The editor cycle consults this too, so the hidden page is skipped
+ * rather than dead-ending the cycle on EG0. */
+static bool graph_target_has_eg1(void)
+{
+    return s_graph_target != GRAPH_TGT_DRONE_STD;
+}
+
 static void graph_toggle_eg_index(void)
 {
     if (!graph_popup_is_active(&s_graph_popup)) return;
-    /* The free-running drone never sees another note-on after its enable gate,
-     * so EG1 would fire once and park at its sustain level forever — a static
-     * offset masquerading as an envelope. Hide the whole EG1 page for it (the
-     * stutter drone keeps it: its stutter gates are real note-ons). */
-    if (s_graph_target == GRAPH_TGT_DRONE_STD) return;
+    if (!graph_target_has_eg1()) return;
 
     if (s_graph_env_dirty) {
         graph_write_points_to_env(s_graph_eg_index);
@@ -988,7 +1007,7 @@ static void graph_rescale_points_for_type(uint8_t old_type, uint8_t new_type)
     float kf = graph_g_fall[old_type & 3u] / graph_g_fall[new_type & 3u];
     d *= kf;
     r *= kf;
-    if (a < 2.0f) a = 2.0f;
+    if (a < (float)VOICE_ENV_ATTACK_MIN_MS) a = (float)VOICE_ENV_ATTACK_MIN_MS;
 
     /* Grow into the LONG range up front so a lengthening rescale isn't clipped
      * by the SHORT axis; the auto-range check below shrinks back when a
@@ -1186,13 +1205,32 @@ static float filter_norm_to_q(float n)
            (FGRAPH_RES_MAX - FGRAPH_RES_MIN);
 }
 
+/* True when the filter editor's target plays a feedback wave (KS): the Q
+ * cursor then edits KS string feedback (0..1) instead of biquad resonance.
+ * Covers the melodic KS patch and both arp routes to KS (WAVE-mode wave and
+ * PATCH-mode virtual patch 263); the drones exclude KS from their cycles. */
+static bool filter_target_is_feedback(void)
+{
+    if (seq_state.ui_mode == UI_MODE_ARP) {
+        return (arp_get_source() == ARP_SRC_WAVE  && arp_get_wave()  == KS)
+            || (arp_get_source() == ARP_SRC_PATCH && arp_get_patch() == SEQ_PATCH_KS);
+    }
+    if (seq_state.ui_mode == UI_MODE_DRONE || seq_state.ui_mode == UI_MODE_DRONE_STD) {
+        return false;
+    }
+    return sequencer_core_get_layer_patch(seq_state.active_layer_idx) == SEQ_PATCH_KS;
+}
+
 /* Populate s_fgraph from s_filter_edit and the current graph target. */
 static void filter_sync_fgraph(void)
 {
-    s_fgraph.filter_type    = s_filter_edit.filter_type;
-    s_fgraph.cutoff_norm    = filter_hz_to_norm(s_filter_edit.cutoff_hz);
-    s_fgraph.resonance_norm = filter_q_to_norm(s_filter_edit.resonance);
-    s_fgraph.enabled        = s_filter_edit.enabled;
+    s_fgraph.filter_type     = s_filter_edit.filter_type;
+    s_fgraph.cutoff_norm     = filter_hz_to_norm(s_filter_edit.cutoff_hz);
+    s_fgraph.res_is_feedback = filter_target_is_feedback();
+    s_fgraph.resonance_norm  = s_fgraph.res_is_feedback
+                               ? SEQ_CLAMP_F32(s_filter_edit.feedback, 0.0f, 1.0f)
+                               : filter_q_to_norm(s_filter_edit.resonance);
+    s_fgraph.enabled         = s_filter_edit.enabled;
     /* cursor and editing stay unchanged */
 }
 
@@ -1257,6 +1295,12 @@ static void filter_load_from_target(void)
     /* Drone filter is a fixed LPF24 that is always on (cursor tops out at 1), so
      * it hides the type/enable header controls; melodic + arp expose both. */
     s_fgraph.show_toggles = (seq_state.ui_mode != UI_MODE_DRONE);
+    /* Feedback waves (KS): a zero feedback means "never authored" — seed the
+     * editor at the engine's build-time default so the FB readout opens honest
+     * (0.9) instead of at a silent-string 0%. */
+    if (filter_target_is_feedback() && f.feedback <= 0.0f) {
+        f.feedback = 0.9f;
+    }
     s_filter_edit = f;
 }
 
@@ -1404,10 +1448,14 @@ bool synth_ui_filter_handle_encoder(long delta)
             s_filter_edit.cutoff_hz = filter_norm_to_hz(s_fgraph.cutoff_norm);
             break;
         }
-        case 1: {   /* resonance */
+        case 1: {   /* resonance — or KS string feedback on feedback waves */
             float step = 0.02f * (float)delta;
             s_fgraph.resonance_norm = SEQ_CLAMP_F32(s_fgraph.resonance_norm + step, 0.0f, 1.0f);
-            s_filter_edit.resonance = filter_norm_to_q(s_fgraph.resonance_norm);
+            if (s_fgraph.res_is_feedback) {
+                s_filter_edit.feedback = s_fgraph.resonance_norm;
+            } else {
+                s_filter_edit.resonance = filter_norm_to_q(s_fgraph.resonance_norm);
+            }
             break;
         }
         case 2: {   /* type (melodic/arp only) */
@@ -1592,10 +1640,14 @@ bool synth_ui_lfo_handle_encoder(long delta)
         case LFO_FLD_WOB_RATE:
             l->wob_rate = (uint8_t)((l->wob_rate + LFO_RATE_COUNT + d) % LFO_RATE_COUNT);
             break;
-        case LFO_FLD_WOB_DEPTH: /* ±5%, clamped 0..100; 0 = wobble off */
-            if (d > 0) l->wob_depth = (l->wob_depth < 95) ? l->wob_depth + 5 : 100;
-            else       l->wob_depth = (l->wob_depth >  5) ? l->wob_depth - 5 : 0;
+        case LFO_FLD_WOB_DEPTH: {
+            /* Authored in whole dB of carrier swing (see voice_config.h);
+             * 0 dB is the OFF step at the bottom of the range, not a wrap. */
+            int db = (int)voice_wob_depth_to_db(l->wob_depth) + d;
+            db = SEQ_CLAMP_INT(db, 0, (int)VOICE_WOB_DB_MAX);
+            l->wob_depth = voice_wob_db_to_depth((uint8_t)db);
             break;
+        }
         default: break;
     }
     s_force_redraw = true;
@@ -1618,6 +1670,9 @@ bool synth_ui_lfo_handle_button(bool is_long)
         s_lfo_view.editing = false;
     } else if (c == LFO_FLD_EN) {
         l->enabled = !l->enabled;              /* boolean: toggle directly */
+        s_lfo_view.editing = false;
+    } else if (c == LFO_FLD_WOB_MODE) {
+        l->wob_depth_only = !l->wob_depth_only; /* boolean: toggle directly */
         s_lfo_view.editing = false;
     } else {
         s_lfo_view.editing = !s_lfo_view.editing;  /* WAVE/RATE/DEPTH/WOB: adjust mode */
@@ -1676,9 +1731,10 @@ bool synth_ui_toggle_editor_apply_scope(void)
 void synth_ui_cycle_editor(void)
 {
     if (graph_popup_is_active(&s_graph_popup)) {
-        if (s_graph_eg_index == 0) {
+        if (s_graph_eg_index == 0 && graph_target_has_eg1()) {
             /* EG0 -> EG1: same widget, next page (writes the departing
-             * envelope through if it was edited). */
+             * envelope through if it was edited). Targets without an EG1 page
+             * fall straight through to the filter tab. */
             graph_toggle_eg_index();
             return;
         }

@@ -11,7 +11,12 @@ static const musical_scale_t s_scales[] = {
     { .name = "Lydian",           .intervals = {0, 2, 4, 6, 7, 9, 11},                 .size = 7  },
     { .name = "Mixolydian",       .intervals = {0, 2, 4, 5, 7, 9, 10},                 .size = 7  },
     { .name = "Minor Pentatonic", .intervals = {0, 3, 5, 7, 10},                       .size = 5  },
-    { .name = "Major Pentatonic", .intervals = {0, 2, 4, 7, 9},                        .size = 5  }
+    { .name = "Major Pentatonic", .intervals = {0, 2, 4, 7, 9},                        .size = 5  },
+    /* Append-only past this point: scale_index is persisted in project
+     * snapshots, so reordering the table would silently re-key saved scales. */
+    { .name = "Harmonic Minor",   .intervals = {0, 2, 3, 5, 7, 8, 11},                 .size = 7  },
+    { .name = "Locrian",          .intervals = {0, 1, 3, 5, 6, 8, 10},                 .size = 7  },
+    { .name = "Whole Tone",       .intervals = {0, 2, 4, 6, 8, 10},                    .size = 6  }
 };
 
 /* Floored integer division (rounds toward negative infinity), unlike C's
@@ -46,28 +51,6 @@ uint8_t quantizer_clamp_midi(int32_t midi_note)
     /* seq_clamp_u8 widens to int64_t before comparing, so a negative note
      * clamps to 0 rather than wrapping through uint8_t on the way in. */
     return SEQ_CLAMP_U8(midi_note, 0, 127);
-}
-
-/* Convert a scale degree (which step of the scale, can be negative or beyond
- * one octave) into a MIDI note. The degree is split into an octave count and an
- * in-scale index; the index picks a semitone offset from the scale's interval
- * table, and the octave adds/subtracts 12 semitones each. */
-uint8_t quantizer_degree_to_midi(int32_t scale_degree, uint8_t root_note,
-                                 const musical_scale_t *scale)
-{
-    if (scale == NULL || scale->size == 0) {
-        return 60;
-    }
-
-    /* floor-div/mod so negative degrees wrap into a valid [0, size) index. */
-    int32_t octave = quantizer_floor_div(scale_degree, scale->size);
-    int32_t scale_index = scale_degree - (octave * scale->size);
-    if (scale_index < 0) {
-        scale_index += scale->size;
-    }
-
-    int32_t midi_note = (int32_t)root_note + (octave * 12) + scale->intervals[scale_index];
-    return quantizer_clamp_midi(midi_note);
 }
 
 /* Snap an arbitrary MIDI note to the nearest note in the given scale/key.

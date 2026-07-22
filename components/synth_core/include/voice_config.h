@@ -25,6 +25,70 @@
 #define VOICE_WOB_DEPTH_AMP    0.15f
 #define VOICE_WOB_DEPTH_RATE   1.0f
 
+/* ── WOBBLE authoring unit ───────────────────────────────────────────────
+ * The stored wob_depth is a 0..100 percentage of VOICE_WOB_DEPTH_AMP, which
+ * tells the user nothing: "50 %" is 50 % of an internal coefficient, not of
+ * anything audible. Authoring and display therefore speak whole dB of carrier
+ * swing, the quantity the ear actually tracks.
+ *
+ * Because the AMP coefficient enters AMY's dB combine linearly
+ * (amp = 10^(3 * coef * mod), amp_combine_controls in amy.c), the peak swing
+ * is exactly 20*log10(10^(3*coef)) = 60 * coef dB, and coef = wob/100 * 0.15.
+ * Full scale is therefore 60 * VOICE_WOB_DEPTH_AMP = 9 dB, in 1 dB steps.
+ *
+ * 0 dB is OFF rather than a distinct zero setting: at zero swing the modulator
+ * is parked (voice_apply_native_lfo silences osc2), so there is nothing between
+ * "off" and "1 dB". The stored byte keeps its 0..100 meaning, so existing
+ * project snapshots load unchanged — only the authoring unit differs.
+ *
+ * The same control also swings the carrier's RATE by up to +/-1 octave
+ * (VOICE_WOB_DEPTH_RATE); the dB readout names the amplitude half of that pair
+ * because it is the half the user is listening for. */
+#define VOICE_WOB_DB_MAX  9u   /* = 60 * VOICE_WOB_DEPTH_AMP; keep in step */
+
+/* Stored 0..100 -> whole dB of swing, rounded (0 => OFF). */
+uint8_t voice_wob_depth_to_db(uint8_t wob_depth);
+
+/* Whole dB of swing -> stored 0..100. Round-trips with the above at every
+ * step, so repeated editing never drifts. */
+uint8_t voice_wob_db_to_depth(uint8_t db);
+
+/* ── Note-triggered envelope bounds ──────────────────────────────────────
+ * The melodic sequencer, the arp and the graph editor all drive the same
+ * seq_env_t into AMY breakpoint sets and need the same guard rails: an attack
+ * floor so a note-on doesn't step the amplitude rail in one block, a release
+ * floor so a note-off doesn't either, and a ceiling that rejects nonsense from
+ * a restored snapshot. Clamp against these names rather than respelling the
+ * numbers, so the UI, the store and the AMY push path cannot drift apart.
+ *
+ * Scope: NOTE-TRIGGERED voices only. The drone engines deliberately keep their
+ * own floors — their envelopes are free-running rather than gated per note and
+ * open over hundreds of milliseconds, so a shared declick policy would encode a
+ * constraint they do not have.
+ *
+ * The graph editor derives its minimum marker spacing from ATTACK_MIN_MS (via
+ * graph_popup_set_min_x_gap(), converted to normalised X for whichever time
+ * axis is active) so the plot cannot enforce a stricter floor than the engine.
+ */
+
+/* Below roughly one render block (5.33 ms at 48 kHz) an attack is
+ * indistinguishable from an instant step, and stepping the amp rail on trigger
+ * is audible as a click on percussive material. Two milliseconds keeps the ramp
+ * inside a single block while still counting as a ramp. */
+#define VOICE_ENV_ATTACK_MIN_MS   2u
+
+/* Longer than the attack floor because a note-off lands on whatever amplitude
+ * the sustain stage held, so the discontinuity is larger: the tail needs a few
+ * blocks to reach zero without a tick. */
+#define VOICE_ENV_RELEASE_MIN_MS  5u
+
+/* Ceiling for any single envelope segment. Far past the graph editor's longest
+ * axis (15 s); exists to reject restored garbage, not to constrain authoring. */
+#define VOICE_ENV_TIME_MAX_MS     60000u
+
+/* Sustain is stored as a percentage of peak. */
+#define VOICE_ENV_SUSTAIN_MAX_PCT 100u
+
 /* Reset a voice_params_t (defined in seq_model.h) to its defaults: everything
  * zeroed/unauthored, amp_trim at unity. The single place the trim gets its
  * non-zero default — kills the "must re-set to 1.0 after memset" footgun that
@@ -35,9 +99,6 @@ void voice_params_init_defaults(voice_params_t *vp);
  * is a native sample-and-hold (redraws only when the carrier phasor wraps),
  * replacing the 20 Hz software lfo_next_rand() poll. */
 uint16_t voice_lfo_wave_to_amy(lfo_wave_t wave);
-
-/* KS/NOISE onset-transient attack floor (2 ms); KS also zeroes sustain. */
-void voice_env_apply_ks_noise_floor(seq_env_t *env, bool is_ks, bool is_noise);
 
 /* ── Shared WAVE-voice skeleton ──────────────────────────────────────────
  * The canonical "N voices, osc0 = note-following carrier" build used by the
@@ -58,8 +119,9 @@ typedef struct {
     uint16_t wave;                 /* AMY wave constant for osc0           */
     float    osc0_amp_const;       /* arp/melodic 1.0; drone const_sent    */
     float    osc0_amp_vel;         /* arp/melodic 1.0; drone 0.0           */
-    bool     ks_feedback_authored; /* authored Q drives KS string decay    */
-    float    ks_feedback_q;        /* seq_filter_t resonance when authored */
+    bool     ks_feedback_authored; /* authored feedback drives KS decay    */
+    float    ks_feedback;          /* seq_filter_t.feedback (0..1) when authored;
+                                      <= 0 or unauthored -> fixed 0.9 default */
     int16_t  wt_preset;            /* >=0 => e->preset (WAVETABLE); else -1 */
 } voice_wave_cfg_t;
 

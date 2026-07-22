@@ -17,10 +17,18 @@ enum {
     LFO_FLD_RATE,
     LFO_FLD_DEPTH,
     LFO_FLD_WOB_RATE,         /* WOBBLE (second-order LFO) rate               */
-    LFO_FLD_WOB_DEPTH,        /* WOBBLE amount, 0 % = off                     */
+    LFO_FLD_WOB_DEPTH,        /* WOBBLE amount in dB of swing, OFF = off      */
+    LFO_FLD_WOB_MODE,         /* WOBBLE reach: depth only vs depth + rate     */
     LFO_FLD_EN,               /* drawn as a header chip, not a panel row      */
     LFO_FLD_COUNT,            /* total navigable fields */
 };
+
+/* Right-panel geometry. The parameter rows (WAVE..WOB_MODE) outnumber the slots
+ * that fit above the hint strip, so the panel is a window that scrolls by one
+ * when the cursor reaches the bottom row; carets mark the off-screen direction.
+ * Adding a parameter field only requires it to sit inside this range. */
+#define LFO_PANEL_SLOTS  5
+#define LFO_PANEL_ROWS   (LFO_FLD_WOB_MODE - LFO_FLD_WAVE + 1)
 
 /* View state for the LFO editor overlay.  Holds the working copy being
  * edited plus display metadata (cursor, editing flag, target track). */

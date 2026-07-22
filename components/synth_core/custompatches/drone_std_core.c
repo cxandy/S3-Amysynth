@@ -104,7 +104,7 @@ static void drone_std_configure_wave_synth(uint8_t synth, uint8_t voices,
         .osc0_amp_const       = drone_std_level_lin(),
         .osc0_amp_vel         = 0.0f,
         .ks_feedback_authored = false,
-        .ks_feedback_q        = 0.0f,
+        .ks_feedback          = 0.0f,
         .wt_preset            = wt_preset,
     };
     voice_build_wave(&cfg);
@@ -177,14 +177,12 @@ static void drone_std_rebuild(void)
         }
     }
 
-    /* Deferred authority: re-impose the user's envelopes after any rebuild. */
+    /* Deferred authority: re-impose the user's envelopes after any rebuild.
+     * Applied verbatim — no KS/NOISE special-case floor exists anymore. */
     if (s_ds.vp.env_authored) {
-        seq_env_t env_to_push = s_ds.vp.env;
-        voice_env_apply_ks_noise_floor(&env_to_push, false,
-                                       s_ds.wave == KS || s_ds.wave == NOISE);
-        sequencer_core_push_envelope(DRONE_STD_SYNTH_MAIN, &env_to_push);
+        sequencer_core_push_envelope(DRONE_STD_SYNTH_MAIN, &s_ds.vp.env);
         if (s_ds.sub_enabled) {
-            sequencer_core_push_envelope(DRONE_STD_SYNTH_SUB, &env_to_push);
+            sequencer_core_push_envelope(DRONE_STD_SYNTH_SUB, &s_ds.vp.env);
         }
     }
     if (s_ds.vp.env1_authored) {
@@ -428,12 +426,9 @@ void drone_std_set_envelope(const seq_env_t *env)
     if (s_ds.vp.env.attack_ms < 2)  s_ds.vp.env.attack_ms = 2;
     if (s_ds.vp.env.release_ms < 5) s_ds.vp.env.release_ms = 5;
     s_ds.vp.env_authored = true;
-    seq_env_t env_to_push = s_ds.vp.env;
-    voice_env_apply_ks_noise_floor(&env_to_push, false,
-                                   s_ds.wave == KS || s_ds.wave == NOISE);
-    sequencer_core_push_envelope(DRONE_STD_SYNTH_MAIN, &env_to_push);
+    sequencer_core_push_envelope(DRONE_STD_SYNTH_MAIN, &s_ds.vp.env);
     if (s_ds.sub_enabled) {
-        sequencer_core_push_envelope(DRONE_STD_SYNTH_SUB, &env_to_push);
+        sequencer_core_push_envelope(DRONE_STD_SYNTH_SUB, &s_ds.vp.env);
     }
 }
 
@@ -458,12 +453,9 @@ void drone_std_set_envelope2(const seq_env_t *env)
 void drone_std_preview_envelope(const seq_env_t *env)
 {
     if (!env) return;
-    seq_env_t tmp = *env;
-    voice_env_apply_ks_noise_floor(&tmp, false,
-                                   s_ds.wave == KS || s_ds.wave == NOISE);
-    sequencer_core_push_envelope(DRONE_STD_SYNTH_MAIN, &tmp);
+    sequencer_core_push_envelope(DRONE_STD_SYNTH_MAIN, env);
     if (s_ds.sub_enabled) {
-        sequencer_core_push_envelope(DRONE_STD_SYNTH_SUB, &tmp);
+        sequencer_core_push_envelope(DRONE_STD_SYNTH_SUB, env);
     }
 }
 

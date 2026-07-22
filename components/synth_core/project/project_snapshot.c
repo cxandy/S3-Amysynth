@@ -77,20 +77,31 @@ static void ser_filter(tlv_writer_t *w, const seq_filter_t *f)
     tlv_put_f32(w, f->resonance);
     tlv_put_u8(w,  f->enabled ? 1 : 0);
     tlv_put_f32(w, f->filter_env_amount);
+    tlv_put_f32(w, f->feedback);   /* LAYR v7+ / ARP v5+: KS string decay */
 }
 
-/* Reads all 5 fields unconditionally (keeps the reader position correct),
+/* Reads all fields unconditionally (keeps the reader position correct),
  * then resets the whole sub-block to a safe bypass default if filter_type is
- * out of range instead of trusting a bogus enum downstream. */
-static bool de_filter(tlv_reader_t *r, seq_filter_t *f)
+ * out of range instead of trusting a bogus enum downstream.
+ * `has_feedback`: whether this file version carries the KS feedback field
+ * (LAYR v7+, ARP v5+ — resolved by the caller, like de_lfo's flags). Older
+ * files derived KS feedback from the Q value at apply time, so reconstruct it
+ * through the same legacy mapping to preserve what those files sounded like. */
+static bool de_filter(tlv_reader_t *r, seq_filter_t *f, bool has_feedback)
 {
     uint8_t ft, en;
-    float cutoff, resonance, env_amount;
+    float cutoff, resonance, env_amount, feedback = 0.0f;
     if (!tlv_get_u8(r, &ft))          return false;
     if (!tlv_get_f32(r, &cutoff))     return false;
     if (!tlv_get_f32(r, &resonance))  return false;
     if (!tlv_get_u8(r, &en))          return false;
     if (!tlv_get_f32(r, &env_amount)) return false;
+    if (has_feedback) {
+        if (!tlv_get_f32(r, &feedback)) return false;
+        feedback = SEQ_CLAMP_F32(feedback, 0.0f, 1.0f);
+    } else {
+        feedback = sequencer_core_ks_feedback_from_q(resonance);
+    }
 
     if (ft > SEQ_FILTER_LPF24) {
         *f = (seq_filter_t){0};
@@ -101,6 +112,7 @@ static bool de_filter(tlv_reader_t *r, seq_filter_t *f)
     f->resonance         = resonance;
     f->enabled           = en != 0;
     f->filter_env_amount = env_amount;
+    f->feedback          = feedback;
     return true;
 }
 
@@ -114,6 +126,7 @@ static void ser_lfo(tlv_writer_t *w, const seq_lfo_t *l)
     tlv_put_u8(w, l->targets);   /* section v2+: target-set bitmask (v1: index) */
     tlv_put_u8(w, l->wob_rate);  /* LAYR v5+ / ARP v3+: WOBBLE second-order LFO */
     tlv_put_u8(w, l->wob_depth);
+    tlv_put_u8(w, l->wob_depth_only ? 1 : 0);  /* LAYR v6+ / ARP v4+ */
 }
 
 /* Same "read everything, then validate" shape as de_filter: an out-of-range
@@ -122,11 +135,14 @@ static void ser_lfo(tlv_writer_t *w, const seq_lfo_t *l)
  * stores a target-set bitmask. Migrate index -> bit when reading an old file. */
 /* `wobble`: whether this file version carries the two WOBBLE bytes — the
  * threshold differs per containing section (LAYR v5+, ARP v3+), so the caller
- * resolves it rather than this shared codec guessing from `ver`. */
-static bool de_lfo(tlv_reader_t *r, seq_lfo_t *l, uint8_t ver, bool wobble)
+ * resolves it rather than this shared codec guessing from `ver`.
+ * `wob_mode`: likewise for the later depth-only reach byte (LAYR v6+, ARP v4+).
+ * Its absence means "depth + rate", which is what those files sounded like. */
+static bool de_lfo(tlv_reader_t *r, seq_lfo_t *l, uint8_t ver, bool wobble,
+                   bool wob_mode)
 {
     uint8_t en, mode, wave, rate, depth, tgt;
-    uint8_t wrate = 0, wdepth = 0;
+    uint8_t wrate = 0, wdepth = 0, wdeponly = 0;
     if (!tlv_get_u8(r, &en))     return false;
     if (!tlv_get_u8(r, &mode))   return false;
     if (!tlv_get_u8(r, &wave))   return false;
@@ -136,6 +152,9 @@ static bool de_lfo(tlv_reader_t *r, seq_lfo_t *l, uint8_t ver, bool wobble)
     if (wobble) {
         if (!tlv_get_u8(r, &wrate))  return false;
         if (!tlv_get_u8(r, &wdepth)) return false;
+    }
+    if (wob_mode) {
+        if (!tlv_get_u8(r, &wdeponly)) return false;
     }
 
     if (mode > LFO_MODE_RETRIG || wave >= LFO_WAVE_COUNT ||
@@ -152,7 +171,11 @@ static bool de_lfo(tlv_reader_t *r, seq_lfo_t *l, uint8_t ver, bool wobble)
         ? ((tgt < LFO_TARGET_COUNT) ? LFO_TGT_BIT(tgt) : 0u)  /* v1 index */
         : (uint8_t)(tgt & LFO_TGT_ALL);                       /* v2 bitmask */
     l->wob_rate  = (wrate < LFO_RATE_COUNT) ? wrate : 0;
-    l->wob_depth = (wdepth > 100) ? 100 : wdepth;
+    /* Snap to a whole-dB authoring step (voice_config.h): files written before
+     * the dB scale carry 5 %-grid values, and a stored 5 % would otherwise read
+     * as OFF while the modulator still ran. */
+    l->wob_depth = voice_wob_db_to_depth(voice_wob_depth_to_db(wdepth));
+    l->wob_depth_only = (wdeponly != 0);
     return true;
 }
 
@@ -176,8 +199,8 @@ static bool de_vp(tlv_reader_t *r, voice_params_t *vp, uint8_t ver)
     voice_params_init_defaults(vp);   /* zeroed baseline + unity amp_trim */
     if (!de_env(r, &vp->env))       return false;
     if (!de_env(r, &vp->env1))      return false;
-    if (!de_filter(r, &vp->filter)) return false;
-    if (!de_lfo(r, &vp->lfo, ver, ver >= 5))  return false;   /* LAYR: wobble v5+ */
+    if (!de_filter(r, &vp->filter, ver >= 7)) return false;  /* LAYR: feedback v7+ */
+    if (!de_lfo(r, &vp->lfo, ver, ver >= 5, ver >= 6))  return false;  /* LAYR: wobble v5+, reach v6+ */
     uint8_t ea, e1a, fa, la;
     if (!tlv_get_u8(r, &ea))  return false;
     if (!tlv_get_u8(r, &e1a)) return false;
@@ -298,10 +321,12 @@ static void apply_glob(const staged_glob_t *g)
 
 static void ser_layer(tlv_writer_t *w, const seq_layer_t *L)
 {
-    size_t h = tlv_begin_section(w, TAG_LAYR, 5);  /* v2: LFO target bitmask;
+    size_t h = tlv_begin_section(w, TAG_LAYR, 7);  /* v2: LFO target bitmask;
                                                     * v3: +gate_pct, +portamento_ms;
                                                     * v4: +groove_pct;
-                                                    * v5: LFO +wob_rate/+wob_depth */
+                                                    * v5: LFO +wob_rate/+wob_depth;
+                                                    * v6: LFO +wob_depth_only;
+                                                    * v7: filter +feedback (KS) */
     tlv_put_u8(w, (uint8_t)L->type);
     tlv_put_u8(w, L->num_steps);
     tlv_put_u16(w, L->patch);
@@ -460,8 +485,10 @@ typedef struct {
 
 static void ser_arp(tlv_writer_t *w)
 {
-    size_t h = tlv_begin_section(w, TAG_ARP, 3);  /* v2: LFO target is a bitmask;
-                                                   * v3: LFO +wob_rate/+wob_depth */
+    size_t h = tlv_begin_section(w, TAG_ARP, 5);  /* v2: LFO target is a bitmask;
+                                                   * v3: LFO +wob_rate/+wob_depth;
+                                                   * v4: LFO +wob_depth_only;
+                                                   * v5: filter +feedback (KS) */
     tlv_put_u8(w, arp_get_enabled() ? 1 : 0);
     tlv_put_u8(w, (uint8_t)arp_get_source());
     tlv_put_u16(w, arp_get_wave());
@@ -513,8 +540,8 @@ static bool parse_arp(tlv_reader_t *b, staged_arp_t *a, uint8_t ver)
     }
     if (!de_env(b, &a->env))       return false;
     if (!de_env(b, &a->env2))      return false;
-    if (!de_filter(b, &a->filter)) return false;
-    if (!de_lfo(b, &a->lfo, ver, ver >= 3))  return false;   /* ARP: wobble v3+ */
+    if (!de_filter(b, &a->filter, ver >= 5)) return false;   /* ARP: feedback v5+ */
+    if (!de_lfo(b, &a->lfo, ver, ver >= 3, ver >= 4))  return false;   /* ARP: wobble v3+, reach v4+ */
     return true;
 }
 
@@ -720,6 +747,10 @@ static bool parse_prog(tlv_reader_t *b, staged_prog_t *p)
 
 static void apply_prog(const staged_prog_t *p)
 {
+    /* The arp values applied moments ago from this snapshot are the new user
+     * baseline; drop any capture the pre-load session's progression held so
+     * set_enabled(false) below cannot restore stale values over them. */
+    sequencer_core_progression_reset_arp_capture();
     sequencer_core_progression_set_count(p->count);
     for (uint8_t i = 0; i < p->count; i++) {
         sequencer_core_progression_set_entry(i, p->root[i], p->chord_type[i], p->duration_bars[i]);
@@ -796,12 +827,15 @@ bool project_snapshot_load(uint8_t slot)
             got_glob = ok;
             break;
         case TAG_LAYR:
-            if (ver < 1 || ver > 3 || staged_layer_count >= MAX_LAYERS) { ok = false; break; }
+            /* Ceiling must track ser_layer()'s version or the firmware rejects
+             * its own files: it was left at 3 while the writer moved to 5. */
+            if (ver < 1 || ver > 7 || staged_layer_count >= MAX_LAYERS) { ok = false; break; }
             ok = parse_layer(&body, &staged_layers[staged_layer_count], ver);
             if (ok) staged_layer_count++;
             break;
         case TAG_ARP:
-            if (got_arp || ver < 1 || ver > 2) { ok = false; break; }
+            /* Same stale-ceiling fix as LAYR: writer was at 3, reader at 2. */
+            if (got_arp || ver < 1 || ver > 5) { ok = false; break; }
             ok = parse_arp(&body, &staged_arp, ver);
             got_arp = ok;
             break;

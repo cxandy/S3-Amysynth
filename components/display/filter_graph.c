@@ -121,7 +121,12 @@ void filter_graph_draw(u8g2_t *u8g2, const filter_graph_t *fg)
         float hz = norm_to_hz(fg->cutoff_norm);
         float q  = norm_to_q(fg->resonance_norm);
         if (fg->cursor == 1) {
-            snprintf(val_buf, sizeof(val_buf), "Q:%.1f", (double)q);
+            if (fg->res_is_feedback) {
+                snprintf(val_buf, sizeof(val_buf), "FB:%u%%",
+                         (unsigned)(fg->resonance_norm * 100.0f + 0.5f));
+            } else {
+                snprintf(val_buf, sizeof(val_buf), "Q:%.1f", (double)q);
+            }
         } else {
             if (hz >= 1000.0f) {
                 snprintf(val_buf, sizeof(val_buf), "%.1fk", (double)(hz / 1000.0f));
@@ -218,7 +223,9 @@ void filter_graph_draw(u8g2_t *u8g2, const filter_graph_t *fg)
 
     /* ── Compute response curve ── */
     float fc = norm_to_hz(fg->cutoff_norm);
-    float Q  = norm_to_q(fg->resonance_norm);
+    /* Feedback mode carries KS feedback in resonance_norm — that value is not
+     * a Q, so plot a neutral flat-ish resonance instead. */
+    float Q  = fg->res_is_feedback ? 1.0f : norm_to_q(fg->resonance_norm);
     const uint8_t baseline_y = (uint8_t)(FG_PLOT_Y0 + FG_PLOT_H - 1);
 
     /* py[i]: Y pixel for each log-spaced frequency sample. The sample

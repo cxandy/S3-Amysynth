@@ -100,9 +100,12 @@ static inline float vis_clamp01(float v)
     return SEQ_CLAMP_F32(v, 0.0f, 1.0f);
 }
 
-/* Rate names mirroring drone_core.c s_rate_names (display-only copy). */
-static const char * const s_vis_rate_names[] = { "1/4", "1/8", "1/16", "1/32" };
-#define VIS_RATE_COUNT 4
+/* Rate names mirroring drone_core.c s_rate_names (display-only copy; order
+ * must match drone_rate_t, which is append-only for snapshot stability). */
+static const char * const s_vis_rate_names[] = {
+    "1/4", "1/8", "1/16", "1/32", "1/1", "1/4T", "1/8T", "1/16T", "1/32T"
+};
+#define VIS_RATE_COUNT 9
 
 void display_drone_vis_draw(u8g2_t *u8g2, const drone_vis_t *vis)
 {

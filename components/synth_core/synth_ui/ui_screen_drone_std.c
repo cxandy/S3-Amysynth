@@ -179,11 +179,14 @@ static void drone_std_edit_row(drone_std_row_t r, int delta)
     }
 }
 
+/* True only when this screen itself owns the display — resolving through the
+ * view precedence keeps the filter/LFO overlays out (they sit on top of the
+ * drone screen without clearing ui_mode). The input isolation guard in main.c
+ * keys off this, so a stale "screen is up" answer here would swallow the
+ * editors' own MY_BUTTON_0 commit/cancel taps. */
 bool synth_ui_drone_std_is_active(void)
 {
-    return seq_state.ui_mode == UI_MODE_DRONE_STD
-        && !seq_state.menu_open
-        && !synth_ui_graph_is_active();
+    return synth_ui_active_view() == UI_VIEW_DRONE_STD;
 }
 
 void synth_ui_drone_std_handle_encoder(long delta)

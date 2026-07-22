@@ -59,21 +59,23 @@ void sequencer_configure_melodic_envelope_track(uint8_t layer_idx, uint8_t track
 {
 #if CONFIG_SEQ_MELODIC_ENVELOPE_ENABLED
     const seq_layer_t *layer = &s_layers[layer_idx];
+    /* No KS/NOISE special-casing: the row's envelope applies verbatim to every
+     * wave. The old forced onset floor + zeroed KS sustain made those patches
+     * decay to silence regardless of what the user authored ("dull in use"). */
     seq_env_t env = *seq_layer_env(layer_idx, track);
-    voice_env_apply_ks_noise_floor(&env,
-                                   layer->patch == SEQ_PATCH_KS,
-                                   layer->patch == SEQ_PATCH_NOISE);
     float sustain = (float)env.sustain_pct / 100.0f;
 
     amy_event *e = amy_helpers_event_begin();
     e->synth = layer->synth_id[track];
     e->bp_is_set[0] = 1;
     e->eg_type[0] = env.eg_type;
-    e->eg0_times[0] = env.attack_ms;
+    e->eg0_times[0] = SEQ_CLAMP_U32(env.attack_ms,
+                                    VOICE_ENV_ATTACK_MIN_MS, VOICE_ENV_TIME_MAX_MS);
     e->eg0_values[0] = 1.0f;
     e->eg0_times[1] = env.decay_ms;
     e->eg0_values[1] = sustain;
-    e->eg0_times[2] = (env.release_ms < 5) ? 5 : env.release_ms;  /* 5 ms declick floor */
+    e->eg0_times[2] = SEQ_CLAMP_U32(env.release_ms,
+                                    VOICE_ENV_RELEASE_MIN_MS, VOICE_ENV_TIME_MAX_MS);
     e->eg0_values[2] = 0.0f;
     amy_helpers_event_send(e);
 #else
@@ -96,10 +98,12 @@ void sequencer_core_set_melodic_envelope(uint8_t layer_idx, uint8_t track,
     seq_layer_t *layer = &s_layers[layer_idx];
 
     seq_env_t *dst = seq_layer_env(layer_idx, track);
-    dst->attack_ms   = SEQ_CLAMP_U32(env->attack_ms,  2, 60000);
-    dst->decay_ms    = SEQ_CLAMP_U32(env->decay_ms,   0, 60000);
-    dst->sustain_pct = SEQ_CLAMP_U8(env->sustain_pct, 0, 100);
-    dst->release_ms  = SEQ_CLAMP_U32(env->release_ms, 5, 60000);  /* 5 ms declick floor */
+    dst->attack_ms   = SEQ_CLAMP_U32(env->attack_ms,
+                                     VOICE_ENV_ATTACK_MIN_MS, VOICE_ENV_TIME_MAX_MS);
+    dst->decay_ms    = SEQ_CLAMP_U32(env->decay_ms,   0, VOICE_ENV_TIME_MAX_MS);
+    dst->sustain_pct = SEQ_CLAMP_U8(env->sustain_pct, 0, VOICE_ENV_SUSTAIN_MAX_PCT);
+    dst->release_ms  = SEQ_CLAMP_U32(env->release_ms,
+                                     VOICE_ENV_RELEASE_MIN_MS, VOICE_ENV_TIME_MAX_MS);
     dst->eg_type     = env->eg_type;
 
     /* Committing in the graph editor establishes this row's authority over the
@@ -149,10 +153,12 @@ void sequencer_core_set_melodic_envelope2(uint8_t layer_idx, uint8_t track,
     seq_layer_t *layer = &s_layers[layer_idx];
 
     seq_env_t *dst = seq_layer_env1(layer_idx, track);
-    dst->attack_ms   = SEQ_CLAMP_U32(env->attack_ms,  2, 60000);
-    dst->decay_ms    = SEQ_CLAMP_U32(env->decay_ms,   0, 60000);
-    dst->sustain_pct = SEQ_CLAMP_U8(env->sustain_pct, 0, 100);
-    dst->release_ms  = SEQ_CLAMP_U32(env->release_ms, 5, 60000);  /* 5 ms declick floor */
+    dst->attack_ms   = SEQ_CLAMP_U32(env->attack_ms,
+                                     VOICE_ENV_ATTACK_MIN_MS, VOICE_ENV_TIME_MAX_MS);
+    dst->decay_ms    = SEQ_CLAMP_U32(env->decay_ms,   0, VOICE_ENV_TIME_MAX_MS);
+    dst->sustain_pct = SEQ_CLAMP_U8(env->sustain_pct, 0, VOICE_ENV_SUSTAIN_MAX_PCT);
+    dst->release_ms  = SEQ_CLAMP_U32(env->release_ms,
+                                     VOICE_ENV_RELEASE_MIN_MS, VOICE_ENV_TIME_MAX_MS);
     dst->eg_type     = env->eg_type;
 
     layer->vp[track].env1_authored = true;
@@ -165,10 +171,10 @@ void sequencer_core_set_melodic_envelope2(uint8_t layer_idx, uint8_t track,
 
 /* ── Per-row melodic filter (runtime-editable) ─────────────────────────── */
 
-/* Map a Q value (same [0.51, 8.0] range enforced by sequencer_core_set_melodic_filter)
- * linearly onto AMY's KS oscillator feedback range [0.0, 1.0]. Q=8.0 -> feedback=1.0
- * is the verified-safe ceiling (lossless two-tap averaging filter, the classic
- * "infinite sustain" Karplus-Strong case); above 1.0 the KS buffer would diverge. */
+/* LEGACY SNAPSHOT IMPORT ONLY. Older project files had no feedback field —
+ * KS string decay was derived from the filter Q. This mapping ([0.51, 8.0] ->
+ * [0, 1]) is kept solely so de_filter() can reconstruct the feedback those
+ * files audibly had. Live apply paths use seq_filter_t.feedback directly. */
 float sequencer_core_ks_feedback_from_q(float q)
 {
     float n = (q - 0.51f) / (8.0f - 0.51f);
@@ -201,8 +207,10 @@ static void melodic_filter_apply(uint8_t layer_idx, uint8_t track,
     } else {
         e->filter_type = FILTER_NONE;
     }
-    if (layer->patch == SEQ_PATCH_KS) {
-        e->feedback = sequencer_core_ks_feedback_from_q(f->resonance);
+    /* KS string decay: the authored feedback value, pushed directly. 0 means
+     * never authored — leave AMY's build-time 0.9 default in place. */
+    if (layer->patch == SEQ_PATCH_KS && f->feedback > 0.0f) {
+        e->feedback = SEQ_CLAMP_F32(f->feedback, 0.0f, 1.0f);
     }
     amy_helpers_event_send(e);
 
@@ -242,6 +250,7 @@ void sequencer_core_set_melodic_filter(uint8_t layer_idx, uint8_t track,
     dst->resonance   = SEQ_CLAMP_F32(f->resonance,  0.51f, 8.0f);
     dst->enabled     = f->enabled;
     dst->filter_env_amount = SEQ_CLAMP_F32(f->filter_env_amount, -8.0f, 8.0f);
+    dst->feedback    = SEQ_CLAMP_F32(f->feedback, 0.0f, 1.0f);
 
     layer->vp[track].filter_authored = true;
     sequencer_configure_melodic_filter_track(layer_idx, track);
@@ -263,8 +272,10 @@ void sequencer_core_push_filter(uint8_t synth, const seq_filter_t *f, bool is_ks
     } else {
         e->filter_type = FILTER_NONE;
     }
-    if (is_ks) {
-        e->feedback = sequencer_core_ks_feedback_from_q(f->resonance);
+    /* KS string decay from the authored feedback field; 0 = never authored,
+     * keep AMY's build-time 0.9 default. */
+    if (is_ks && f->feedback > 0.0f) {
+        e->feedback = SEQ_CLAMP_F32(f->feedback, 0.0f, 1.0f);
     }
     amy_helpers_event_send(e);
 }
@@ -292,7 +303,7 @@ void sequencer_core_set_melodic_lfo(uint8_t layer_idx, uint8_t track,
          * non-zero for PAN/RANDOM fallback so the service loop picks them up. */
         s_lfo_hz[layer_idx][track] = (lfo->enabled && is_native_lfo_track(&layer->vp[track].lfo))
                                      ? 0.0f
-                                     : (lfo->enabled ? lfo_rate_to_hz(lfo->rate, s_bpm) : 0.0f);
+                                     : (lfo->enabled ? seq_lfo_sw_hz(lfo->rate, s_bpm) : 0.0f);
         ESP_LOGI(TAG, "LFO L%u T%u %s %.2f Hz d=%u tgt=0x%02x [native]",
                  layer_idx + 1u, track + 1u, lfo->enabled ? "ON" : "OFF",
                  (double)s_lfo_hz[layer_idx][track], lfo->depth, lfo->targets);
@@ -308,7 +319,7 @@ void sequencer_core_set_melodic_lfo(uint8_t layer_idx, uint8_t track,
         lfo_restore_target_neutrals(layer, track, lfo);
         s_lfo_hz[layer_idx][track] = 0.0f;
     } else {
-        s_lfo_hz[layer_idx][track] = lfo_rate_to_hz(lfo->rate, s_bpm);
+        s_lfo_hz[layer_idx][track] = seq_lfo_sw_hz(lfo->rate, s_bpm);
     }
     ESP_LOGI(TAG, "LFO L%u T%u %s %.2f Hz d=%u tgt=0x%02x",
              layer_idx + 1u, track + 1u, lfo->enabled ? "ON" : "OFF",
@@ -480,11 +491,7 @@ void sequencer_core_preview_melodic_envelope(uint8_t layer_idx, uint8_t track,
 {
     if (!env || layer_idx >= s_num_layers || track >= SEQ_TRACKS) return;
     const seq_layer_t *layer = &s_layers[layer_idx];
-    seq_env_t tmp = *env;
-    voice_env_apply_ks_noise_floor(&tmp,
-                                   layer->patch == SEQ_PATCH_KS,
-                                   layer->patch == SEQ_PATCH_NOISE);
-    sequencer_core_push_envelope(layer->synth_id[track], &tmp);
+    sequencer_core_push_envelope(layer->synth_id[track], env);
 }
 
 void sequencer_core_preview_melodic_envelope2(uint8_t layer_idx, uint8_t track,
@@ -505,6 +512,7 @@ void sequencer_core_preview_melodic_filter(uint8_t layer_idx, uint8_t track,
     tmp.cutoff_hz         = SEQ_CLAMP_F32(f->cutoff_hz,  65.0f, 8000.0f);
     tmp.resonance         = SEQ_CLAMP_F32(f->resonance,  0.51f, 8.0f);
     tmp.filter_env_amount = SEQ_CLAMP_F32(f->filter_env_amount, -8.0f, 8.0f);
+    tmp.feedback          = SEQ_CLAMP_F32(f->feedback, 0.0f, 1.0f);
     melodic_filter_apply(layer_idx, track, &tmp);
 }
 

@@ -151,11 +151,10 @@ void menu_build_view(menu_view_t *out)
     }
 
     snprintf(s_menu_items[MI_QUANT_ROOT].label, MENU_LABEL_LEN, "Root");
-    {
-        char nn[4];
-        ui_note_name(sequencer_core_get_quantizer_root_note(), nn);
-        snprintf(s_menu_items[MI_QUANT_ROOT].value, MENU_VALUE_LEN, "%s", nn);
-    }
+    /* Pitch class only — the snapper searches all octaves relative to the root,
+     * so showing an octave ("C4") would imply a choice that does nothing. */
+    snprintf(s_menu_items[MI_QUANT_ROOT].value, MENU_VALUE_LEN, "%s",
+             chord_root_name(sequencer_core_get_quantizer_root_note() % 12));
 
     snprintf(s_menu_items[MI_ARP_ENABLED].label, MENU_LABEL_LEN, "Arp");
     snprintf(s_menu_items[MI_ARP_ENABLED].value, MENU_VALUE_LEN, "%s",
@@ -288,9 +287,12 @@ static void menu_edit_value(menu_item_id_t id, int delta)
             break;
         }
         case MI_QUANT_ROOT: {
-            int r = (int)sequencer_core_get_quantizer_root_note() + delta;
-            r = SEQ_CLAMP_INT(r, 0, 127);
-            sequencer_core_set_quantizer_root_note((uint8_t)r);
+            /* Cycle the 12 pitch classes; only the pitch class matters to the
+             * snapper. Stored as a MIDI note in octave 4 (60..71) so persisted
+             * snapshots and the Kconfig default (60) keep their meaning. */
+            int pc = ((int)sequencer_core_get_quantizer_root_note() % 12 + delta) % 12;
+            if (pc < 0) pc += 12;
+            sequencer_core_set_quantizer_root_note((uint8_t)(60 + pc));
             break;
         }
         case MI_ARP_ENABLED:

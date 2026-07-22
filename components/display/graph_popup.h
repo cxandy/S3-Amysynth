@@ -112,6 +112,11 @@ typedef struct {
     gpopup_shape_fn shape;
     /* Optional X-axis stepping override for edits (see gpopup_xstep_fn). */
     gpopup_xstep_fn xstep;
+    /* Minimum normalised X separation enforced between consecutive points.
+     * Host-settable because the meaningful floor lives in the host's domain
+     * units (milliseconds), and its normalised equivalent changes whenever the
+     * host rescales its time axis. Defaults to GPOPUP_DEFAULT_MIN_X_GAP. */
+    float           min_x_gap;
 } gpopup_t;
 
 /* ── Lifecycle ──────────────────────────────────────────────────────────── */
@@ -122,6 +127,12 @@ void graph_popup_init(gpopup_t *p, uint8_t x, uint8_t y, uint8_t w, uint8_t h);
 /* Replace the curve points. Coordinates are clamped to 0..1. n is clamped to
  * GPOPUP_MAX_POINTS. Safe to call before or after open(). */
 void graph_popup_set_points(gpopup_t *p, const gpopup_point_t *pts, uint8_t n);
+
+/* Set the minimum normalised X separation between consecutive points. Pass the
+ * normalised equivalent of whatever floor the host's own domain enforces, so the
+ * plot never becomes the stricter of the two constraints. Values are clamped to
+ * a sane range; call again after any change to the host's axis scaling. */
+void graph_popup_set_min_x_gap(gpopup_t *p, float gap);
 
 /* Open the pop-up in the given mode with an optional title. Resets the edit
  * cursor/state. The caller should have seeded points via set_points() first. */

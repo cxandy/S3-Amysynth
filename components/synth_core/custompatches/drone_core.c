@@ -20,7 +20,7 @@
 #include "quantizer.h"     /* quantizer_chord_intervals() */
 #include "amy.h"
 #include "amy_helpers.h"
-#include "voice_config.h"  /* voice_env_apply_ks_noise_floor */
+#include "voice_config.h"  /* voice_build_wave + shared voice param helpers */
 #include "sdkconfig.h"
 #include "esp_log.h"
 
@@ -82,19 +82,32 @@ static const char *TAG = "drone_core";
  * been removed in favour of the shared chord_type_t system. */
 
 /* Stutter rate -> multiplier on the beat rate (beats/sec * mult = LFO Hz).
- * 1/4 = 1x beat, 1/8 = 2x, 1/16 = 4x, 1/32 = 8x. */
+ * 1/4 = 1x beat, 1/8 = 2x, 1/16 = 4x, 1/32 = 8x, 1/1 = 0.25x; triplets are
+ * 1.5x their straight division. All map to integer subs-per-bar (4x mult) so
+ * the stutter grid stays tick-exact. Deliberately NOT frequency-capped like
+ * the LFO rates: audio-adjacent stutter gating is a playable effect here. */
 static const float s_rate_mult[DRONE_RATE_COUNT] = {
-    [DRONE_RATE_1_4]  = 1.0f,
-    [DRONE_RATE_1_8]  = 2.0f,
-    [DRONE_RATE_1_16] = 4.0f,
-    [DRONE_RATE_1_32] = 8.0f,
+    [DRONE_RATE_1_4]   = 1.0f,
+    [DRONE_RATE_1_8]   = 2.0f,
+    [DRONE_RATE_1_16]  = 4.0f,
+    [DRONE_RATE_1_32]  = 8.0f,
+    [DRONE_RATE_1_1]   = 0.25f,
+    [DRONE_RATE_1_4T]  = 1.5f,
+    [DRONE_RATE_1_8T]  = 3.0f,
+    [DRONE_RATE_1_16T] = 6.0f,
+    [DRONE_RATE_1_32T] = 12.0f,
 };
 
 static const char *s_rate_names[DRONE_RATE_COUNT] = {
-    [DRONE_RATE_1_4]  = "1/4",
-    [DRONE_RATE_1_8]  = "1/8",
-    [DRONE_RATE_1_16] = "1/16",
-    [DRONE_RATE_1_32] = "1/32",
+    [DRONE_RATE_1_4]   = "1/4",
+    [DRONE_RATE_1_8]   = "1/8",
+    [DRONE_RATE_1_16]  = "1/16",
+    [DRONE_RATE_1_32]  = "1/32",
+    [DRONE_RATE_1_1]   = "1/1",
+    [DRONE_RATE_1_4T]  = "1/4T",
+    [DRONE_RATE_1_8T]  = "1/8T",
+    [DRONE_RATE_1_16T] = "1/16T",
+    [DRONE_RATE_1_32T] = "1/32T",
 };
 
 /* ── Step patterns ── 8-bit per-bar masks (bit0 = step0, LSB-first). A 0 bit
@@ -273,7 +286,7 @@ static void drone_configure_wave_synth(uint8_t synth, uint8_t voices, uint16_t w
         .osc0_amp_const       = const_sent,
         .osc0_amp_vel         = 0.0f,
         .ks_feedback_authored = false,   /* fixed 0.9 KS default */
-        .ks_feedback_q        = 0.0f,
+        .ks_feedback          = 0.0f,
         .wt_preset            = wt_preset,
     };
     voice_build_wave(&cfg);
@@ -377,15 +390,11 @@ static void drone_rebuild(void)
     /* Re-impose the user's custom ADSR if authored (rebuild/patch resets the
      * synth oscs). Deferred authority, matching the melodic + arp behaviour. */
     if (s_d.vp.env_authored) {
-        seq_env_t env_to_push = s_d.vp.env;
-        /* Attack-floor only (is_ks=false): the drone never zeroes KS sustain,
-         * and KS/NOISE are excluded from its wave cycle anyway — this guards
-         * stale persisted values without changing the envelope shape. */
-        voice_env_apply_ks_noise_floor(&env_to_push, false,
-                                       s_d.wave == KS || s_d.wave == NOISE);
-        sequencer_core_push_envelope(DRONE_SYNTH_MAIN, &env_to_push);
+        /* Authored envelope applies verbatim (KS/NOISE are excluded from the
+         * drone wave cycle; no special-case floor exists anymore anywhere). */
+        sequencer_core_push_envelope(DRONE_SYNTH_MAIN, &s_d.vp.env);
         if (s_d.sub_enabled) {
-            sequencer_core_push_envelope(DRONE_SYNTH_SUB, &env_to_push);
+            sequencer_core_push_envelope(DRONE_SYNTH_SUB, &s_d.vp.env);
         }
     }
     /* Second envelope (EG1): only pushed when authored — nothing in the
@@ -840,13 +849,11 @@ void drone_set_envelope(const seq_env_t *env)
     if (s_d.vp.env.attack_ms < 2) s_d.vp.env.attack_ms = 2;  /* 2 ms floor */
     if (s_d.vp.env.release_ms < 5) s_d.vp.env.release_ms = 5;  /* 5 ms declick floor */
     s_d.vp.env_authored = true;
-    seq_env_t env_to_push = s_d.vp.env;
-    /* Attack-floor only, matching drone_rebuild(): no KS sustain zeroing. */
-    voice_env_apply_ks_noise_floor(&env_to_push, false,
-                                   s_d.wave == KS || s_d.wave == NOISE);
-    sequencer_core_push_envelope(DRONE_SYNTH_MAIN, &env_to_push);
+    /* Applied verbatim — no KS/NOISE special-case floor exists anymore (the
+     * local 2/5 ms declick floors above still apply to every wave equally). */
+    sequencer_core_push_envelope(DRONE_SYNTH_MAIN, &s_d.vp.env);
     if (s_d.sub_enabled) {
-        sequencer_core_push_envelope(DRONE_SYNTH_SUB, &env_to_push);
+        sequencer_core_push_envelope(DRONE_SYNTH_SUB, &s_d.vp.env);
     }
     ESP_LOGI(TAG, "drone env -> A%u D%u S%u%% R%u",
              (unsigned)s_d.vp.env.attack_ms, (unsigned)s_d.vp.env.decay_ms,
@@ -858,13 +865,9 @@ void drone_set_envelope(const seq_env_t *env)
 void drone_preview_envelope(const seq_env_t *env)
 {
     if (!env) return;
-    seq_env_t tmp = *env;
-    /* Same onset-floor treatment as drone_set_envelope's push. */
-    voice_env_apply_ks_noise_floor(&tmp, false,
-                                   s_d.wave == KS || s_d.wave == NOISE);
-    sequencer_core_push_envelope(DRONE_SYNTH_MAIN, &tmp);
+    sequencer_core_push_envelope(DRONE_SYNTH_MAIN, env);
     if (s_d.sub_enabled) {
-        sequencer_core_push_envelope(DRONE_SYNTH_SUB, &tmp);
+        sequencer_core_push_envelope(DRONE_SYNTH_SUB, env);
     }
 }
 

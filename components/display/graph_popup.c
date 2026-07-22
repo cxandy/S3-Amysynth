@@ -23,6 +23,18 @@ static inline float clampf01(float v) { return SEQ_CLAMP_F32(v, 0.0f, 1.0f); }
 #define GPOPUP_PAD_BOT  4
 #define GPOPUP_TITLE_H  8   /* extra top inset when a title is shown */
 
+/* Fallback minimum normalised X separation between consecutive points, used
+ * until a host installs its own via graph_popup_set_min_x_gap(). Sized for
+ * marker legibility on a 128 px plot; a host that knows the real floor in its
+ * own units should install that instead, so the plot never ends up being the
+ * stricter of the two constraints. */
+#define GPOPUP_DEFAULT_MIN_X_GAP 0.004f
+
+/* Accepted range for an installed gap. Zero is legal (no spacing rule at all);
+ * the ceiling stops a bad conversion from silently distorting real edits. */
+#define GPOPUP_MIN_X_GAP_LO      0.0f
+#define GPOPUP_MIN_X_GAP_HI      0.05f
+
 /* Encoder step size for value adjustment (normalised units per detent). */
 #define GPOPUP_ADJUST_STEP 0.02f
 
@@ -73,6 +85,13 @@ void graph_popup_init(gpopup_t *p, uint8_t x, uint8_t y, uint8_t w, uint8_t h)
     p->h = h;
     p->mode = GPOPUP_MODE_VIEW;
     p->active = false;
+    p->min_x_gap = GPOPUP_DEFAULT_MIN_X_GAP;
+}
+
+void graph_popup_set_min_x_gap(gpopup_t *p, float gap)
+{
+    if (!p) return;
+    p->min_x_gap = SEQ_CLAMP_F32(gap, GPOPUP_MIN_X_GAP_LO, GPOPUP_MIN_X_GAP_HI);
 }
 
 void graph_popup_set_points(gpopup_t *p, const gpopup_point_t *pts, uint8_t n)
@@ -147,11 +166,6 @@ void graph_popup_set_xstep(gpopup_t *p, gpopup_xstep_fn fn)
  *   - origin pinned to (0,0); A.y pinned to 1.0; R.y pinned to 0.0.
  *   - only the D point's Y (the sustain level) is freely movable.
  * Index roles assume the standard 4-point ADSR seed used by the host. */
-/* Minimum normalised spacing between points. Sub-pixel on a 128px plot: only
- * prevents exact crossing/collapse, so a fine-grained (audio-taper) host step
- * can bring segments down to a few ms without the spacing rule fighting it. */
-#define GPOPUP_MIN_X_GAP 0.004f
-
 static void adsr_apply_constraints(gpopup_t *p)
 {
     if (p->style != GPOPUP_STYLE_ADSR || p->num_points < 4) return;
@@ -170,12 +184,12 @@ static void adsr_apply_constraints(gpopup_t *p)
      * by 1.0; a second backward pass keeps an earlier point from being pushed
      * past a later one when the later point was dragged left. */
     for (uint8_t i = 1; i < p->num_points; ++i) {
-        float lo = pt[i - 1].x + GPOPUP_MIN_X_GAP;
+        float lo = pt[i - 1].x + p->min_x_gap;
         if (pt[i].x < lo) pt[i].x = lo;
         if (pt[i].x > 1.0f) pt[i].x = 1.0f;
     }
     for (int i = (int)p->num_points - 2; i >= 1; --i) {
-        float hi = pt[i + 1].x - GPOPUP_MIN_X_GAP;
+        float hi = pt[i + 1].x - p->min_x_gap;
         if (pt[i].x > hi) pt[i].x = hi;
         if (pt[i].x < 0.0f) pt[i].x = 0.0f;
     }
@@ -446,10 +460,14 @@ void graph_popup_draw(u8g2_t *u8g2, const gpopup_t *p)
         if (!adsr && p->editing_value && p->cursor < p->num_points) {
             char buf[16];
             const gpopup_point_t *pt = &p->points[p->cursor];
+            /* Held in uint8_t so the percentages are provably three digits:
+             * the float clamp already bounds them to 0..100, but that range
+             * does not survive the float->int conversion, and -Wformat-
+             * truncation then has to assume a full-width int per %d. */
+            uint8_t rx = SEQ_CLAMP_U8((int)(clampf01(pt->x) * 100.0f + 0.5f), 0, 100);
+            uint8_t ry = SEQ_CLAMP_U8((int)(clampf01(pt->y) * 100.0f + 0.5f), 0, 100);
             snprintf(buf, sizeof(buf), "%c %d,%d",
-                     p->adjust_axis_y ? 'V' : 'H',
-                     (int)(clampf01(pt->x) * 100.0f + 0.5f),
-                     (int)(clampf01(pt->y) * 100.0f + 0.5f));
+                     p->adjust_axis_y ? 'V' : 'H', rx, ry);
             u8g2_SetFont(u8g2, u8g2_font_5x7_tr);
             /* Bottom-right inside the box. */
             uint8_t tw = (uint8_t)u8g2_GetStrWidth(u8g2, buf);

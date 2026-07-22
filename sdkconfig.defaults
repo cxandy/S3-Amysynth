@@ -3,6 +3,7 @@
 # ESP PSRAM
 #
 CONFIG_SPIRAM=y
+CONFIG_LIBC_PICOLIBC=y
 #
 # SPI RAM config
 #

@@ -269,11 +269,13 @@ static void drone_edit_row(drone_logical_row_t r, int delta)
     }
 }
 
+/* Same view-resolved test as the normal drone screen: true only while this
+ * screen (or its visualiser page) is what the display shows, so the filter/LFO
+ * overlays keep their own buttons instead of being isolated away. */
 bool synth_ui_drone_is_active(void)
 {
-    return seq_state.ui_mode == UI_MODE_DRONE
-        && !seq_state.menu_open
-        && !synth_ui_graph_is_active();
+    ui_view_id_t v = synth_ui_active_view();
+    return v == UI_VIEW_DRONE || v == UI_VIEW_DRONE_VIS;
 }
 
 void synth_ui_drone_handle_encoder(long delta)

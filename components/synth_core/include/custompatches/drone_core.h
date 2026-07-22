@@ -41,12 +41,18 @@ typedef enum {
     DRONE_SRC_PATCH = 1,
 } drone_source_t;
 
-/* Stutter LFO note divisions (tempo-locked). */
+/* Stutter LFO note divisions (tempo-locked). Append-only: values persist in
+ * project snapshots. Widened to the arp's range (whole note + triplets). */
 typedef enum {
-    DRONE_RATE_1_4  = 0,
-    DRONE_RATE_1_8  = 1,
-    DRONE_RATE_1_16 = 2,
-    DRONE_RATE_1_32 = 3,
+    DRONE_RATE_1_4   = 0,
+    DRONE_RATE_1_8   = 1,
+    DRONE_RATE_1_16  = 2,
+    DRONE_RATE_1_32  = 3,
+    DRONE_RATE_1_1   = 4,
+    DRONE_RATE_1_4T  = 5,
+    DRONE_RATE_1_8T  = 6,
+    DRONE_RATE_1_16T = 7,
+    DRONE_RATE_1_32T = 8,
     DRONE_RATE_COUNT
 } drone_rate_t;
 

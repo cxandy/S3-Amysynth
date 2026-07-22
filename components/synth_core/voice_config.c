@@ -24,15 +24,16 @@ uint16_t voice_lfo_wave_to_amy(lfo_wave_t wave)
     }
 }
 
-void voice_env_apply_ks_noise_floor(seq_env_t *env, bool is_ks, bool is_noise)
+uint8_t voice_wob_depth_to_db(uint8_t wob_depth)
 {
-    if (!env) return;
-    if (is_ks) {
-        env->attack_ms   = 2;   /* onset transient suppressed by attack ramp */
-        env->sustain_pct = 0;   /* string body carried by KS feedback decay  */
-    } else if (is_noise) {
-        env->attack_ms   = 2;   /* onset transient suppressed by attack ramp */
-    }
+    if (wob_depth > 100u) wob_depth = 100u;
+    return (uint8_t)(((unsigned)wob_depth * VOICE_WOB_DB_MAX + 50u) / 100u);
+}
+
+uint8_t voice_wob_db_to_depth(uint8_t db)
+{
+    if (db > VOICE_WOB_DB_MAX) db = VOICE_WOB_DB_MAX;
+    return (uint8_t)(((unsigned)db * 100u + VOICE_WOB_DB_MAX / 2u) / VOICE_WOB_DB_MAX);
 }
 
 void voice_build_wave(const voice_wave_cfg_t *cfg)
@@ -54,11 +55,11 @@ void voice_build_wave(const voice_wave_cfg_t *cfg)
     e->wave  = cfg->wave;
     if (cfg->wt_preset >= 0) e->preset = cfg->wt_preset;
     if (cfg->wave == KS) {
-        /* Authored Q drives KS string decay once the user has dialed it;
-         * otherwise keep the fixed default until they touch Q. */
-        e->feedback = cfg->ks_feedback_authored
-            ? sequencer_core_ks_feedback_from_q(cfg->ks_feedback_q)
-            : 0.9f;
+        /* Authored feedback drives KS string decay directly once dialed;
+         * otherwise (or on the 0 "never set" sentinel) the fixed default. */
+        float fb = cfg->ks_feedback;
+        if (fb > 1.0f) fb = 1.0f;   /* > 1 would make the KS buffer diverge */
+        e->feedback = (cfg->ks_feedback_authored && fb > 0.0f) ? fb : 0.9f;
     }
     e->freq_coefs[COEF_NOTE] = 1.0f;
     e->amp_coefs[COEF_CONST] = cfg->osc0_amp_const;
@@ -122,7 +123,11 @@ void voice_apply_native_lfo(uint8_t synth, const seq_lfo_t *lfo, uint16_t bpm)
         e->amp_coefs[COEF_EG0]    = 0.0f;
         e->mod_source             = 2;
         e->amp_coefs[COEF_MOD]    = w * VOICE_WOB_DEPTH_AMP;
-        e->freq_coefs[COEF_MOD]   = w * VOICE_WOB_DEPTH_RATE;
+        /* Reach toggle: depth-only leaves the carrier's rate steady. Written
+         * unconditionally (zero, not skipped) so switching to depth-only can
+         * never leave a previous rate coupling modulating. */
+        e->freq_coefs[COEF_MOD]   = lfo->wob_depth_only
+                                  ? 0.0f : w * VOICE_WOB_DEPTH_RATE;
         amy_helpers_event_send(e);
 
         /* osc 2: the wobble modulator itself — fixed TRIANGLE (smooth, no

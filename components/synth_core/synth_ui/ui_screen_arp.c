@@ -11,11 +11,13 @@
  *  ARP SCREEN
  * ════════════════════════════════════════════════════════════════════════ */
 
+/* Same view-resolved test as the drone screens: true only while this screen is
+ * what the display shows. The input isolation guard in main.c keys off this, so
+ * answering true under the filter/LFO overlays (which leave ui_mode alone) would
+ * swallow those editors' own MY_BUTTON_0 commit/cancel taps. */
 bool synth_ui_arp_is_active(void)
 {
-    return seq_state.ui_mode == UI_MODE_ARP
-        && !seq_state.menu_open
-        && !synth_ui_graph_is_active();
+    return synth_ui_active_view() == UI_VIEW_ARP;
 }
 
 /* The arp screen keeps its own cursor + editing flags, independent of the

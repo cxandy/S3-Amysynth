@@ -1,4 +1,5 @@
 #include "display_lfo.h"
+#include "voice_config.h"   /* WOBBLE dB authoring unit (shared with the editor) */
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -12,6 +13,8 @@
 #define LFO_ROW0_Y     21      /* first checklist row baseline            */
 #define LFO_ROW_DY      8      /* checklist row pitch                      */
 #define LFO_RCOL_X     64      /* right-column text x                      */
+#define LFO_SCROLL_X  117      /* scroll caret x (clears the widest row and
+                                  the adjust caret at x=123)               */
 
 /* Precomputed y-offsets (from icon center) for 16-pixel-wide wave icons.
  * Positive = below center on screen (screen y increases downward). */
@@ -45,13 +48,19 @@ static const char *target_name(int t)
 static const char *rate_label(lfo_rate_t r)
 {
     switch (r) {
-        case LFO_RATE_1_8:  return "1/8";
-        case LFO_RATE_1_4:  return "1/4";
-        case LFO_RATE_1_2:  return "1/2";
-        case LFO_RATE_1BAR: return "1BR";
-        case LFO_RATE_2BAR: return "2BR";
-        case LFO_RATE_4BAR: return "4BR";
-        default:            return "???";
+        case LFO_RATE_1_8:   return "1/8";
+        case LFO_RATE_1_4:   return "1/4";
+        case LFO_RATE_1_2:   return "1/2";
+        case LFO_RATE_1BAR:  return "1BR";
+        case LFO_RATE_2BAR:  return "2BR";
+        case LFO_RATE_4BAR:  return "4BR";
+        case LFO_RATE_1_16:  return "1/16";
+        case LFO_RATE_1_32:  return "1/32";
+        case LFO_RATE_1_4T:  return "1/4T";
+        case LFO_RATE_1_8T:  return "1/8T";
+        case LFO_RATE_1_16T: return "1/16T";
+        case LFO_RATE_1_32T: return "1/32T";
+        default:             return "???";
     }
 }
 
@@ -73,9 +82,12 @@ static void draw_wave_icon(u8g2_t *u8g2, uint8_t x0, uint8_t y_center,
 }
 
 /* Draw a right-column parameter row ("Label  value"), inverted when selected,
- * with a small caret to the far right while it is being adjusted. */
+ * with a small caret to the far right while it is being adjusted. `scroll` is
+ * '^' / 'v' on the window's edge rows when more parameters lie that way, or 0.
+ * It is drawn inside the row's colour context so it stays legible on the
+ * inverted selection bar. */
 static void draw_right_row(u8g2_t *u8g2, uint8_t baseline, const char *text,
-                           bool selected, bool editing)
+                           bool selected, bool editing, char scroll)
 {
     if (selected) {
         u8g2_SetDrawColor(u8g2, 1);
@@ -83,6 +95,10 @@ static void draw_right_row(u8g2_t *u8g2, uint8_t baseline, const char *text,
         u8g2_SetDrawColor(u8g2, 0);
     }
     u8g2_DrawStr(u8g2, LFO_RCOL_X, baseline, text);
+    if (scroll) {
+        char s[2] = { scroll, '\0' };
+        u8g2_DrawStr(u8g2, LFO_SCROLL_X, baseline, s);
+    }
     if (selected && editing) {
         /* filled caret at the row's right edge = "turn to adjust" */
         u8g2_DrawBox(u8g2, 123, baseline - 6, 3, 6);
@@ -143,32 +159,74 @@ void lfo_view_draw(u8g2_t *u8g2, const lfo_view_t *v)
         if (selected) u8g2_SetDrawColor(u8g2, 1);
     }
 
-    /* ── Right panel: shared LFO parameters (5 compact rows, 8 px pitch, so
-     * the WOBBLE pair fits above the hint strip; En moved to the header). ── */
-    char buf[12];
+    /* ── Right panel: shared LFO parameters, LFO_PANEL_SLOTS rows at an 8 px
+     * pitch. There are more parameters than slots, so this is a window that
+     * scrolls by one when the cursor reaches the last row (En lives in the
+     * header chip, and the target checklist owns the left panel). ── */
+    static const uint8_t slot_y[LFO_PANEL_SLOTS] = { 22, 31, 39, 47, 55 };
+    char buf[14];
 
-    /* WAVE row: label + live waveform icon */
-    bool wav_sel = (v->cursor == LFO_FLD_WAVE);
-    if (wav_sel) {
-        u8g2_SetDrawColor(u8g2, 1);
-        u8g2_DrawBox(u8g2, LFO_DIV_X + 1, 15, 127 - LFO_DIV_X, 9);
-        u8g2_SetDrawColor(u8g2, 0);
+    uint8_t first = 0;   /* first parameter row shown in the window */
+    if (v->cursor >= LFO_FLD_WAVE && v->cursor < LFO_FLD_WAVE + LFO_PANEL_ROWS) {
+        uint8_t row = (uint8_t)(v->cursor - LFO_FLD_WAVE);
+        if (row >= LFO_PANEL_SLOTS)
+            first = (uint8_t)(row - LFO_PANEL_SLOTS + 1u);
     }
-    u8g2_DrawStr(u8g2, LFO_RCOL_X, 22, "Wav");
-    if (wav_sel && v->editing) u8g2_DrawBox(u8g2, 123, 16, 3, 6);  /* color 0 while selected */
-    draw_wave_icon(u8g2, 92, 16, l->wave, wav_sel);                /* restores color 1 */
-    if (wav_sel) u8g2_SetDrawColor(u8g2, 1);
 
-    snprintf(buf, sizeof(buf), "Rte %s", rate_label(l->rate));
-    draw_right_row(u8g2, 31, buf, v->cursor == LFO_FLD_RATE, v->editing);
+    for (uint8_t s = 0; s < LFO_PANEL_SLOTS; s++) {
+        uint8_t row  = (uint8_t)(first + s);
+        uint8_t base = slot_y[s];
+        uint8_t fld  = (uint8_t)(LFO_FLD_WAVE + row);
+        bool    sel  = (v->cursor == fld);
 
-    snprintf(buf, sizeof(buf), "Dep %u%%", (unsigned)l->depth);
-    draw_right_row(u8g2, 39, buf, v->cursor == LFO_FLD_DEPTH, v->editing);
+        /* Carets on the window edges: the off-screen rows are the only thing
+         * telling the user the panel continues. */
+        char scroll = 0;
+        if (s == 0 && first > 0)                                    scroll = '^';
+        if (s == LFO_PANEL_SLOTS - 1 && row + 1u < LFO_PANEL_ROWS)  scroll = 'v';
 
-    /* WOBBLE: second-order LFO chained onto the carrier (depth + rate). */
-    snprintf(buf, sizeof(buf), "WRt %s", rate_label((lfo_rate_t)l->wob_rate));
-    draw_right_row(u8g2, 47, buf, v->cursor == LFO_FLD_WOB_RATE, v->editing);
+        if (fld == LFO_FLD_WAVE) {
+            /* WAVE row: label + live waveform icon instead of a value string. */
+            if (sel) {
+                u8g2_SetDrawColor(u8g2, 1);
+                u8g2_DrawBox(u8g2, LFO_DIV_X + 1, base - 7, 127 - LFO_DIV_X, 9);
+                u8g2_SetDrawColor(u8g2, 0);
+            }
+            u8g2_DrawStr(u8g2, LFO_RCOL_X, base, "Wav");
+            if (sel && v->editing) u8g2_DrawBox(u8g2, 123, base - 6, 3, 6);  /* color 0 while selected */
+            draw_wave_icon(u8g2, 92, base - 6, l->wave, sel);                /* restores color 1 */
+            if (sel) u8g2_SetDrawColor(u8g2, 1);
+            continue;
+        }
 
-    snprintf(buf, sizeof(buf), "Wob %u%%", (unsigned)l->wob_depth);
-    draw_right_row(u8g2, 55, buf, v->cursor == LFO_FLD_WOB_DEPTH, v->editing);
+        switch (fld) {
+            case LFO_FLD_RATE:
+                snprintf(buf, sizeof(buf), "Rte %s", rate_label(l->rate));
+                break;
+            case LFO_FLD_DEPTH:
+                snprintf(buf, sizeof(buf), "Dep %u%%", (unsigned)l->depth);
+                break;
+            case LFO_FLD_WOB_RATE:
+                snprintf(buf, sizeof(buf), "WRt %s", rate_label((lfo_rate_t)l->wob_rate));
+                break;
+            case LFO_FLD_WOB_DEPTH: {
+                /* Amount reads as the carrier's peak dB swing (voice_config.h),
+                 * so the number means something to the ear instead of being a
+                 * percentage of an internal coefficient. Zero swing is OFF. */
+                uint8_t wob_db = voice_wob_depth_to_db(l->wob_depth);
+                if (wob_db == 0) snprintf(buf, sizeof(buf), "Wob OFF");
+                else             snprintf(buf, sizeof(buf), "Wob %udB", (unsigned)wob_db);
+                break;
+            }
+            case LFO_FLD_WOB_MODE:
+                /* Which of the carrier's two rails the wobble reaches. */
+                snprintf(buf, sizeof(buf), "WTo %s",
+                         l->wob_depth_only ? "Dep" : "Dep+Rt");
+                break;
+            default:
+                buf[0] = '\0';
+                break;
+        }
+        draw_right_row(u8g2, base, buf, sel, v->editing, scroll);
+    }
 }

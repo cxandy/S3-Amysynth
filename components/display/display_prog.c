@@ -15,7 +15,7 @@ void display_prog_draw_frame(u8g2_t *u8g2, const prog_view_t *view)
     u8g2_SetDrawColor(u8g2, 1);
     u8g2_SetFont(u8g2, u8g2_font_6x10_tf);
 
-    /* Title + enabled state. */
+    /* Title + apply-mode + enabled state. */
     u8g2_DrawStr(u8g2, 2, PROG_TITLE_Y, "PROG");
     const char *en_str = (view && view->enabled) ? "ON" : "OFF";
     uint8_t en_x = (uint8_t)(128 - u8g2_GetStrWidth(u8g2, en_str) - 2);
@@ -29,6 +29,20 @@ void display_prog_draw_frame(u8g2_t *u8g2, const prog_view_t *view)
         u8g2_SetDrawColor(u8g2, 1);
     } else {
         u8g2_DrawStr(u8g2, en_x, PROG_TITLE_Y, en_str);
+    }
+    /* Apply-mode toggle (cursor == count+1), left of ON/OFF. */
+    if (view) {
+        const char *ap_str = view->apply_at_bar ? "BAR" : "INST";
+        uint8_t ap_x = (uint8_t)(en_x - u8g2_GetStrWidth(u8g2, ap_str) - 10);
+        if (view->cursor == (uint8_t)(view->count + 1)) {
+            uint8_t w = (uint8_t)(u8g2_GetStrWidth(u8g2, ap_str) + 4);
+            u8g2_DrawBox(u8g2, (uint8_t)(ap_x - 2), 0, w, 10);
+            u8g2_SetDrawColor(u8g2, 0);
+            u8g2_DrawStr(u8g2, ap_x, PROG_TITLE_Y, ap_str);
+            u8g2_SetDrawColor(u8g2, 1);
+        } else {
+            u8g2_DrawStr(u8g2, ap_x, PROG_TITLE_Y, ap_str);
+        }
     }
     u8g2_DrawHLine(u8g2, 0, 15, 128);
 

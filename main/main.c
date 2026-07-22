@@ -335,7 +335,7 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
 // on the esp_timer task only if queue creation failed at startup).
 static void dispatch_button_event(my_button_id_t button_id, button_event_t event)
 {
-    /* MY_BUTTON_SHOULDER (GPIO17, original shoulder): per-view bindings. On the
+    /* MY_BUTTON_SHOULDER: per-view bindings. On the
      * sequencer grid a press toggles the step under the cursor, so one hand
      * rides the encoder while the other enters steps (tracker-style two-handed
      * entry); on the envelope editor it flips the EG1 sweep polarity. Fires on

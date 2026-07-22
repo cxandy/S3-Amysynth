@@ -375,10 +375,28 @@ void sequencer_core_set_playing(bool p)
     if (s_playing == p) return;
     s_playing = p;
     if (s_playing) {
-        /* Anchor the bar counter so bars_elapsed is relative to this play-start. */
-        s_bar_baseline = sequencer_ticks();
+        /* Anchor the bar counter to the NEXT absolute bar boundary, not the raw
+         * play-press tick. AMY fires periodic events on tick % period, so
+         * pattern loops are phase-locked to the absolute tick grid; rounding up
+         * makes every progression bar line coincide with step 0 of 16-step
+         * patterns (32-step layers align every other loop boundary). The
+         * partial pre-boundary stretch counts as bar 0 (bars_elapsed clamps),
+         * so the first chord still gets its full duration. */
+        uint32_t t = sequencer_ticks();
+        s_bar_baseline = ((t + SEQ_TICKS_PER_BAR - 1) / SEQ_TICKS_PER_BAR)
+                         * SEQ_TICKS_PER_BAR;
         s_prog.entry_start_bar = 0;
         s_prog.current = 0;
+        /* The progression restarts from entry 0 on play, but the layers/arp may
+         * still hold the chord of whichever entry was live at stop time —
+         * request a re-apply so what is shown as active is also what sounds.
+         * Drained by the progression service on synth_ui_task (single-applier).
+         * Flagged immediate: this is a correction, not a musical edit, so it
+         * must bypass the BAR launch-quantize hold. */
+        if (s_prog.enabled) {
+            s_prog_apply_immediate = true;
+            s_prog_apply_pending = true;
+        }
         for (uint8_t i = 0; i < s_num_layers; i++) {
             sequencer_core_trig_reset(i);
             sequencer_resync_layer(i);

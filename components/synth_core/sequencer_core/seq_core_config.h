@@ -51,6 +51,15 @@
  * safely below the smallest loop period (16*12=192). Chosen range, NOT a
  * hardware-confirmed spec; the future step_nudge setter clamps to +-this. */
 #define SEQ_STEP_NUDGE_MAX    6
+/* Tempo-synced LFO frequency ceilings. NATIVE keeps AMY-carrier LFOs sub-
+ * audible (1/32 at 240 BPM or 1/32T at >100 BPM would otherwise cross 20 Hz
+ * into AM/sideband territory); SW additionally protects the 20 Hz software
+ * fallback stepper (DT = 0.05 s in seq_core_editors.c) — under ~4 steps per
+ * LFO cycle the stepped waveform degenerates (a sine sampled at exactly 2
+ * steps/cycle aliases to DC). Fast rates cap to these instead of being hidden
+ * from the pickers, so the selectable range stays uniform across surfaces. */
+#define SEQ_LFO_NATIVE_MAX_HZ 20.0f
+#define SEQ_LFO_SW_MAX_HZ     5.0f
 /* Drum gate: fraction of a step the note is held before its note-off. Now that
  * drums are real Juno patches (note-offs honored), this controls choke vs. ring;
  * the patch's own release tail still plays out after note-off. Tunable via

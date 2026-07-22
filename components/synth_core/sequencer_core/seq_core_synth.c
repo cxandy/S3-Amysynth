@@ -175,7 +175,7 @@ static void sequencer_configure_melodic_wave_track(uint8_t synth_id,
                                                     uint16_t patch,
                                                     uint16_t num_voices,
                                                     bool filter_authored,
-                                                    float filter_q)
+                                                    float ks_feedback)
 {
     static const uint16_t s_wave_for_patch[] = {
         SINE, SAW_DOWN, SAW_UP, PULSE, TRIANGLE, NOISE, KS,
@@ -210,7 +210,7 @@ static void sequencer_configure_melodic_wave_track(uint8_t synth_id,
         .osc0_amp_const       = 1.0f,
         .osc0_amp_vel         = 1.0f,
         .ks_feedback_authored = filter_authored,
-        .ks_feedback_q        = filter_q,
+        .ks_feedback          = ks_feedback,
 #if CONFIG_AMY_WAVETABLE
         .wt_preset            = is_wavetable ? (int16_t)wt_preset : -1,
 #else
@@ -330,7 +330,7 @@ seq_env_t *seq_layer_env1(uint8_t layer_idx, uint8_t track)
  * (once, even when applying to several slots). */
 static bool sequencer_apply_patch_kind(uint8_t synth_id, uint16_t patch,
                                        uint16_t num_voices, uint32_t synth_flags,
-                                       bool filter_authored, float filter_q)
+                                       bool filter_authored, float ks_feedback)
 {
     /* Virtual patch number whose feature is not in this build (browse skips
      * these, but stored/programmatic values can still arrive): snap to raw
@@ -338,12 +338,12 @@ static bool sequencer_apply_patch_kind(uint8_t synth_id, uint16_t patch,
     if (sequencer_core_patch_compiled_out(patch)) {
         sequencer_configure_melodic_wave_track(synth_id, SEQ_PATCH_SINE,
                                                num_voices, filter_authored,
-                                               filter_q);
+                                               ks_feedback);
         return false;
     }
     if (sequencer_core_is_wave_patch(patch)) {
         sequencer_configure_melodic_wave_track(synth_id, patch, num_voices,
-                                               filter_authored, filter_q);
+                                               filter_authored, ks_feedback);
         return false;
     }
     if (patch >= SEQ_PATCH_BASS_BASE && patch <= SEQ_PATCH_BASS_MAX) {
@@ -380,10 +380,10 @@ static bool sequencer_apply_patch_kind(uint8_t synth_id, uint16_t patch,
  * later flush is owed. */
 static bool seq_apply_patch(uint8_t synth_id, uint16_t patch,
                             uint16_t num_voices, uint32_t synth_flags,
-                            bool filter_authored, float filter_q)
+                            bool filter_authored, float ks_feedback)
 {
     return sequencer_apply_patch_kind(synth_id, patch, num_voices,
-                                      synth_flags, filter_authored, filter_q);
+                                      synth_flags, filter_authored, ks_feedback);
 }
 
 /* Reassert global FX iff any patch applied since the last flush was a patch
@@ -458,7 +458,7 @@ void sequencer_configure_synth(uint8_t layer_idx)
                                         layer->num_voices,
                                         layer->synth_flags,
                                         layer->vp[t].filter_authored,
-                                        layer->vp[t].filter.resonance);
+                                        layer->vp[t].filter.feedback);
     }
     seq_flush_patch_fx(string_patch);
     sequencer_configure_melodic_envelope(layer_idx);
@@ -844,8 +844,10 @@ void sequencer_core_push_envelope(uint8_t synth, const seq_env_t *env)
     e->synth         = synth;
     e->bp_is_set[0]  = 1;
     e->eg_type[0]    = env->eg_type;
-    uint32_t attack_ms = (env->attack_ms < 2) ? 2 : env->attack_ms;  /* 2 ms floor */
-    uint32_t release_ms = (env->release_ms < 5) ? 5 : env->release_ms;  /* 5 ms declick floor */
+    uint32_t attack_ms  = SEQ_CLAMP_U32(env->attack_ms,
+                                        VOICE_ENV_ATTACK_MIN_MS, VOICE_ENV_TIME_MAX_MS);
+    uint32_t release_ms = SEQ_CLAMP_U32(env->release_ms,
+                                        VOICE_ENV_RELEASE_MIN_MS, VOICE_ENV_TIME_MAX_MS);
     e->eg0_times[0]  = attack_ms;
     e->eg0_values[0] = 1.0f;
     e->eg0_times[1]  = env->decay_ms;
@@ -865,8 +867,10 @@ void sequencer_core_push_envelope_eg1(uint8_t synth, uint8_t osc, const seq_env_
     e->osc           = osc;
     e->bp_is_set[1]  = 1;
     e->eg_type[1]    = env->eg_type;
-    uint32_t attack_ms = (env->attack_ms < 2) ? 2 : env->attack_ms;  /* 2 ms floor */
-    uint32_t release_ms = (env->release_ms < 5) ? 5 : env->release_ms;  /* 5 ms declick floor */
+    uint32_t attack_ms  = SEQ_CLAMP_U32(env->attack_ms,
+                                        VOICE_ENV_ATTACK_MIN_MS, VOICE_ENV_TIME_MAX_MS);
+    uint32_t release_ms = SEQ_CLAMP_U32(env->release_ms,
+                                        VOICE_ENV_RELEASE_MIN_MS, VOICE_ENV_TIME_MAX_MS);
     e->eg1_times[0]  = attack_ms;
     e->eg1_values[0] = 1.0f;
     e->eg1_times[1]  = env->decay_ms;
@@ -892,7 +896,7 @@ void sequencer_core_push_melodic_portamento(uint8_t layer_idx)
 }
 
 void sequencer_core_arp_configure(uint16_t patch_number, uint8_t num_voices,
-                                  bool filter_authored, float filter_q)
+                                  bool filter_authored, float ks_feedback)
 {
     /* Full catalog, same as melodic: kind dispatch (raw wave / bass / FM /
      * patch string) is shared via sequencer_apply_patch_kind(). */
@@ -903,7 +907,7 @@ void sequencer_core_arp_configure(uint16_t patch_number, uint8_t num_voices,
     sequencer_kill_synth_voices(SEQ_ARP_SYNTH);
     bool string_patch = seq_apply_patch(SEQ_ARP_SYNTH, patch_number,
                                         num_voices, 0,
-                                        filter_authored, filter_q);
+                                        filter_authored, ks_feedback);
     seq_flush_patch_fx(string_patch);
     ESP_LOGI(TAG, "arp synth %u patch -> %u (%u voices)",
              (unsigned)SEQ_ARP_SYNTH, (unsigned)patch_number, (unsigned)num_voices);

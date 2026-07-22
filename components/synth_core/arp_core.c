@@ -205,8 +205,10 @@ static void arp_apply_filter(const seq_filter_t *f)
     } else {
         e->filter_type = FILTER_NONE;
     }
-    if (s_arp.wave == KS) {
-        e->feedback = sequencer_core_ks_feedback_from_q(f->resonance);
+    /* KS string decay from the authored feedback field; 0 = never authored,
+     * keep AMY's build-time 0.9 default. */
+    if (s_arp.wave == KS && f->feedback > 0.0f) {
+        e->feedback = SEQ_CLAMP_F32(f->feedback, 0.0f, 1.0f);
     }
     amy_helpers_event_send(e);
 
@@ -244,7 +246,7 @@ static void arp_configure_wave_synth(void)
         .osc0_amp_const       = 1.0f,
         .osc0_amp_vel         = 1.0f,
         .ks_feedback_authored = s_arp.vp.filter_authored,
-        .ks_feedback_q        = s_arp.vp.filter.resonance,
+        .ks_feedback          = s_arp.vp.filter.feedback,
         .wt_preset            = -1,
     };
     voice_build_wave(&cfg);
@@ -317,14 +319,13 @@ static void arp_rebuild(void)
     if (s_arp.source == ARP_SRC_WAVE) {
         arp_configure_wave_synth();
         /* WAVE mode has no patch envelope; always push the arp's env (authored
-         * or default) so EG0 breakpoints are valid and notes decay correctly. */
-        seq_env_t env_to_push = s_arp.vp.env;
-        voice_env_apply_ks_noise_floor(&env_to_push,
-                                       s_arp.wave == KS, s_arp.wave == NOISE);
-        sequencer_core_push_envelope(sequencer_core_arp_synth(), &env_to_push);
+         * or default) so EG0 breakpoints are valid and notes decay correctly.
+         * Applies verbatim to KS/NOISE too — no forced onset floor / zeroed
+         * sustain (that override made those waves useless in practice). */
+        sequencer_core_push_envelope(sequencer_core_arp_synth(), &s_arp.vp.env);
     } else {
         sequencer_core_arp_configure(s_arp.patch, sequencer_core_arp_voices(),
-                                     s_arp.vp.filter_authored, s_arp.vp.filter.resonance);
+                                     s_arp.vp.filter_authored, s_arp.vp.filter.feedback);
         /* Raw wave/wavetable patches have no built-in EG0; always push the
          * envelope so notes decay. Juno/DX7 patch strings AND the bass/FM
          * presets carry their own envelopes (they're part of the preset's
@@ -604,8 +605,10 @@ void arp_set_envelope(const seq_env_t *env)
 {
     if (!env) return;
     s_arp.vp.env = *env;
-    if (s_arp.vp.env.attack_ms < 2) s_arp.vp.env.attack_ms = 2;  /* 2 ms floor */
-    if (s_arp.vp.env.release_ms < 5) s_arp.vp.env.release_ms = 5;  /* 5 ms declick floor */
+    s_arp.vp.env.attack_ms  = SEQ_CLAMP_U32(s_arp.vp.env.attack_ms,
+                                            VOICE_ENV_ATTACK_MIN_MS, VOICE_ENV_TIME_MAX_MS);
+    s_arp.vp.env.release_ms = SEQ_CLAMP_U32(s_arp.vp.env.release_ms,
+                                            VOICE_ENV_RELEASE_MIN_MS, VOICE_ENV_TIME_MAX_MS);
     s_arp.vp.env_authored = true;
     sequencer_core_push_envelope(sequencer_core_arp_synth(), &s_arp.vp.env);
     ESP_LOGI(TAG, "arp env -> A%u D%u S%u%% R%u",
@@ -622,8 +625,10 @@ void arp_set_envelope2(const seq_env_t *env)
 {
     if (!env) return;
     s_arp.vp.env1 = *env;
-    if (s_arp.vp.env1.attack_ms < 2) s_arp.vp.env1.attack_ms = 2;  /* 2 ms floor */
-    if (s_arp.vp.env1.release_ms < 5) s_arp.vp.env1.release_ms = 5;  /* 5 ms declick floor */
+    s_arp.vp.env1.attack_ms  = SEQ_CLAMP_U32(s_arp.vp.env1.attack_ms,
+                                             VOICE_ENV_ATTACK_MIN_MS, VOICE_ENV_TIME_MAX_MS);
+    s_arp.vp.env1.release_ms = SEQ_CLAMP_U32(s_arp.vp.env1.release_ms,
+                                             VOICE_ENV_RELEASE_MIN_MS, VOICE_ENV_TIME_MAX_MS);
     s_arp.vp.env1_authored = true;
     sequencer_core_push_envelope_eg1(sequencer_core_arp_synth(), 0, &s_arp.vp.env1);
     ESP_LOGI(TAG, "arp env1 -> A%u D%u S%u%% R%u",

@@ -16,18 +16,25 @@ extern "C" {
 
 /**
  * @brief Button identifiers
- * 
- * GPIO3 is a strapping pin on ESP32-S3, so we use GPIO15, GPIO18, GPIO8 and
- * substitute GPIO42 for the fourth button instead.
+ *
+ * Each name is a ROLE; the pin it lands on is decided by this list's order,
+ * because s_button_gpios[] (my_buttons.c) is positional. Reordering members
+ * here reassigns roles to physical buttons without touching the wiring list —
+ * which is how the shoulder and step-toggle roles come to be exchanged below.
+ * Keep each comment's GPIO in step with the matching row of that array.
  */
 typedef enum {
-    MY_BUTTON_0 = 0,  // GPIO15 → play/pause + layer cycle (pin swapped with MY_BUTTON_SHOULDER)
-    MY_BUTTON_1,      // GPIO18 → step toggle
-    MY_BUTTON_2,      // GPIO8
-    MY_BUTTON_3,      // GPIO42 (GPIO3 is strapping pin, avoided)
+    MY_BUTTON_SHOULDER, // GPIO15 → per-view: step toggle on the grid (second one,
+                        //          alongside the encoder press), EG1 sweep
+                        //          polarity in the envelope editor
+    MY_BUTTON_1,        // GPIO18 → patch-select hold (hold + encoder); in editors:
+                        //          filter enable, EG curve-type cycle
+    MY_BUTTON_2,        // GPIO8
+    MY_BUTTON_3,        // GPIO42 (GPIO3 is strapping pin, avoided)
     MY_BUTTON_ENC,      // GPIO16 → encoder push button (step toggle)
-    MY_BUTTON_SHOULDER, // GPIO17 → original shoulder button, per-view bindings (pin swapped with MY_BUTTON_0)
-    MY_BUTTON_SHIFT,    // GPIO47 → new shoulder button, reserved as shift modifier
+    MY_BUTTON_0,        // GPIO17 → layer cycle (tap) / play-stop (long); commit
+                        //          or cancel an open editor
+    MY_BUTTON_SHIFT,    // GPIO47 → hold modifier for the SHIFT+1/2/3 chords
     MY_BUTTON_MAX
 } my_button_id_t;
 
@@ -43,8 +50,8 @@ typedef void (*my_button_event_cb_t)(my_button_id_t button_id, button_event_t ev
 /**
  * @brief Initialize all buttons
  * 
- * Creates GPIO buttons on pins 15, 18, 8, 42 with active low configuration
- * and internal pull-ups enabled.
+ * Creates GPIO buttons on pins 15, 18, 8, 42, 16, 17, 47 with active low
+ * configuration and internal pull-ups enabled.
  * 
  * @return ESP_OK on success, error code otherwise
  */

@@ -94,6 +94,16 @@ typedef struct {
     uint8_t            current;
     uint32_t           entry_start_bar; /* bars_elapsed when current entry began */
     bool               enabled;
+    /* The progression drives the arp's root/scale while enabled; the user's own
+     * values are captured on the first apply and restored on disable so a
+     * session with the progression never permanently clobbers arp settings.
+     * Runtime-only (not persisted): zero-init means "nothing saved". */
+    uint8_t            saved_arp_root;
+    uint8_t            saved_arp_scale;
+    bool               arp_saved;       /* true while the progression owns the arp */
+    /* Launch quantization: hold deferred chord applies until the next bar line
+     * while playing (false = apply immediately, the historical behavior). */
+    bool               apply_at_bar;
 } chord_progression_t;
 
 /* ── Shared state — defined (non-static) in the owning .c file ───────── */
@@ -134,6 +144,7 @@ extern uint32_t       s_lfo_rng_state;
 /* Owned by seq_core_progression.c */
 extern chord_progression_t s_prog;
 extern volatile bool  s_prog_apply_pending;
+extern volatile bool  s_prog_apply_immediate;
 
 /* Owned by seq_core_trig.c */
 extern uint32_t s_layer_loop_count[];              /* MAX_LAYERS   */
@@ -170,6 +181,15 @@ void melodic_lfo_refresh_native_freq(void);
 uint16_t sequencer_clamp_bpm(uint16_t b);
 void     sequencer_push_tempo(uint16_t b);
 /* lfo_rate_to_hz is already declared in the public sequencer_core.h */
+
+/* LFO Hz for the 20 Hz software fallback stepper: lfo_rate_to_hz additionally
+ * capped to the stepper's usable band (SEQ_LFO_SW_MAX_HZ) — the fast end of
+ * the widened rate range needs >= 4 stepper samples per LFO cycle. */
+static inline float seq_lfo_sw_hz(lfo_rate_t rate, uint16_t bpm)
+{
+    float hz = lfo_rate_to_hz(rate, bpm);
+    return (hz > SEQ_LFO_SW_MAX_HZ) ? SEQ_LFO_SW_MAX_HZ : hz;
+}
 float    lfo_next_rand(void);
 void     lfo_push_target_neutral(uint8_t synth_id, lfo_target_t target);
 

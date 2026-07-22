@@ -443,7 +443,7 @@ uint8_t sequencer_core_clamp_melodic_note(int32_t midi_note);
 
 /* (Re)configure the arp synth with a patch + voice count (flags = 0). */
 void sequencer_core_arp_configure(uint16_t patch_number, uint8_t num_voices,
-                                  bool filter_authored, float filter_q);
+                                  bool filter_authored, float ks_feedback);
 
 /* Schedule a repeating note-on + note-off pair on the arp synth.
  *  tag_base  : unique tag for this arp step (off uses tag_base+1)
@@ -514,6 +514,14 @@ bool sequencer_core_get_track_solo(uint8_t layer_idx, uint8_t track);
  * chord. progression_service() must be called at ~20 Hz from the UI task. */
 void    sequencer_core_progression_set_enabled(bool en);
 bool    sequencer_core_progression_get_enabled(void);
+/* Launch quantization for chord applies: false (default) = instant, true =
+ * musical edits hold until the next bar line while playing. */
+void    sequencer_core_progression_set_apply_at_bar(bool at_bar);
+bool    sequencer_core_progression_get_apply_at_bar(void);
+/* Drop the progression's captured pre-enable arp root/scale without restoring
+ * it. For project load only: the freshly loaded arp values become the new
+ * baseline, so a stale capture must not be restored over them on disable. */
+void    sequencer_core_progression_reset_arp_capture(void);
 void    sequencer_core_progression_set_entry(uint8_t idx, uint8_t root,
                                              chord_type_t chord_type,
                                              uint8_t duration_bars);

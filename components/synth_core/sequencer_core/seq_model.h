@@ -101,6 +101,14 @@ typedef struct {
                                   routes the row's EG1 through
                                   filter_freq_coefs[COEF_EG1] (same convention as
                                   bass_presets.c and arp_core.c:253). */
+    float   feedback;      /* KS string decay, 0..1 (1.0 = lossless "infinite
+                              sustain"; above 1 the KS buffer diverges). Only
+                              meaningful on feedback waves (KS): the filter
+                              editor's Q cursor edits THIS instead of resonance
+                              there. 0.0 (memset default) = never authored ->
+                              apply paths leave AMY's build-time 0.9 default
+                              untouched. Replaces the old scheme that derived
+                              feedback from the resonance Q value. */
 } seq_filter_t;
 
 /* ── LFO (per-track tempo-synced software modulator) ── */
@@ -121,6 +129,12 @@ typedef enum {
 typedef enum {
     LFO_RATE_1_8 = 0, LFO_RATE_1_4,  LFO_RATE_1_2,
     LFO_RATE_1BAR,    LFO_RATE_2BAR, LFO_RATE_4BAR,
+    /* Append-only past this point: values are persisted in project snapshots.
+     * Widened to mirror the arp's rate range (1BAR already covers 1/1); the
+     * fast end is frequency-capped in lfo_rate_to_hz / the software stepper so
+     * a tempo-synced LFO can never reach audible rate. */
+    LFO_RATE_1_16,    LFO_RATE_1_32,
+    LFO_RATE_1_4T,    LFO_RATE_1_8T, LFO_RATE_1_16T, LFO_RATE_1_32T,
     LFO_RATE_COUNT,
 } lfo_rate_t;
 typedef struct {
@@ -137,8 +151,18 @@ typedef struct {
                               osc2 modulating the osc1 carrier's depth AND
                               rate via chained mod_source (breathing wobble,
                               varying vibrato, non-repeating movement).       */
-    uint8_t      wob_depth;/* 0..100 % wobble amount; 0 = wobble off (osc2
-                              dormant). Zero-init default = off.              */
+    uint8_t      wob_depth;/* 0..100 % of VOICE_WOB_DEPTH_AMP; 0 = wobble off
+                              (osc2 dormant). Zero-init default = off. The UI
+                              authors this in whole dB of carrier swing (0..9,
+                              0 = OFF) — see the WOBBLE authoring unit block in
+                              voice_config.h; the stored unit is unchanged so
+                              project snapshots stay compatible.              */
+    bool    wob_depth_only;/* WOBBLE reach. false (zero-init) = the historical
+                              behaviour: one control swings both the carrier's
+                              depth AND its rate (+/-1 octave). true = depth
+                              swing only, leaving the LFO rate steady. Phrased
+                              as the opt-in restriction so zero-init and files
+                              written before the toggle keep their sound.     */
 } seq_lfo_t;
 
 /* Target-set helpers. The single mod-source oscillator can feed any subset of

@@ -15,16 +15,19 @@
 
 static const char *TAG = "my_buttons";
 
-// Button GPIO assignments (active low with internal pull-up)
-// GPIO3 is ESP32-S3 strapping pin, using GPIO42 instead
+// Button GPIO assignments (active low with internal pull-up). This list is the
+// WIRING and does not change when roles move around: entry N is simply the pin
+// of the Nth member of my_button_id_t, so reordering that enum is what
+// reassigns roles to physical buttons. The names below are therefore whichever
+// role currently occupies each slot — keep them in step with the enum.
 static const int32_t s_button_gpios[MY_BUTTON_MAX] = {
-    15,  // MY_BUTTON_0 → play/pause + layer cycle (pin swapped with MY_BUTTON_SHOULDER)
-    18,  // MY_BUTTON_1 → step toggle
+    15,  // MY_BUTTON_SHOULDER → per-view bindings (step toggle on the grid)
+    18,  // MY_BUTTON_1        → patch-select hold
     8,   // MY_BUTTON_2
     42,  // MY_BUTTON_3 (avoiding GPIO3 strapping pin)
-    16,  // MY_BUTTON_ENC → encoder push button
-    17,  // MY_BUTTON_SHOULDER → original shoulder button (pin swapped with MY_BUTTON_0)
-    47,  // MY_BUTTON_SHIFT → new shoulder button acting as shift modifier
+    16,  // MY_BUTTON_ENC      → encoder push button
+    17,  // MY_BUTTON_0        → layer cycle / play-stop
+    47,  // MY_BUTTON_SHIFT    → hold modifier
 };
 
 static button_handle_t s_button_handles[MY_BUTTON_MAX] = {NULL};

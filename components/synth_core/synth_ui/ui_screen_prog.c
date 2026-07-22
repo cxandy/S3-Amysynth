@@ -19,6 +19,7 @@ void prog_build_view(prog_view_t *out)
 {
     uint8_t count = sequencer_core_progression_get_count();
     out->enabled       = sequencer_core_progression_get_enabled();
+    out->apply_at_bar  = sequencer_core_progression_get_apply_at_bar();
     out->count         = count;
     out->current_entry = sequencer_core_progression_get_current();
     out->cursor        = s_prog_cursor;
@@ -40,6 +41,7 @@ uint32_t prog_view_signature(prog_view_t *out)
     uint32_t h = FNV1A_OFFSET;
     prog_build_view(out);
     h = fnv1a_bytes(h, &out->enabled,       sizeof(out->enabled));
+    h = fnv1a_bytes(h, &out->apply_at_bar,  sizeof(out->apply_at_bar));
     h = fnv1a_bytes(h, &out->count,         sizeof(out->count));
     h = fnv1a_bytes(h, &out->current_entry, sizeof(out->current_entry));
     h = fnv1a_bytes(h, &out->cursor,        sizeof(out->cursor));
@@ -71,9 +73,10 @@ bool synth_ui_prog_handle_encoder(int delta)
 {
     if (!synth_ui_prog_is_active()) return false;
     uint8_t count = sequencer_core_progression_get_count();
-    uint8_t max_cursor = (count > 0) ? count : 0;
+    /* Cursor range: 0=enable toggle, 1..count=entries, count+1=apply mode. */
+    uint8_t max_cursor = (uint8_t)(count + 1);
 
-    if (s_prog_editing && s_prog_cursor >= 1) {
+    if (s_prog_editing && s_prog_cursor >= 1 && s_prog_cursor <= count) {
         /* Editing the focused field of the selected entry. */
         uint8_t ei = (uint8_t)(s_prog_cursor - 1);
         uint8_t root; chord_type_t ct; uint8_t dur;
@@ -102,7 +105,7 @@ bool synth_ui_prog_handle_encoder(int delta)
         }
         sequencer_core_progression_set_entry(ei, root, ct, dur);
     } else {
-        /* Navigate cursor (0=toggle, 1..count=rows). */
+        /* Navigate cursor (0=toggle, 1..count=rows, count+1=apply mode). */
         int nc = (int)s_prog_cursor + delta;
         if (nc < 0) nc = (int)max_cursor;
         if (nc > (int)max_cursor) nc = 0;
@@ -115,10 +118,15 @@ bool synth_ui_prog_handle_encoder(int delta)
 bool synth_ui_prog_handle_button(void)
 {
     if (!synth_ui_prog_is_active()) return false;
+    uint8_t count = sequencer_core_progression_get_count();
     if (s_prog_cursor == 0) {
         /* Toggle row: enable/disable the progression. */
         sequencer_core_progression_set_enabled(
             !sequencer_core_progression_get_enabled());
+    } else if (s_prog_cursor == (uint8_t)(count + 1)) {
+        /* Apply-mode row: INST <-> BAR launch quantization. */
+        sequencer_core_progression_set_apply_at_bar(
+            !sequencer_core_progression_get_apply_at_bar());
     } else if (!s_prog_editing) {
         /* Enter field-edit on the focused entry, starting at root. */
         s_prog_editing = true;
@@ -151,7 +159,8 @@ bool synth_ui_prog_add_entry(void)
 bool synth_ui_prog_delete_entry(void)
 {
     if (!synth_ui_prog_is_active()) return false;
-    if (s_prog_cursor >= 1) {
+    if (s_prog_cursor >= 1 &&
+        s_prog_cursor <= sequencer_core_progression_get_count()) {
         sequencer_core_progression_delete_entry((uint8_t)(s_prog_cursor - 1));
         uint8_t count = sequencer_core_progression_get_count();
         if (s_prog_cursor > count) s_prog_cursor = count;  /* clamp to last row */

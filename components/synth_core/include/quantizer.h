@@ -24,8 +24,6 @@ uint8_t quantizer_scale_count(void);
 const musical_scale_t *quantizer_get_scale(uint8_t scale_index);
 
 uint8_t quantizer_clamp_midi(int32_t midi_note);
-uint8_t quantizer_degree_to_midi(int32_t scale_degree, uint8_t root_note,
-                                 const musical_scale_t *scale);
 uint8_t quantizer_snap_midi_note(uint8_t midi_note, uint8_t root_note,
                                  const musical_scale_t *scale);
 

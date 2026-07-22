@@ -29,15 +29,26 @@ void sequencer_push_tempo(uint16_t b)
 float lfo_rate_to_hz(lfo_rate_t rate, uint16_t bpm)
 {
     float b = (float)bpm;
+    float hz;
     switch (rate) {
-        case LFO_RATE_1_8:  return b / 30.0f;    /* 1/8 note */
-        case LFO_RATE_1_4:  return b / 60.0f;    /* 1/4 note */
-        case LFO_RATE_1_2:  return b / 120.0f;   /* 1/2 note */
-        case LFO_RATE_1BAR: return b / 240.0f;   /* 1 bar (4/4) */
-        case LFO_RATE_2BAR: return b / 480.0f;
-        case LFO_RATE_4BAR: return b / 960.0f;
-        default:            return b / 240.0f;
+        case LFO_RATE_1_8:   hz = b / 30.0f;  break; /* 1/8 note */
+        case LFO_RATE_1_4:   hz = b / 60.0f;  break; /* 1/4 note */
+        case LFO_RATE_1_2:   hz = b / 120.0f; break; /* 1/2 note */
+        case LFO_RATE_1BAR:  hz = b / 240.0f; break; /* 1 bar (4/4) */
+        case LFO_RATE_2BAR:  hz = b / 480.0f; break;
+        case LFO_RATE_4BAR:  hz = b / 960.0f; break;
+        case LFO_RATE_1_16:  hz = b / 15.0f;  break;
+        case LFO_RATE_1_32:  hz = b / 7.5f;   break;
+        case LFO_RATE_1_4T:  hz = b / 40.0f;  break; /* triplet = 1.5x straight */
+        case LFO_RATE_1_8T:  hz = b / 20.0f;  break;
+        case LFO_RATE_1_16T: hz = b / 10.0f;  break;
+        case LFO_RATE_1_32T: hz = b / 5.0f;   break;
+        default:             hz = b / 240.0f; break;
     }
+    /* Sub-audible ceiling: at high BPM the fastest divisions would cross into
+     * audio-rate AM; cap the frequency rather than hiding rates from pickers. */
+    if (hz > SEQ_LFO_NATIVE_MAX_HZ) hz = SEQ_LFO_NATIVE_MAX_HZ;
+    return hz;
 }
 
 float lfo_next_rand(void)
@@ -69,9 +80,16 @@ void sequencer_core_set_bpm(uint16_t new_bpm)
     s_bpm = sequencer_clamp_bpm(new_bpm);
     sequencer_push_tempo(s_bpm);
     for (int li = 0; li < s_num_layers; li++) {
+#if CONFIG_SEQ_MELODIC_AMY_NATIVE_LFO
+        /* Native-LFO (wave-patch) tracks keep s_lfo_hz == 0: their AMY carrier
+         * is retuned by melodic_lfo_refresh_native_freq() below, and a nonzero
+         * value here would set the 20 Hz software stepper double-modulating on
+         * top of the native carrier (mirrors sequencer_core_set_melodic_lfo). */
+        if (sequencer_core_is_wave_patch(s_layers[li].patch)) continue;
+#endif
         for (int tr = 0; tr < SEQ_TRACKS; tr++) {
             if (s_layers[li].vp[tr].lfo_authored && s_layers[li].vp[tr].lfo.enabled)
-                s_lfo_hz[li][tr] = lfo_rate_to_hz(s_layers[li].vp[tr].lfo.rate, s_bpm);
+                s_lfo_hz[li][tr] = seq_lfo_sw_hz(s_layers[li].vp[tr].lfo.rate, s_bpm);
         }
     }
     /* Sync the arp WAVE-mode LFO carrier to the new BPM (no-op when not active). */

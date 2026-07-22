@@ -27,8 +27,13 @@ extern "C" {
 typedef struct {
     uint8_t filter_type;     /* FGRAPH_FILTER_* */
     float   cutoff_norm;     /* 0..1 log-mapped over [FGRAPH_CUTOFF_HZ_MIN, MAX] */
-    float   resonance_norm;  /* 0..1 mapped from [FGRAPH_RES_MIN, FGRAPH_RES_MAX] */
-    uint8_t cursor;          /* 0=cutoff, 1=resonance, 2=type, 3=enable */
+    float   resonance_norm;  /* 0..1 mapped from [FGRAPH_RES_MIN, FGRAPH_RES_MAX];
+                              * when res_is_feedback, this carries the KS
+                              * feedback value 0..1 directly instead */
+    bool    res_is_feedback; /* feedback wave (KS): cursor 1 edits string
+                              * feedback, readout "FB:xx%"; the plotted curve
+                              * uses a neutral Q since Q is not editable there */
+    uint8_t cursor;          /* 0=cutoff, 1=resonance/feedback, 2=type, 3=enable */
     bool    editing;         /* cursor is currently being adjusted */
     bool    enabled;         /* false → draw flat line + "OFF" */
     bool    show_toggles;    /* target exposes the type(2)/enable(3) cursors —

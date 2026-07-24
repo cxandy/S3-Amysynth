@@ -25,6 +25,9 @@
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "sdkconfig.h"
+#if CONFIG_SYNTH_WIRELESS
+#include "radio_manager.h"
+#endif
 #include <string.h>
 
 static const char *TAG_TASK = "synth_ui";
@@ -133,6 +136,15 @@ static void synth_ui_task(void *pvParameters)
         projects_menu_service();
 #endif
 
+#if CONFIG_SYNTH_WIRELESS
+        /* Radio session start/stop queued by the Wireless page (clicks run
+         * on the button task). Must run here: NimBLE init/teardown blocks
+         * for a moment and needs this task's 8192-byte stack, and the
+         * session_start hook loads the live slot's patch - both far too
+         * heavy for the input path. */
+        radio_manager_service();
+#endif
+
         /* Output-level watchdog: peeks the USB ring on this core/task (see
          * usb_audio_watchdog.h). Compiles to nothing when the Kconfig gate is
          * off, as do the badge draw and signature mix below. */
@@ -157,6 +169,12 @@ static void synth_ui_task(void *pvParameters)
             /* The watchdog badge participates in the render gate so it
              * appears/clears without needing any other screen change. */
             sig ^= (uint32_t)output_wd_state() * 0x9E3779B9u;
+#if CONFIG_SYNTH_WIRELESS
+            /* BLE badge participates too: appears/changes on session or
+             * connection state without any other screen change. */
+            sig ^= ((uint32_t)radio_manager_state() * 2u +
+                    (radio_manager_connected() ? 1u : 0u)) * 0x85EBCA6Bu;
+#endif
             bool force = s_force_redraw || (view != last_view);
 
             if (force || sig != last_sig) {
@@ -184,6 +202,25 @@ static void synth_ui_task(void *pvParameters)
                     u8g2_DrawStr(s_u8g2, 110, 7, owd_txt);
                     u8g2_SetDrawColor(s_u8g2, 1);
                 }
+#if CONFIG_SYNTH_WIRELESS
+                /* BLE session badge, left of the CLIP/LOUD box (which owns
+                 * x=108..127): inverted box while a central is connected,
+                 * plain text while merely advertising. Same fill-only /
+                 * single-send discipline. */
+                if (radio_manager_state() == RADIO_ACTIVE) {
+                    u8g2_SetFont(s_u8g2, u8g2_font_4x6_tr);
+                    if (radio_manager_connected()) {
+                        u8g2_SetDrawColor(s_u8g2, 1);
+                        u8g2_DrawBox(s_u8g2, 90, 0, 16, 8);
+                        u8g2_SetDrawColor(s_u8g2, 0);
+                        u8g2_DrawStr(s_u8g2, 92, 7, "BLE");
+                        u8g2_SetDrawColor(s_u8g2, 1);
+                    } else {
+                        u8g2_SetDrawColor(s_u8g2, 1);
+                        u8g2_DrawStr(s_u8g2, 92, 7, "ble");
+                    }
+                }
+#endif
                 u8g2_SendBuffer(s_u8g2);
                 last_sig = sig;
                 last_view = view;

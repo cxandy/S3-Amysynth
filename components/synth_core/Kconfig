@@ -33,7 +33,7 @@ config SEQ_MELODIC_EXPRESSIVE_DEFAULTS
 
 choice SEQ_MELODIC_PATCH_PRESET
 	prompt "Melodic layer AMY patch preset"
-	default SEQ_MELODIC_PATCH_JUNO_EPIANO1
+	default SEQ_MELODIC_PATCH_SINE
 	help
 		Selects which built-in AMY patch number the sequencer uses when
 		creating melodic layers.
@@ -58,6 +58,10 @@ config SEQ_MELODIC_PATCH_JUNO_EPIANO_TREM
 
 config SEQ_MELODIC_PATCH_PIANO_BUILTIN
 	bool "AMY built-in piano (patch 256)"
+
+config SEQ_MELODIC_PATCH_SINE
+	bool "Raw SINE waveform (patch 257)"
+
 config SEQ_MELODIC_PATCH_CUSTOM_START
 	bool "start of custom presets/raw waveforms"
 
@@ -86,6 +90,7 @@ config SEQ_MELODIC_PATCH
 	default 7 if SEQ_MELODIC_PATCH_JUNO_PIANO1
 	default 104 if SEQ_MELODIC_PATCH_JUNO_EPIANO_TREM
 	default 256 if SEQ_MELODIC_PATCH_PIANO_BUILTIN
+	default 257 if SEQ_MELODIC_PATCH_SINE
 	default 1 if SEQ_MELODIC_PATCH_CUSTOM_START
 	help
 		Resolved AMY patch number for melodic layer initialization.

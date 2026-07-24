@@ -19,7 +19,7 @@ if(CONFIG_SYNTH_ADDITIVE)
         "custompatches/additive_presets.c")
 endif()
 
-idf_component_register(SRCS "amy_helpers.c" "amy_fx.c" "arp_core.c" "quantizer.c" "graph_popup_amy.c" "voice_config.c"
+idf_component_register(SRCS "live_play.c" "amy_helpers.c" "amy_fx.c" "arp_core.c" "quantizer.c" "graph_popup_amy.c" "voice_config.c"
                             "synth_ui/synth_ui_state.c"
                             "synth_ui/synth_ui_task.c"
                             "synth_ui/synth_ui_hint.c"
@@ -35,6 +35,7 @@ idf_component_register(SRCS "amy_helpers.c" "amy_fx.c" "arp_core.c" "quantizer.c
                             "synth_ui/ui_screen_drone_std.c"
                             "synth_ui/ui_screen_prog.c"
                             "synth_ui/ui_screen_chords.c"
+                            "synth_ui/ui_screen_wireless.c"
                             "synth_ui/ui_screen_trackopts.c"
                             "synth_ui/ui_screen_stepedit.c"
                             "sequencer_core/seq_core_state.c"
@@ -56,7 +57,7 @@ idf_component_register(SRCS "amy_helpers.c" "amy_fx.c" "arp_core.c" "quantizer.c
                        INCLUDE_DIRS "include" "sequencer_core" "project"
                        PRIV_INCLUDE_DIRS "."
                        REQUIRES u8g2 display amy
-                       PRIV_REQUIRES seq_clamp project_store usb_audio)
+                       PRIV_REQUIRES seq_clamp project_store usb_audio wireless)
 # -Wstack-usage is GCC-only; clang rejects the unknown warning option under -Werror.
 if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
     target_compile_options(${COMPONENT_LIB} PRIVATE "-Wstack-usage=1024")
@@ -70,6 +71,7 @@ set_source_files_properties(
     "${CMAKE_CURRENT_LIST_DIR}/synth_ui/ui_screen_menu.c"
     "${CMAKE_CURRENT_LIST_DIR}/synth_ui/ui_screen_fxmenu.c"
     "${CMAKE_CURRENT_LIST_DIR}/synth_ui/ui_screen_projects.c"
+    "${CMAKE_CURRENT_LIST_DIR}/synth_ui/ui_screen_wireless.c"
     "${CMAKE_CURRENT_LIST_DIR}/synth_ui/ui_screen_arp.c"
     "${CMAKE_CURRENT_LIST_DIR}/synth_ui/ui_screen_drone.c"
     "${CMAKE_CURRENT_LIST_DIR}/synth_ui/ui_screen_drone_std.c"

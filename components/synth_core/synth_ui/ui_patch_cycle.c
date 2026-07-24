@@ -7,6 +7,9 @@
 #include "patch_names.h"
 #include "patch_cycle.h"
 #include "sdkconfig.h"
+#if CONFIG_SYNTH_WIRELESS
+#include "live_play.h"
+#endif
 #include "esp_log.h"
 
 static const char *TAG = "synth_ui";
@@ -176,6 +179,26 @@ void synth_ui_arp_cycle_patch(int delta)
         ESP_LOGI(TAG, "arp patch cycle -> %u", (unsigned)next);
     }
 }
+
+#if CONFIG_SYNTH_WIRELESS
+/* Cycle the live-play slot's patch (Wireless menu page's Patch row). Shares
+ * the melodic domain: the live slot routes the full catalog through
+ * sequencer_core_configure_synth_slot()'s kind dispatch, same as the arp. */
+void synth_ui_cycle_live_patch(int delta)
+{
+    if (delta == 0) return;
+    int dir = (delta > 0) ? 1 : -1;
+    uint16_t next = patch_domain_step(&s_melodic_domain, live_play_get_patch(), dir);
+    live_play_set_patch(next);
+
+    const char *name = patch_name_for(next);
+    if (name) {
+        ESP_LOGI(TAG, "live patch cycle -> %u (%s)", (unsigned)next, name);
+    } else {
+        ESP_LOGI(TAG, "live patch cycle -> %u", (unsigned)next);
+    }
+}
+#endif
 
 /* Cycle the drone's PATCH-mode preset (hold+turn gesture on the drone screen).
  * Reuses the same browse-mode stepping + name lookup as the others. */

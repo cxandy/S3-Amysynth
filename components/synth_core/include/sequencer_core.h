@@ -458,6 +458,14 @@ uint8_t sequencer_core_clamp_melodic_note(int32_t midi_note);
 void sequencer_core_arp_configure(uint16_t patch_number, uint8_t num_voices,
                                   bool filter_authored, float ks_feedback);
 
+/* (Re)configure an out-of-band dedicated synth slot with any routable patch
+ * (flags = 0, neutral filter/KS authoring). Kills sounding voices first and
+ * reasserts global FX when the patch was a string patch. For slot owners
+ * outside the track allocator (live play); track and arp slots have their
+ * own entry points above. */
+void sequencer_core_configure_synth_slot(uint8_t synth_id, uint16_t patch_number,
+                                         uint8_t num_voices);
+
 /* Schedule a repeating note-on + note-off pair on the arp synth.
  *  tag_base  : unique tag for this arp step (off uses tag_base+1)
  *  midi_note : already-snapped/clamped pitch to play

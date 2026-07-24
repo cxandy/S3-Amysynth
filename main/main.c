@@ -29,6 +29,11 @@
 #include "project_fs.h"
 #include "project_store.h"
 #include "project_snapshot.h"
+#if CONFIG_SYNTH_WIRELESS
+#include "midi_core.h"
+#include "radio_manager.h"
+#include "live_play.h"
+#endif
 
 #ifndef CONFIG_AMYSYNTH_INPUT_DIAGNOSTICS
 #define CONFIG_AMYSYNTH_INPUT_DIAGNOSTICS 0
@@ -1130,6 +1135,27 @@ void app_main(void)
      * single-threaded on this task's stack, before the UI task starts. */
     synth_ui_init(s_u8g2);
     HEAP_CHECK("after synth_ui_init");
+
+#if CONFIG_SYNTH_WIRELESS
+    /* Wire the MIDI transports to the live-play voice. The wireless component
+     * knows nothing of synth_core (P4 portability seam): notes reach the
+     * synth only through these sink callbacks, and the radio session calls
+     * back through the hooks (session_start prepares the live slot on the
+     * synth_ui task; stop/disconnect release held notes - stuck-note safety).
+     * No radio is initialized here: sessions start on demand from the
+     * Wireless menu page. */
+    static const midi_sink_t s_live_sink = {
+        .note_on  = live_play_note_on,
+        .note_off = live_play_note_off,
+    };
+    static const radio_hooks_t s_radio_hooks = {
+        .session_start   = live_play_ensure_ready,
+        .session_stop    = live_play_all_notes_off,
+        .peer_disconnect = live_play_all_notes_off,
+    };
+    midi_core_set_sink(&s_live_sink);
+    radio_manager_init(&s_radio_hooks);
+#endif
     ESP_LOGI(TAG, "[startup] after amy_start");
     
     TaskHandle_t amy_render_task_handle = NULL;

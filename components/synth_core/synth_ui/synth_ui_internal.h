@@ -143,6 +143,18 @@ bool     projects_menu_is_renaming(void);
 void     projects_menu_rename_commit(void);
 void     projects_menu_rename_cancel(void);
 
+/* ─── Wireless page: BLE MIDI session control (item model in
+ *     ui_screen_wireless.c; page state and input routing live in
+ *     ui_screen_menu.c). Declared unconditionally like the Projects page -
+ *     every call site is guarded by CONFIG_SYNTH_WIRELESS. ─────────────── */
+const menu_item_view_t *wireless_menu_build_items(void);
+uint8_t  wireless_menu_item_count(void);
+bool     wireless_menu_item_is_back(uint8_t idx);
+bool     wireless_menu_item_is_value(uint8_t idx);
+bool     wireless_menu_handle_click(uint8_t idx);
+void     wireless_menu_edit_value(uint8_t idx, int delta);
+void     wireless_menu_reset(void);
+
 /* ─── Chords page: chord-preset editor (item model in ui_screen_chords.c;
  *     page state and input routing live in ui_screen_menu.c). Slot list +
  *     per-slot edit view; every edit commits through seq_chords_set and

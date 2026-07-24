@@ -206,6 +206,14 @@ void lfo_view_draw(u8g2_t *u8g2, const lfo_view_t *v)
             case LFO_FLD_DEPTH:
                 snprintf(buf, sizeof(buf), "Dep %u%%", (unsigned)l->depth);
                 break;
+            case LFO_FLD_FLT_OCT:
+                /* FILTER swing reads in octaves around the authored cutoff -
+                 * the unit the log2 filter rail works in (voice_config.h).
+                 * Resolves the legacy depth-derived sentinel, so the row
+                 * always shows the effective swing. */
+                snprintf(buf, sizeof(buf), "Flt %.2foc",
+                         (double)voice_lfo_filter_octaves(l));
+                break;
             case LFO_FLD_WOB_RATE:
                 snprintf(buf, sizeof(buf), "WRt %s", rate_label((lfo_rate_t)l->wob_rate));
                 break;

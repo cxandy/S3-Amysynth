@@ -957,3 +957,17 @@ void sequencer_core_arp_configure(uint16_t patch_number, uint8_t num_voices,
     ESP_LOGI(TAG, "arp synth %u patch -> %u (%u voices)",
              (unsigned)SEQ_ARP_SYNTH, (unsigned)patch_number, (unsigned)num_voices);
 }
+
+void sequencer_core_configure_synth_slot(uint8_t synth_id, uint16_t patch_number,
+                                         uint8_t num_voices)
+{
+    patch_number = SEQ_CLAMP_U16(patch_number, 0, SEQ_PATCH_FULL_MAX);
+    /* Osc topology can change between patch kinds; kill sounding voices
+     * before the pool is rebuilt (same discipline as the arp path above). */
+    sequencer_kill_synth_voices(synth_id);
+    bool string_patch = seq_apply_patch(synth_id, patch_number, num_voices,
+                                        0, false, 0.0f);
+    seq_flush_patch_fx(string_patch);
+    ESP_LOGI(TAG, "synth %u patch -> %u (%u voices)",
+             (unsigned)synth_id, (unsigned)patch_number, (unsigned)num_voices);
+}

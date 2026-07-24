@@ -12,6 +12,9 @@
 #if CONFIG_SYNTH_PROJECT_STORE
 #include "project_fs.h"
 #endif
+#if CONFIG_SYNTH_WIRELESS
+#include "radio_manager.h"
+#endif
 #include "esp_log.h"
 #include <stdio.h>
 #include <string.h>
@@ -56,6 +59,9 @@ typedef enum {
 #if CONFIG_SYNTH_PROJECT_STORE
     MI_PROJECTS,
 #endif
+#if CONFIG_SYNTH_WIRELESS
+    MI_WIRELESS,
+#endif
     MI_VOLUME,
     MI_SAMPLE,
     MI_SAMPLE_CANCEL,
@@ -77,6 +83,10 @@ static bool    s_projects_page = false;
 #endif
 /* Chord-preset editor page (item model in ui_screen_chords.c). */
 static bool    s_chords_page = false;
+#if CONFIG_SYNTH_WIRELESS
+/* BLE MIDI session page (item model in ui_screen_wireless.c). */
+static bool    s_wireless_page = false;
+#endif
 
 /* Title for the menu overlay's header bar (drawn by ui_view_resolve.c). */
 const char *menu_page_title(void)
@@ -96,6 +106,9 @@ const char *menu_page_title(void)
     if (s_projects_page) return "PROJECTS";
 #endif
     if (s_chords_page) return chords_menu_title();
+#if CONFIG_SYNTH_WIRELESS
+    if (s_wireless_page) return "WIRELESS";
+#endif
     return "MENU";
 }
 
@@ -132,6 +145,15 @@ void menu_build_view(menu_view_t *out)
         out->editing = seq_state.menu_editing;
         return;
     }
+#if CONFIG_SYNTH_WIRELESS
+    if (s_wireless_page) {
+        out->items   = wireless_menu_build_items();
+        out->count   = wireless_menu_item_count();
+        out->cursor  = seq_state.menu_cursor;
+        out->editing = seq_state.menu_editing;
+        return;
+    }
+#endif
 
     for (int i = 0; i < MI_COUNT; i++) {
         s_menu_items[i].value[0] = '\0';
@@ -219,6 +241,13 @@ void menu_build_view(menu_view_t *out)
     snprintf(s_menu_items[MI_PROJECTS].label, MENU_LABEL_LEN, "Projects");
     snprintf(s_menu_items[MI_PROJECTS].value, MENU_VALUE_LEN, "%s",
              project_fs_ok() ? ">" : "ERR");
+#endif
+
+#if CONFIG_SYNTH_WIRELESS
+    /* BLE MIDI session lives on its own page (ui_screen_wireless.c). */
+    snprintf(s_menu_items[MI_WIRELESS].label, MENU_LABEL_LEN, "Wireless");
+    snprintf(s_menu_items[MI_WIRELESS].value, MENU_VALUE_LEN, "%s",
+             radio_manager_state() == RADIO_ACTIVE ? "ON" : ">");
 #endif
 
     /* Master output volume (0..200%, unity=100%). Written to amy_global.volume[]. */
@@ -372,6 +401,9 @@ void synth_ui_menu_toggle(void)
         s_projects_page = false;
 #endif
         s_chords_page = false;
+#if CONFIG_SYNTH_WIRELESS
+        s_wireless_page = false;
+#endif
         if (seq_state.menu_cursor >= MI_COUNT) seq_state.menu_cursor = 0;
     }
     s_force_redraw = true;
@@ -428,6 +460,10 @@ bool synth_ui_menu_handle_encoder(long delta)
 #endif
         } else if (s_chords_page) {
             chords_menu_edit_value(seq_state.menu_cursor, (int)delta);
+#if CONFIG_SYNTH_WIRELESS
+        } else if (s_wireless_page) {
+            wireless_menu_edit_value(seq_state.menu_cursor, (int)delta);
+#endif
         } else {
             menu_edit_value((menu_item_id_t)seq_state.menu_cursor, (int)delta);
         }
@@ -438,6 +474,9 @@ bool synth_ui_menu_handle_encoder(long delta)
                 s_projects_page ? (int)projects_menu_item_count() :
 #endif
                 s_chords_page ? (int)chords_menu_item_count() :
+#if CONFIG_SYNTH_WIRELESS
+                s_wireless_page ? (int)wireless_menu_item_count() :
+#endif
                 (int)MI_COUNT;
         int c = (int)seq_state.menu_cursor + (int)delta;
         /* clamp (no wrap) so the list feels bounded */
@@ -515,6 +554,21 @@ bool synth_ui_menu_handle_button(void)
         return true;
     }
 
+#if CONFIG_SYNTH_WIRELESS
+    if (s_wireless_page) {
+        uint8_t idx = seq_state.menu_cursor;
+        if (wireless_menu_item_is_back(idx)) {
+            s_wireless_page = false;
+            seq_state.menu_cursor  = s_main_cursor;
+            seq_state.menu_editing = false;
+        } else {
+            seq_state.menu_editing = wireless_menu_handle_click(idx);
+        }
+        s_force_redraw = true;
+        return true;
+    }
+#endif
+
     menu_item_id_t id = (menu_item_id_t)seq_state.menu_cursor;
 
     if (menu_item_is_value(id)) {
@@ -583,6 +637,15 @@ bool synth_ui_menu_handle_button(void)
                 s_projects_page = true;
                 seq_state.menu_cursor = 0;
                 projects_menu_reset();
+                break;
+#endif
+#if CONFIG_SYNTH_WIRELESS
+            case MI_WIRELESS:
+                /* Dive into the wireless page; the menu stays open. */
+                s_main_cursor = seq_state.menu_cursor;
+                s_wireless_page = true;
+                seq_state.menu_cursor = 0;
+                wireless_menu_reset();
                 break;
 #endif
             case MI_SAMPLE:

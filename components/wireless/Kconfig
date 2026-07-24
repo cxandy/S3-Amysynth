@@ -1,0 +1,30 @@
+menu "Wireless (BLE MIDI)"
+
+config SYNTH_WIRELESS
+	bool "Wireless support (BLE MIDI in)"
+	depends on BT_ENABLED && BT_NIMBLE_ENABLED
+	default n
+	help
+		On-demand BLE MIDI input: a "Wireless" menu page starts a NimBLE
+		peripheral session (advertises the BLE-MIDI GATT service) and tears
+		it down again, returning the stack's RAM. Incoming notes play a
+		dedicated live synth slot. When disabled, no radio code is compiled
+		and the menu entry does not exist.
+
+		Requires the NimBLE host (Component config -> Bluetooth), trimmed to
+		peripheral-only so the stack costs as little internal RAM as it can:
+		BT_NIMBLE_ROLE_CENTRAL=n, BT_NIMBLE_ROLE_OBSERVER=n,
+		BT_NIMBLE_MAX_CONNECTIONS=1, BT_NIMBLE_GATT_SERVER=y. Pin both stack
+		halves to core 0 (BT_NIMBLE_PINNED_TO_CORE_0, BT_CTRL_PINNED_TO_CORE_0)
+		to keep them off the AMY render core.
+
+config SYNTH_BLE_MIDI_LOG
+	bool "Verbose BLE MIDI logging"
+	depends on SYNTH_WIRELESS
+	default n
+	help
+		Logs per-packet BLE MIDI traffic details. Diagnostic only: the log
+		calls sit on the NimBLE host task in the note path, so keep this
+		off outside debugging sessions.
+
+endmenu

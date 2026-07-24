@@ -18,6 +18,21 @@
 #define VOICE_LFO_DEPTH_SCAN   0.5f
 #define VOICE_LFO_DEPTH_PAN    0.5f  /* swing around the 0.5 center baseline */
 
+/* FILTER-target swing ceiling, in quarter-octave steps (16 = 4.0 octaves). */
+#define VOICE_LFO_FLT_OCT_Q_MAX 16u
+
+/* Effective FILTER swing in octaves. AMY's filter_freq COEF_MOD rail is
+ * log2-frequency, so this value IS the native coefficient; the software
+ * stepper uses it as the 2^x exponent scale. Resolves the flt_oct_q legacy
+ * sentinel (0 = depth% x VOICE_LFO_DEPTH_FILTER - the pre-octave law). */
+static inline float voice_lfo_filter_octaves(const seq_lfo_t *l)
+{
+    uint8_t q = l->flt_oct_q;
+    if (q == 0) return ((float)l->depth / 100.0f) * VOICE_LFO_DEPTH_FILTER;
+    if (q > VOICE_LFO_FLT_OCT_Q_MAX) q = VOICE_LFO_FLT_OCT_Q_MAX;
+    return 0.25f * (float)q;
+}
+
 /* WOBBLE (second-order LFO): osc2 chained as the osc1 carrier's mod_source.
  * AMP rides the dB combine (contribution is linear in the exponent: amp
  * multiplier = 10^(3 * coef * wob) => 0.15 ~ +/-9 dB depth breathing at full

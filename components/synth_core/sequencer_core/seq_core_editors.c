@@ -379,7 +379,8 @@ void __attribute__((optimize("O3", "unroll-loops", "fast-math"))) sequencer_core
                 float base = (s_layers[li].vp[tr].filter.enabled &&
                               s_layers[li].vp[tr].filter.cutoff_hz > 0.0f)
                              ? s_layers[li].vp[tr].filter.cutoff_hz : 1000.0f;
-                e->filter_freq_coefs[COEF_CONST] = base * powf(2.0f, d * 3.0f * val);
+                e->filter_freq_coefs[COEF_CONST] =
+                    base * powf(2.0f, voice_lfo_filter_octaves(lfo) * val);
             }
             if (LFO_HAS_TGT(lfo, LFO_TARGET_AMP))
                 e->amp_coefs[COEF_CONST] = 1.0f - d*(0.5f - 0.5f*val);

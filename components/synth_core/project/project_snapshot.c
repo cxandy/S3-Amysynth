@@ -128,6 +128,8 @@ static void ser_lfo(tlv_writer_t *w, const seq_lfo_t *l)
     tlv_put_u8(w, l->wob_rate);  /* LAYR v5+ / ARP v3+: WOBBLE second-order LFO */
     tlv_put_u8(w, l->wob_depth);
     tlv_put_u8(w, l->wob_depth_only ? 1 : 0);  /* LAYR v6+ / ARP v4+ */
+    tlv_put_u8(w, l->flt_oct_q);  /* LAYR v8+ / ARP v7+: FILTER swing in
+                                   * quarter-octaves; 0 = legacy depth-derived */
 }
 
 /* Same "read everything, then validate" shape as de_filter: an out-of-range
@@ -138,12 +140,14 @@ static void ser_lfo(tlv_writer_t *w, const seq_lfo_t *l)
  * threshold differs per containing section (LAYR v5+, ARP v3+), so the caller
  * resolves it rather than this shared codec guessing from `ver`.
  * `wob_mode`: likewise for the later depth-only reach byte (LAYR v6+, ARP v4+).
- * Its absence means "depth + rate", which is what those files sounded like. */
+ * Its absence means "depth + rate", which is what those files sounded like.
+ * `flt_oct`: likewise for the FILTER octave-swing byte (LAYR v8+, ARP v7+).
+ * Its absence leaves the 0 sentinel = the old depth-derived filter law. */
 static bool de_lfo(tlv_reader_t *r, seq_lfo_t *l, uint8_t ver, bool wobble,
-                   bool wob_mode)
+                   bool wob_mode, bool flt_oct)
 {
     uint8_t en, mode, wave, rate, depth, tgt;
-    uint8_t wrate = 0, wdepth = 0, wdeponly = 0;
+    uint8_t wrate = 0, wdepth = 0, wdeponly = 0, foct = 0;
     if (!tlv_get_u8(r, &en))     return false;
     if (!tlv_get_u8(r, &mode))   return false;
     if (!tlv_get_u8(r, &wave))   return false;
@@ -156,6 +160,9 @@ static bool de_lfo(tlv_reader_t *r, seq_lfo_t *l, uint8_t ver, bool wobble,
     }
     if (wob_mode) {
         if (!tlv_get_u8(r, &wdeponly)) return false;
+    }
+    if (flt_oct) {
+        if (!tlv_get_u8(r, &foct)) return false;
     }
 
     if (mode > LFO_MODE_RETRIG || wave >= LFO_WAVE_COUNT ||
@@ -177,6 +184,8 @@ static bool de_lfo(tlv_reader_t *r, seq_lfo_t *l, uint8_t ver, bool wobble,
      * as OFF while the modulator still ran. */
     l->wob_depth = voice_wob_db_to_depth(voice_wob_depth_to_db(wdepth));
     l->wob_depth_only = (wdeponly != 0);
+    l->flt_oct_q = (foct > VOICE_LFO_FLT_OCT_Q_MAX)
+                   ? (uint8_t)VOICE_LFO_FLT_OCT_Q_MAX : foct;
     return true;
 }
 
@@ -201,7 +210,7 @@ static bool de_vp(tlv_reader_t *r, voice_params_t *vp, uint8_t ver)
     if (!de_env(r, &vp->env))       return false;
     if (!de_env(r, &vp->env1))      return false;
     if (!de_filter(r, &vp->filter, ver >= 7)) return false;  /* LAYR: feedback v7+ */
-    if (!de_lfo(r, &vp->lfo, ver, ver >= 5, ver >= 6))  return false;  /* LAYR: wobble v5+, reach v6+ */
+    if (!de_lfo(r, &vp->lfo, ver, ver >= 5, ver >= 6, ver >= 8))  return false;  /* LAYR: wobble v5+, reach v6+, flt_oct v8+ */
     uint8_t ea, e1a, fa, la;
     if (!tlv_get_u8(r, &ea))  return false;
     if (!tlv_get_u8(r, &e1a)) return false;
@@ -322,12 +331,13 @@ static void apply_glob(const staged_glob_t *g)
 
 static void ser_layer(tlv_writer_t *w, const seq_layer_t *L)
 {
-    size_t h = tlv_begin_section(w, TAG_LAYR, 7);  /* v2: LFO target bitmask;
+    size_t h = tlv_begin_section(w, TAG_LAYR, 8);  /* v2: LFO target bitmask;
                                                     * v3: +gate_pct, +portamento_ms;
                                                     * v4: +groove_pct;
                                                     * v5: LFO +wob_rate/+wob_depth;
                                                     * v6: LFO +wob_depth_only;
-                                                    * v7: filter +feedback (KS) */
+                                                    * v7: filter +feedback (KS);
+                                                    * v8: LFO +flt_oct_q */
     tlv_put_u8(w, (uint8_t)L->type);
     tlv_put_u8(w, L->num_steps);
     tlv_put_u16(w, L->patch);
@@ -505,11 +515,12 @@ typedef struct {
 
 static void ser_arp(tlv_writer_t *w)
 {
-    size_t h = tlv_begin_section(w, TAG_ARP, 6);  /* v2: LFO target is a bitmask;
+    size_t h = tlv_begin_section(w, TAG_ARP, 7);  /* v2: LFO target is a bitmask;
                                                    * v3: LFO +wob_rate/+wob_depth;
                                                    * v4: LFO +wob_depth_only;
                                                    * v5: filter +feedback (KS);
-                                                   * v6: +follow_quant (appended) */
+                                                   * v6: +follow_quant (appended);
+                                                   * v7: LFO +flt_oct_q */
     tlv_put_u8(w, arp_get_enabled() ? 1 : 0);
     tlv_put_u8(w, (uint8_t)arp_get_source());
     tlv_put_u16(w, arp_get_wave());
@@ -563,7 +574,7 @@ static bool parse_arp(tlv_reader_t *b, staged_arp_t *a, uint8_t ver)
     if (!de_env(b, &a->env))       return false;
     if (!de_env(b, &a->env2))      return false;
     if (!de_filter(b, &a->filter, ver >= 5)) return false;   /* ARP: feedback v5+ */
-    if (!de_lfo(b, &a->lfo, ver, ver >= 3, ver >= 4))  return false;   /* ARP: wobble v3+, reach v4+ */
+    if (!de_lfo(b, &a->lfo, ver, ver >= 3, ver >= 4, ver >= 7))  return false;   /* ARP: wobble v3+, reach v4+, flt_oct v7+ */
     /* v6: follow the global scale quantizer. Pre-v6 files predate the option —
      * default OFF (the arp's own scale), the only behavior that existed. */
     if (ver >= 6) {
@@ -908,14 +919,14 @@ bool project_snapshot_load(uint8_t slot)
         case TAG_LAYR:
             /* Ceiling must track ser_layer()'s version or the firmware rejects
              * its own files: it was left at 3 while the writer moved to 5. */
-            if (ver < 1 || ver > 7 || staged_layer_count >= MAX_LAYERS) { ok = false; break; }
+            if (ver < 1 || ver > 8 || staged_layer_count >= MAX_LAYERS) { ok = false; break; }
             ok = parse_layer(&body, &staged_layers[staged_layer_count], ver);
             if (ok) staged_layer_count++;
             break;
         case TAG_ARP:
             /* Ceiling must track ser_arp()'s version or the firmware rejects
              * its own saves (the LAYR stale-ceiling bug class). */
-            if (got_arp || ver < 1 || ver > 6) { ok = false; break; }
+            if (got_arp || ver < 1 || ver > 7) { ok = false; break; }
             ok = parse_arp(&body, &staged_arp, ver);
             got_arp = ok;
             break;

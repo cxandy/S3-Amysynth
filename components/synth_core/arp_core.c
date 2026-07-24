@@ -4,11 +4,13 @@
 #include "custompatches/additive_voice.h"  /* s_additive_voice + push_live (ADDITIVE_CUSTOM) */
 #include "amy_helpers.h"   /* amy_helpers_event_begin/send — for WAVE mode osc config */
 #include "voice_config.h"  /* canonical LFO depth scalars + shared wave map */
+#include "seq_core_config.h" /* SEQ_LFO_SW_MAX_HZ (software-stepper rate cap) */
 #include "quantizer.h"
 #include "seq_clamp.h"
 #include "sdkconfig.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include <math.h>
 #include <string.h>
 
 /* DEBUG: bisect heap corruption inside arp init. Gated by
@@ -761,8 +763,111 @@ void arp_core_mark_dirty(void)
 
 /* Perform a pending re-emit, if any. Called once per UI frame so rapid edits
  * coalesce into a single refresh. Cheap no-op when nothing changed. */
+/* ── PATCH-mode software LFO fallback ────────────────────────────────────
+ * WAVE mode gets the AMY-native voice-local LFO (osc1 carrier + osc2 wobble,
+ * voice_apply_native_lfo); a patch owns its whole osc layout, so PATCH mode
+ * runs the same 20 Hz software stepper as non-wave melodic tracks
+ * (sequencer_core_lfo_service, the canonical implementation this mirrors),
+ * modulating each checked target's COEF_CONST rail on the arp synth. WOBBLE
+ * has no software analog and is ignored here, like on melodic patch tracks. */
+static float   s_swlfo_phase   = 0.0f;
+static float   s_swlfo_rnd    = 0.0f;
+static bool    s_swlfo_active = false;
+static uint8_t s_swlfo_targets = 0;   /* targets driven while active - the set
+                                       * to restore, even if edited since */
+
+/* seq_core_editors.c internals shared with this stepper. Mirrored prototypes:
+ * seq_core_internal.h cannot be included here (it defines a TU-local TAG). */
+float lfo_next_rand(void);
+void  lfo_push_target_neutral(uint8_t synth_id, lfo_target_t target);
+
+/* lfo_rate_to_hz capped to the software stepper's usable band - mirrors
+ * seq_lfo_sw_hz (seq_core_internal.h): the fast end of the rate range needs
+ * >= 4 stepper samples per LFO cycle. */
+static inline float arp_swlfo_hz(lfo_rate_t rate, uint16_t bpm)
+{
+    float hz = lfo_rate_to_hz(rate, bpm);
+    return (hz > SEQ_LFO_SW_MAX_HZ) ? SEQ_LFO_SW_MAX_HZ : hz;
+}
+
+static float arp_swlfo_eval(lfo_wave_t wave, float ph)
+{
+    switch (wave) {
+        case LFO_WAVE_SINE:     return sinf(2.0f * 3.14159265f * ph);
+        case LFO_WAVE_TRIANGLE: return (ph < 0.5f) ? (4.0f * ph - 1.0f)
+                                                   : (3.0f - 4.0f * ph);
+        case LFO_WAVE_SAW_UP:   return 2.0f * ph - 1.0f;
+        case LFO_WAVE_SAW_DOWN: return 1.0f - 2.0f * ph;
+        case LFO_WAVE_SQUARE:   return (ph < 0.5f) ? 1.0f : -1.0f;
+        case LFO_WAVE_RANDOM:   return s_swlfo_rnd;
+        default:                return 0.0f;
+    }
+}
+
+static void arp_swlfo_service(void)
+{
+    const seq_lfo_t *lfo = &s_arp.vp.lfo;
+    bool want = s_arp.enabled && s_arp.source == ARP_SRC_PATCH &&
+                lfo->enabled && lfo->targets != 0;
+
+    if (!want) {
+        if (s_swlfo_active) {
+            /* Restore every rail the stepper was driving (mirrors
+             * lfo_restore_target_neutrals in seq_core_editors.c). */
+            s_swlfo_active = false;
+            uint8_t syn = sequencer_core_arp_synth();
+            for (int t = 0; t < LFO_TARGET_COUNT; t++) {
+                if (!(s_swlfo_targets & LFO_TGT_BIT(t))) continue;
+                if (t == LFO_TARGET_FILTER)
+                    sequencer_core_push_filter(syn, &s_arp.vp.filter,
+                                               s_arp.patch == SEQ_PATCH_KS);
+                else
+                    lfo_push_target_neutral(syn, (lfo_target_t)t);
+            }
+        }
+        return;
+    }
+
+    if (!s_swlfo_active) {
+        s_swlfo_active = true;
+        s_swlfo_phase  = 0.0f;
+    }
+    s_swlfo_targets = lfo->targets;
+
+    float ph = s_swlfo_phase +
+               arp_swlfo_hz(lfo->rate, sequencer_core_get_bpm()) * 0.05f;
+    if (ph >= 1.0f) {
+        ph -= 1.0f;
+        if (lfo->wave == LFO_WAVE_RANDOM) s_swlfo_rnd = lfo_next_rand();
+    }
+    s_swlfo_phase = ph;
+
+    float val = arp_swlfo_eval(lfo->wave, ph);
+    float d   = (float)lfo->depth / 100.0f;
+
+    amy_event *e = amy_helpers_event_begin();
+    e->synth = sequencer_core_arp_synth();
+    if (LFO_HAS_TGT(lfo, LFO_TARGET_FILTER)) {
+        float base = (s_arp.vp.filter.enabled && s_arp.vp.filter.cutoff_hz > 0.0f)
+                     ? s_arp.vp.filter.cutoff_hz : 1000.0f;
+        e->filter_freq_coefs[COEF_CONST] =
+            base * powf(2.0f, voice_lfo_filter_octaves(lfo) * val);
+    }
+    if (LFO_HAS_TGT(lfo, LFO_TARGET_AMP))
+        e->amp_coefs[COEF_CONST] = 1.0f - d * (0.5f - 0.5f * val);
+    if (LFO_HAS_TGT(lfo, LFO_TARGET_PITCH))
+        e->freq_coefs[COEF_CONST] = powf(2.0f, d * val);
+    if (LFO_HAS_TGT(lfo, LFO_TARGET_PAN))
+        e->pan_coefs[COEF_CONST] = 0.5f + d * 0.5f * val;
+    /* SCAN needs a wavetable voice - WAVE mode / native only. */
+    amy_helpers_event_send(e);
+}
+
 void arp_core_service(void)
 {
+    /* The software LFO runs every frame (20 Hz), independent of the dirty
+     * flag - it is a modulator, not a re-emit. */
+    arp_swlfo_service();
     if (!s_arp_dirty) return;
     s_arp_dirty = false;
     arp_core_refresh();

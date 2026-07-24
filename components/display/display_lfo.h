@@ -16,6 +16,7 @@ enum {
     LFO_FLD_WAVE = LFO_TARGET_COUNT,
     LFO_FLD_RATE,
     LFO_FLD_DEPTH,
+    LFO_FLD_FLT_OCT,          /* FILTER swing in +/-octaves (quarter steps)   */
     LFO_FLD_WOB_RATE,         /* WOBBLE (second-order LFO) rate               */
     LFO_FLD_WOB_DEPTH,        /* WOBBLE amount in dB of swing, OFF = off      */
     LFO_FLD_WOB_MODE,         /* WOBBLE reach: depth only vs depth + rate     */

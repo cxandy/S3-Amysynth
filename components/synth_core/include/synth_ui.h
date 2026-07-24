@@ -71,6 +71,8 @@ void synth_ui_arp_handle_encoder(long delta);
 void synth_ui_arp_handle_button(void);
 /* Cycle the arp's own patch (hold+turn gesture on the arp screen). */
 void synth_ui_arp_cycle_patch(int delta);
+/* Live-play slot patch (Wireless menu page); defined under CONFIG_SYNTH_WIRELESS. */
+void synth_ui_cycle_live_patch(int delta);
 
 /* ── Drone screen ────────────────────────────────────────────────────────
  * Standalone "stutter house drone" synth (custompatches/drone_core). Active

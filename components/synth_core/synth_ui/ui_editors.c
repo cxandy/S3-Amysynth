@@ -1643,6 +1643,16 @@ bool synth_ui_lfo_handle_encoder(long delta)
             if (d > 0) l->depth = (l->depth < 95) ? l->depth + 5 : 100;
             else       l->depth = (l->depth >  5) ? l->depth - 5 : 0;
             break;
+        case LFO_FLD_FLT_OCT: {
+            /* Quarter-octave steps. A legacy (sentinel) value materializes at
+             * its current effective swing first, so the initial click nudges
+             * the sound instead of jumping it. */
+            int q = l->flt_oct_q ? (int)l->flt_oct_q
+                                 : (int)(((unsigned)l->depth * 12u + 50u) / 100u);
+            q = SEQ_CLAMP_INT(q + d, 1, (int)VOICE_LFO_FLT_OCT_Q_MAX);
+            l->flt_oct_q = (uint8_t)q;
+            break;
+        }
         case LFO_FLD_WOB_RATE:
             l->wob_rate = (uint8_t)((l->wob_rate + LFO_RATE_COUNT + d) % LFO_RATE_COUNT);
             break;

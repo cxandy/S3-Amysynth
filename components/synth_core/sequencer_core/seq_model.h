@@ -164,6 +164,14 @@ typedef struct {
                               swing only, leaving the LFO rate steady. Phrased
                               as the opt-in restriction so zero-init and files
                               written before the toggle keep their sound.     */
+    uint8_t flt_oct_q;     /* FILTER-target swing in quarter-octaves (1..16 =
+                              +/-0.25..4.0 oct), independent of the shared
+                              depth % - octaves are what the ear (and AMY's
+                              log2 filter rail) actually work in. 0 = legacy
+                              sentinel: derive depth% x VOICE_LFO_DEPTH_FILTER
+                              so zero-init structs and files written before
+                              this field keep their sound. Never read raw -
+                              resolve via voice_lfo_filter_octaves().         */
 } seq_lfo_t;
 
 /* Target-set helpers. The single mod-source oscillator can feed any subset of

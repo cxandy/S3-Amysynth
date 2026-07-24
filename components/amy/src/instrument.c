@@ -38,6 +38,11 @@ struct voice_fifo *voice_fifo_init(int size, const char *name) {
         return NULL;
     }
     struct voice_fifo *result = (struct voice_fifo *)malloc_caps(sizeof(struct voice_fifo), amy_global.config.ram_caps_synth);
+    /* LOCAL EDIT (S3-Amysynth): OOM guard, see instrument_init below. */
+    if (result == NULL) {
+        fprintf(stderr, "init_voice_fifo: out of memory\n");
+        return NULL;
+    }
     result->head = 0;
     result->tail = 0;
     result->length = MAX_VOICES_PER_INSTRUMENT + 1;  // One more than max size.  fixed in this implementation.
@@ -150,6 +155,14 @@ void _instrument_reset_forgotten_pool(struct instrument_info *instrument) {
 
 struct instrument_info *instrument_init(int id, int num_voices, uint16_t* amy_voices, uint16_t patch_number, uint16_t oscs_per_voice, uint8_t bus, uint32_t flags) {
     struct instrument_info *instrument = (struct instrument_info *)malloc_caps(sizeof(struct instrument_info), amy_global.config.ram_caps_synth);
+    /* LOCAL EDIT (S3-Amysynth): unchecked malloc was a StoreProhibited under
+     * internal-heap OOM (alloc_osc bug family). NULL is already "synth not
+     * defined" to every caller (instrument_number_exists). Upstream PR
+     * candidate alongside the alloc_osc guards. */
+    if (instrument == NULL) {
+        fprintf(stderr, "instrument_init: out of memory for synth %d\n", id);
+        return NULL;
+    }
     instrument->id = id;
     if (num_voices <= 0 || num_voices > MAX_VOICES_PER_INSTRUMENT) {
         fprintf(stderr, "num_voices %d not within 1 .. MAX_VOICES_PER_INSTRUMENT %d\n", num_voices, MAX_VOICES_PER_INSTRUMENT);
@@ -167,6 +180,14 @@ struct instrument_info *instrument_init(int id, int num_voices, uint16_t* amy_vo
     instrument->grab_midi_notes = true;
     instrument->released_voices = voice_fifo_init(num_voices, "released");
     instrument->active_voices = voice_fifo_init(num_voices, "active");
+    /* LOCAL EDIT (S3-Amysynth): fifo alloc failed under OOM - unwind and
+     * report "synth not defined" instead of crashing in voice_fifo_put. */
+    if (instrument->released_voices == NULL || instrument->active_voices == NULL) {
+        voice_fifo_free(instrument->active_voices);
+        voice_fifo_free(instrument->released_voices);
+        free(instrument);
+        return NULL;
+    }
     for (uint8_t voice = 0; voice < num_voices; ++voice) {
         instrument->amy_voices[voice] = amy_voices[voice];
         voice_fifo_put(instrument->released_voices, voice);

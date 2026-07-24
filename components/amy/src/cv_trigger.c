@@ -190,6 +190,12 @@ void set_cv_from_osc(int cv_channel, int osc) {
     osc_for_cv[cv_channel] = osc;
     if (osc < 0)  return;  // syntax to unset cv_from_osc.
     ensure_osc_allocd(osc, NULL);
+    // LOCAL EDIT (S3-Amysynth): OOM guard - alloc failed, leave the mapping
+    // unset rather than crash. See AMY-EDITS.md.
+    if (synth[osc] == NULL) {
+        osc_for_cv[cv_channel] = -1;
+        return;
+    }
     synth[osc]->status = SYNTH_IS_MOD_SOURCE;
     // No longer record this osc in note_off state.
     AMY_UNSET(synth[osc]->note_off_clock);

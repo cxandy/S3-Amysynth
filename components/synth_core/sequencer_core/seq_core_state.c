@@ -66,6 +66,8 @@ void sequencer_core_init(void)
     memset(s_layers, 0, sizeof(s_layers));
     memset(s_cached_step, 0, MAX_LAYERS * sizeof(s_cached_step[0]));
     memset(s_track_source_note, 0, MAX_LAYERS * SEQ_TRACKS * sizeof(s_track_source_note[0][0]));
+    memset(s_track_prev_plain, 0, MAX_LAYERS * SEQ_TRACKS * sizeof(s_track_prev_plain[0][0]));
+    memset(s_voices_applied, 0, MAX_LAYERS * SEQ_TRACKS * sizeof(s_voices_applied[0][0]));
     s_playing = true;
     s_bpm     = SEQ_DEFAULT_BPM;
     s_melodic_patch = SEQ_MEL_PATCH;
@@ -133,6 +135,7 @@ uint8_t sequencer_core_add_layer(seq_layer_type_t type, uint8_t num_steps)
          * body, mid snare, high hat tick, mid-high perc; stays user-editable. */
         for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
             s_track_source_note[idx][t] = SEQ_DRUM_DEFAULT_NOTE[t];
+            s_track_prev_plain[idx][t]  = SEQ_DRUM_DEFAULT_NOTE[t];
             layer->track_base_note[t] = SEQ_DRUM_DEFAULT_NOTE[t];
             for (uint8_t s = 0; s < SEQ_MAX_STEPS; s++) {
                 layer->step_note[t][s] = SEQ_DRUM_DEFAULT_NOTE[t];
@@ -162,6 +165,7 @@ uint8_t sequencer_core_add_layer(seq_layer_type_t type, uint8_t num_steps)
         static const uint8_t mel_notes[SEQ_TRACKS] = {60, 64, 67, 71};
         for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
             s_track_source_note[idx][t] = mel_notes[t];
+            s_track_prev_plain[idx][t]  = mel_notes[t];
             layer->track_base_note[t] = mel_notes[t];
             for (uint8_t s = 0; s < SEQ_MAX_STEPS; s++) {
                 layer->step_note[t][s] = mel_notes[t];
@@ -246,6 +250,12 @@ bool sequencer_core_delete_layer(uint8_t layer_idx)
         memmove(&s_track_source_note[layer_idx],
                 &s_track_source_note[layer_idx + 1],
                 tail * sizeof(s_track_source_note[0]));
+        memmove(&s_track_prev_plain[layer_idx],
+                &s_track_prev_plain[layer_idx + 1],
+                tail * sizeof(s_track_prev_plain[0]));
+        memmove(&s_voices_applied[layer_idx],
+                &s_voices_applied[layer_idx + 1],
+                tail * sizeof(s_voices_applied[0]));
         memmove(&s_lfo_phase[layer_idx],
                 &s_lfo_phase[layer_idx + 1],
                 tail * sizeof(s_lfo_phase[0]));

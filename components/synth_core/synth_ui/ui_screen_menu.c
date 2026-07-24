@@ -44,12 +44,14 @@ typedef enum {
     MI_QUANT_ENABLED,
     MI_QUANT_SCALE,
     MI_QUANT_ROOT,
+    MI_ARP_QUANT,         /* arp scale source: own scale vs global quantizer */
     MI_ARP_ENABLED,
     MI_DRONE_ENABLED,     /* normal drone (drone_std_core) */
     MI_STUTTER_ENABLED,   /* stutter drone (drone_core)    */
     MI_DRUM_ENGINE,
     MI_ADD_LAYER,
     MI_REMOVE_LAYER,
+    MI_CHORDS,
     MI_FX_MENU,
 #if CONFIG_SYNTH_PROJECT_STORE
     MI_PROJECTS,
@@ -73,6 +75,8 @@ static uint8_t s_fx_cursor = 0;
 #if CONFIG_SYNTH_PROJECT_STORE
 static bool    s_projects_page = false;
 #endif
+/* Chord-preset editor page (item model in ui_screen_chords.c). */
+static bool    s_chords_page = false;
 
 /* Title for the menu overlay's header bar (drawn by ui_view_resolve.c). */
 const char *menu_page_title(void)
@@ -91,6 +95,7 @@ const char *menu_page_title(void)
 #if CONFIG_SYNTH_PROJECT_STORE
     if (s_projects_page) return "PROJECTS";
 #endif
+    if (s_chords_page) return chords_menu_title();
     return "MENU";
 }
 
@@ -120,6 +125,13 @@ void menu_build_view(menu_view_t *out)
         return;
     }
 #endif
+    if (s_chords_page) {
+        out->items   = chords_menu_build_items();
+        out->count   = chords_menu_item_count();
+        out->cursor  = seq_state.menu_cursor;
+        out->editing = seq_state.menu_editing;
+        return;
+    }
 
     for (int i = 0; i < MI_COUNT; i++) {
         s_menu_items[i].value[0] = '\0';
@@ -156,6 +168,12 @@ void menu_build_view(menu_view_t *out)
     snprintf(s_menu_items[MI_QUANT_ROOT].value, MENU_VALUE_LEN, "%s",
              chord_root_name(sequencer_core_get_quantizer_root_note() % 12));
 
+    /* GLOB = arp snaps to the Quant/Scale/Root above (chromatic while Quant is
+     * OFF; progression chords still win). OWN = the arp's private scale. */
+    snprintf(s_menu_items[MI_ARP_QUANT].label, MENU_LABEL_LEN, "ArpQ");
+    snprintf(s_menu_items[MI_ARP_QUANT].value, MENU_VALUE_LEN, "%s",
+             arp_get_follow_quant() ? "GLOB" : "OWN");
+
     snprintf(s_menu_items[MI_ARP_ENABLED].label, MENU_LABEL_LEN, "Arp");
     snprintf(s_menu_items[MI_ARP_ENABLED].value, MENU_VALUE_LEN, "%s",
              arp_get_enabled() ? "ON" : "OFF");
@@ -186,6 +204,11 @@ void menu_build_view(menu_view_t *out)
         else
             snprintf(s_menu_items[MI_REMOVE_LAYER].value, MENU_VALUE_LEN, "--");
     }
+
+    /* Chord presets live on their own page (ui_screen_chords.c). */
+    snprintf(s_menu_items[MI_CHORDS].label, MENU_LABEL_LEN, "Chords");
+    snprintf(s_menu_items[MI_CHORDS].value, MENU_VALUE_LEN, "%u/%u",
+             (unsigned)seq_chords_defined_count(), (unsigned)SEQ_CHORD_SLOTS);
 
     /* Global FX live on their own page (ui_screen_fxmenu.c). */
     snprintf(s_menu_items[MI_FX_MENU].label, MENU_LABEL_LEN, "FX");
@@ -255,6 +278,7 @@ static bool menu_item_is_value(menu_item_id_t id)
         case MI_QUANT_ENABLED:
         case MI_QUANT_SCALE:
         case MI_QUANT_ROOT:
+        case MI_ARP_QUANT:
         case MI_ARP_ENABLED:
         case MI_DRONE_ENABLED:
         case MI_STUTTER_ENABLED:
@@ -295,6 +319,9 @@ static void menu_edit_value(menu_item_id_t id, int delta)
             sequencer_core_set_quantizer_root_note((uint8_t)(60 + pc));
             break;
         }
+        case MI_ARP_QUANT:
+            if (dir != 0) arp_set_follow_quant(!arp_get_follow_quant());
+            break;
         case MI_ARP_ENABLED:
             if (dir != 0) arp_set_enabled(!arp_get_enabled());
             break;
@@ -344,6 +371,7 @@ void synth_ui_menu_toggle(void)
 #if CONFIG_SYNTH_PROJECT_STORE
         s_projects_page = false;
 #endif
+        s_chords_page = false;
         if (seq_state.menu_cursor >= MI_COUNT) seq_state.menu_cursor = 0;
     }
     s_force_redraw = true;
@@ -398,6 +426,8 @@ bool synth_ui_menu_handle_encoder(long delta)
         } else if (s_projects_page) {
             projects_menu_edit_value(seq_state.menu_cursor, (int)delta);
 #endif
+        } else if (s_chords_page) {
+            chords_menu_edit_value(seq_state.menu_cursor, (int)delta);
         } else {
             menu_edit_value((menu_item_id_t)seq_state.menu_cursor, (int)delta);
         }
@@ -407,6 +437,7 @@ bool synth_ui_menu_handle_encoder(long delta)
 #if CONFIG_SYNTH_PROJECT_STORE
                 s_projects_page ? (int)projects_menu_item_count() :
 #endif
+                s_chords_page ? (int)chords_menu_item_count() :
                 (int)MI_COUNT;
         int c = (int)seq_state.menu_cursor + (int)delta;
         /* clamp (no wrap) so the list feels bounded */
@@ -471,6 +502,19 @@ bool synth_ui_menu_handle_button(void)
     }
 #endif
 
+    if (s_chords_page) {
+        uint8_t idx = seq_state.menu_cursor;
+        if (chords_menu_item_is_back(idx)) {
+            s_chords_page = false;
+            seq_state.menu_cursor  = s_main_cursor;
+            seq_state.menu_editing = false;
+        } else {
+            seq_state.menu_editing = chords_menu_handle_click(idx);
+        }
+        s_force_redraw = true;
+        return true;
+    }
+
     menu_item_id_t id = (menu_item_id_t)seq_state.menu_cursor;
 
     if (menu_item_is_value(id)) {
@@ -518,6 +562,13 @@ bool synth_ui_menu_handle_button(void)
                 s_to_layer = seq_state.active_layer_idx;
                 synth_ui_request_delete_to_layer();
                 seq_state.menu_open = false;
+                break;
+            case MI_CHORDS:
+                /* Dive into the chord-preset page; the menu stays open. */
+                s_main_cursor = seq_state.menu_cursor;
+                s_chords_page = true;
+                seq_state.menu_cursor = 0;
+                chords_menu_reset();
                 break;
             case MI_FX_MENU:
                 /* Dive into the global-FX page; the menu stays open. */

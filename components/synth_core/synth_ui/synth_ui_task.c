@@ -445,15 +445,30 @@ void synth_ui_set_bpm(uint16_t bpm)
 
 /* Transposes the selected track's note by `delta` semitones. We read/write the
  * *source* note (the user's raw choice) so repeated nudges accumulate cleanly;
- * the core may quantize it, so we read back the resolved note for display. */
+ * the core may quantize it, so we read back the resolved note for display.
+ * Melodic tracks scroll a virtual list that wraps at both ends: C1..C7, then
+ * the defined chord presets (CH1..CHn) past the top (seq_chords_selector_step)
+ * — with no chords defined that is just today's range minus the saturation.
+ * Drum tracks keep the plain clamped nudge. */
 void synth_ui_adjust_track_note(int delta)
 {
     uint8_t li    = seq_state.active_layer_idx;
     uint8_t track = seq_state.selected_track;
     uint8_t note  = sequencer_core_get_track_source_note(li, track);
-    uint8_t new_note = SEQ_CLAMP_U8(note + delta, 0, 127);
-    sequencer_core_set_track_midi_note(li, track, new_note);
-    /* Keep display in sync with resolved note after core clamp/quantize. */
+
+    if (li < seq_state.num_layers &&
+        seq_state.layers[li].type == SEQ_LAYER_MELODIC) {
+        int dir = (delta > 0) ? 1 : -1;
+        for (int k = (delta > 0 ? delta : -delta); k > 0; k--) {
+            note = seq_chords_selector_step(note, dir);
+        }
+        sequencer_core_set_track_midi_note(li, track, note);
+    } else {
+        uint8_t new_note = SEQ_CLAMP_U8(note + delta, 0, 127);
+        sequencer_core_set_track_midi_note(li, track, new_note);
+    }
+    /* Keep display in sync with resolved note after core clamp/quantize
+     * (a chord assignment reads back as its CHn sentinel). */
     seq_state.layers[li].track_base_note[track] =
         sequencer_core_get_track_midi_note(li, track);
 }

@@ -53,15 +53,21 @@ static volatile bool sequencer_external_clock = false;
  * Instead we keep a compact list of only the tags that currently have deltas,
  * so the tick is O(active events) regardless of tag magnitude.
  * s_active_tags is the dense list; s_tag_slot maps tag -> its index (-1 = inactive)
- * for O(1) swap-removal. Both are guarded by SEQ_LOCK. See AMY-EDITS.md. */
-static int32_t *s_active_tags = NULL;
-static int32_t *s_tag_slot    = NULL;
+ * for O(1) swap-removal. Both are guarded by SEQ_LOCK. See AMY-EDITS.md.
+ *
+ * int16_t: both arrays hold tag numbers / list indices < max_sequences, and
+ * these arrays live in scarce internal RAM (ram_caps_synth) sized per tag —
+ * int16 halves their cost (2 x 2 B/tag instead of 2 x 4 B). sequencer_init
+ * clamps max_sequences below INT16_MAX so the -1 sentinel and the values
+ * always fit. */
+static int16_t *s_active_tags = NULL;
+static int16_t *s_tag_slot    = NULL;
 static int32_t  s_num_active  = 0;
 
 static inline void seq_active_add(int32_t tag) {
     if (s_tag_slot == NULL || s_tag_slot[tag] >= 0) return;
-    s_tag_slot[tag] = s_num_active;
-    s_active_tags[s_num_active++] = tag;
+    s_tag_slot[tag] = (int16_t)s_num_active;
+    s_active_tags[s_num_active++] = (int16_t)tag;
 }
 
 static inline void seq_active_remove(int32_t tag) {
@@ -69,9 +75,9 @@ static inline void seq_active_remove(int32_t tag) {
     int32_t pos = s_tag_slot[tag];
     if (pos < 0) return;
     int32_t last = --s_num_active;
-    int32_t moved = s_active_tags[last];
+    int16_t moved = s_active_tags[last];
     s_active_tags[pos] = moved;
-    s_tag_slot[moved]  = pos;
+    s_tag_slot[moved]  = (int16_t)pos;
     s_tag_slot[tag]    = -1;
 }
 
@@ -80,13 +86,28 @@ void _sequencer_start();
 void _sequencer_stop();
 
 void sequencer_init(int max_sequencer_tags) {
+    /* LOCAL EDIT (S3-Amysynth): the active-tag index stores tags as int16_t
+     * (see above); clamp so tag values and the -1 sentinel always fit. */
+    if (max_sequencer_tags > 32766) max_sequencer_tags = 32766;
     max_sequences = max_sequencer_tags;
     sequences = (struct sequence_info_t *)malloc_caps(max_sequences * sizeof(struct sequence_info_t),
                                                       amy_global.config.ram_caps_synth);
-    s_active_tags = (int32_t *)malloc_caps(max_sequences * sizeof(int32_t),
+    s_active_tags = (int16_t *)malloc_caps(max_sequences * sizeof(int16_t),
                                            amy_global.config.ram_caps_synth);
-    s_tag_slot    = (int32_t *)malloc_caps(max_sequences * sizeof(int32_t),
+    s_tag_slot    = (int16_t *)malloc_caps(max_sequences * sizeof(int16_t),
                                            amy_global.config.ram_caps_synth);
+    /* LOCAL EDIT (S3-Amysynth): boot-time allocs, but unchecked NULLs here
+     * would crash in the init loop below (delta-pool OOM bug family). On any
+     * failure disable the sequencer wholesale: with max_sequences = 0,
+     * sequencer_add_event rejects every tag and the tick scans nothing. */
+    if (sequences == NULL || s_active_tags == NULL || s_tag_slot == NULL) {
+        fprintf(stderr, "sequencer_init: OOM (%d tags) - sequencer disabled\n",
+                max_sequencer_tags);
+        if (sequences)     { free(sequences);     sequences = NULL; }
+        if (s_active_tags) { free(s_active_tags); s_active_tags = NULL; }
+        if (s_tag_slot)    { free(s_tag_slot);    s_tag_slot = NULL; }
+        max_sequences = 0;
+    }
     s_num_active  = 0;
     for (int32_t i = 0; i < max_sequences; ++i) {
         sequences[i].deltas = NULL;
@@ -239,6 +260,8 @@ uint8_t sequencer_add_event(amy_event *e) {
     // if the tag already exists - if there's tick/period, overwrite, if there's no tick / period, we should remove the entry
     //fprintf(stderr, "sequencer_add_event: e->instrument %d e->note %.0f e->vel %.2f tick %d period %d tag %d\n", e->instrument, e->midi_note, e->velocity, e->sequence[SEQUENCE_TICK], e->sequence[SEQUENCE_PERIOD], e->sequence[SEQUENCE_TAG]);
     int32_t tag = e->sequence[SEQUENCE_TAG];
+    /* LOCAL EDIT (S3-Amysynth): sequencer disabled by init-time OOM. */
+    if (sequences == NULL) return 0;
     if (tag > max_sequences) {
         fprintf(stderr, "sequencer tag %" PRIi32" (with tick %" PRIu32", period %" PRIu32") is greater than or eq max_sequences %" PRIi32"\n",
                 tag, e->sequence[SEQUENCE_TICK], e->sequence[SEQUENCE_PERIOD], max_sequences);

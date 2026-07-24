@@ -91,6 +91,9 @@ typedef struct {
     int16_t    slots[ARP_MAX_SLOTS];  /* raw chromatic MIDI, -1 = empty */
     uint8_t    scale_index;
     uint8_t    root_note;
+    bool       follow_quant;  /* snap to the global scale quantizer instead of
+                                 scale_index/root_note above (see arp_snap);
+                                 default OFF via the init memset */
     uint16_t     patch;
     arp_source_t source;         /* WAVE or PATCH (default PATCH)               */
     uint16_t     wave;           /* AMY waveform used when source==ARP_SRC_WAVE */
@@ -153,11 +156,25 @@ static uint8_t arp_collect_down(uint8_t out[ARP_MAX_SLOTS])
     return arp_collect_up(out);
 }
 
-/* Snap a chromatic note to the arp's own scale/root (independent quantizer). */
+/* Snap a chromatic note per the arp's quantize mode. Default: the arp's own
+ * scale/root (independent quantizer). With follow_quant ON the global scale
+ * quantizer is used instead, with the same precedence as melodic layers: an
+ * active chord progression still wins (it drives the arp's own root/scale
+ * while it owns them), and a disabled global quantizer means no snapping at
+ * all (chromatic). */
 static uint8_t arp_snap(uint8_t chromatic)
 {
-    const musical_scale_t *scale = quantizer_get_scale(s_arp.scale_index);
-    uint8_t snapped = quantizer_snap_midi_note(chromatic, s_arp.root_note, scale);
+    uint8_t root      = s_arp.root_note;
+    uint8_t scale_idx = s_arp.scale_index;
+    if (s_arp.follow_quant && !sequencer_core_progression_arp_owned()) {
+        if (!sequencer_core_get_quantizer_enabled()) {
+            return sequencer_core_clamp_melodic_note((int32_t)chromatic);
+        }
+        root      = sequencer_core_get_quantizer_root_note();
+        scale_idx = sequencer_core_get_quantizer_scale();
+    }
+    const musical_scale_t *scale = quantizer_get_scale(scale_idx);
+    uint8_t snapped = quantizer_snap_midi_note(chromatic, root, scale);
     return sequencer_core_clamp_melodic_note((int32_t)snapped);
 }
 
@@ -557,6 +574,13 @@ void arp_set_root_note(uint8_t root_note)
     arp_mark_dirty();
 }
 
+void arp_set_follow_quant(bool follow)
+{
+    if (s_arp.follow_quant == follow) return;
+    s_arp.follow_quant = follow;
+    arp_mark_dirty();
+}
+
 void arp_set_chord(uint8_t root_midi, uint8_t scale_index)
 {
     arp_set_root_note(root_midi);
@@ -727,6 +751,14 @@ void arp_set_wave(uint16_t amy_wave)
     }
 }
 
+/* Public dirty-mark: lets the transport request a coalesced re-emit on resume
+ * (note emission is gated on the sequencer playing, so nothing re-armed the
+ * schedule while paused). Same flag the internal setters use. */
+void arp_core_mark_dirty(void)
+{
+    arp_mark_dirty();
+}
+
 /* Perform a pending re-emit, if any. Called once per UI frame so rapid edits
  * coalesce into a single refresh. Cheap no-op when nothing changed. */
 void arp_core_service(void)
@@ -745,6 +777,7 @@ arp_rate_t   arp_get_rate(void)       { return s_arp.rate; }
 uint8_t      arp_get_gate_pct(void)   { return s_arp.gate_pct; }
 uint8_t      arp_get_scale(void)      { return s_arp.scale_index; }
 uint8_t      arp_get_root_note(void)  { return s_arp.root_note; }
+bool         arp_get_follow_quant(void) { return s_arp.follow_quant; }
 uint16_t     arp_get_patch(void)      { return s_arp.patch; }
 arp_source_t arp_get_source(void)     { return s_arp.source; }
 uint16_t     arp_get_wave(void)       { return s_arp.wave; }

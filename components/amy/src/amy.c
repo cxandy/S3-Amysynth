@@ -309,8 +309,11 @@ void alloc_chorus_delay_lines(uint8_t bus) {
     // LOCAL EDIT (S3-Amysynth): amy_render() PIE-clears delay_mod each block, so it is
     // one of the buffers a PIE kernel walks - 16-byte aligned like the others.
     amy_global.bus[bus]->chorus.delay_mod = (SAMPLE *)malloc_caps_block(sizeof(SAMPLE) * AMY_BLOCK_SIZE, amy_global.config.ram_caps_delay);
-    bool success = true;
-    for(int c = 0; c < AMY_NCHANS; ++c) {
+    // LOCAL EDIT (S3-Amysynth): OOM guard - a NULL delay_mod counts as failure
+    // too, so a partial chorus alloc is torn down instead of leaving a NULL
+    // buffer for the render loop's block clear. See AMY-EDITS.md.
+    bool success = (amy_global.bus[bus]->chorus.delay_mod != NULL);
+    for(int c = 0; success && c < AMY_NCHANS; ++c) {
         delay_line_t *delay_line = new_delay_line(DELAY_LINE_LEN, DELAY_LINE_LEN / 2, amy_global.config.ram_caps_delay);
         if (delay_line) {
             amy_global.bus[bus]->chorus.chorus_delay_lines[c] = delay_line;
@@ -337,6 +340,12 @@ void config_chorus(uint8_t bus, float level, uint16_t max_delay, float lfo_freq,
         if (amy_global.bus[bus]->chorus.chorus_delay_lines[0] == NULL) {
             alloc_chorus_delay_lines(bus);
         }
+        // LOCAL EDIT (S3-Amysynth): OOM guard - alloc can fail; leave the
+        // chorus off (mirrors config_reverb) instead of deref'ing NULL lines.
+        if (amy_global.bus[bus]->chorus.chorus_delay_lines[0] == NULL) {
+            amy_global.bus[bus]->chorus.level = 0;
+            return;
+        }
         // apply max_delay.
         for (int chan=0; chan<AMY_NCHANS; ++chan) {
             //chorus_delay_lines[chan]->max_delay = max_delay;
@@ -344,6 +353,12 @@ void config_chorus(uint8_t bus, float level, uint16_t max_delay, float lfo_freq,
         }
         // Configure the LFO osc.
         ensure_osc_allocd(CHORUS_MOD_SOURCE + bus, NULL);
+        // LOCAL EDIT (S3-Amysynth): OOM guard - LFO osc alloc failed, leave
+        // the chorus off.
+        if (synth[CHORUS_MOD_SOURCE + bus] == NULL) {
+            amy_global.bus[bus]->chorus.level = 0;
+            return;
+        }
         // if we're turning on for the first time, start the oscillator.
         if (synth[CHORUS_MOD_SOURCE + bus]->status == SYNTH_OFF) {  //chorus.level == 0) {
             // Setup chorus oscillator.
@@ -936,6 +951,18 @@ void alloc_osc(int osc, uint8_t *max_num_breakpoints) {
     uint8_t *ptr = malloc_caps(sizeof(struct synthinfo) + sizeof(struct mod_synthinfo)
                                + total_num_breakpoints * (sizeof(float) + sizeof(uint32_t)),
                                amy_global.config.ram_caps_events);
+    /* LOCAL EDIT (S3-Amysynth): malloc_caps returns NULL on exhaustion; the
+     * unchecked write below was a StoreProhibited on internal-heap OOM (same
+     * bug family as the delta-pool and reverb OOM crashes). Leave the osc
+     * unallocated: reset_osc() and the render loop already tolerate a NULL
+     * synth[osc], and play_delta()/the mod/chain loop guards skip it, so the
+     * voice goes silent instead of crashing. See AMY-EDITS.md. */
+    if (ptr == NULL) {
+        fprintf(stderr, "alloc_osc: OOM allocating osc %d - osc left silent\n", osc);
+        synth[osc] = NULL;
+        msynth[osc] = NULL;
+        return;
+    }
     synth[osc] = (struct synthinfo *)ptr;
     msynth[osc] = (struct mod_synthinfo *)(ptr + sizeof(struct synthinfo));
     // Point to the breakpoint sets.
@@ -1245,6 +1272,10 @@ int chained_osc_would_cause_loop(uint16_t osc, uint16_t chained_osc) {
                     chained_osc, osc);
             return true;
         }
+        /* LOCAL EDIT (S3-Amysynth): alloc can fail under OOM; refusing the
+         * link (as if it looped) keeps a NULL osc out of the chain walk that
+         * MIDI_NOTE propagation and render both follow. */
+        if (synth[next_osc] == NULL) return true;
         next_osc = synth[next_osc]->chained_osc;
     } while(AMY_IS_SET(next_osc));
     return false;
@@ -1265,6 +1296,10 @@ int mod_osc_would_cause_loop(uint16_t osc, uint16_t mod_osc) {
                     mod_osc, osc);
             return true;
         }
+        /* LOCAL EDIT (S3-Amysynth): alloc can fail under OOM; refuse the
+         * mod link so hold_and_modify never recurses into a NULL osc (the
+         * caller's else-branch unsets mod_source). */
+        if (synth[next_osc] == NULL) return true;
         next_osc = synth[next_osc]->mod_source;
     } while(AMY_IS_SET(next_osc));
     return false;
@@ -1291,7 +1326,17 @@ void play_delta(struct delta *d) {
     //uint8_t trig=0;
     // todo: delta-only side effect, remove
 
-    if (d->param != RESET_OSC)  ensure_osc_allocd(d->osc, NULL);
+    if (d->param != RESET_OSC) {
+        ensure_osc_allocd(d->osc, NULL);
+        /* LOCAL EDIT (S3-Amysynth): the alloc can fail under internal-heap
+         * OOM (see alloc_osc). Every branch below dereferences
+         * synth[d->osc]; drop the delta instead of crashing. RESET_OSC is
+         * exempt above and reset_osc() itself tolerates NULL. */
+        if (synth[d->osc] == NULL) {
+            AMY_PROFILE_STOP(PLAY_DELTA)
+            return;
+        }
+    }
 
     if(d->param == MIDI_NOTE) {
         // Midi note and Velocity are propagated to chained_osc.
@@ -1350,6 +1395,13 @@ void play_delta(struct delta *d) {
             max_num_breakpoints[bp_set] = bp_index + 1;
             // realloc rounds up in blocks of DEFAULT_NUM_BREAKPOINTS (8).
             ensure_osc_allocd(d->osc, max_num_breakpoints);
+            /* LOCAL EDIT (S3-Amysynth): the breakpoint realloc frees the old
+             * osc before allocating the bigger one, so the entry guard's
+             * non-NULL promise can be invalidated right here under OOM. */
+            if (synth[d->osc] == NULL) {
+                AMY_PROFILE_STOP(PLAY_DELTA)
+                return;
+            }
         }
         if(pos % 2 == 0) {
             synth[d->osc]->breakpoint_times[bp_set][pos / 2] = d->data.i;
@@ -1441,9 +1493,15 @@ void play_delta(struct delta *d) {
         if(AMY_IS_SET(synth[d->osc]->algo_source[which_source])) {
             int osc = synth[d->osc]->algo_source[which_source];
             ensure_osc_allocd(osc, NULL);
-            synth[osc]->status = SYNTH_IS_ALGO_SOURCE;
-            // Configure the amp envelope appropriately, just once when named as an algo_source.
-            synth[osc]->eg_type[0] = ENVELOPE_DX7;
+            /* LOCAL EDIT (S3-Amysynth): alloc can fail under OOM; unset the
+             * source so render_algo never walks into a NULL osc. */
+            if (synth[osc] == NULL) {
+                AMY_UNSET(synth[d->osc]->algo_source[which_source]);
+            } else {
+                synth[osc]->status = SYNTH_IS_ALGO_SOURCE;
+                // Configure the amp envelope appropriately, just once when named as an algo_source.
+                synth[osc]->eg_type[0] = ENVELOPE_DX7;
+            }
         }
     }
     // for global changes, just make the change, no need to update the per-osc synth
@@ -1885,6 +1943,9 @@ AMY_IRAM_ATTR void amy_render(uint16_t start, uint16_t end, uint8_t core) {
     if(AMY_HAS_CHORUS && core == 0) {
         for(int bus = 0; bus <= amy_global.highest_bus; ++bus) {
             ensure_osc_allocd(CHORUS_MOD_SOURCE + bus, NULL);
+            // LOCAL EDIT (S3-Amysynth): OOM guard - skip this bus's chorus
+            // LFO if the osc could not be allocated.
+            if (synth[CHORUS_MOD_SOURCE + bus] == NULL) continue;
             hold_and_modify(CHORUS_MOD_SOURCE + bus);
             if(amy_global.bus[bus]->chorus.level!=0)  {
                 // LOCAL EDIT (S3-Amysynth): PIE-accelerated block clear (see amy_simd.h).

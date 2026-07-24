@@ -40,6 +40,7 @@ static const char *TAG = "project_snapshot";
 #define TAG_ARP  0x20505241u
 #define TAG_DRON 0x4E4F5244u
 #define TAG_PROG 0x474F5250u
+#define TAG_CHRD 0x44524843u
 
 #define PROJECT_SER_BUF_CAP (64 * 1024)
 
@@ -437,6 +438,24 @@ static bool parse_layer(tlv_reader_t *b, seq_layer_t *L, uint8_t ver)
         }
     }
 
+    /* Note fields hold either a playable pitch or (melodic only) a chord
+     * preset sentinel (seq_chords.h). Anything else — a corrupt value or a
+     * sentinel family this build doesn't know — clamps into the playable
+     * range so it can never leak into pitch math downstream. */
+    for (int t = 0; t < SEQ_TRACKS; t++) {
+        bool mel = L->type == SEQ_LAYER_MELODIC;
+        if (!(mel && SEQ_NOTE_IS_CHORD(L->track_base_note[t]))) {
+            L->track_base_note[t] = SEQ_CLAMP_U8(L->track_base_note[t],
+                                                 SEQ_MEL_NOTE_MIN, SEQ_MEL_NOTE_MAX);
+        }
+        for (int s = 0; s < SEQ_MAX_STEPS; s++) {
+            if (!(mel && SEQ_NOTE_IS_CHORD(L->step_note[t][s]))) {
+                L->step_note[t][s] = SEQ_CLAMP_U8(L->step_note[t][s],
+                                                  SEQ_MEL_NOTE_MIN, SEQ_MEL_NOTE_MAX);
+            }
+        }
+    }
+
     /* v3: per-layer melodic NoteFX. Pre-v3 files predate the fields — default to
      * the legacy gate (glide off). Clamp to the live control ranges either way. */
     if (ver >= 3) {
@@ -475,6 +494,7 @@ typedef struct {
     uint8_t      gate_pct;
     uint8_t      scale;
     uint8_t      root;
+    bool         follow_quant;
     uint16_t     portamento_ms;
     float        amp_scale;
     int16_t      slots[ARP_MAX_SLOTS];
@@ -485,10 +505,11 @@ typedef struct {
 
 static void ser_arp(tlv_writer_t *w)
 {
-    size_t h = tlv_begin_section(w, TAG_ARP, 5);  /* v2: LFO target is a bitmask;
+    size_t h = tlv_begin_section(w, TAG_ARP, 6);  /* v2: LFO target is a bitmask;
                                                    * v3: LFO +wob_rate/+wob_depth;
                                                    * v4: LFO +wob_depth_only;
-                                                   * v5: filter +feedback (KS) */
+                                                   * v5: filter +feedback (KS);
+                                                   * v6: +follow_quant (appended) */
     tlv_put_u8(w, arp_get_enabled() ? 1 : 0);
     tlv_put_u8(w, (uint8_t)arp_get_source());
     tlv_put_u16(w, arp_get_wave());
@@ -506,6 +527,7 @@ static void ser_arp(tlv_writer_t *w)
     seq_env_t e2; arp_get_envelope2(&e2); ser_env(w, &e2);
     seq_filter_t f; arp_get_filter(&f);  ser_filter(w, &f);
     seq_lfo_t l; arp_get_lfo(&l);        ser_lfo(w, &l);
+    tlv_put_u8(w, arp_get_follow_quant() ? 1 : 0);   /* v6 */
     tlv_end_section(w, h);
 }
 
@@ -542,6 +564,14 @@ static bool parse_arp(tlv_reader_t *b, staged_arp_t *a, uint8_t ver)
     if (!de_env(b, &a->env2))      return false;
     if (!de_filter(b, &a->filter, ver >= 5)) return false;   /* ARP: feedback v5+ */
     if (!de_lfo(b, &a->lfo, ver, ver >= 3, ver >= 4))  return false;   /* ARP: wobble v3+, reach v4+ */
+    /* v6: follow the global scale quantizer. Pre-v6 files predate the option —
+     * default OFF (the arp's own scale), the only behavior that existed. */
+    if (ver >= 6) {
+        if (!tlv_get_u8(b, &v)) return false;
+        a->follow_quant = v != 0;
+    } else {
+        a->follow_quant = false;
+    }
     return true;
 }
 
@@ -557,6 +587,7 @@ static void apply_arp(const staged_arp_t *a)
     arp_set_gate_pct(a->gate_pct);
     arp_set_scale(a->scale);
     arp_set_root_note(a->root);
+    arp_set_follow_quant(a->follow_quant);
     arp_set_portamento_ms(a->portamento_ms);
     arp_set_amp_scale(a->amp_scale);
     for (int i = 0; i < ARP_MAX_SLOTS; i++) arp_set_slot((uint8_t)i, a->slots[i]);
@@ -758,6 +789,50 @@ static void apply_prog(const staged_prog_t *p)
     sequencer_core_progression_set_enabled(p->enabled);
 }
 
+/* ── CHRD section (chord presets, seq_chords.h) ──────────────────────────
+ * v1: u8 slot count, then per slot u8 tone count + SEQ_CHORD_MAX_NOTES note
+ * bytes (fixed width; a wider voicing bumps the version). Old firmware skips
+ * the unknown section cleanly — chords simply vanish there, and any chord
+ * sentinel in that file's LAYR notes gets range-clamped by its loader (plays
+ * a top-of-range note; nothing crashes). */
+
+static void ser_chrd(tlv_writer_t *w)
+{
+    size_t h = tlv_begin_section(w, TAG_CHRD, 1);
+    tlv_put_u8(w, SEQ_CHORD_SLOTS);
+    for (uint8_t s = 0; s < SEQ_CHORD_SLOTS; s++) {
+        seq_chord_t c;
+        if (!seq_chords_get(s, &c)) memset(&c, 0, sizeof c);
+        tlv_put_u8(w, c.count);
+        for (uint8_t i = 0; i < SEQ_CHORD_MAX_NOTES; i++) {
+            tlv_put_u8(w, c.notes[i]);
+        }
+    }
+    tlv_end_section(w, h);
+}
+
+static bool parse_chrd(tlv_reader_t *b, seq_chord_t slots[SEQ_CHORD_SLOTS])
+{
+    uint8_t nslots;
+    if (!tlv_get_u8(b, &nslots)) return false;
+    for (uint8_t s = 0; s < nslots; s++) {
+        uint8_t count;
+        uint8_t notes[SEQ_CHORD_MAX_NOTES];
+        if (!tlv_get_u8(b, &count)) return false;
+        for (uint8_t i = 0; i < SEQ_CHORD_MAX_NOTES; i++) {
+            if (!tlv_get_u8(b, &notes[i])) return false;
+        }
+        if (s < SEQ_CHORD_SLOTS) {
+            /* count is advisory: seq_chords_import re-derives it from the
+             * non-zero tones, which also normalizes hand-edited files. */
+            memcpy(slots[s].notes, notes, sizeof notes);
+            slots[s].count = (count > SEQ_CHORD_MAX_NOTES)
+                             ? SEQ_CHORD_MAX_NOTES : count;
+        }
+    }
+    return true;
+}
+
 /* ── Public API ───────────────────────────────────────────────────────────── */
 
 bool project_snapshot_save(uint8_t slot, const char *name)
@@ -783,6 +858,7 @@ bool project_snapshot_save(uint8_t slot, const char *name)
     ser_arp(&w);
     ser_drone(&w);
     ser_prog(&w);
+    ser_chrd(&w);
 
     bool ok = !w.err && project_store_write(slot, name, buf, w.len);
 
@@ -812,8 +888,11 @@ bool project_snapshot_load(uint8_t slot)
     staged_arp_t   staged_arp;   memset(&staged_arp, 0, sizeof staged_arp);
     staged_drone_t staged_drone; memset(&staged_drone, 0, sizeof staged_drone);
     staged_prog_t  staged_prog;  memset(&staged_prog, 0, sizeof staged_prog);
+    seq_chord_t    staged_chords[SEQ_CHORD_SLOTS];
+    memset(staged_chords, 0, sizeof staged_chords);
     uint8_t staged_layer_count = 0;
     bool got_glob = false, got_arp = false, got_drone = false, got_prog = false;
+    bool got_chrd = false;
 
     tlv_reader_t r;
     tlv_reader_init(&r, payload, len);
@@ -834,8 +913,9 @@ bool project_snapshot_load(uint8_t slot)
             if (ok) staged_layer_count++;
             break;
         case TAG_ARP:
-            /* Same stale-ceiling fix as LAYR: writer was at 3, reader at 2. */
-            if (got_arp || ver < 1 || ver > 5) { ok = false; break; }
+            /* Ceiling must track ser_arp()'s version or the firmware rejects
+             * its own saves (the LAYR stale-ceiling bug class). */
+            if (got_arp || ver < 1 || ver > 6) { ok = false; break; }
             ok = parse_arp(&body, &staged_arp, ver);
             got_arp = ok;
             break;
@@ -848,6 +928,11 @@ bool project_snapshot_load(uint8_t slot)
             if (got_prog || ver != 1) { ok = false; break; }
             ok = parse_prog(&body, &staged_prog);
             got_prog = ok;
+            break;
+        case TAG_CHRD:
+            if (got_chrd || ver != 1) { ok = false; break; }
+            ok = parse_chrd(&body, staged_chords);
+            got_chrd = ok;
             break;
         default:
             break;   /* unknown section: ignore (forward-compat) */
@@ -876,6 +961,13 @@ bool project_snapshot_load(uint8_t slot)
     /* ── Phase 2: apply. Nothing above this point touched live state. ── */
     sequencer_core_set_playing(false);
     arp_core_clear_all();
+
+    /* Chord table BEFORE the layer imports: import's synth configure sizes
+     * each row's voice count from the chord a loaded sentinel references
+     * (seq_track_num_voices), so the table must already hold the file's
+     * voicings. A file without a CHRD section clears the table — the project
+     * is the whole persisted state, chords included. */
+    seq_chords_import(got_chrd ? staged_chords : NULL);
 
     while (sequencer_core_get_num_layers() > 1) {
         sequencer_core_delete_layer((uint8_t)(sequencer_core_get_num_layers() - 1));

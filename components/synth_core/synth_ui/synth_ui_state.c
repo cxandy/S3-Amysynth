@@ -63,6 +63,11 @@ void synth_ui_reload_mirror_from_core(void)
 /* ── Note-name helper (local; mirrors display_seq.c's static one) ─────── */
 void ui_note_name(uint8_t midi_note, char buf[4])
 {
+    /* Chord preset sentinel: the "note" is a chord slot, shown as CHn. */
+    if (SEQ_NOTE_IS_CHORD(midi_note)) {
+        snprintf(buf, 4, "CH%u", (unsigned)(SEQ_CHORD_INDEX(midi_note) + 1u));
+        return;
+    }
     static const char *const names[] = {
         "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"
     };

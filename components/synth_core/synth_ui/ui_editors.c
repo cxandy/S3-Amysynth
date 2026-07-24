@@ -1205,8 +1205,9 @@ static float filter_norm_to_q(float n)
            (FGRAPH_RES_MAX - FGRAPH_RES_MIN);
 }
 
-/* True when the filter editor's target plays a feedback wave (KS): the Q
- * cursor then edits KS string feedback (0..1) instead of biquad resonance.
+/* True when the filter editor's target plays a feedback wave (KS): the editor
+ * then exposes the extra FB cursor (slot 2) editing KS string feedback 0..1.
+ * Q stays fully editable — AMY runs the biquad on KS oscs like any other wave.
  * Covers the melodic KS patch and both arp routes to KS (WAVE-mode wave and
  * PATCH-mode virtual patch 263); the drones exclude KS from their cycles. */
 static bool filter_target_is_feedback(void)
@@ -1224,13 +1225,12 @@ static bool filter_target_is_feedback(void)
 /* Populate s_fgraph from s_filter_edit and the current graph target. */
 static void filter_sync_fgraph(void)
 {
-    s_fgraph.filter_type     = s_filter_edit.filter_type;
-    s_fgraph.cutoff_norm     = filter_hz_to_norm(s_filter_edit.cutoff_hz);
-    s_fgraph.res_is_feedback = filter_target_is_feedback();
-    s_fgraph.resonance_norm  = s_fgraph.res_is_feedback
-                               ? SEQ_CLAMP_F32(s_filter_edit.feedback, 0.0f, 1.0f)
-                               : filter_q_to_norm(s_filter_edit.resonance);
-    s_fgraph.enabled         = s_filter_edit.enabled;
+    s_fgraph.filter_type    = s_filter_edit.filter_type;
+    s_fgraph.cutoff_norm    = filter_hz_to_norm(s_filter_edit.cutoff_hz);
+    s_fgraph.has_feedback   = filter_target_is_feedback();
+    s_fgraph.resonance_norm = filter_q_to_norm(s_filter_edit.resonance);
+    s_fgraph.feedback_norm  = SEQ_CLAMP_F32(s_filter_edit.feedback, 0.0f, 1.0f);
+    s_fgraph.enabled        = s_filter_edit.enabled;
     /* cursor and editing stay unchanged */
 }
 
@@ -1427,14 +1427,18 @@ bool synth_ui_filter_handle_encoder(long delta)
     if (!s_fgraph.editing) {
         /* Not editing: scroll cursor position.
          * Drone: 0=cutoff 1=resonance (type fixed, no EN cursor).
-         * Arp/melodic: 0=cutoff 1=resonance 2=type 3=enable. The melodic
-         * EG1 sweep depth/polarity live on the envelope editor's EG1 page
-         * (arp uses the fixed ARP_FILTER_EG1_DEPTH_OCT). */
-        uint8_t max_cursor = drone ? 1 : 3;
-        if (delta > 0) {
-            s_fgraph.cursor = (uint8_t)((s_fgraph.cursor + 1) % (max_cursor + 1));
-        } else if (delta < 0) {
-            s_fgraph.cursor = (s_fgraph.cursor == 0) ? max_cursor : (s_fgraph.cursor - 1);
+         * Arp/melodic: 0=cutoff 1=resonance 2=feedback 3=type 4=enable, where
+         * slot 2 only exists on KS targets and is skipped otherwise. The
+         * melodic EG1 sweep depth/polarity live on the envelope editor's EG1
+         * page (arp uses the fixed ARP_FILTER_EG1_DEPTH_OCT). */
+        uint8_t max_cursor = drone ? 1 : 4;
+        int dir = (delta > 0) ? 1 : ((delta < 0) ? -1 : 0);
+        if (dir != 0) {
+            uint8_t c = s_fgraph.cursor;
+            do {
+                c = (uint8_t)((c + (uint8_t)(max_cursor + 1) + dir) % (max_cursor + 1));
+            } while (c == 2 && !s_fgraph.has_feedback);
+            s_fgraph.cursor = c;
         }
         s_force_redraw = true;
         return true;
@@ -1448,17 +1452,19 @@ bool synth_ui_filter_handle_encoder(long delta)
             s_filter_edit.cutoff_hz = filter_norm_to_hz(s_fgraph.cutoff_norm);
             break;
         }
-        case 1: {   /* resonance — or KS string feedback on feedback waves */
+        case 1: {   /* resonance */
             float step = 0.02f * (float)delta;
             s_fgraph.resonance_norm = SEQ_CLAMP_F32(s_fgraph.resonance_norm + step, 0.0f, 1.0f);
-            if (s_fgraph.res_is_feedback) {
-                s_filter_edit.feedback = s_fgraph.resonance_norm;
-            } else {
-                s_filter_edit.resonance = filter_norm_to_q(s_fgraph.resonance_norm);
-            }
+            s_filter_edit.resonance = filter_norm_to_q(s_fgraph.resonance_norm);
             break;
         }
-        case 2: {   /* type (melodic/arp only) */
+        case 2: {   /* KS string feedback (feedback targets only) */
+            float step = 0.02f * (float)delta;
+            s_fgraph.feedback_norm = SEQ_CLAMP_F32(s_fgraph.feedback_norm + step, 0.0f, 1.0f);
+            s_filter_edit.feedback = s_fgraph.feedback_norm;
+            break;
+        }
+        case 3: {   /* type (melodic/arp only) */
             if (!drone) {
                 int t = (int)s_filter_edit.filter_type + (int)delta;
                 /* Wrap within 1..4 (NONE is toggled via MY_BUTTON_1, not the type cursor). */
@@ -1469,7 +1475,7 @@ bool synth_ui_filter_handle_encoder(long delta)
             }
             break;
         }
-        case 3: {   /* enable toggle (melodic/arp only; drone filter is always on) */
+        case 4: {   /* enable toggle (melodic/arp only; drone filter is always on) */
             if (!drone) {
                 s_filter_edit.enabled = !s_filter_edit.enabled;
                 s_fgraph.enabled      = s_filter_edit.enabled;

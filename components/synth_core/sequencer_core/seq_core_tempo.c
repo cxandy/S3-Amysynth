@@ -104,11 +104,20 @@ uint16_t sequencer_core_get_bpm(void) { return s_bpm; }
 
 /* ── Public API — quantizer ──────────────────────────────────────────── */
 
+/* An arp in follow-global mode snaps against s_quantizer at emit time, so any
+ * change here must re-emit its schedule (coalesced dirty-mark, same path the
+ * arp's own setters use). No-op when the arp uses its own scale. */
+static void quantizer_changed_refresh_arp(void)
+{
+    if (arp_get_follow_quant()) arp_core_mark_dirty();
+}
+
 void sequencer_core_set_quantizer_enabled(bool enabled)
 {
     if (s_quantizer.enabled == enabled) return;
     s_quantizer.enabled = enabled;
     sequencer_refresh_melodic_layers(false);
+    quantizer_changed_refresh_arp();
     ESP_LOGI(TAG, "quantizer %s", enabled ? "enabled" : "disabled");
 }
 
@@ -116,6 +125,7 @@ void sequencer_core_set_quantizer_root_note(uint8_t root_note)
 {
     s_quantizer.root_note = root_note;
     sequencer_refresh_melodic_layers(false);
+    quantizer_changed_refresh_arp();
     ESP_LOGI(TAG, "quantizer root -> %u", root_note);
 }
 
@@ -123,6 +133,7 @@ void sequencer_core_set_quantizer_scale(uint8_t scale_index)
 {
     s_quantizer.scale_index = (scale_index >= quantizer_scale_count()) ? 0 : scale_index;
     sequencer_refresh_melodic_layers(false);
+    quantizer_changed_refresh_arp();
     ESP_LOGI(TAG, "quantizer scale -> %u", s_quantizer.scale_index);
 }
 

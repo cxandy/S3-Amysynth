@@ -58,42 +58,32 @@ static inline uint8_t trig_rand_pct(void)
  * result is re-snapped to the scale. */
 #define SEQ_STEP_TRANSFORM_SPAN 12
 
-/* Per-step pitch transform (spec 20 §3.1). Offsets the step's authored note per
- * fire, then re-snaps the result to the active chord/scale via the same engine
- * resolve the plain per-track path uses — unless step_quant_bypass is set, in
- * which case the transformed note is only bounds-clamped and emitted
- * chromatically (spec 20 §3.2). SEQ_STEP_TRANSFORM_NONE returns `base`
- * unchanged (this helper is only reached for decorated steps anyway). All
- * integer math: no float, no lock, safe on the Core-0 service-tick task. */
-static uint8_t trig_transform_note(uint8_t layer_idx, const seq_layer_t *layer,
-                                   uint8_t track, uint8_t step, uint8_t base)
+/* Per-step pitch transform (spec 20 §3.1), split into "which offset does this
+ * fire get" so single notes and chord voicings share one PRNG/loop-counter
+ * draw per fire. Returns true when a transform mode is active and writes the
+ * semitone offset; false (offset 0) for SEQ_STEP_TRANSFORM_NONE. All integer
+ * math: no float, no lock, safe on the Core-0 service-tick task. */
+static bool trig_transform_offset(uint8_t layer_idx, const seq_layer_t *layer,
+                                  uint8_t track, uint8_t step, int *offset)
 {
-    int offset;
     switch ((seq_step_transform_t)layer->step_transform[track][step]) {
         case SEQ_STEP_TRANSFORM_RANDOM:
-            offset = (int)(trig_rand_pct() % (2u * SEQ_STEP_TRANSFORM_SPAN + 1u))
-                     - SEQ_STEP_TRANSFORM_SPAN;
-            break;
+            *offset = (int)(trig_rand_pct() % (2u * SEQ_STEP_TRANSFORM_SPAN + 1u))
+                      - SEQ_STEP_TRANSFORM_SPAN;
+            return true;
         case SEQ_STEP_TRANSFORM_RAMP_UP:
-            offset = (int)(s_layer_loop_count[layer_idx]
-                           % (SEQ_STEP_TRANSFORM_SPAN + 1u));
-            break;
-        case SEQ_STEP_TRANSFORM_RAMP_DOWN:
-            offset = -(int)(s_layer_loop_count[layer_idx]
+            *offset = (int)(s_layer_loop_count[layer_idx]
                             % (SEQ_STEP_TRANSFORM_SPAN + 1u));
-            break;
+            return true;
+        case SEQ_STEP_TRANSFORM_RAMP_DOWN:
+            *offset = -(int)(s_layer_loop_count[layer_idx]
+                             % (SEQ_STEP_TRANSFORM_SPAN + 1u));
+            return true;
         case SEQ_STEP_TRANSFORM_NONE:
         default:
-            return base;
+            *offset = 0;
+            return false;
     }
-
-    int transformed = (int)base + offset;
-    transformed = SEQ_CLAMP_INT(transformed, 0, 127);
-
-    if (layer->step_quant_bypass[track][step]) {
-        return sequencer_clamp_layer_note(layer, (uint8_t)transformed);
-    }
-    return sequencer_resolve_track_note(layer, (uint8_t)transformed);
 }
 
 /* ── Ratchet tag formula ──────────────────────────────────────────────────
@@ -117,13 +107,40 @@ static inline uint32_t ratchet_off_tag(uint8_t layer, uint8_t track, uint8_t slo
     return ratchet_on_tag(layer, track, slot) + 1u;
 }
 
+/* ── Chord-tone tag formula ───────────────────────────────────────────────
+ * Extra chord tones (1..SEQ_CHORD_MAX_NOTES-1; tone 0 rides the ratchet tags
+ * above) get their own statically assigned one-shot pair per (layer, track,
+ * ratchet-slot, tone), mirroring the ratchet scheme — never pooled, so a slow
+ * chord ratchet can't overwrite another track's in-flight schedule. Layout in
+ * seq_core_config.h (SEQ_CHORD_TAG_BASE..MAX). */
+static inline uint32_t chord_on_tag(uint8_t layer, uint8_t track, uint8_t slot,
+                                    uint8_t tone /* 1.. */)
+{
+    return SEQ_CHORD_TAG_BASE
+         + (ratchet_slot_index(layer, track, slot) * (SEQ_CHORD_MAX_NOTES - 1)
+            + (uint32_t)(tone - 1)) * 2u;
+}
+
+static inline uint32_t chord_off_tag(uint8_t layer, uint8_t track, uint8_t slot,
+                                     uint8_t tone /* 1.. */)
+{
+    return chord_on_tag(layer, track, slot, tone) + 1u;
+}
+
 bool sequencer_core_step_is_decorated(const seq_layer_t *layer, uint8_t track, uint8_t step)
 {
     if (track >= SEQ_TRACKS || step >= SEQ_MAX_STEPS) return false;
+    /* A chord sentinel forces the decorated one-shot path too: the plain path
+     * emits ONE periodic tag pair with a fixed pitch, while a chord fires up
+     * to SEQ_CHORD_MAX_NOTES tones whose pitches (progression transpose) and
+     * count (live table edits) are resolved per fire. One-shots also
+     * self-consume, so chords add no resident periodic events to the delta
+     * pool and can never leave a stuck periodic tag ringing. */
     return layer->step_prob[track][step]      != 100
         || layer->step_ratchet[track][step]   != 1
         || layer->step_cond_type[track][step] != (uint8_t)SEQ_STEP_COND_NONE
-        || layer->step_transform[track][step] != (uint8_t)SEQ_STEP_TRANSFORM_NONE;
+        || layer->step_transform[track][step] != (uint8_t)SEQ_STEP_TRANSFORM_NONE
+        || SEQ_NOTE_IS_CHORD(layer->step_note[track][step]);
 }
 
 void sequencer_core_trig_reset(uint8_t layer_idx)
@@ -150,6 +167,21 @@ void sequencer_core_trig_clear_all(uint8_t layer_idx)
         for (uint8_t k = 0; k < SEQ_MAX_RATCHET; k++) {
             sequencer_emit_clear_tag(ratchet_on_tag(layer_idx, t, k));
             sequencer_emit_clear_tag(ratchet_off_tag(layer_idx, t, k));
+            for (uint8_t tone = 1; tone < SEQ_CHORD_MAX_NOTES; tone++) {
+                sequencer_emit_clear_tag(chord_on_tag(layer_idx, t, k, tone));
+                sequencer_emit_clear_tag(chord_off_tag(layer_idx, t, k, tone));
+            }
+        }
+    }
+}
+
+void sequencer_core_trig_clear_track_chord(uint8_t layer_idx, uint8_t track)
+{
+    if (layer_idx >= MAX_LAYERS || track >= SEQ_TRACKS) return;
+    for (uint8_t k = 0; k < SEQ_MAX_RATCHET; k++) {
+        for (uint8_t tone = 1; tone < SEQ_CHORD_MAX_NOTES; tone++) {
+            sequencer_emit_clear_tag(chord_on_tag(layer_idx, track, k, tone));
+            sequencer_emit_clear_tag(chord_off_tag(layer_idx, track, k, tone));
         }
     }
 }
@@ -206,11 +238,32 @@ static void trig_schedule_ratchets(uint8_t layer_idx, const seq_layer_t *layer,
      * Applied here as well as the plain path so decorated steps match. */
     velocity += (float)layer->step_velocity_adj[track][step] * 0.01f;
     velocity = SEQ_CLAMP_F32(velocity, 0.0f, 1.0f);
+
     /* Single per-fire pitch source for both ratchet sub-hits and the plain
-     * decorated (n==1) path: apply any per-step note transform here so every
-     * sub-hit of one fire shares the same transformed pitch. */
-    uint8_t note  = trig_transform_note(layer_idx, layer, track, step,
-                                        layer->step_note[track][step]);
+     * decorated (n==1) path. A chord sentinel expands to its tones here (with
+     * the progression transpose applied); any per-step note transform draws
+     * ONE offset per fire so every sub-hit — and every chord tone — shares it.
+     * Single notes keep the historical semantics (offset then re-snap unless
+     * bypassed); chord tones take the offset chromatically with a bounds
+     * clamp, never per-tone re-quantization (intervals are the feature). */
+    uint8_t stored = layer->step_note[track][step];
+    uint8_t tones[SEQ_CHORD_MAX_NOTES];
+    uint8_t ntones = seq_track_fire_notes(layer, stored, tones);
+    if (ntones == 0) return;   /* undefined chord slot: fire nothing */
+
+    int toff;
+    if (trig_transform_offset(layer_idx, layer, track, step, &toff)) {
+        if (SEQ_NOTE_IS_CHORD(stored)) {
+            for (uint8_t i = 0; i < ntones; i++) {
+                tones[i] = sequencer_core_clamp_melodic_note((int32_t)tones[i] + toff);
+            }
+        } else {
+            int tn = SEQ_CLAMP_INT((int)tones[0] + toff, 0, 127);
+            tones[0] = layer->step_quant_bypass[track][step]
+                     ? sequencer_clamp_layer_note(layer, (uint8_t)tn)
+                     : sequencer_resolve_track_note(layer, (uint8_t)tn);
+        }
+    }
     uint8_t synth = layer->synth_id[track];
 
     /* Ratchet velocity taper (patch-06): sub-hit k is scaled by (1 - taper*k%).
@@ -224,10 +277,16 @@ static void trig_schedule_ratchets(uint8_t layer_idx, const seq_layer_t *layer,
         float v = velocity * scale;
         uint32_t tick_on  = now_ticks + 1u + (uint32_t)k * sub_ticks;
         uint32_t tick_off = tick_on + gate;
-        amy_helpers_note_send(synth, (float)note, v,
+        amy_helpers_note_send(synth, (float)tones[0], v,
                             ratchet_on_tag(layer_idx, track, k), tick_on, 0);
-        amy_helpers_note_send(synth, (float)note, 0.0f,
+        amy_helpers_note_send(synth, (float)tones[0], 0.0f,
                             ratchet_off_tag(layer_idx, track, k), tick_off, 0);
+        for (uint8_t i = 1; i < ntones; i++) {
+            amy_helpers_note_send(synth, (float)tones[i], v,
+                                chord_on_tag(layer_idx, track, k, i), tick_on, 0);
+            amy_helpers_note_send(synth, (float)tones[i], 0.0f,
+                                chord_off_tag(layer_idx, track, k, i), tick_off, 0);
+        }
     }
 }
 

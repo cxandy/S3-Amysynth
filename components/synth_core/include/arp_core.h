@@ -73,6 +73,11 @@ void arp_core_clear_all(void);
  * spin collapses into a single re-emit instead of one per detent. */
 void arp_core_service(void);
 
+/* Request a coalesced re-emit (drained by arp_core_service()). Used by the
+ * transport on resume: arp note emission is gated on the sequencer playing,
+ * so the schedule cleared at pause must be explicitly rebuilt on play. */
+void arp_core_mark_dirty(void);
+
 /* ── Parameter setters (each re-emits the sequence) ── */
 void arp_set_enabled(bool enabled);
 void arp_set_direction(arp_dir_t dir);
@@ -81,6 +86,12 @@ void arp_set_rate(arp_rate_t rate);
 void arp_set_gate_pct(uint8_t gate_pct);      /* clamped 10..100        */
 void arp_set_scale(uint8_t scale_index);
 void arp_set_root_note(uint8_t root_note);
+/* Follow the global scale quantizer instead of the arp's own scale/root.
+ * Precedence mirrors melodic layers: while the chord progression owns the
+ * arp's root/scale the chord still wins; with follow ON and the global
+ * quantizer disabled, notes play chromatic (no snapping). Default OFF. */
+void arp_set_follow_quant(bool follow);
+bool arp_get_follow_quant(void);
 void arp_set_chord(uint8_t root_midi, uint8_t scale_index);
 void arp_set_patch(uint16_t patch_number);
 /* Live FM voice edits (FM screen): re-push the shared custom voice

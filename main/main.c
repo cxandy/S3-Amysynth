@@ -1077,9 +1077,16 @@ void app_main(void)
      * Per-step ratchet trigs (seq_core_trig.c) then claim a further
      * MAX_LAYERS*SEQ_TRACKS*SEQ_MAX_RATCHET*2 = 128 dedicated one-shot tags
      * right above the arp range: 1120..1247 (SEQ_RATCHET_TAG_BASE/MAX in
-     * seq_core_config.h). 1200 no longer covers that — raised to 1280 to
-     * clear SEQ_RATCHET_TAG_MAX (1247) with the same +2 off-by-one margin. */
-    amy_cfg.max_sequencer_tags = 1280;
+     * seq_core_config.h).
+     *
+     * Chord presets add two one-shot blocks above that (seq_core_config.h):
+     * extra chord tones per ratchet slot 1248..1631 (SEQ_CHORD_TAG_*) and
+     * chord edit-preview pairs 1632..1727 (SEQ_CHORD_PREVIEW_TAG_*). Set to
+     * 1730 = SEQ_CHORD_PREVIEW_TAG_MAX (1727) + the +2 off-by-one margin +1.
+     * Cost note: each tag is 16 B of internal DRAM (12 B sequence_info_t +
+     * two int16 active-index entries), so this table is ~28 KB — grow it
+     * deliberately (see docs/internal-dram-audit-2026-07-23.md). */
+    amy_cfg.max_sequencer_tags = 1730;
     /* Raise the instrument table from the default 64 so the standalone drones
      * (custompatches/drone_core + drone_std_core) can claim dedicated slots
      * above the existing map (drum 6..9, melodic 11..62, arp 63). The stutter

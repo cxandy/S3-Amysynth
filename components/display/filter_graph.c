@@ -100,6 +100,40 @@ static float norm_to_q(float norm)
     return FGRAPH_RES_MIN + norm * (FGRAPH_RES_MAX - FGRAPH_RES_MIN);
 }
 
+/* KS string-feedback readout: a small box hanging just under the Q readout,
+ * below the header divider. Drawn only on feedback waves (has_feedback), so
+ * the header layout itself never changes for other targets. Blanks the plot
+ * behind it so the value stays legible over the response curve — call after
+ * the curve (or the OFF line) is down. Feedback is decay of the KS string,
+ * independent of the biquad, hence also drawn while the filter is OFF. */
+static void draw_feedback_box(u8g2_t *u8g2, const filter_graph_t *fg)
+{
+    if (!fg->has_feedback) return;
+
+    char fb_buf[10];
+    snprintf(fb_buf, sizeof(fb_buf), "FB:%u%%",
+             (unsigned)(fg->feedback_norm * 100.0f + 0.5f));
+    u8g2_SetFont(u8g2, u8g2_font_5x7_tr);
+    uint8_t fw = (uint8_t)u8g2_GetStrWidth(u8g2, fb_buf);
+    uint8_t fx = (uint8_t)(126 - fw);
+    const uint8_t fy = FG_TOPBAR_H;   /* first row under the divider */
+    const uint8_t fh = 11;
+    bool sel = (fg->cursor == 2);
+
+    u8g2_SetDrawColor(u8g2, 0);
+    u8g2_DrawBox(u8g2, (uint8_t)(fx - 2), fy, (uint8_t)(fw + 4), fh);
+    u8g2_SetDrawColor(u8g2, 1);
+    if (sel && fg->editing) {
+        u8g2_DrawBox(u8g2, (uint8_t)(fx - 2), fy, (uint8_t)(fw + 4), fh);
+        u8g2_SetDrawColor(u8g2, 0);
+        u8g2_DrawStr(u8g2, fx, (uint8_t)(fy + 8), fb_buf);
+        u8g2_SetDrawColor(u8g2, 1);
+    } else {
+        if (sel) u8g2_DrawRFrame(u8g2, (uint8_t)(fx - 2), fy, (uint8_t)(fw + 4), fh, 1);
+        u8g2_DrawStr(u8g2, fx, (uint8_t)(fy + 8), fb_buf);
+    }
+}
+
 void filter_graph_draw(u8g2_t *u8g2, const filter_graph_t *fg)
 {
     if (!u8g2 || !fg) return;
@@ -121,12 +155,7 @@ void filter_graph_draw(u8g2_t *u8g2, const filter_graph_t *fg)
         float hz = norm_to_hz(fg->cutoff_norm);
         float q  = norm_to_q(fg->resonance_norm);
         if (fg->cursor == 1) {
-            if (fg->res_is_feedback) {
-                snprintf(val_buf, sizeof(val_buf), "FB:%u%%",
-                         (unsigned)(fg->resonance_norm * 100.0f + 0.5f));
-            } else {
-                snprintf(val_buf, sizeof(val_buf), "Q:%.1f", (double)q);
-            }
+            snprintf(val_buf, sizeof(val_buf), "Q:%.1f", (double)q);
         } else {
             if (hz >= 1000.0f) {
                 snprintf(val_buf, sizeof(val_buf), "%.1fk", (double)(hz / 1000.0f));
@@ -170,8 +199,8 @@ void filter_graph_draw(u8g2_t *u8g2, const filter_graph_t *fg)
         uint8_t group_w = fg->show_toggles ? (uint8_t)(tw + CB_GAP + CB_W) : tw;
         uint8_t tx = (uint8_t)((128 - group_w) / 2);
 
-        /* Type name — cursor 2 highlight only where the type is selectable. */
-        if (fg->show_toggles && fg->cursor == 2) {
+        /* Type name — cursor 3 highlight only where the type is selectable. */
+        if (fg->show_toggles && fg->cursor == 3) {
             if (fg->editing) {
                 /* Inverted box = value is live. */
                 u8g2_DrawBox(u8g2, (uint8_t)(tx - 2), 0, (uint8_t)(tw + 4), 11);
@@ -187,12 +216,12 @@ void filter_graph_draw(u8g2_t *u8g2, const filter_graph_t *fg)
         }
 
         /* Enable checkbox — always shows the on/off state (filled = on); cursor
-         * 3 selects it (outline highlight, inverted while toggling). Its state
+         * 4 selects it (outline highlight, inverted while toggling). Its state
          * mirrors the plot's OFF/curve, so enable is legible without scrolling. */
         if (fg->show_toggles) {
             uint8_t bx = (uint8_t)(tx + tw + CB_GAP);
             const uint8_t by = 2, bh = 7;   /* checkbox rows 2..8, aligned to text */
-            bool sel = (fg->cursor == 3);
+            bool sel = (fg->cursor == 4);
 
             if (sel && fg->editing) {
                 u8g2_DrawBox(u8g2, (uint8_t)(bx - 2), 0, (uint8_t)(CB_W + 4), 11);
@@ -218,14 +247,13 @@ void filter_graph_draw(u8g2_t *u8g2, const filter_graph_t *fg)
         u8g2_SetFont(u8g2, u8g2_font_5x7_tr);
         uint8_t ow = (uint8_t)u8g2_GetStrWidth(u8g2, "OFF");
         u8g2_DrawStr(u8g2, (uint8_t)((FG_PLOT_W - ow) / 2), (uint8_t)(y_mid - 2), "OFF");
+        draw_feedback_box(u8g2, fg);
         return;
     }
 
     /* ── Compute response curve ── */
     float fc = norm_to_hz(fg->cutoff_norm);
-    /* Feedback mode carries KS feedback in resonance_norm — that value is not
-     * a Q, so plot a neutral flat-ish resonance instead. */
-    float Q  = fg->res_is_feedback ? 1.0f : norm_to_q(fg->resonance_norm);
+    float Q  = norm_to_q(fg->resonance_norm);
     const uint8_t baseline_y = (uint8_t)(FG_PLOT_Y0 + FG_PLOT_H - 1);
 
     /* py[i]: Y pixel for each log-spaced frequency sample. The sample
@@ -275,4 +303,7 @@ void filter_graph_draw(u8g2_t *u8g2, const filter_graph_t *fg)
     u8g2_SetDrawColor(u8g2, 2);   /* XOR: inverts whatever is there */
     u8g2_DrawVLine(u8g2, cx, FG_PLOT_Y0, FG_PLOT_H - 1);
     u8g2_SetDrawColor(u8g2, 1);
+
+    /* Last so its blanked background wins over the curve and cutoff cursor. */
+    draw_feedback_box(u8g2, fg);
 }

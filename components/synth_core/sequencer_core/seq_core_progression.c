@@ -175,6 +175,11 @@ void sequencer_core_progression_set_enabled(bool en)
 
 bool sequencer_core_progression_get_enabled(void) { return s_prog.enabled; }
 
+/* arp_saved is set on the first chord apply (when the user's own root/scale
+ * are captured) and cleared when disable restores them — exactly the window
+ * in which the arp's root/scale hold progression chords, not user values. */
+bool sequencer_core_progression_arp_owned(void) { return s_prog.arp_saved; }
+
 /* Launch quantization: false = chord applies land on the next service tick
  * (instant), true = musical edits hold until the next bar line while playing. */
 void sequencer_core_progression_set_apply_at_bar(bool at_bar)

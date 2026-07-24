@@ -5,6 +5,9 @@
 uint8_t  s_cached_step[MAX_LAYERS];
 uint8_t  s_track_source_note[MAX_LAYERS][SEQ_TRACKS];
 uint32_t s_bar_baseline = 0;
+/* Last plain source note per track — chord-slot-delete fallback (see the
+ * declaration comment in seq_core_internal.h). */
+uint8_t  s_track_prev_plain[MAX_LAYERS][SEQ_TRACKS];
 
 /* ── Bar counter ─────────────────────────────────────────────────────────
  * sequencer_ticks() is monotonic (never resets on play/stop in normal use).
@@ -55,6 +58,63 @@ static inline uint32_t seq_preview_tag(uint8_t layer, uint8_t track)
 static inline uint32_t seq_preview_off_tag(uint8_t layer, uint8_t track)
 {
     return seq_preview_tag(layer, track) + (uint32_t)(MAX_LAYERS * SEQ_TRACKS);
+}
+
+/* Chord edit-preview tags: extra-tone (1..SEQ_CHORD_MAX_NOTES-1) on/off pairs
+ * for the one-shot preview path; tone 0 stays on the legacy preview pair
+ * above. Layout comment: seq_core_config.h chord tag space. */
+static inline uint32_t seq_chord_preview_on_tag(uint8_t layer, uint8_t track,
+                                                uint8_t tone /* 1.. */)
+{
+    return SEQ_CHORD_PREVIEW_TAG_BASE
+         + (((uint32_t)layer * SEQ_TRACKS + track) * (SEQ_CHORD_MAX_NOTES - 1)
+            + (uint32_t)(tone - 1)) * 2u;
+}
+
+static inline uint32_t seq_chord_preview_off_tag(uint8_t layer, uint8_t track,
+                                                 uint8_t tone /* 1.. */)
+{
+    return seq_chord_preview_on_tag(layer, track, tone) + 1u;
+}
+
+/* Clear the extra-tone preview pairs from `first_tone` up — run on every
+ * chord preview (a shrink between two previews must not let a pending
+ * higher-tone pair from the previous voicing fire) and when a track's
+ * resolved note leaves the chord zone. */
+static void seq_chord_preview_clear_from(uint8_t layer, uint8_t track,
+                                         uint8_t first_tone)
+{
+    for (uint8_t tone = first_tone ? first_tone : 1; tone < SEQ_CHORD_MAX_NOTES; tone++) {
+        sequencer_emit_clear_tag(seq_chord_preview_on_tag(layer, track, tone));
+        sequencer_emit_clear_tag(seq_chord_preview_off_tag(layer, track, tone));
+    }
+}
+
+/* ── Chord expansion (shared with seq_core_trig.c) ─────────────────────── */
+
+/* Progression transpose for chord presets: presets are authored as the "I"
+ * voicing (progression entry 0); each advance moves them by the delta between
+ * the live chord root and entry 0's root, so the whole voicing tracks the bar
+ * exactly as the single-note tracks do — but as a rigid transpose, never
+ * per-tone re-quantization. With the progression off (including manual layer
+ * chord snap), chords play exactly as entered. Computed at fire time, so a
+ * progression advance re-pitches chords with zero re-emit plumbing. */
+int sequencer_chord_transpose(const seq_layer_t *layer)
+{
+    if (!s_prog.enabled || s_prog.count == 0) return 0;
+    if (!layer->chord_mode) return 0;
+    return (int)layer->chord_root - (int)s_prog.entries[0].root;
+}
+
+uint8_t seq_track_fire_notes(const seq_layer_t *layer, uint8_t stored_note,
+                             uint8_t out[SEQ_CHORD_MAX_NOTES])
+{
+    if (!SEQ_NOTE_IS_CHORD(stored_note)) {
+        out[0] = stored_note;
+        return 1;
+    }
+    return seq_chords_resolve(SEQ_CHORD_INDEX(stored_note),
+                              sequencer_chord_transpose(layer), out);
 }
 
 /* Swing / shuffle: delay ODD 16th-steps by swing_pct% of one step so the
@@ -154,6 +214,14 @@ uint8_t sequencer_resolve_track_note(const seq_layer_t *layer,
 {
     if (layer->type != SEQ_LAYER_MELODIC) {
         return sequencer_clamp_layer_note(layer, source_note);
+    }
+
+    /* Chord preset sentinel: passes through untouched — no quantize, no clamp
+     * (the clamp would smash it to SEQ_MEL_NOTE_MAX). Expansion to pitches
+     * happens at fire time (seq_track_fire_notes); the quantizer/chord snap
+     * below never applies to individual chord tones by design. */
+    if (SEQ_NOTE_IS_CHORD(source_note)) {
+        return source_note;
     }
 
     /* Chord mode overrides the global scale quantizer for this layer. */
@@ -297,6 +365,12 @@ static void sequencer_refresh_track_note(uint8_t layer_idx, uint8_t track,
         } else {
             return;
         }
+    } else if (SEQ_NOTE_IS_CHORD(layer->track_base_note[track])) {
+        /* Leaving (or switching) a chord: kill this track's pending chord-tone
+         * one-shots and extra-tone preview pairs so no scheduled tone from the
+         * old voicing survives the transition (clear -> rebuild, every time). */
+        sequencer_core_trig_clear_track_chord(layer_idx, track);
+        seq_chord_preview_clear_from(layer_idx, track, 1);
     }
 
     /* Apply the resolved note to the whole track (all steps play one pitch). */
@@ -316,16 +390,35 @@ static void sequencer_refresh_track_note(uint8_t layer_idx, uint8_t track,
     /* One-shot preview: fires a few ticks from now using the same tag slot.
      * Rapid scrolling overwrites the slot so only the last change is heard.
      * Velocity matches what a real downbeat step on this track would play
-     * (groove velocity x amp trim) so the preview is honest about level. */
+     * (groove velocity x amp trim) so the preview is honest about level.
+     * A chord sentinel previews the full voicing (that IS the feature): tone 0
+     * on the legacy preview pair, extra tones on the chord preview pairs, and
+     * any pairs past the tone count cleared so a shrink between two previews
+     * cannot leave a stale higher tone pending. */
+    uint8_t tones[SEQ_CHORD_MAX_NOTES];
+    uint8_t ntones = seq_track_fire_notes(layer, resolved_note, tones);
+    if (ntones == 0) return;   /* undefined chord slot: nothing to audition */
+
     float preview_vel = sequencer_step_velocity(layer, track, 0)
                         * layer->vp[track].amp_trim;
     if (preview_vel > 1.0f) preview_vel = 1.0f;
     uint32_t fire_tick = sequencer_ticks() + SEQ_PREVIEW_DELAY_TICKS;
-    amy_helpers_note_send(layer->synth_id[track], resolved_note, preview_vel,
+    uint32_t off_tick  = fire_tick + seq_step_gate(layer, 0);
+    amy_helpers_note_send(layer->synth_id[track], tones[0], preview_vel,
                         seq_preview_tag(layer_idx, track), fire_tick, 0);
-    amy_helpers_note_send(layer->synth_id[track], resolved_note, 0.0f,
-                        seq_preview_off_tag(layer_idx, track),
-                        fire_tick + seq_step_gate(layer, 0), 0);
+    amy_helpers_note_send(layer->synth_id[track], tones[0], 0.0f,
+                        seq_preview_off_tag(layer_idx, track), off_tick, 0);
+    for (uint8_t i = 1; i < ntones; i++) {
+        amy_helpers_note_send(layer->synth_id[track], tones[i], preview_vel,
+                            seq_chord_preview_on_tag(layer_idx, track, i),
+                            fire_tick, 0);
+        amy_helpers_note_send(layer->synth_id[track], tones[i], 0.0f,
+                            seq_chord_preview_off_tag(layer_idx, track, i),
+                            off_tick, 0);
+    }
+    if (SEQ_NOTE_IS_CHORD(resolved_note)) {
+        seq_chord_preview_clear_from(layer_idx, track, ntones);
+    }
 
     ESP_LOGI(TAG, "L%d T%d note -> %d (preview @ tick %lu)",
              layer_idx + 1, track + 1, resolved_note, (unsigned long)fire_tick);
@@ -401,6 +494,10 @@ void sequencer_core_set_playing(bool p)
             sequencer_core_trig_reset(i);
             sequencer_resync_layer(i);
         }
+        /* The pause path cleared the arp schedule and emission is s_playing-
+         * gated, so nothing re-armed it while stopped — request a coalesced
+         * re-emit (drained by arp_core_service() on the UI task). */
+        arp_core_mark_dirty();
     } else {
         /* Bug 1.1: clear arp scheduled events FIRST so repeating arp tags
          * don't keep firing while the sequencer is paused. */
@@ -443,10 +540,30 @@ void sequencer_core_set_track_midi_note(uint8_t layer_idx, uint8_t track,
     if (layer_idx >= s_num_layers || track >= SEQ_TRACKS) return;
     seq_layer_t *layer = &s_layers[layer_idx];
 
-    midi_note = sequencer_clamp_layer_note(layer, midi_note);
+    /* A defined chord sentinel is a valid melodic assignment and must not be
+     * range-clamped (that would smash it to SEQ_MEL_NOTE_MAX). Anything else
+     * — plain notes, sentinels on drum layers, sentinels for undefined slots
+     * — takes the normal clamp. */
+    bool chord_ok = layer->type == SEQ_LAYER_MELODIC &&
+                    SEQ_NOTE_IS_CHORD(midi_note) &&
+                    seq_chords_is_defined(SEQ_CHORD_INDEX(midi_note));
+    if (!chord_ok) {
+        midi_note = sequencer_clamp_layer_note(layer, midi_note);
+        /* Remember the last plain choice: the fallback if a chord slot this
+         * track later references gets deleted. */
+        s_track_prev_plain[layer_idx][track] = midi_note;
+    }
 
     s_track_source_note[layer_idx][track] = midi_note;
     sequencer_refresh_track_note(layer_idx, track, true);
+
+    /* Chord assignment can widen (or release) this track's voice need beyond
+     * the layer's configured count. Reconfigure through the proven paused
+     * clear -> configure -> resync path — same discipline as patch cycling,
+     * and only when the need actually changed (menu-time cost only). */
+    if (layer->type == SEQ_LAYER_MELODIC && sequencer_layer_voices_stale(layer_idx)) {
+        sequencer_reconfigure_layer_paused(layer_idx);
+    }
 }
 
 uint8_t sequencer_core_get_track_midi_note(uint8_t layer_idx, uint8_t track)
@@ -461,10 +578,95 @@ uint8_t sequencer_core_get_track_source_note(uint8_t layer_idx, uint8_t track)
     return s_track_source_note[layer_idx][track];
 }
 
+/* Chord table edit sweep (called by seq_chords_set/clear on the UI task).
+ * Voicing edits need no re-emit — fires read the table live — but pending
+ * one-shots from the old voicing are cleared, a now-undefined slot drops
+ * referencing tracks back to their last plain note, and a changed tone count
+ * reconfigures the layer's voice budget. */
+void sequencer_core_chord_slot_changed(uint8_t idx)
+{
+    if (idx >= SEQ_CHORD_SLOTS) return;
+    uint8_t sentinel = SEQ_CHORD_NOTE(idx);
+    bool defined = seq_chords_is_defined(idx);
+
+    for (uint8_t li = 0; li < s_num_layers; li++) {
+        seq_layer_t *layer = &s_layers[li];
+        if (layer->type != SEQ_LAYER_MELODIC) continue;
+        bool touched = false;
+        for (uint8_t t = 0; t < layer->num_tracks; t++) {
+            if (s_track_source_note[li][t] != sentinel) continue;
+            touched = true;
+            sequencer_core_trig_clear_track_chord(li, t);
+            seq_chord_preview_clear_from(li, t, 1);
+            if (!defined) {
+                /* Never leave a track silently referencing an empty slot. */
+                uint8_t fb = s_track_prev_plain[li][t];
+                if (fb == 0) fb = 60;   /* C4 when no plain note was ever set */
+                s_track_source_note[li][t] =
+                    sequencer_clamp_layer_note(layer, fb);
+            }
+            sequencer_refresh_track_note(li, t, false);
+        }
+        if (touched && sequencer_layer_voices_stale(li)) {
+            sequencer_reconfigure_layer_paused(li);
+        }
+    }
+}
+
+/* Chord-editor audition: one-shot the (possibly not-yet-saved) voicing
+ * through a melodic track's synth via the preview tag machinery. Plays the
+ * tones exactly as authored (no progression transpose — the editor edits the
+ * "I" voicing). Honest caveat: a voicing wider than the track's current voice
+ * count will voice-steal until it is actually assigned (assignment widens the
+ * count); still honest about timbre, which is the point of the audition. */
+void sequencer_core_audition_chord(uint8_t layer_idx, uint8_t track,
+                                   const seq_chord_t *chord)
+{
+    if (layer_idx >= s_num_layers || track >= SEQ_TRACKS || chord == NULL) return;
+    seq_layer_t *layer = &s_layers[layer_idx];
+    if (layer->type != SEQ_LAYER_MELODIC) return;
+
+    uint8_t tones[SEQ_CHORD_MAX_NOTES];
+    uint8_t ntones = 0;
+    for (uint8_t i = 0; i < SEQ_CHORD_MAX_NOTES; i++) {
+        if (chord->notes[i] == 0) continue;
+        tones[ntones++] = sequencer_core_clamp_melodic_note(chord->notes[i]);
+    }
+    seq_chord_preview_clear_from(layer_idx, track, ntones ? ntones : 1);
+    if (ntones == 0) return;
+
+    float preview_vel = sequencer_step_velocity(layer, track, 0)
+                        * layer->vp[track].amp_trim;
+    if (preview_vel > 1.0f) preview_vel = 1.0f;
+    uint32_t fire_tick = sequencer_ticks() + SEQ_PREVIEW_DELAY_TICKS;
+    uint32_t off_tick  = fire_tick + seq_step_gate(layer, 0);
+    amy_helpers_note_send(layer->synth_id[track], tones[0], preview_vel,
+                        seq_preview_tag(layer_idx, track), fire_tick, 0);
+    amy_helpers_note_send(layer->synth_id[track], tones[0], 0.0f,
+                        seq_preview_off_tag(layer_idx, track), off_tick, 0);
+    for (uint8_t i = 1; i < ntones; i++) {
+        amy_helpers_note_send(layer->synth_id[track], tones[i], preview_vel,
+                            seq_chord_preview_on_tag(layer_idx, track, i),
+                            fire_tick, 0);
+        amy_helpers_note_send(layer->synth_id[track], tones[i], 0.0f,
+                            seq_chord_preview_off_tag(layer_idx, track, i),
+                            off_tick, 0);
+    }
+}
+
 void sequencer_core_arp_emit_note(uint32_t tag_base, uint8_t midi_note,
                                   float velocity, uint32_t tick_on,
                                   uint32_t gate_ticks, uint32_t period)
 {
+    /* Slaved to the transport, same as sequencer_emit_step(): while paused
+     * nothing may (re)arm the arp's repeating schedule — otherwise any arp
+     * refresh during a pause (param edit, progression apply, project load)
+     * leaves the arp playing alone. The resume path in
+     * sequencer_core_set_playing() marks the arp dirty so the schedule is
+     * rebuilt when playback restarts; periodic events are phase-locked to the
+     * absolute tick grid, so the rebuild lands back in sync. */
+    if (!s_playing) return;
+
     /* Defensive: never let an out-of-range tag reach AMY. Its sequences[] table
      * is sized to max_sequencer_tags and add_event has a `tag > max` off-by-one,
      * so a stray tag would smash the heap. Cap to the reserved arp window. */

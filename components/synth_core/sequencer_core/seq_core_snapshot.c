@@ -37,6 +37,22 @@ bool sequencer_core_import_layer(uint8_t layer_idx, const seq_layer_t *src)
     dst->num_tracks = num_tracks;
     dst->step_page  = 0;
 
+    /* Rebuild the per-track source notes from the loaded resolved notes.
+     * s_track_source_note is not persisted, and leaving the pre-load values
+     * in place meant the first re-resolve after load (note nudge, progression
+     * advance) snapped every track back to stale pitches — and would strip a
+     * loaded chord sentinel entirely. The resolved note re-resolves to itself
+     * (idempotent snap), so it is a faithful source reconstruction. Chord
+     * sentinels double as their own source; plain notes also seed the
+     * chord-delete fallback. */
+    for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
+        uint8_t n = dst->track_base_note[t];
+        s_track_source_note[layer_idx][t] = n;
+        if (!SEQ_NOTE_IS_CHORD(n)) {
+            s_track_prev_plain[layer_idx][t] = n;
+        }
+    }
+
     /* Re-push the full sound config to the layer's synth slots. The public
      * patch setters dedup against the layer's stored patch number - which the
      * struct copy above has already overwritten - so they would silently

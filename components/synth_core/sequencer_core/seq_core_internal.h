@@ -127,9 +127,16 @@ extern volatile bool  s_layers_mutating;   /* guards delete_layer's compaction v
 extern uint8_t        s_cached_step[];
 extern uint8_t        s_track_source_note[][SEQ_TRACKS];
 extern uint32_t       s_bar_baseline;
+/* Last PLAIN (non-sentinel) source note per track — the fallback a track
+ * returns to when the chord slot it references is deleted/emptied. Runtime
+ * only (never persisted); 0 = unset, fallback then defaults to C4. */
+extern uint8_t        s_track_prev_plain[][SEQ_TRACKS];
 
 /* Owned by seq_core_synth.c */
 extern seq_drum_engine_t s_drum_engine;
+/* Per-track voice count last pushed to each melodic row's synth (chord-aware
+ * budget bookkeeping) — shifted by delete_layer alongside s_track_source_note. */
+extern uint8_t        s_voices_applied[][SEQ_TRACKS];
 
 /* Owned by seq_core_tempo.c */
 extern uint16_t       s_bpm;
@@ -161,9 +168,31 @@ void     sequencer_clear_layer_tags(uint8_t layer_idx);
 void     sequencer_refresh_melodic_layers(bool preview);
 uint32_t sequencer_bars_elapsed(void);
 
+/* From seq_core_engine.c — chord expansion shared with seq_core_trig.c.
+ * seq_track_fire_notes resolves what a stored (possibly sentinel) note fires:
+ * 1 plain note or n chord tones (transpose applied, each tone range-clamped).
+ * Returns the tone count; 0 = undefined chord slot, fire nothing.
+ * sequencer_chord_transpose is the progression offset for chord presets:
+ * layer chord root relative to progression entry 0's root while the
+ * progression is enabled, else 0 (chords play exactly as entered). */
+uint8_t seq_track_fire_notes(const seq_layer_t *layer, uint8_t stored_note,
+                             uint8_t out[SEQ_CHORD_MAX_NOTES]);
+int     sequencer_chord_transpose(const seq_layer_t *layer);
+
 /* From seq_core_synth.c */
 void      sequencer_configure_synth(uint8_t layer_idx);
 void      sequencer_kill_synth_voices(uint8_t synth_id);
+/* Chord-aware per-track voice count: layer->num_voices, widened to the chord
+ * tone count while the track's base note is a chord sentinel — voices are
+ * spent only where chords actually play. Consulted by every melodic
+ * patch-apply site so the widened count survives patch reloads. */
+uint8_t   seq_track_num_voices(const seq_layer_t *layer, uint8_t track);
+/* True when any melodic track's needed voice count differs from what its
+ * synth was last configured with (chord assigned/removed or slot resized). */
+bool      sequencer_layer_voices_stale(uint8_t layer_idx);
+/* Clear schedule -> configure synth -> resync; the proven patch-cycling path,
+ * reused for chord voice-count changes (same ringing discipline). */
+void      sequencer_reconfigure_layer_paused(uint8_t layer_idx);
 /* Push the layer's melodic glide (portamento_ms) to every row synth. AMY clears
  * portamento_alpha on osc reset, so this is reasserted on every voice rebuild. */
 void      sequencer_core_push_melodic_portamento(uint8_t layer_idx);
@@ -221,3 +250,7 @@ bool sequencer_core_step_is_decorated(const seq_layer_t *layer, uint8_t track, u
 void sequencer_core_trig_reset(uint8_t layer_idx);   /* called on play-start, one layer   */
 void sequencer_core_trig_clear_all(uint8_t layer_idx); /* called on pause, one layer       */
 void sequencer_core_trig_reset_all(void);            /* called on layer add/delete        */
+/* Clear one track's pending chord-tone one-shot tags (tones 1..3). Called by
+ * the engine when a track's resolved note moves away from a chord so no
+ * scheduled extra tone survives the transition. */
+void sequencer_core_trig_clear_track_chord(uint8_t layer_idx, uint8_t track);

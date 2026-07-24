@@ -5,6 +5,7 @@
 #include "sdkconfig.h"     /* CONFIG_* gates on the virtual patch ranges below */
 #include "seq_model.h"     /* seq_layer_type_t, seq_layer_t, SEQ_* defines */
 #include "chord_types.h"
+#include "seq_chords.h"    /* chord presets: seq_chord_t + sentinel macros */
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h" /* TaskHandle_t — layers-applier registration below */
 
@@ -366,6 +367,18 @@ void    sequencer_core_set_track_midi_note(uint8_t layer_idx, uint8_t track,
 uint8_t sequencer_core_get_track_midi_note(uint8_t layer_idx, uint8_t track);
 uint8_t sequencer_core_get_track_source_note(uint8_t layer_idx, uint8_t track);
 
+/* ── Chord presets (seq_chords.h) — engine hooks ──
+ * chord_slot_changed: sweep every melodic track referencing chord slot `idx`
+ * after a table edit — re-emit, reconfigure the voice count when it changed,
+ * and fall back to the track's last plain note when the slot went undefined.
+ * Called automatically by seq_chords_set/clear; UI-task (single-applier) only.
+ * audition_chord: one-shot preview of an arbitrary chord (not necessarily
+ * stored yet) through track (layer_idx,track)'s synth — the chord editor's
+ * per-edit audition. */
+void sequencer_core_chord_slot_changed(uint8_t idx);
+void sequencer_core_audition_chord(uint8_t layer_idx, uint8_t track,
+                                   const seq_chord_t *chord);
+
 /* ── Per-step probability / ratchet / conditional trig ────────────────────
  * A step with prob==100 && ratchet==1 && cond==NONE is "plain" and costs
  * nothing extra (same always-on periodic AMY tag as before this feature).
@@ -522,6 +535,11 @@ bool    sequencer_core_progression_get_apply_at_bar(void);
  * it. For project load only: the freshly loaded arp values become the new
  * baseline, so a stale capture must not be restored over them on disable. */
 void    sequencer_core_progression_reset_arp_capture(void);
+/* True while the progression is driving the arp's root/scale (from the first
+ * chord apply until disable restores the captured values). Used by the arp's
+ * follow-global-quantizer mode: an active progression chord wins over the
+ * global scale, mirroring melodic chord_mode precedence. */
+bool    sequencer_core_progression_arp_owned(void);
 void    sequencer_core_progression_set_entry(uint8_t idx, uint8_t root,
                                              chord_type_t chord_type,
                                              uint8_t duration_bars);

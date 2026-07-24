@@ -1,5 +1,7 @@
 #pragma once
 
+#include "seq_chords.h"   /* SEQ_CHORD_MAX_NOTES for the chord tag-space math */
+
 /* ── Kconfig defaults ────────────────────────────────────────────────────── */
 #ifndef CONFIG_SEQ_QUANTIZER_DEFAULT_ENABLED
 #define CONFIG_SEQ_QUANTIZER_DEFAULT_ENABLED 1
@@ -160,6 +162,27 @@
 #define SEQ_RATCHET_TAG_BASE  (SEQ_ARP_TAG_MAX + 1u)                          /* 1120 */
 #define SEQ_RATCHET_TAG_COUNT (MAX_LAYERS * SEQ_TRACKS * SEQ_MAX_RATCHET * 2) /* 128 */
 #define SEQ_RATCHET_TAG_MAX   (SEQ_RATCHET_TAG_BASE + SEQ_RATCHET_TAG_COUNT - 1) /* 1247 */
+
+/* ── Chord tag space ──────────────────────────────────────────────────────
+ * Chord steps always go through the decorated one-shot path (a chord sentinel
+ * in step_note makes the step "decorated", see seq_core_trig.c), so chord
+ * tones need one-shot tags only — never a periodic per-step block. Tone 0 of
+ * every fire reuses the existing ratchet tag pair; tones 1..3 get their own
+ * statically assigned pair per (layer, track, ratchet-slot, tone). A second
+ * small block gives the edit-preview path its extra-tone pairs. Tags cost
+ * ~20 B of internal DRAM each in AMY (sequence_info_t + the two active-index
+ * arrays), which is why the one-shot scheme (480 tags) was chosen over a
+ * periodic per-step chord block (~3.5 K tags). Same max_sequencer_tags
+ * off-by-one rule as above: main.c must stay >= SEQ_CHORD_PREVIEW_TAG_MAX + 2. */
+#define SEQ_CHORD_TAG_BASE    (SEQ_RATCHET_TAG_MAX + 1u)                      /* 1248 */
+#define SEQ_CHORD_TAG_COUNT   (MAX_LAYERS * SEQ_TRACKS * SEQ_MAX_RATCHET \
+                               * (SEQ_CHORD_MAX_NOTES - 1) * 2)               /* 384 */
+#define SEQ_CHORD_TAG_MAX     (SEQ_CHORD_TAG_BASE + SEQ_CHORD_TAG_COUNT - 1)  /* 1631 */
+#define SEQ_CHORD_PREVIEW_TAG_BASE  (SEQ_CHORD_TAG_MAX + 1u)                  /* 1632 */
+#define SEQ_CHORD_PREVIEW_TAG_COUNT (MAX_LAYERS * SEQ_TRACKS \
+                                     * (SEQ_CHORD_MAX_NOTES - 1) * 2)         /* 96 */
+#define SEQ_CHORD_PREVIEW_TAG_MAX   (SEQ_CHORD_PREVIEW_TAG_BASE + \
+                                     SEQ_CHORD_PREVIEW_TAG_COUNT - 1)         /* 1727 */
 
 /* ── Global chord progression ────────────────────────────────────────────── */
 #define CHORD_PROG_MAX_ENTRIES 8

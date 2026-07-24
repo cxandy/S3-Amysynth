@@ -1,5 +1,6 @@
 #include "display_seq.h"
 #include "patch_names.h"
+#include "seq_chords.h"   /* chord sentinel test for the track pitch label */
 #include <stdio.h>
 
 /* Static role labels for the four drum tracks, by purpose/frequency range
@@ -9,9 +10,15 @@ static const char *const drum_track_labels[SEQ_TRACKS] = {
     "LOW", "MID", "TOP", "PERC"
 };
 
-/* Produce a 3-char null-terminated note name: "C4", "C#4", "D4" … */
+/* Produce a 3-char null-terminated note name: "C4", "C#4", "D4" … — or the
+ * chord-slot label "CHn" when the stored note is a chord preset sentinel
+ * (seq_chords.h, via seq_model.h's engine model). */
 static void note_name_str(uint8_t midi_note, char buf[4])
 {
+    if (SEQ_NOTE_IS_CHORD(midi_note)) {
+        snprintf(buf, 4, "CH%u", (unsigned)(SEQ_CHORD_INDEX(midi_note) + 1u));
+        return;
+    }
     static const char *const note_names[] = {
         "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"
     };

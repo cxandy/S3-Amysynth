@@ -163,6 +163,38 @@ void sequencer_kill_synth_voices(uint8_t synth_id)
     amy_helpers_event_send(e);
 }
 
+/* ── Chord-aware per-track voice budget ───────────────────────────────────
+ * What each melodic row's synth was last configured with, so a chord
+ * assign/remove or slot resize can detect "my voice count no longer fits"
+ * without re-deriving AMY-side state. Runtime bookkeeping only; non-static so
+ * delete_layer's compaction (seq_core_state.c) can shift it in lockstep with
+ * the other per-layer parallel arrays. */
+uint8_t s_voices_applied[MAX_LAYERS][SEQ_TRACKS];
+
+uint8_t seq_track_num_voices(const seq_layer_t *layer, uint8_t track)
+{
+    uint8_t v = layer->num_voices;
+    if (layer->type == SEQ_LAYER_MELODIC &&
+        SEQ_NOTE_IS_CHORD(layer->track_base_note[track])) {
+        uint8_t c = seq_chords_count(SEQ_CHORD_INDEX(layer->track_base_note[track]));
+        if (c > v) v = c;
+    }
+    return v;
+}
+
+bool sequencer_layer_voices_stale(uint8_t layer_idx)
+{
+    if (layer_idx >= s_num_layers) return false;
+    const seq_layer_t *layer = &s_layers[layer_idx];
+    if (layer->type != SEQ_LAYER_MELODIC) return false;
+    for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
+        if (seq_track_num_voices(layer, t) != s_voices_applied[layer_idx][t]) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /* Configure a single melodic synth slot as a bare AMY oscillator.
  * Mirrors arp_configure_wave_synth() but for melodic tracks (SEQ_MEL_VOICES
  * voices per synth slot).  Envelope, filter, and LFO are applied by the caller.
@@ -447,18 +479,23 @@ void sequencer_configure_synth(uint8_t layer_idx)
         return;
     }
 
-    /* Melodic: push the shared patch/flags/voices to each row's own synth.
-     * Kind dispatch (raw wave / bass / FM / patch string) lives in
-     * sequencer_apply_patch_kind() above, shared with the arp. */
+    /* Melodic: push the shared patch/flags to each row's own synth. The voice
+     * count is per-track: layer->num_voices, widened to the chord tone count
+     * on rows carrying a chord preset (seq_track_num_voices) — voices are
+     * spent only where chords play. Kind dispatch (raw wave / bass / FM /
+     * patch string) lives in sequencer_apply_patch_kind() above, shared with
+     * the arp. */
     bool string_patch = false;
     for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
+        uint8_t voices = seq_track_num_voices(layer, t);
         sequencer_kill_synth_voices(layer->synth_id[t]);
         string_patch |= seq_apply_patch(layer->synth_id[t],
                                         layer->patch,
-                                        layer->num_voices,
+                                        voices,
                                         layer->synth_flags,
                                         layer->vp[t].filter_authored,
                                         layer->vp[t].filter.feedback);
+        s_voices_applied[layer_idx][t] = voices;
     }
     seq_flush_patch_fx(string_patch);
     sequencer_configure_melodic_envelope(layer_idx);
@@ -485,10 +522,18 @@ void sequencer_configure_synth(uint8_t layer_idx)
  * per track — mandatory, their note-offs were just cleared too), re-emit.
  * sequencer_emit_step() is s_playing-gated, so the resync is a no-op while
  * paused. Cost: the layer goes quiet for the events cleared mid-flight; the
- * re-emit restores the same absolute tick positions, so groove phase is kept. */
-static void sequencer_reconfigure_layer_paused(uint8_t layer_idx)
+ * re-emit restores the same absolute tick positions, so groove phase is kept.
+ * Non-static since chord presets: also the reconfigure path for per-track
+ * voice-count changes (chord assign/remove, slot resize) — see
+ * seq_core_internal.h. */
+void sequencer_reconfigure_layer_paused(uint8_t layer_idx)
 {
     sequencer_clear_layer_tags(layer_idx);
+    /* Also drop the trig engine's pending one-shots (ratchet + chord tone
+     * pairs): a sub-hit scheduled moments ago must not resolve against the
+     * half-rebuilt voice pool below — the same stranded-osc mechanism the
+     * periodic clear above exists to prevent. */
+    sequencer_core_trig_clear_all(layer_idx);
     sequencer_configure_synth(layer_idx);
     sequencer_resync_layer(layer_idx);
 }

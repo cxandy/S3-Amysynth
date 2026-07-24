@@ -104,9 +104,10 @@ typedef struct {
     float   feedback;      /* KS string decay, 0..1 (1.0 = lossless "infinite
                               sustain"; above 1 the KS buffer diverges). Only
                               meaningful on feedback waves (KS): the filter
-                              editor's Q cursor edits THIS instead of resonance
-                              there. 0.0 (memset default) = never authored ->
-                              apply paths leave AMY's build-time 0.9 default
+                              editor exposes a dedicated FB cursor for it there,
+                              alongside the still-editable biquad resonance.
+                              0.0 (memset default) = never authored -> apply
+                              paths leave AMY's build-time 0.9 default
                               untouched. Replaces the old scheme that derived
                               feedback from the resonance Q value. */
 } seq_filter_t;

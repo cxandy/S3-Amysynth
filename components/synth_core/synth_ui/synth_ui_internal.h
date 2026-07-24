@@ -143,6 +143,19 @@ bool     projects_menu_is_renaming(void);
 void     projects_menu_rename_commit(void);
 void     projects_menu_rename_cancel(void);
 
+/* ─── Chords page: chord-preset editor (item model in ui_screen_chords.c;
+ *     page state and input routing live in ui_screen_menu.c). Slot list +
+ *     per-slot edit view; every edit commits through seq_chords_set and
+ *     auditions on the selected melodic track. ──────────────────────────── */
+const menu_item_view_t *chords_menu_build_items(void);
+uint8_t  chords_menu_item_count(void);
+bool     chords_menu_item_is_back(uint8_t idx);
+bool     chords_menu_item_is_value(uint8_t idx);
+bool     chords_menu_handle_click(uint8_t idx);
+void     chords_menu_edit_value(uint8_t idx, int delta);
+void     chords_menu_reset(void);
+const char *chords_menu_title(void);
+
 /* Editor live-preview service: flushes any pending throttled apply (currently
  * only the graph editor's amp trim, whose melodic apply re-emits the track's
  * steps). Called from synth_ui_task's 50 ms loop; no-op when no editor is

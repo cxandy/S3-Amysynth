@@ -189,10 +189,8 @@ void set_cv_from_osc(int cv_channel, int osc) {
     // Mirror MOD_SOURCE setup from amy.c:config_chorus
     osc_for_cv[cv_channel] = osc;
     if (osc < 0)  return;  // syntax to unset cv_from_osc.
-    ensure_osc_allocd(osc, NULL);
-    // LOCAL EDIT (S3-Amysynth): OOM guard - alloc failed, leave the mapping
-    // unset rather than crash. See AMY-EDITS.md.
-    if (synth[osc] == NULL) {
+    // On OOM leave the mapping unset.
+    if (!ensure_osc_allocd(osc, NULL)) {
         osc_for_cv[cv_channel] = -1;
         return;
     }

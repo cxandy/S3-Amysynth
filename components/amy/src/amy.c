@@ -4,6 +4,7 @@
 #include "amy.h"
 #include "amy_simd.h"  // LOCAL EDIT (S3-Amysynth): PIE block clear/copy
 #include "delay.h"
+#include <stdarg.h>
 
 // LOCAL EDIT (S3-Amysynth): also build the profiler support (tables, timers,
 // init/print) in COARSE mode, not just full AMY_DEBUG. See AMY-EDITS.md.
@@ -226,6 +227,23 @@ output_sample_type * output_block;
   }
 #endif
 
+// All runtime allocation failures report through here: count, log, and under
+// AMY_DEBUG abort() at the cause instead of degrading silently.
+void amy_oom(const char *fmt, ...) {
+    ++amy_global.oom_count;
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+#ifdef AMY_DEBUG
+    abort();
+#endif
+}
+
+uint32_t amy_get_oom_count() {
+    return amy_global.oom_count;
+}
+
 
 void dealloc_echo_delay_lines(uint8_t bus) {
     for (int c = AMY_NCHANS - 1; c >= 0; --c) {
@@ -309,9 +327,8 @@ void alloc_chorus_delay_lines(uint8_t bus) {
     // LOCAL EDIT (S3-Amysynth): amy_render() PIE-clears delay_mod each block, so it is
     // one of the buffers a PIE kernel walks - 16-byte aligned like the others.
     amy_global.bus[bus]->chorus.delay_mod = (SAMPLE *)malloc_caps_block(sizeof(SAMPLE) * AMY_BLOCK_SIZE, amy_global.config.ram_caps_delay);
-    // LOCAL EDIT (S3-Amysynth): OOM guard - a NULL delay_mod counts as failure
-    // too, so a partial chorus alloc is torn down instead of leaving a NULL
-    // buffer for the render loop's block clear. See AMY-EDITS.md.
+    // A NULL delay_mod counts as failure too, so a partial chorus alloc is torn
+    // down instead of leaving a NULL buffer for the render loop's block clear.
     bool success = (amy_global.bus[bus]->chorus.delay_mod != NULL);
     for(int c = 0; success && c < AMY_NCHANS; ++c) {
         delay_line_t *delay_line = new_delay_line(DELAY_LINE_LEN, DELAY_LINE_LEN / 2, amy_global.config.ram_caps_delay);
@@ -323,7 +340,7 @@ void alloc_chorus_delay_lines(uint8_t bus) {
         }
     }
     if (!success) {
-        fprintf(stderr, "unable to alloc chorus of %d samples\n", (int)DELAY_LINE_LEN);
+        amy_oom("unable to alloc chorus of %d samples\n", (int)DELAY_LINE_LEN);
         dealloc_chorus_delay_lines(bus);
     }
 }
@@ -340,8 +357,7 @@ void config_chorus(uint8_t bus, float level, uint16_t max_delay, float lfo_freq,
         if (amy_global.bus[bus]->chorus.chorus_delay_lines[0] == NULL) {
             alloc_chorus_delay_lines(bus);
         }
-        // LOCAL EDIT (S3-Amysynth): OOM guard - alloc can fail; leave the
-        // chorus off (mirrors config_reverb) instead of deref'ing NULL lines.
+        // On OOM leave the chorus off, as config_reverb does.
         if (amy_global.bus[bus]->chorus.chorus_delay_lines[0] == NULL) {
             amy_global.bus[bus]->chorus.level = 0;
             return;
@@ -351,11 +367,8 @@ void config_chorus(uint8_t bus, float level, uint16_t max_delay, float lfo_freq,
             //chorus_delay_lines[chan]->max_delay = max_delay;
             amy_global.bus[bus]->chorus.chorus_delay_lines[chan]->fixed_delay = (int)max_delay / 2;
         }
-        // Configure the LFO osc.
-        ensure_osc_allocd(CHORUS_MOD_SOURCE + bus, NULL);
-        // LOCAL EDIT (S3-Amysynth): OOM guard - LFO osc alloc failed, leave
-        // the chorus off.
-        if (synth[CHORUS_MOD_SOURCE + bus] == NULL) {
+        // Configure the LFO osc; on OOM leave the chorus off.
+        if (!ensure_osc_allocd(CHORUS_MOD_SOURCE + bus, NULL)) {
             amy_global.bus[bus]->chorus.level = 0;
             return;
         }
@@ -498,6 +511,7 @@ int8_t global_init(amy_config_t c) {
     amy_global.debug_flag = 0;
     amy_global.highest_bus = 0;
     amy_global.hpf_state = 0;
+    amy_global.oom_count = 0;
     amy_global.sequencer_tick_count = 0;
     amy_global.next_amy_tick_us = 0;
     amy_global.us_per_tick = 0;
@@ -552,10 +566,6 @@ float midi_note_for_logfreq(float logfreq) {
 
 
 
-// LOCAL EDIT (S3-Amysynth, 2026-06-27): forward decl; defined with the delta-pool
-// globals below. Counts events dropped on pool OOM (see add_delta_to_queue).
-extern uint32_t amy_delta_drop_count;
-
 void add_delta_to_queue(struct delta *d, struct delta **queue) {
     AMY_PROFILE_START(ADD_DELTA_TO_QUEUE)
     amy_grab_lock();
@@ -566,14 +576,10 @@ void add_delta_to_queue(struct delta *d, struct delta **queue) {
 
     struct delta *new_d = delta_get(d);
 
-    // LOCAL EDIT (S3-Amysynth, 2026-06-27): pool exhausted and could not be grown
-    // (OOM). Undo the decorative qsize bump, count the drop, and bail instead of
-    // dereferencing NULL (was StoreProhibited @0x10). The PSRAM spill in
-    // deltas_add_pool_block makes this path essentially unreachable in practice.
+    // Pool couldn't grow: undo the qsize bump and drop the delta.
     if (new_d == NULL) {
         if (queue == &amy_global.delta_queue && amy_global.delta_qsize > 0)
             amy_global.delta_qsize--;
-        amy_delta_drop_count++;
         amy_release_lock();
         AMY_PROFILE_STOP(ADD_DELTA_TO_QUEUE)
         return;
@@ -951,14 +957,9 @@ void alloc_osc(int osc, uint8_t *max_num_breakpoints) {
     uint8_t *ptr = malloc_caps(sizeof(struct synthinfo) + sizeof(struct mod_synthinfo)
                                + total_num_breakpoints * (sizeof(float) + sizeof(uint32_t)),
                                amy_global.config.ram_caps_events);
-    /* LOCAL EDIT (S3-Amysynth): malloc_caps returns NULL on exhaustion; the
-     * unchecked write below was a StoreProhibited on internal-heap OOM (same
-     * bug family as the delta-pool and reverb OOM crashes). Leave the osc
-     * unallocated: reset_osc() and the render loop already tolerate a NULL
-     * synth[osc], and play_delta()/the mod/chain loop guards skip it, so the
-     * voice goes silent instead of crashing. See AMY-EDITS.md. */
+    // On OOM leave the osc NULL; the voice goes silent instead of crashing.
     if (ptr == NULL) {
-        fprintf(stderr, "alloc_osc: OOM allocating osc %d - osc left silent\n", osc);
+        amy_oom("alloc_osc: out of memory allocating osc %d\n", osc);
         synth[osc] = NULL;
         msynth[osc] = NULL;
         return;
@@ -987,13 +988,20 @@ void free_osc(int osc) {
     msynth[osc] = NULL;
 }
 
-void ensure_osc_allocd(int osc, uint8_t *max_num_breakpoints) {
-    if (synth[osc] == NULL) alloc_osc(osc, max_num_breakpoints);
-    else if (max_num_breakpoints) {
+// Ensure synth[osc] exists with at least the requested breakpoint capacity.
+// Returns false on OOM: the osc is still NULL, or (for a grow) keeps its old,
+// smaller vectors.
+bool ensure_osc_allocd(int osc, uint8_t *max_num_breakpoints) {
+    if (synth[osc] == NULL) {
+        alloc_osc(osc, max_num_breakpoints);
+        return synth[osc] != NULL;
+    }
+    if (max_num_breakpoints) {
         bool realloc_needed = false;
         uint8_t new_max_num_breakpoints[MAX_BREAKPOINT_SETS];
         for (int i = 0; i < MAX_BREAKPOINT_SETS; ++i) {
-            new_max_num_breakpoints[i] = DEFAULT_NUM_BREAKPOINTS;
+            // Never shrink a set; the copy below has to fit its old contents.
+            new_max_num_breakpoints[i] = synth[osc]->max_num_breakpoints[i];
             if (synth[osc]->max_num_breakpoints[i] < max_num_breakpoints[i]) {
                 realloc_needed = true;
                 // Increase num_breakpoints in blocks of DEFAULT_NUM_BREAKPOINTS.
@@ -1003,52 +1011,42 @@ void ensure_osc_allocd(int osc, uint8_t *max_num_breakpoints) {
         }
         if (realloc_needed) {
             //fprintf(stderr, "realloc for osc %d (breakpoints %d, %d -> %d, %d (wave=%d)\n", osc, synth[osc]->max_num_breakpoints[0], synth[osc]->max_num_breakpoints[1], max_num_breakpoints[0], max_num_breakpoints[1], synth[osc]->wave);
-            // Save the current values in the structure.
-            struct synthinfo saved_values = *synth[osc];
-            int32_t breakpoint_times[MAX_BREAKPOINT_SETS][MAX_BREAKPOINTS];
-            float breakpoint_values[MAX_BREAKPOINT_SETS][MAX_BREAKPOINTS];
-            int num_old_breakpoints[MAX_BREAKPOINT_SETS];
-            for (int i = 0; i < MAX_BREAKPOINT_SETS; ++i) {
-                num_old_breakpoints[i] = synth[osc]->max_num_breakpoints[i];
-                for (int j = 0; j < num_old_breakpoints[i]; ++j) {
-                    breakpoint_times[i][j] = synth[osc]->breakpoint_times[i][j];
-                    breakpoint_values[i][j] = synth[osc]->breakpoint_values[i][j];
-                }
-            }
-            // Reallocate the structure.
-            free_osc(osc);
+            // Allocate the replacement before freeing the old block, so OOM
+            // leaves the osc's state intact.
+            struct synthinfo *old_synth = synth[osc];
+            struct mod_synthinfo *old_msynth = msynth[osc];
+            synth[osc] = NULL;
             alloc_osc(osc, new_max_num_breakpoints);
-            // Save the pointers to the newly-alloc'd vectors.
-            uint32_t *saved_breakpoint_times[MAX_BREAKPOINT_SETS];
-            float *saved_breakpoint_values[MAX_BREAKPOINT_SETS];
-            int saved_max_num_breakpoints[MAX_BREAKPOINT_SETS];
-            for (int i = 0; i < MAX_BREAKPOINT_SETS; ++i) {
-                saved_breakpoint_times[i] = synth[osc]->breakpoint_times[i];
-                saved_breakpoint_values[i]= synth[osc]->breakpoint_values[i];
-                saved_max_num_breakpoints[i] = synth[osc]->max_num_breakpoints[i];
+            if (synth[osc] == NULL) {
+                synth[osc] = old_synth;
+                msynth[osc] = old_msynth;
+                return false;
             }
-            // Copy all the values from the previous alloc.
-            (*synth[osc]) = saved_values;
-            // Restore the new breakpoint vectors.
+            // Copy the old state over, keeping the new (larger) vectors.
+            struct synthinfo *new_synth = synth[osc];
+            struct synthinfo fresh = *new_synth;  // new vectors and counts
+            *new_synth = *old_synth;
             for (int i = 0; i < MAX_BREAKPOINT_SETS; ++i) {
-                synth[osc]->breakpoint_times[i] = saved_breakpoint_times[i];
-                synth[osc]->breakpoint_values[i] = saved_breakpoint_values[i];
-                synth[osc]->max_num_breakpoints[i] = saved_max_num_breakpoints[i];
-            }
-            // And, to be conservative, the breakpoint values themselves.
-            for (int i = 0; i < MAX_BREAKPOINT_SETS; ++i) {
-                for (int j = 0; j < num_old_breakpoints[i]; ++j) {
-                    synth[osc]->breakpoint_times[i][j] = breakpoint_times[i][j];
-                    synth[osc]->breakpoint_values[i][j] = breakpoint_values[i][j];
+                new_synth->breakpoint_times[i] = fresh.breakpoint_times[i];
+                new_synth->breakpoint_values[i] = fresh.breakpoint_values[i];
+                new_synth->max_num_breakpoints[i] = fresh.max_num_breakpoints[i];
+                int num_old_breakpoints = old_synth->max_num_breakpoints[i];
+                for (int j = 0; j < num_old_breakpoints; ++j) {
+                    new_synth->breakpoint_times[i][j] = old_synth->breakpoint_times[i][j];
+                    new_synth->breakpoint_values[i][j] = old_synth->breakpoint_values[i][j];
                 }
                 // And clear the ones beyond
-                for (int j = num_old_breakpoints[i]; j < synth[osc]->max_num_breakpoints[i]; ++j) {
-                    AMY_UNSET(synth[osc]->breakpoint_times[i][j]);
-                    AMY_UNSET(synth[osc]->breakpoint_values[i][j]);
+                for (int j = num_old_breakpoints; j < new_synth->max_num_breakpoints[i]; ++j) {
+                    AMY_UNSET(new_synth->breakpoint_times[i][j]);
+                    AMY_UNSET(new_synth->breakpoint_values[i][j]);
                 }
             }
+            free(old_synth);
         }
+        for (int i = 0; i < MAX_BREAKPOINT_SETS; ++i)
+            if (synth[osc]->max_num_breakpoints[i] < max_num_breakpoints[i]) return false;
     }
+    return true;
 }
 
 
@@ -1266,16 +1264,13 @@ int chained_osc_would_cause_loop(uint16_t osc, uint16_t chained_osc) {
     // Check to see if chaining this osc would cause a loop.
     uint16_t next_osc = chained_osc;
     do {
-        ensure_osc_allocd(chained_osc, NULL);
+        // An osc we can't allocate can't be linked.
+        if (!ensure_osc_allocd(next_osc, NULL)) return true;
         if (next_osc == osc) {
             fprintf(stderr, "chaining osc %d to osc %d would cause loop.\n",
                     chained_osc, osc);
             return true;
         }
-        /* LOCAL EDIT (S3-Amysynth): alloc can fail under OOM; refusing the
-         * link (as if it looped) keeps a NULL osc out of the chain walk that
-         * MIDI_NOTE propagation and render both follow. */
-        if (synth[next_osc] == NULL) return true;
         next_osc = synth[next_osc]->chained_osc;
     } while(AMY_IS_SET(next_osc));
     return false;
@@ -1290,16 +1285,13 @@ int mod_osc_would_cause_loop(uint16_t osc, uint16_t mod_osc) {
     // chained_osc_would_cause_loop() above.
     uint16_t next_osc = mod_osc;
     do {
-        ensure_osc_allocd(next_osc, NULL);
+        // An osc we can't allocate can't be linked.
+        if (!ensure_osc_allocd(next_osc, NULL)) return true;
         if (next_osc == osc) {
             fprintf(stderr, "osc %d as mod_source for osc %d would cause loop.\n",
                     mod_osc, osc);
             return true;
         }
-        /* LOCAL EDIT (S3-Amysynth): alloc can fail under OOM; refuse the
-         * mod link so hold_and_modify never recurses into a NULL osc (the
-         * caller's else-branch unsets mod_source). */
-        if (synth[next_osc] == NULL) return true;
         next_osc = synth[next_osc]->mod_source;
     } while(AMY_IS_SET(next_osc));
     return false;
@@ -1327,12 +1319,8 @@ void play_delta(struct delta *d) {
     // todo: delta-only side effect, remove
 
     if (d->param != RESET_OSC) {
-        ensure_osc_allocd(d->osc, NULL);
-        /* LOCAL EDIT (S3-Amysynth): the alloc can fail under internal-heap
-         * OOM (see alloc_osc). Every branch below dereferences
-         * synth[d->osc]; drop the delta instead of crashing. RESET_OSC is
-         * exempt above and reset_osc() itself tolerates NULL. */
-        if (synth[d->osc] == NULL) {
+        // On OOM drop the delta; every branch below dereferences synth[d->osc].
+        if (!ensure_osc_allocd(d->osc, NULL)) {
             AMY_PROFILE_STOP(PLAY_DELTA)
             return;
         }
@@ -1394,11 +1382,8 @@ void play_delta(struct delta *d) {
                 max_num_breakpoints[i] = synth[d->osc]->max_num_breakpoints[i];
             max_num_breakpoints[bp_set] = bp_index + 1;
             // realloc rounds up in blocks of DEFAULT_NUM_BREAKPOINTS (8).
-            ensure_osc_allocd(d->osc, max_num_breakpoints);
-            /* LOCAL EDIT (S3-Amysynth): the breakpoint realloc frees the old
-             * osc before allocating the bigger one, so the entry guard's
-             * non-NULL promise can be invalidated right here under OOM. */
-            if (synth[d->osc] == NULL) {
+            // On OOM the osc keeps its old, smaller vectors: drop the delta.
+            if (!ensure_osc_allocd(d->osc, max_num_breakpoints)) {
                 AMY_PROFILE_STOP(PLAY_DELTA)
                 return;
             }
@@ -1492,10 +1477,8 @@ void play_delta(struct delta *d) {
         synth[d->osc]->algo_source[which_source] = d->data.i;
         if(AMY_IS_SET(synth[d->osc]->algo_source[which_source])) {
             int osc = synth[d->osc]->algo_source[which_source];
-            ensure_osc_allocd(osc, NULL);
-            /* LOCAL EDIT (S3-Amysynth): alloc can fail under OOM; unset the
-             * source so render_algo never walks into a NULL osc. */
-            if (synth[osc] == NULL) {
+            // On OOM unset the source so render_algo never sees a NULL osc.
+            if (!ensure_osc_allocd(osc, NULL)) {
                 AMY_UNSET(synth[d->osc]->algo_source[which_source]);
             } else {
                 synth[osc]->status = SYNTH_IS_ALGO_SOURCE;
@@ -1942,10 +1925,7 @@ AMY_IRAM_ATTR void amy_render(uint16_t start, uint16_t end, uint8_t core) {
 
     if(AMY_HAS_CHORUS && core == 0) {
         for(int bus = 0; bus <= amy_global.highest_bus; ++bus) {
-            ensure_osc_allocd(CHORUS_MOD_SOURCE + bus, NULL);
-            // LOCAL EDIT (S3-Amysynth): OOM guard - skip this bus's chorus
-            // LFO if the osc could not be allocated.
-            if (synth[CHORUS_MOD_SOURCE + bus] == NULL) continue;
+            if (!ensure_osc_allocd(CHORUS_MOD_SOURCE + bus, NULL)) continue;
             hold_and_modify(CHORUS_MOD_SOURCE + bus);
             if(amy_global.bus[bus]->chorus.level!=0)  {
                 // LOCAL EDIT (S3-Amysynth): PIE-accelerated block clear (see amy_simd.h).
@@ -2214,12 +2194,6 @@ struct delta *free_deltas_pool = NULL;
 struct delta *delta_blocks[MAX_DELTA_BLOCKS];
 int next_delta_block = 0;
 
-// LOCAL EDIT (S3-Amysynth, 2026-06-27): count of events dropped because the
-// delta pool could not be grown (OOM). Stays 0 in practice with PSRAM spill;
-// non-zero means even PSRAM was exhausted. Not logged per-drop (would spam
-// under amy_queue_lock during the exact burst that triggered it).
-uint32_t amy_delta_drop_count = 0;
-
 #define DELTA_BLOCK_SIZE 2048
 
 // LOCAL EDIT (S3-Amysynth, 2026-06-27): takes explicit caps so overflow blocks
@@ -2244,7 +2218,10 @@ static struct delta *deltas_pool_alloc(int max_delta_pool_size, struct delta *ta
 
 void deltas_add_pool_block(void) {
     if (next_delta_block >= MAX_DELTA_BLOCKS) {
-        fprintf(stderr, "**delta pool: MAX_DELTA_BLOCKS (%d) reached — events will be dropped\n", MAX_DELTA_BLOCKS);
+        // LOCAL EDIT (S3-Amysynth): upstream abort()s here; on target a dropped
+        // event beats taking the whole synth down. Reported like an OOM.
+        amy_oom("deltas_add_pool_block: MAX_DELTA_BLOCKS (%d) reached - events will be dropped\n",
+                MAX_DELTA_BLOCKS);
         return;
     }
     // LOCAL EDIT (S3-Amysynth, 2026-06-27): block 0 in internal RAM (hot common-
@@ -2254,7 +2231,7 @@ void deltas_add_pool_block(void) {
                                             : (MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     struct delta *block = deltas_pool_alloc(DELTA_BLOCK_SIZE, free_deltas_pool, caps);
     if (block == NULL) {
-        fprintf(stderr, "**delta pool: OOM growing block %d (caps 0x%lx) — events will be dropped\n",
+        amy_oom("deltas_add_pool_block: out of memory growing block %d (caps 0x%lx) - events will be dropped\n",
                 next_delta_block, (unsigned long)caps);
         return;   // leave free_deltas_pool/next_delta_block untouched; delta_get guards
     }

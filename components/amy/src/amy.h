@@ -915,6 +915,9 @@ typedef struct global_state {
 
     // Final output mix
     float bus_gain[AMY_NUM_BUSES];
+
+    // Runtime allocation failures since amy_start (see amy_oom).
+    uint32_t oom_count;
 } global_state_t;
 
 
@@ -964,6 +967,7 @@ void * malloc_caps(uint32_t size, uint32_t flags);
 // buffers the ESP32-S3 PIE kernels walk. See the definition in amy.c for why this is
 // separate from malloc_caps rather than folded into it.
 void * malloc_caps_block(uint32_t size, uint32_t flags);
+void amy_oom(const char *fmt, ...);
 void config_reverb(uint8_t bus, float level, float liveness, float damping, float xover_hz);
 void config_chorus(uint8_t bus, float level, uint16_t max_delay, float lfo_freq, float depth);
 void config_echo(uint8_t bus, float level, float delay_ms, float max_delay_ms, float feedback, float filter_coef);
@@ -983,7 +987,7 @@ float atoff(const char *s);
 int8_t oscs_init();
 void alloc_osc(int osc, uint8_t *max_num_breakpoints_per_bpset_or_null);
 void free_osc(int osc);
-void ensure_osc_allocd(int osc, uint8_t *max_num_breakpoints_per_bpset_or_null);
+bool ensure_osc_allocd(int osc, uint8_t *max_num_breakpoints_per_bpset_or_null);
 void patches_init(int max_memory_patches);
 void patches_deinit();
 void parse_algo_source(char* message, int16_t *vals);
@@ -1018,6 +1022,9 @@ amy_config_t amy_default_config();
 void amy_clear_event(amy_event *e);
 amy_event amy_default_event();
 uint32_t amy_sysclock();
+// Runtime allocation failures since amy_start.  AMY degrades on OOM (silent
+// voice, dropped event) instead of crashing; hosts can poll this to detect it.
+uint32_t amy_get_oom_count();
 int amy_get_output_buffer(output_sample_type * samples);
 int amy_get_input_buffer(output_sample_type * samples);
 void amy_set_external_input_buffer(output_sample_type * samples);

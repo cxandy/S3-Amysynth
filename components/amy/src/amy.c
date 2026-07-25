@@ -2,7 +2,6 @@
 // brian@variogr.am / dan.ellis@gmail.com
 
 #include "amy.h"
-#include "amy_simd.h"  // LOCAL EDIT (S3-Amysynth): PIE block clear/copy
 #include "delay.h"
 #include <stdarg.h>
 
@@ -201,26 +200,20 @@ output_sample_type * output_block;
     return result;
   }
 
-  // LOCAL EDIT (S3-Amysynth): allocator for the sample-block buffers the ESP32-S3 PIE
-  // kernels walk (fbl, per_osc_fb, the FM scratch blocks).
+  // 16-byte-aligned allocator for the sample blocks the ESP32-S3 PIE kernels walk
+  // (the FM operator scratch in algorithms.c). Alignment is a correctness matter
+  // for PIE, not just speed: EE.VLD.128 / EE.VST.128 force the low address bits of
+  // the operand to zero, so an unaligned base silently accesses the rounded-down
+  // address instead of faulting - which is why zero()/copy() test the base and fall
+  // back to libc when it isn't aligned.
   //
-  // 16-byte alignment is a CORRECTNESS matter for PIE, not just speed: EE.VLD.128 /
-  // EE.VST.128 force the low address bits of the operand to zero, so an unaligned base
-  // silently accesses the wrong (rounded-down) address instead of faulting. The pie_dsp
-  // wrappers already guard against that with a scalar head, but aligning the base means
-  // the head is empty and a whole AMY_BLOCK_SIZE block goes down the vector path.
-  //
-  // Deliberately NOT folded into malloc_caps(): most AMY allocations are small structs
-  // (synthinfo, msynth, instruments, sequencer arrays) and heap_caps_aligned_alloc
-  // over-allocates per block. On this board internal DRAM is the scarce resource
-  // (~54 KB free), so we pay the alignment overhead only where PIE actually reads.
-  //
-  // Freeing is unchanged: in IDF free(p) == heap_caps_free(p), which is the correct
-  // deallocator for heap_caps_aligned_alloc (heap_caps_aligned_free is deprecated).
+  // Kept separate from malloc_caps() because most AMY allocations are small
+  // structs and aligned allocation over-allocates per block. free(p) is
+  // unchanged: under IDF free() == heap_caps_free(), the correct deallocator
+  // for heap_caps_aligned_alloc (heap_caps_aligned_free is deprecated).
   void * malloc_caps_block(uint32_t size, uint32_t flags) {
-  #if defined(ESP_PLATFORM) && AMY_PIE_SIMD
-    const uint32_t aligned_size = (size + 15u) & ~15u;  // aligned_alloc wants a multiple
-    return heap_caps_aligned_alloc(16, aligned_size, flags);
+  #if defined(ESP_PLATFORM) && defined(CONFIG_IDF_TARGET_ESP32S3)
+    return heap_caps_aligned_alloc(16, (size + 15u) & ~15u, flags);
   #else
     return malloc_caps(size, flags);
   #endif
@@ -324,9 +317,7 @@ void dealloc_chorus_delay_lines(uint8_t bus) {
 }
 
 void alloc_chorus_delay_lines(uint8_t bus) {
-    // LOCAL EDIT (S3-Amysynth): amy_render() PIE-clears delay_mod each block, so it is
-    // one of the buffers a PIE kernel walks - 16-byte aligned like the others.
-    amy_global.bus[bus]->chorus.delay_mod = (SAMPLE *)malloc_caps_block(sizeof(SAMPLE) * AMY_BLOCK_SIZE, amy_global.config.ram_caps_delay);
+    amy_global.bus[bus]->chorus.delay_mod = (SAMPLE *)malloc_caps(sizeof(SAMPLE) * AMY_BLOCK_SIZE, amy_global.config.ram_caps_delay);
     // A NULL delay_mod counts as failure too, so a partial chorus alloc is torn
     // down instead of leaving a NULL buffer for the render loop's block clear.
     bool success = (amy_global.bus[bus]->chorus.delay_mod != NULL);
@@ -1082,9 +1073,8 @@ int8_t oscs_init() {
     // clear out both as local mode won't use fbl[1] 
     for(uint16_t core=0;core<AMY_CORES;++core) {
         for (int bus = 0; bus < AMY_NUM_BUSES; ++bus) {
-            // LOCAL EDIT (S3-Amysynth): PIE kernels walk these - 16-byte aligned.
-            per_osc_fb[core][bus] = (SAMPLE*)malloc_caps_block(sizeof(SAMPLE) * AMY_BLOCK_SIZE, amy_global.config.ram_caps_fbl);
-            fbl[core][bus] = (SAMPLE*)malloc_caps_block(sizeof(SAMPLE) * AMY_BLOCK_SIZE * AMY_NCHANS, amy_global.config.ram_caps_fbl);
+            per_osc_fb[core][bus] = (SAMPLE*)malloc_caps(sizeof(SAMPLE) * AMY_BLOCK_SIZE, amy_global.config.ram_caps_fbl);
+            fbl[core][bus] = (SAMPLE*)malloc_caps(sizeof(SAMPLE) * AMY_BLOCK_SIZE * AMY_NCHANS, amy_global.config.ram_caps_fbl);
             bzero(fbl[core][bus], sizeof(SAMPLE) * AMY_BLOCK_SIZE * AMY_NCHANS);
         }
     }
@@ -1894,15 +1884,12 @@ AMY_IRAM_ATTR void amy_render(uint16_t start, uint16_t end, uint8_t core) {
     amy_grab_lock();
 
     for(int bus = 0; bus <= amy_global.highest_bus; ++bus)
-        // LOCAL EDIT (S3-Amysynth): PIE-accelerated block clear (see amy_simd.h).
-        AMY_BLOCK_BZERO(fbl[core][bus], sizeof(SAMPLE) * AMY_BLOCK_SIZE * AMY_NCHANS);
+        bzero(fbl[core][bus], sizeof(SAMPLE) * AMY_BLOCK_SIZE * AMY_NCHANS);
     SAMPLE max_max = 0;
     for(uint16_t osc=start; osc<end; osc++) {
         if(synth[osc] != NULL && synth[osc]->status == SYNTH_AUDIBLE) { // skip oscs that are silent or mod sources from playback
             uint8_t bus = synth[osc]->bus;
-            // LOCAL EDIT (S3-Amysynth): hottest clear in the render path - runs once
-            // per audible oscillator per block. PIE-accelerated (see amy_simd.h).
-            AMY_BLOCK_BZERO(per_osc_fb[core][bus], AMY_BLOCK_SIZE * sizeof(SAMPLE));
+            bzero(per_osc_fb[core][bus], AMY_BLOCK_SIZE * sizeof(SAMPLE));
             SAMPLE max_val = render_osc_wave(osc, core, per_osc_fb[core][bus]);
             if (synth[osc]->status != SYNTH_AUDIBLE) {
                 reset_modosc(msynth[osc]);  // (g)  This makes a difference, but not clicks
@@ -1928,8 +1915,7 @@ AMY_IRAM_ATTR void amy_render(uint16_t start, uint16_t end, uint8_t core) {
             if (!ensure_osc_allocd(CHORUS_MOD_SOURCE + bus, NULL)) continue;
             hold_and_modify(CHORUS_MOD_SOURCE + bus);
             if(amy_global.bus[bus]->chorus.level!=0)  {
-                // LOCAL EDIT (S3-Amysynth): PIE-accelerated block clear (see amy_simd.h).
-                AMY_BLOCK_BZERO(amy_global.bus[bus]->chorus.delay_mod, AMY_BLOCK_SIZE * sizeof(SAMPLE));
+                bzero(amy_global.bus[bus]->chorus.delay_mod, AMY_BLOCK_SIZE * sizeof(SAMPLE));
                 render_osc_wave(CHORUS_MOD_SOURCE + bus, 0 /* core */, amy_global.bus[bus]->chorus.delay_mod);
             }
         }

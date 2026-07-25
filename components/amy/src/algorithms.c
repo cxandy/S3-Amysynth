@@ -1,6 +1,5 @@
 // algorithms.c
 #include "amy.h"
-#include "amy_simd.h"  // LOCAL EDIT (S3-Amysynth): PIE block clear/copy
 
 // Thank you MFSA for the DX7 op structure , borrowed here \/ \/ \/ 
 enum FmOperatorFlags {
@@ -75,15 +74,59 @@ const struct FmAlgorithm algorithms[33] = {
 
 // a = 0
 static inline void zero(SAMPLE* a) {
-    // LOCAL EDIT (S3-Amysynth): PIE-accelerated on ESP32-S3 (see amy_simd.h).
-    AMY_BLOCK_BZERO((void *)a, AMY_BLOCK_SIZE * sizeof(SAMPLE));
+    const size_t nbytes = AMY_BLOCK_SIZE * sizeof(SAMPLE);
+#if defined(__XTENSA__) && defined(CONFIG_IDF_TARGET_ESP32S3)
+    // ESP32-S3 PIE: clear the FM-operator scratch block with a 128-bit vector
+    // store loop. This block clear/copy is the render path's one real PIE win
+    // (~10% on a 6-op FM voice); nothing else in AMY vectorizes (int32 SAMPLE has
+    // no 32-bit vector multiply, oscillators gather, filters recur). The scratch
+    // is 16-byte aligned (malloc_caps_block in algo_init) and nbytes is a compile
+    // -time multiple of 16, so the guard passes; anything unaligned falls to bzero.
+    //
+    // The aligned inner loop is the same one esp-dsp uses in dsps_memset_aes3.S /
+    // dsps_memcpy_aes3.S (Apache-2.0) - credit there for the approach. This is not
+    // a clean-room copy of those kernels, though: it carries none of their scalar
+    // head/tail machinery for unaligned buffers (which is most of their length),
+    // taking the vector path only for whole aligned blocks and deferring anything
+    // else to libc. Written compactly as original code (no lines copied), so it
+    // needs no separate .S file and keeps this source MIT with no vendored asm.
+    if ((((uintptr_t)a | nbytes) & 15u) == 0) {
+        void *pp = a;  // ee.vst.128.ip post-increments the address register
+        __asm__ volatile(
+            "ee.xorq q0, q0, q0\n\t"
+            "loopnez %1, .Lamy_zero%=\n\t"
+            "ee.vst.128.ip q0, %0, 16\n"
+            ".Lamy_zero%=:"
+            : "+&r"(pp)
+            : "r"(nbytes / 16)
+            : "memory");
+        return;
+    }
+#endif
+    bzero((void *)a, nbytes);
 }
 
 
 // b = a
 static inline void copy(SAMPLE* a, SAMPLE* b) {
-    // LOCAL EDIT (S3-Amysynth): PIE-accelerated on ESP32-S3 (see amy_simd.h).
-    AMY_BLOCK_BCOPY((void *)a, (void *)b, AMY_BLOCK_SIZE * sizeof(SAMPLE));
+    const size_t nbytes = AMY_BLOCK_SIZE * sizeof(SAMPLE);
+#if defined(__XTENSA__) && defined(CONFIG_IDF_TARGET_ESP32S3)
+    // ESP32-S3 PIE: copy the block with paired 128-bit vector load/store (see zero()).
+    if ((((uintptr_t)a | (uintptr_t)b | nbytes) & 15u) == 0) {
+        const void *s = a;
+        void *d = b;
+        __asm__ volatile(
+            "loopnez %2, .Lamy_copy%=\n\t"
+            "ee.vld.128.ip q0, %1, 16\n\t"
+            "ee.vst.128.ip q0, %0, 16\n"
+            ".Lamy_copy%=:"
+            : "+&r"(d), "+&r"(s)
+            : "r"(nbytes / 16)
+            : "memory");
+        return;
+    }
+#endif
+    bcopy((void *)a, (void *)b, nbytes);
 }
 
 SAMPLE render_mod(SAMPLE *in, SAMPLE* out, uint16_t osc, SAMPLE feedback_level, uint16_t algo_osc, SAMPLE amp) {
@@ -146,7 +189,7 @@ void algo_init() {
     for(uint16_t i=0;i<AMY_CORES;i++) {
         scratch[i] = malloc_caps(sizeof(SAMPLE*)*3, amy_global.config.ram_caps_fbl);
         for(uint16_t j=0;j<3;j++) {
-            // LOCAL EDIT (S3-Amysynth): PIE zero()/copy() walk these - 16-byte aligned.
+            // 16-byte aligned so zero()/copy() take their PIE vector path.
             scratch[i][j] = malloc_caps_block(sizeof(SAMPLE)*AMY_BLOCK_SIZE, amy_global.config.ram_caps_fbl);
         }
     }

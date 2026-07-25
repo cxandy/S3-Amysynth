@@ -262,3 +262,18 @@ SAMPLE render_algo(SAMPLE* buf, uint16_t osc, uint8_t core) {
     // TODO, i need to figure out what happens on note offs for algo_sources.. they should still render..
     return max_value;
 }
+
+// LOCAL EDIT (S3-Amysynth): reach zero()'s PIE block clear from amy_render()'s
+// buffer clears (per_osc_fb, fbl, chorus delay_mod) without a second copy of the
+// kernel. Upstream accelerates only the FM scratch here, which is where the
+// measured win is; the render-loop clears are the same shape and cost us one
+// wrapper rather than duplicated inline asm. Appended (rather than folded into
+// zero()) so algorithms.c stays byte-identical to upstream above this line.
+//
+// One "block" is AMY_BLOCK_SIZE samples - the fixed size zero() clears. Callers
+// pass 1, or AMY_NCHANS for the interleaved fbl buffers. Whether the vector path
+// or libc runs is zero()'s own alignment test: buffers allocated by
+// malloc_caps_block() take the vector path, anything else falls back.
+void amy_block_zero_blocks(SAMPLE *p, int nblocks) {
+    for (int i = 0; i < nblocks; ++i) zero(p + i * AMY_BLOCK_SIZE);
+}

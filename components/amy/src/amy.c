@@ -317,7 +317,8 @@ void dealloc_chorus_delay_lines(uint8_t bus) {
 }
 
 void alloc_chorus_delay_lines(uint8_t bus) {
-    amy_global.bus[bus]->chorus.delay_mod = (SAMPLE *)malloc_caps(sizeof(SAMPLE) * AMY_BLOCK_SIZE, amy_global.config.ram_caps_delay);
+    // LOCAL EDIT (S3-Amysynth): aligned so amy_render()'s clear takes the PIE path.
+    amy_global.bus[bus]->chorus.delay_mod = (SAMPLE *)malloc_caps_block(sizeof(SAMPLE) * AMY_BLOCK_SIZE, amy_global.config.ram_caps_delay);
     // A NULL delay_mod counts as failure too, so a partial chorus alloc is torn
     // down instead of leaving a NULL buffer for the render loop's block clear.
     bool success = (amy_global.bus[bus]->chorus.delay_mod != NULL);
@@ -1073,8 +1074,9 @@ int8_t oscs_init() {
     // clear out both as local mode won't use fbl[1] 
     for(uint16_t core=0;core<AMY_CORES;++core) {
         for (int bus = 0; bus < AMY_NUM_BUSES; ++bus) {
-            per_osc_fb[core][bus] = (SAMPLE*)malloc_caps(sizeof(SAMPLE) * AMY_BLOCK_SIZE, amy_global.config.ram_caps_fbl);
-            fbl[core][bus] = (SAMPLE*)malloc_caps(sizeof(SAMPLE) * AMY_BLOCK_SIZE * AMY_NCHANS, amy_global.config.ram_caps_fbl);
+            // LOCAL EDIT (S3-Amysynth): aligned so amy_render()'s clears take the PIE path.
+            per_osc_fb[core][bus] = (SAMPLE*)malloc_caps_block(sizeof(SAMPLE) * AMY_BLOCK_SIZE, amy_global.config.ram_caps_fbl);
+            fbl[core][bus] = (SAMPLE*)malloc_caps_block(sizeof(SAMPLE) * AMY_BLOCK_SIZE * AMY_NCHANS, amy_global.config.ram_caps_fbl);
             bzero(fbl[core][bus], sizeof(SAMPLE) * AMY_BLOCK_SIZE * AMY_NCHANS);
         }
     }
@@ -1884,12 +1886,15 @@ AMY_IRAM_ATTR void amy_render(uint16_t start, uint16_t end, uint8_t core) {
     amy_grab_lock();
 
     for(int bus = 0; bus <= amy_global.highest_bus; ++bus)
-        bzero(fbl[core][bus], sizeof(SAMPLE) * AMY_BLOCK_SIZE * AMY_NCHANS);
+        // LOCAL EDIT (S3-Amysynth): PIE block clear via algorithms.c zero().
+        amy_block_zero_blocks(fbl[core][bus], AMY_NCHANS);
     SAMPLE max_max = 0;
     for(uint16_t osc=start; osc<end; osc++) {
         if(synth[osc] != NULL && synth[osc]->status == SYNTH_AUDIBLE) { // skip oscs that are silent or mod sources from playback
             uint8_t bus = synth[osc]->bus;
-            bzero(per_osc_fb[core][bus], AMY_BLOCK_SIZE * sizeof(SAMPLE));
+            // LOCAL EDIT (S3-Amysynth): hottest clear in the render path - once per
+            // audible oscillator per block. PIE block clear via algorithms.c zero().
+            amy_block_zero_blocks(per_osc_fb[core][bus], 1);
             SAMPLE max_val = render_osc_wave(osc, core, per_osc_fb[core][bus]);
             if (synth[osc]->status != SYNTH_AUDIBLE) {
                 reset_modosc(msynth[osc]);  // (g)  This makes a difference, but not clicks
@@ -1915,7 +1920,8 @@ AMY_IRAM_ATTR void amy_render(uint16_t start, uint16_t end, uint8_t core) {
             if (!ensure_osc_allocd(CHORUS_MOD_SOURCE + bus, NULL)) continue;
             hold_and_modify(CHORUS_MOD_SOURCE + bus);
             if(amy_global.bus[bus]->chorus.level!=0)  {
-                bzero(amy_global.bus[bus]->chorus.delay_mod, AMY_BLOCK_SIZE * sizeof(SAMPLE));
+                // LOCAL EDIT (S3-Amysynth): PIE block clear via algorithms.c zero().
+                amy_block_zero_blocks(amy_global.bus[bus]->chorus.delay_mod, 1);
                 render_osc_wave(CHORUS_MOD_SOURCE + bus, 0 /* core */, amy_global.bus[bus]->chorus.delay_mod);
             }
         }

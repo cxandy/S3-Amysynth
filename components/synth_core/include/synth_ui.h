@@ -64,6 +64,14 @@ bool synth_ui_menu_rename_active(void);
 void synth_ui_menu_rename_save(void);
 void synth_ui_menu_rename_discard(void);
 
+/* True while the menu overlay is open on its Wireless page. The ADSR/filter
+ * editors bind to the BLE MIDI live-play voice on this rather than a ui_mode
+ * (the page is an overlay, so the mode underneath is the screen the user came
+ * from), and the SHIFT+1 open chord uses it to allow the editor from a page
+ * rather than only from a mode screen. Stays true while an editor draws over
+ * the overlay. Always false when CONFIG_SYNTH_WIRELESS is off. */
+bool synth_ui_wireless_page_is_open(void);
+
 /* ── Arp screen ──────────────────────────────────────────────────────────
  * Active when seq_state.ui_mode == UI_MODE_ARP and no overlay is up. */
 bool synth_ui_arp_is_active(void);

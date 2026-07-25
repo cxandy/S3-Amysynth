@@ -4,6 +4,9 @@
 #include "arp_core.h"
 #include "custompatches/drone_core.h"
 #include "custompatches/drone_std_core.h"
+#if CONFIG_SYNTH_WIRELESS
+#include "live_play.h"     /* BLE MIDI live-play voice: GRAPH_TGT_LIVE target */
+#endif
 #include "graph_popup.h"
 #include "filter_graph.h"
 #include "display_lfo.h"
@@ -42,6 +45,10 @@ typedef enum {
     GRAPH_TGT_DRONE     = 1,
     GRAPH_TGT_ARP       = 2,
     GRAPH_TGT_DRONE_STD = 3,
+    /* BLE MIDI live-play voice (slot 10). Structurally the arp's twin - one
+     * voice, no layer/track scope - so it follows the arp branch everywhere
+     * except the LFO editor, which it does not support (see live_play_set_lfo). */
+    GRAPH_TGT_LIVE      = 4,
 } graph_target_t;
 static graph_target_t s_graph_target = GRAPH_TGT_MELODIC;
 
@@ -424,6 +431,11 @@ static bool graph_read_target_env_idx(seq_env_t *env, uint8_t eg_index)
             case GRAPH_TGT_ARP:
                 arp_get_envelope2(env);
                 return true;
+#if CONFIG_SYNTH_WIRELESS
+            case GRAPH_TGT_LIVE:
+                live_play_get_envelope2(env);
+                return true;
+#endif
             case GRAPH_TGT_MELODIC:
             default:
                 return sequencer_core_get_melodic_envelope2(s_graph_layer,
@@ -440,6 +452,11 @@ static bool graph_read_target_env_idx(seq_env_t *env, uint8_t eg_index)
         case GRAPH_TGT_ARP:
             arp_get_envelope(env);
             return true;
+#if CONFIG_SYNTH_WIRELESS
+        case GRAPH_TGT_LIVE:
+            live_play_get_envelope(env);
+            return true;
+#endif
         case GRAPH_TGT_MELODIC:
         default:
             return sequencer_core_get_melodic_envelope(s_graph_layer,
@@ -461,6 +478,11 @@ static void graph_write_target_env_idx(const seq_env_t *env, uint8_t eg_index)
             case GRAPH_TGT_ARP:
                 arp_set_envelope2(env);
                 break;
+#if CONFIG_SYNTH_WIRELESS
+            case GRAPH_TGT_LIVE:
+                live_play_set_envelope2(env);
+                break;
+#endif
             case GRAPH_TGT_MELODIC:
             default:
                 if (s_editor_apply_all) {
@@ -483,6 +505,11 @@ static void graph_write_target_env_idx(const seq_env_t *env, uint8_t eg_index)
         case GRAPH_TGT_ARP:
             arp_set_envelope(env);
             break;
+#if CONFIG_SYNTH_WIRELESS
+        case GRAPH_TGT_LIVE:
+            live_play_set_envelope(env);
+            break;
+#endif
         case GRAPH_TGT_MELODIC:
         default:
             if (s_editor_apply_all) {
@@ -503,11 +530,21 @@ static bool graph_read_target_env(seq_env_t *env)
 
 /* Open the editor seeded from the active screen's envelope. The target is chosen
  * by which top-level screen is showing: the drone screen edits the drone env,
- * the arp screen the arp env, otherwise the selected melodic row. */
+ * the arp screen the arp env, otherwise the selected melodic row.
+ *
+ * The Wireless page is the exception: it is a page of the menu overlay rather
+ * than a ui_mode, so it cannot be read off seq_state.ui_mode - it is tested
+ * first, before the mode ladder, since the mode underneath the overlay is
+ * whatever screen the user came from. */
 void synth_ui_graph_open_envelope(void)
 {
     graph_popup_ensure_init();
 
+#if CONFIG_SYNTH_WIRELESS
+    if (synth_ui_wireless_page_is_open()) {
+        s_graph_target = GRAPH_TGT_LIVE;
+    } else
+#endif
     if (seq_state.ui_mode == UI_MODE_DRONE) {
         s_graph_target = GRAPH_TGT_DRONE;
     } else if (seq_state.ui_mode == UI_MODE_DRONE_STD) {
@@ -555,6 +592,11 @@ void synth_ui_graph_open_envelope(void)
         case GRAPH_TGT_ARP:
             s_graph_amp_edit = arp_get_amp_scale();
             break;
+#if CONFIG_SYNTH_WIRELESS
+        case GRAPH_TGT_LIVE:
+            s_graph_amp_edit = live_play_get_amp_scale();
+            break;
+#endif
         case GRAPH_TGT_MELODIC:
         default:
             s_graph_amp_edit = sequencer_core_get_melodic_amp_scale(
@@ -577,6 +619,12 @@ void synth_ui_graph_open_envelope(void)
         seq_filter_t f;
         arp_get_filter(&f);
         s_graph_fenv_edit = f.filter_env_amount;
+#if CONFIG_SYNTH_WIRELESS
+    } else if (s_graph_target == GRAPH_TGT_LIVE) {
+        seq_filter_t f;
+        live_play_get_filter(&f);
+        s_graph_fenv_edit = f.filter_env_amount;
+#endif
     }
 
     graph_update_ticks();
@@ -655,6 +703,12 @@ static void graph_live_push_env(void)
             if (s_graph_eg_index == 1) arp_preview_envelope2(&env);
             else                       arp_preview_envelope(&env);
             break;
+#if CONFIG_SYNTH_WIRELESS
+        case GRAPH_TGT_LIVE:
+            if (s_graph_eg_index == 1) live_play_preview_envelope2(&env);
+            else                       live_play_preview_envelope(&env);
+            break;
+#endif
         case GRAPH_TGT_MELODIC:
         default: {
             uint8_t t0 = s_editor_apply_all ? 0 : s_graph_track;
@@ -683,6 +737,16 @@ static void graph_live_push_fenv(void)
         s_graph_live_fenv = true;
         return;
     }
+#if CONFIG_SYNTH_WIRELESS
+    if (s_graph_target == GRAPH_TGT_LIVE) {
+        seq_filter_t f;
+        live_play_get_filter(&f);
+        f.filter_env_amount = s_graph_fenv_edit;
+        live_play_preview_filter(&f);
+        s_graph_live_fenv = true;
+        return;
+    }
+#endif
     if (s_graph_target != GRAPH_TGT_MELODIC) return;
     uint8_t t0 = s_editor_apply_all ? 0 : s_graph_track;
     uint8_t t1 = s_editor_apply_all ? (uint8_t)(SEQ_TRACKS - 1) : s_graph_track;
@@ -701,6 +765,9 @@ static void graph_amp_live_set(float v)
         case GRAPH_TGT_DRONE:     drone_set_amp_trim(v);     break;
         case GRAPH_TGT_DRONE_STD: drone_std_set_amp_trim(v); break;
         case GRAPH_TGT_ARP:       arp_set_amp_scale(v);      break;
+#if CONFIG_SYNTH_WIRELESS
+        case GRAPH_TGT_LIVE:      live_play_set_amp_scale(v); break;
+#endif
         case GRAPH_TGT_MELODIC:
         default: {
             uint8_t t0 = s_editor_apply_all ? 0 : s_graph_track;
@@ -784,11 +851,23 @@ static void graph_live_cancel_restore(void)
             arp_get_filter(&f);
             arp_preview_filter(&f);
         }
+#if CONFIG_SYNTH_WIRELESS
+        if (s_graph_live_fenv && s_graph_target == GRAPH_TGT_LIVE) {
+            seq_filter_t f;
+            live_play_get_filter(&f);
+            live_play_preview_filter(&f);
+        }
+#endif
         seq_env_t env;
         if (s_graph_live_env && graph_read_target_env_idx(&env, s_graph_eg_index)) {
             if (s_graph_target == GRAPH_TGT_ARP) {
                 if (s_graph_eg_index == 1) arp_preview_envelope2(&env);
                 else                       arp_preview_envelope(&env);
+#if CONFIG_SYNTH_WIRELESS
+            } else if (s_graph_target == GRAPH_TGT_LIVE) {
+                if (s_graph_eg_index == 1) live_play_preview_envelope2(&env);
+                else                       live_play_preview_envelope(&env);
+#endif
             } else if (s_graph_target == GRAPH_TGT_DRONE_STD) {
                 if (s_graph_eg_index == 1) drone_std_preview_envelope2(&env);
                 else                       drone_std_preview_envelope(&env);
@@ -824,6 +903,11 @@ static void graph_commit_to_env(void)
         case GRAPH_TGT_ARP:
             arp_set_amp_scale(s_graph_amp_edit);
             break;
+#if CONFIG_SYNTH_WIRELESS
+        case GRAPH_TGT_LIVE:
+            live_play_set_amp_scale(s_graph_amp_edit);
+            break;
+#endif
         case GRAPH_TGT_MELODIC:
         default:
             if (s_editor_apply_all) {
@@ -848,6 +932,15 @@ static void graph_commit_to_env(void)
         arp_set_filter(&f);
         s_graph_fenv_dirty = false;
     }
+#if CONFIG_SYNTH_WIRELESS
+    if (s_graph_fenv_dirty && s_graph_target == GRAPH_TGT_LIVE) {
+        seq_filter_t f;
+        live_play_get_filter(&f);
+        f.filter_env_amount = s_graph_fenv_edit;
+        live_play_set_filter(&f);
+        s_graph_fenv_dirty = false;
+    }
+#endif
     if (s_graph_fenv_dirty && s_graph_target == GRAPH_TGT_MELODIC) {
         uint8_t t0 = s_editor_apply_all ? 0 : s_graph_track;
         uint8_t t1 = s_editor_apply_all ? (uint8_t)(SEQ_TRACKS - 1) : s_graph_track;
@@ -948,6 +1041,18 @@ void synth_ui_graph_toggle_amp_mode(void)
 static bool graph_target_has_eg1(void)
 {
     return s_graph_target != GRAPH_TGT_DRONE_STD;
+}
+
+/* Targets carrying an EG1->cutoff sweep DEPTH field (seq_filter_t's
+ * filter_env_amount): the melodic rows, the arp and the live voice. The drones
+ * have no such field - their EG1 page edits the envelope only. Gates the depth
+ * readout, the encoder's depth adjust and the polarity flip. */
+static bool graph_target_has_eg1_depth(void)
+{
+#if CONFIG_SYNTH_WIRELESS
+    if (s_graph_target == GRAPH_TGT_LIVE) return true;
+#endif
+    return s_graph_target == GRAPH_TGT_MELODIC || s_graph_target == GRAPH_TGT_ARP;
 }
 
 static void graph_toggle_eg_index(void)
@@ -1066,8 +1171,13 @@ void synth_ui_graph_cycle_eg_type(void)
  * EG1 page. */
 const char *synth_ui_graph_hint_b2(void)
 {
-    return (s_graph_eg_index == 1 && s_graph_target == GRAPH_TGT_MELODIC)
-         ? "Env" : "Amp";
+    /* Deliberately narrower than graph_target_has_eg1_depth(): the arp keeps
+     * its historical "Amp" label here, unchanged by the live-voice port. */
+    bool env_slot = (s_graph_target == GRAPH_TGT_MELODIC);
+#if CONFIG_SYNTH_WIRELESS
+    env_slot = env_slot || (s_graph_target == GRAPH_TGT_LIVE);
+#endif
+    return (s_graph_eg_index == 1 && env_slot) ? "Env" : "Amp";
 }
 
 /* Flip the sign of the EG1->cutoff sweep (melodic rows + arp — the drones
@@ -1078,7 +1188,7 @@ void synth_ui_graph_flip_eg1_polarity(void)
 {
     if (!graph_popup_is_active(&s_graph_popup)) return;
     if (s_graph_eg_index != 1) return;
-    if (s_graph_target != GRAPH_TGT_MELODIC && s_graph_target != GRAPH_TGT_ARP) return;
+    if (!graph_target_has_eg1_depth()) return;
     if (s_graph_fenv_edit == 0.0f) return;
     s_graph_fenv_edit  = -s_graph_fenv_edit;
     s_graph_fenv_dirty = true;
@@ -1093,8 +1203,7 @@ bool synth_ui_graph_handle_encoder(long delta)
     if (!graph_popup_is_active(&s_graph_popup)) return false;
 
     if (s_graph_amp_mode) {
-        if (s_graph_eg_index == 1 && (s_graph_target == GRAPH_TGT_MELODIC ||
-                                      s_graph_target == GRAPH_TGT_ARP)) {
+        if (s_graph_eg_index == 1 && graph_target_has_eg1_depth()) {
             /* EG1 page: encoder adjusts EG1->cutoff depth, 0.25 oct/detent.
              * Bipolar -8..+8; negative = inverted/downward sweep (same range
              * as the filter editor's EG cursor — one shared field). */
@@ -1210,13 +1319,58 @@ static float filter_norm_to_q(float n)
  * Q stays fully editable — AMY runs the biquad on KS oscs like any other wave.
  * Covers the melodic KS patch and both arp routes to KS (WAVE-mode wave and
  * PATCH-mode virtual patch 263); the drones exclude KS from their cycles. */
+/* Which backend the FILTER editor is bound to. The graph editor captures its
+ * target in s_graph_target at open time, but the filter editor derives it on
+ * every call - historically straight off seq_state.ui_mode. That breaks for the
+ * live voice: the Wireless page is an overlay, so the mode underneath is
+ * whichever screen the user opened the menu from, and a live filter opened over
+ * the drone screen would otherwise take the drone's fixed-LPF24 cursor map and
+ * push to the drone's sweep. These predicates put LIVE first so it can never
+ * inherit another target's behaviour.
+ *
+ * REFACTOR TARGET: these bools are the seam, not the destination. Deriving the
+ * edit target from sequencer UI state couples every editor to which SCREEN is
+ * showing, when what they actually need is which VOICE they were opened on -
+ * two things that only coincide for targets that happen to own a top-level
+ * screen. The live voice is the first that does not, and adding a second such
+ * target (a second live slot, a per-drum-track editor, MIDI-learn on an
+ * arbitrary slot) means another predicate here and another ladder arm at every
+ * call site.
+ *
+ * The decoupled shape already exists one function up: capture the target once
+ * at open time, the way s_graph_target does, and give it a backend vtable
+ * (get/set/preview env, env1, filter, amp, plus flags for "has EG1 depth",
+ * "has an LFO page", "has track scope"). Then the editors read one struct and
+ * seq_state is only consulted when BINDING a target, not while editing one -
+ * which also retires the s_graph_layer/s_graph_track statics for every target
+ * that has no track scope. Worth doing when the third non-screen target lands;
+ * not worth churning the drone/arp/melodic paths for on its own. */
+static bool filter_tgt_is_live(void)
+{
+    return synth_ui_wireless_page_is_open();
+}
+static bool filter_tgt_is_drone(void)
+{
+    return !filter_tgt_is_live() && filter_tgt_is_drone();
+}
+static bool filter_tgt_is_drone_std(void)
+{
+    return !filter_tgt_is_live() && filter_tgt_is_drone_std();
+}
+static bool filter_tgt_is_arp(void)
+{
+    return !filter_tgt_is_live() && filter_tgt_is_arp();
+}
+
 static bool filter_target_is_feedback(void)
 {
-    if (seq_state.ui_mode == UI_MODE_ARP) {
+    /* Live voice is always a patch; KS feedback is not one of its cursors. */
+    if (filter_tgt_is_live()) return false;
+    if (filter_tgt_is_arp()) {
         return (arp_get_source() == ARP_SRC_WAVE  && arp_get_wave()  == KS)
             || (arp_get_source() == ARP_SRC_PATCH && arp_get_patch() == SEQ_PATCH_KS);
     }
-    if (seq_state.ui_mode == UI_MODE_DRONE || seq_state.ui_mode == UI_MODE_DRONE_STD) {
+    if (filter_tgt_is_drone() || filter_tgt_is_drone_std()) {
         return false;
     }
     return sequencer_core_get_layer_patch(seq_state.active_layer_idx) == SEQ_PATCH_KS;
@@ -1238,7 +1392,22 @@ static void filter_sync_fgraph(void)
 static void filter_load_from_target(void)
 {
     seq_filter_t f = {0};
-    if (seq_state.ui_mode == UI_MODE_DRONE) {
+#if CONFIG_SYNTH_WIRELESS
+    if (synth_ui_wireless_page_is_open()) {
+        /* Live voice: same never-authored sentinel as the arp/melodic rows.
+         * Tested before the ui_mode ladder because the Wireless page is an
+         * overlay - the mode underneath is whatever screen the user came from. */
+        live_play_get_filter(&f);
+        if (f.cutoff_hz <= 0.0f) {
+            f.filter_type = SEQ_FILTER_LPF;
+            f.cutoff_hz   = 800.0f;
+            f.resonance   = 1.0f;
+            f.enabled     = false;
+        }
+        snprintf(s_fgraph.label, sizeof(s_fgraph.label), "LIVE");
+    } else
+#endif
+    if (filter_tgt_is_drone()) {
         /* Drone: always LPF24, cutoff = sweep midpoint, Q from drone_get_resonance. */
         float lo = drone_get_sweep_lo();
         float hi = drone_get_sweep_hi();
@@ -1248,7 +1417,7 @@ static void filter_load_from_target(void)
         f.enabled     = true;
 
         snprintf(s_fgraph.label, sizeof(s_fgraph.label), "STUTR");
-    } else if (seq_state.ui_mode == UI_MODE_DRONE_STD) {
+    } else if (filter_tgt_is_drone_std()) {
         drone_std_get_filter(&f);
         /* Same never-authored sentinel handling as the arp: seed sensible
          * starting values but honestly read "OFF" until the user enables. */
@@ -1259,7 +1428,7 @@ static void filter_load_from_target(void)
             f.enabled     = false;
         }
         snprintf(s_fgraph.label, sizeof(s_fgraph.label), "DRONE");
-    } else if (seq_state.ui_mode == UI_MODE_ARP) {
+    } else if (filter_tgt_is_arp()) {
         arp_get_filter(&f);
         /* Only apply display defaults when the filter was never authored
          * (cutoff_hz == 0 from zero-init); preserve authored values even
@@ -1294,7 +1463,7 @@ static void filter_load_from_target(void)
     }
     /* Drone filter is a fixed LPF24 that is always on (cursor tops out at 1), so
      * it hides the type/enable header controls; melodic + arp expose both. */
-    s_fgraph.show_toggles = (seq_state.ui_mode != UI_MODE_DRONE);
+    s_fgraph.show_toggles = (!filter_tgt_is_drone());
     /* Feedback waves (KS): a zero feedback means "never authored" — seed the
      * editor at the engine's build-time default so the FB readout opens honest
      * (0.9) instead of at a silent-string 0%. */
@@ -1315,7 +1484,7 @@ static float s_fdrone_open_lo, s_fdrone_open_hi, s_fdrone_open_res;
 
 static void filter_live_push(void)
 {
-    if (seq_state.ui_mode == UI_MODE_DRONE) {
+    if (filter_tgt_is_drone()) {
         /* Same midpoint math as commit: move the sweep window, keep width. */
         float lo   = drone_get_sweep_lo();
         float hi   = drone_get_sweep_hi();
@@ -1324,10 +1493,14 @@ static void filter_live_push(void)
         drone_set_sweep_lo(SEQ_CLAMP_F32(mid - half, 65.0f, 7900.0f));
         drone_set_sweep_hi(SEQ_CLAMP_F32(mid + half, 100.0f, 8000.0f));
         drone_set_resonance(s_filter_edit.resonance);
-    } else if (seq_state.ui_mode == UI_MODE_DRONE_STD) {
+    } else if (filter_tgt_is_drone_std()) {
         drone_std_preview_filter(&s_filter_edit);
-    } else if (seq_state.ui_mode == UI_MODE_ARP) {
+    } else if (filter_tgt_is_arp()) {
         arp_preview_filter(&s_filter_edit);
+#if CONFIG_SYNTH_WIRELESS
+    } else if (filter_tgt_is_live()) {
+        live_play_preview_filter(&s_filter_edit);
+#endif
     } else {
         uint8_t li = seq_state.active_layer_idx;
         if (s_editor_apply_all) {
@@ -1346,20 +1519,20 @@ static void filter_live_cancel_restore(void)
     if (!s_filter_live) return;
     s_filter_live = false;
 
-    if (seq_state.ui_mode == UI_MODE_DRONE) {
+    if (filter_tgt_is_drone()) {
         drone_set_sweep_lo(s_fdrone_open_lo);
         drone_set_sweep_hi(s_fdrone_open_hi);
         drone_set_resonance(s_fdrone_open_res);
         return;
     }
-    if (seq_state.ui_mode == UI_MODE_DRONE_STD) {
+    if (filter_tgt_is_drone_std()) {
         /* Re-push the stored filter (bypass when it was never enabled). */
         seq_filter_t f;
         drone_std_get_filter(&f);
         drone_std_preview_filter(&f);
         return;
     }
-    if (seq_state.ui_mode == UI_MODE_ARP) {
+    if (filter_tgt_is_arp()) {
         /* Best effort: re-push the stored filter. A never-authored PATCH-mode
          * arp keeps the previewed bypass until its next patch reload. */
         seq_filter_t f;
@@ -1367,6 +1540,17 @@ static void filter_live_cancel_restore(void)
         arp_preview_filter(&f);
         return;
     }
+#if CONFIG_SYNTH_WIRELESS
+    if (filter_tgt_is_live()) {
+        /* Same best-effort as the arp: the live voice is always a patch, so a
+         * never-authored filter keeps the previewed bypass until the next
+         * patch load rebuilds the slot. */
+        seq_filter_t f;
+        live_play_get_filter(&f);
+        live_play_preview_filter(&f);
+        return;
+    }
+#endif
     uint8_t li = seq_state.active_layer_idx;
     uint8_t t0 = s_editor_apply_all ? 0 : seq_state.selected_track;
     uint8_t t1 = s_editor_apply_all ? (uint8_t)(SEQ_TRACKS - 1)
@@ -1400,7 +1584,7 @@ void synth_ui_filter_open(void)
     s_fgraph.enabled = s_filter_edit.enabled;
     filter_sync_fgraph();
     s_filter_live = false;
-    if (seq_state.ui_mode == UI_MODE_DRONE) {
+    if (filter_tgt_is_drone()) {
         s_fdrone_open_lo  = drone_get_sweep_lo();
         s_fdrone_open_hi  = drone_get_sweep_hi();
         s_fdrone_open_res = drone_get_resonance();
@@ -1415,14 +1599,14 @@ void synth_ui_filter_open(void)
 bool synth_ui_filter_handle_encoder(long delta)
 {
     if (!s_filter_active) return false;
-    bool drone = (seq_state.ui_mode == UI_MODE_DRONE);
+    bool drone = (filter_tgt_is_drone());
 
     /* Arp currently takes the same cursor map and the same edit branches as
      * melodic (see case 2/3 below), so it needs no separate predicate; the
      * arp-specific EG1 sweep depth is the fixed ARP_FILTER_EG1_DEPTH_OCT rather
      * than an editable field. Kept commented as the hook to restore if arp ever
      * regains its own filter-edit behaviour. */
-    /* bool arp = (seq_state.ui_mode == UI_MODE_ARP); */
+    /* bool arp = (filter_tgt_is_arp()); */
 
     if (!s_fgraph.editing) {
         /* Not editing: scroll cursor position.
@@ -1524,7 +1708,16 @@ bool synth_ui_filter_close_commit(void)
 {
     if (!s_filter_active) return false;
 
-    if (seq_state.ui_mode == UI_MODE_DRONE) {
+#if CONFIG_SYNTH_WIRELESS
+    if (synth_ui_wireless_page_is_open()) {
+        live_play_set_filter(&s_filter_edit);
+        ESP_LOGI(TAG, "filter commit live: type%u %.0fHz Q%.2f en=%d",
+                 s_filter_edit.filter_type,
+                 (double)s_filter_edit.cutoff_hz, (double)s_filter_edit.resonance,
+                 (int)s_filter_edit.enabled);
+    } else
+#endif
+    if (filter_tgt_is_drone()) {
         /* Drone: update resonance + move sweep range to new midpoint. */
         float lo = drone_get_sweep_lo();
         float hi = drone_get_sweep_hi();
@@ -1535,13 +1728,13 @@ bool synth_ui_filter_close_commit(void)
         drone_set_resonance(s_filter_edit.resonance);
         ESP_LOGI(TAG, "filter commit drone: sweepMid=%.0f Q=%.2f",
                  (double)new_mid, (double)s_filter_edit.resonance);
-    } else if (seq_state.ui_mode == UI_MODE_DRONE_STD) {
+    } else if (filter_tgt_is_drone_std()) {
         drone_std_set_filter(&s_filter_edit);
         ESP_LOGI(TAG, "filter commit drone_std: type%u %.0fHz Q%.2f en=%d",
                  s_filter_edit.filter_type,
                  (double)s_filter_edit.cutoff_hz, (double)s_filter_edit.resonance,
                  (int)s_filter_edit.enabled);
-    } else if (seq_state.ui_mode == UI_MODE_ARP) {
+    } else if (filter_tgt_is_arp()) {
         arp_set_filter(&s_filter_edit);
         ESP_LOGI(TAG, "filter commit arp: type%u %.0fHz Q%.2f",
                  s_filter_edit.filter_type,
@@ -1587,6 +1780,13 @@ void synth_ui_lfo_open(void)
 {
     // TODO: drone LFO = BPM-multiplier stutter only; implement constrained editor when needed
     if (seq_state.ui_mode == UI_MODE_DRONE) return; // drone has no free LFO editor
+#if CONFIG_SYNTH_WIRELESS
+    /* Live voice: no LFO editor either. It is always a patch voice, and a patch
+     * owns its osc layout, so the native LFO carrier cannot be grafted on the
+     * way a WAVE-mode voice takes it; driving it would need the PATCH-mode
+     * software stepper (arp_core.c). Skipped in the editor cycle below. */
+    if (synth_ui_wireless_page_is_open()) return;
+#endif
     uint8_t li = seq_state.active_layer_idx;
     uint8_t tr = seq_state.selected_track;
     seq_lfo_t existing = {
@@ -1725,6 +1925,11 @@ bool synth_ui_lfo_close_commit(void)
  * ARP and DRONE modes have no "apply to all tracks" concept — no-op there. */
 bool synth_ui_toggle_editor_apply_scope(void)
 {
+    /* The live voice has no track scope either, and it must be tested before
+     * the ui_mode ladder: its editor runs over the menu overlay, so the mode
+     * underneath would otherwise let the chord flip the MELODIC scope while a
+     * LIVE editor is showing. */
+    if (synth_ui_wireless_page_is_open()) return false;
     if (seq_state.ui_mode == UI_MODE_ARP || seq_state.ui_mode == UI_MODE_DRONE ||
         seq_state.ui_mode == UI_MODE_DRONE_STD)
         return false;
@@ -1758,8 +1963,13 @@ void synth_ui_cycle_editor(void)
         synth_ui_filter_open();
     } else if (s_filter_active) {
         synth_ui_filter_close_commit();
-        if (seq_state.ui_mode == UI_MODE_DRONE)
-            synth_ui_graph_open_envelope(); // drone: skip LFO tab, cycle back to ADSR
+        bool no_lfo_tab = (seq_state.ui_mode == UI_MODE_DRONE);
+#if CONFIG_SYNTH_WIRELESS
+        /* Live voice has no LFO editor either (see synth_ui_lfo_open). */
+        no_lfo_tab = no_lfo_tab || synth_ui_wireless_page_is_open();
+#endif
+        if (no_lfo_tab)
+            synth_ui_graph_open_envelope(); // skip LFO tab, cycle back to ADSR
         else
             synth_ui_lfo_open();
     } else if (s_lfo_active) {
@@ -1819,6 +2029,10 @@ static void graph_draw_topbar(u8g2_t *u8g2)
         snprintf(buf, sizeof(buf), "STUTR %s", eg_tag);
     } else if (s_graph_target == GRAPH_TGT_DRONE_STD) {
         snprintf(buf, sizeof(buf), "DRONE %s", eg_tag);
+#if CONFIG_SYNTH_WIRELESS
+    } else if (s_graph_target == GRAPH_TGT_LIVE) {
+        snprintf(buf, sizeof(buf), "LIVE %s", eg_tag);
+#endif
     } else {
         snprintf(buf, sizeof(buf), "L%u T%u %s%s",
                  s_graph_layer + 1, s_graph_track + 1, eg_tag,
@@ -1844,8 +2058,7 @@ static void graph_draw_topbar(u8g2_t *u8g2)
      * middle readout is idle, so the shoulder-button polarity flip has a
      * visible readout. */
     uint8_t rw = 0;
-    bool eg1_fenv = (s_graph_eg_index == 1 && (s_graph_target == GRAPH_TGT_MELODIC ||
-                                               s_graph_target == GRAPH_TGT_ARP));
+    bool eg1_fenv = (s_graph_eg_index == 1 && graph_target_has_eg1_depth());
     if (type_flash) {
         /* Inverted pad so the transient name reads as an event, not a label. */
         const char *tname = graph_eg_type_name(s_graph_eg_type_disp);

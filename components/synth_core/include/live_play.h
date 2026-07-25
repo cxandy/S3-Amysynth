@@ -1,5 +1,6 @@
 #pragma once
 #include <stdint.h>
+#include "sequencer_core.h"   /* seq_env_t / seq_filter_t / seq_lfo_t */
 
 #ifdef __cplusplus
 extern "C" {
@@ -29,6 +30,37 @@ void live_play_all_notes_off(void);
 /* Patch selection (Wireless menu page; same catalog as melodic/arp). */
 uint16_t live_play_get_patch(void);
 void     live_play_set_patch(uint16_t patch_number);
+
+/* ── Runtime-editable voice params (shared ADSR / filter / LFO editors) ──
+ * Same contract as the arp's block, which is the structural template: one
+ * voice, no layer/track scope, "patch owns it until the user commits, then
+ * our copy wins" via the authored flags. Everything is re-applied after a
+ * patch change so an edited voice survives reconfigure.
+ *
+ * Session-only: nothing here is written to a project, matching the live
+ * slot's patch number.
+ *
+ * Core 0 / synth_ui task only (the editors' task) - these push through
+ * amy_helpers, never under amy_queue_lock. */
+void live_play_get_envelope(seq_env_t *out);
+void live_play_set_envelope(const seq_env_t *env);
+void live_play_get_envelope2(seq_env_t *out);
+void live_play_set_envelope2(const seq_env_t *env);
+
+void live_play_get_filter(seq_filter_t *out);
+void live_play_set_filter(const seq_filter_t *f);
+
+void live_play_get_lfo(seq_lfo_t *out);
+void live_play_set_lfo(const seq_lfo_t *lfo);
+
+float live_play_get_amp_scale(void);
+void  live_play_set_amp_scale(float v);
+
+/* Editor live-preview: AMY only, store + authored flags untouched (cancel
+ * re-pushes the stored values). */
+void live_play_preview_envelope(const seq_env_t *env);
+void live_play_preview_envelope2(const seq_env_t *env);
+void live_play_preview_filter(const seq_filter_t *f);
 
 #ifdef __cplusplus
 }

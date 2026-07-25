@@ -403,9 +403,17 @@ static void dispatch_button_event(my_button_id_t button_id, button_event_t event
              * open editor the same chord closes+commits it (mirrors the
              * MY_BUTTON_0 tap). The former in-editor apply-scope toggle moved to
              * SHIFT+3 so this one combo both opens and closes the editor. */
-            if (sv == UI_VIEW_SEQ || sv == UI_VIEW_ARP ||
-                sv == UI_VIEW_DRONE || sv == UI_VIEW_DRONE_VIS ||
-                sv == UI_VIEW_DRONE_STD) {
+            bool open_from_screen = (sv == UI_VIEW_SEQ || sv == UI_VIEW_ARP ||
+                                     sv == UI_VIEW_DRONE || sv == UI_VIEW_DRONE_VIS ||
+                                     sv == UI_VIEW_DRONE_STD);
+#if CONFIG_SYNTH_WIRELESS
+            /* The Wireless page is an overlay page rather than a mode screen,
+             * but the same chord opens the editors there, bound to the BLE MIDI
+             * live-play voice (synth_ui_graph_open_envelope picks the target). */
+            open_from_screen = open_from_screen ||
+                               (sv == UI_VIEW_MENU && synth_ui_wireless_page_is_open());
+#endif
+            if (open_from_screen) {
                 synth_ui_graph_open_envelope();
             } else if (sv == UI_VIEW_GRAPH) {
                 synth_ui_graph_close_commit();

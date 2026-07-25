@@ -112,6 +112,21 @@ const char *menu_page_title(void)
     return "MENU";
 }
 
+/* True while the Wireless page of the overlay is the one showing. The editors
+ * use this to bind to the live-play voice: the page is not a ui_mode, so it
+ * cannot be read off seq_state. Stays true while an editor draws over the
+ * overlay (the menu is still open underneath), which is what lets the filter
+ * tab and the editor cycle route to the same target as the ADSR tab.
+ * Defined unconditionally so callers need no build-time guard. */
+bool synth_ui_wireless_page_is_open(void)
+{
+#if CONFIG_SYNTH_WIRELESS
+    return seq_state.menu_open && s_wireless_page;
+#else
+    return false;
+#endif
+}
+
 /* Format the current value of each menu item into the flat view array. */
 void menu_build_view(menu_view_t *out)
 {

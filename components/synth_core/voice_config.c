@@ -11,6 +11,55 @@ void voice_params_init_defaults(voice_params_t *vp)
     vp->amp_trim = 1.0f;   /* unity — the one non-zero default */
 }
 
+/* ── Lazy LFO-sibling materialization state ──────────────────────────────
+ * Per synth: has anything ever sent an event to the LFO sibling oscs
+ * (osc1/osc2) since the pool was last provably reset? AMY allocates an
+ * osc's ~532 B synth struct the first time an event addresses it
+ * (ensure_osc_allocd at event→delta conversion), so the disabled-path
+ * "park" events below would themselves BE the allocation. Skipping them
+ * is safe exactly when this bit is clear: the oscs are then either NULL
+ * or AMY-reset (pool-shape change posts RESET_OSC per osc), and both
+ * states are silent and carry no mod coupling.
+ *
+ * The bit may only be CLEARED on provable freshness (a known pool-shape
+ * change in voice_build_wave); everything ambiguous keeps it SET, because
+ * a wrongly-set bit only costs the memory savings while a wrongly-clear
+ * bit skips parking a live carrier (the stale-COEF_MOD DC-rail class).
+ * The shape cache exists solely to make that freshness proof: 0 means
+ * "unknown" (never built here, or a foreign patch configured the synth
+ * since — see voice_lfo_mark_foreign), and unknown never clears the bit.
+ *
+ * Core-0 / UI-task only, like every entry point in this file. */
+#define VOICE_LFO_SYNTH_MAX 128u
+
+static uint16_t s_pool_shape[VOICE_LFO_SYNTH_MAX];        /* (voices<<8)|oscs; 0 = unknown */
+static uint8_t  s_lfo_materialized[VOICE_LFO_SYNTH_MAX / 8u];
+
+static inline bool lfo_materialized(uint8_t synth)
+{
+    if (synth >= VOICE_LFO_SYNTH_MAX) return true;  /* out of range: park always */
+    return (s_lfo_materialized[synth >> 3] >> (synth & 7u)) & 1u;
+}
+
+static inline void lfo_set_materialized(uint8_t synth, bool on)
+{
+    if (synth >= VOICE_LFO_SYNTH_MAX) return;
+    if (on) s_lfo_materialized[synth >> 3] |=  (uint8_t)(1u << (synth & 7u));
+    else    s_lfo_materialized[synth >> 3] &= (uint8_t)~(1u << (synth & 7u));
+}
+
+bool voice_lfo_siblings_materialized(uint8_t synth)
+{
+    return lfo_materialized(synth);
+}
+
+void voice_lfo_mark_foreign(uint8_t synth)
+{
+    if (synth >= VOICE_LFO_SYNTH_MAX) return;
+    s_pool_shape[synth] = 0;                 /* shape proof is gone */
+    lfo_set_materialized(synth, true);       /* park always until proven fresh */
+}
+
 uint16_t voice_lfo_wave_to_amy(lfo_wave_t wave)
 {
     switch (wave) {
@@ -39,6 +88,18 @@ uint8_t voice_wob_db_to_depth(uint8_t db)
 void voice_build_wave(const voice_wave_cfg_t *cfg)
 {
     if (!cfg) return;
+
+    /* A *known different* shape forces AMY to reallocate the voice oscs
+     * (patches.c only no-ops on an identical shape) and RESET_OSC each new
+     * one, so the LFO siblings are provably fresh: forget them. An unknown
+     * cache (first build, or foreign config since) proves nothing. */
+    if (cfg->synth < VOICE_LFO_SYNTH_MAX) {
+        uint16_t shape = (uint16_t)(((uint16_t)cfg->num_voices << 8)
+                                    | cfg->oscs_per_voice);
+        if (s_pool_shape[cfg->synth] != 0 && s_pool_shape[cfg->synth] != shape)
+            lfo_set_materialized(cfg->synth, false);
+        s_pool_shape[cfg->synth] = shape;
+    }
 
     /* Pool definition. Re-sending an unchanged shape is a no-op in AMY, so
      * callers may rebuild freely without resetting live voices. */
@@ -143,8 +204,11 @@ void voice_apply_native_lfo(uint8_t synth, const seq_lfo_t *lfo, uint16_t bpm)
         e->amp_coefs[COEF_VEL]    = 0.0f;
         e->amp_coefs[COEF_EG0]    = 0.0f;
         amy_helpers_event_send(e);
+
+        lfo_set_materialized(synth, true);
     } else {
-        /* Disabled: clear the mod coupling, silence the carrier. */
+        /* Disabled: clear the mod coupling, silence the carrier. The osc0
+         * event always goes out (the carrier exists and costs nothing). */
         e = amy_helpers_event_begin();
         e->synth                       = synth;
         e->osc                         = 0;
@@ -154,6 +218,12 @@ void voice_apply_native_lfo(uint8_t synth, const seq_lfo_t *lfo, uint16_t bpm)
         e->duty_coefs[COEF_MOD]        = 0.0f;
         e->pan_coefs[COEF_MOD]         = 0.0f;
         amy_helpers_event_send(e);
+
+        /* Never-materialized siblings are NULL or AMY-reset — silent, no
+         * coupling, nothing to park. Sending the events anyway would
+         * allocate them and forfeit the lazy reservation. */
+        if (!lfo_materialized(synth))
+            return;
 
         e = amy_helpers_event_begin();
         e->synth                 = synth;

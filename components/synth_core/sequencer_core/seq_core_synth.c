@@ -199,10 +199,10 @@ bool sequencer_layer_voices_stale(uint8_t layer_idx)
  * Mirrors arp_configure_wave_synth() but for melodic tracks (SEQ_MEL_VOICES
  * voices per synth slot).  Envelope, filter, and LFO are applied by the caller.
  *
- * In native LFO mode oscs_per_voice=2 is always allocated (even before an LFO
- * is authored) so that toggling the LFO later never forces a pool resize.
- * Osc 1 starts dormant (amp=0); sequencer_configure_melodic_lfo() activates it
- * when an LFO is authored. */
+ * In native LFO mode oscs_per_voice=3 keeps the osc1 (LFO carrier) and osc2
+ * (wobble) INDEX slots reserved so toggling the LFO later never forces a pool
+ * resize — but their ~532 B/osc synth structs stay unallocated until an LFO
+ * is actually authored (lazy materialization, see voice_config.h). */
 static void sequencer_configure_melodic_wave_track(uint8_t synth_id,
                                                     uint16_t patch,
                                                     uint16_t num_voices,
@@ -252,12 +252,16 @@ static void sequencer_configure_melodic_wave_track(uint8_t synth_id,
     voice_build_wave(&cfg);
 
 #if CONFIG_SEQ_MELODIC_AMY_NATIVE_LFO
-    /* osc 1: LFO carrier slot — starts dormant until an LFO is authored */
-    amy_event *e = amy_helpers_event_begin();
-    e->synth                 = synth_id;
-    e->osc                   = 1;
-    e->amp_coefs[COEF_CONST] = 0.0f;  /* dormant */
-    amy_helpers_event_send(e);
+    /* osc 1: LFO carrier slot. Only re-park it when it may already exist
+     * (it survived a same-shape rebuild); on a fresh pool the event itself
+     * would allocate the osc and forfeit the lazy reservation. */
+    if (voice_lfo_siblings_materialized(synth_id)) {
+        amy_event *e = amy_helpers_event_begin();
+        e->synth                 = synth_id;
+        e->osc                   = 1;
+        e->amp_coefs[COEF_CONST] = 0.0f;  /* dormant */
+        amy_helpers_event_send(e);
+    }
 #endif
 }
 
@@ -378,12 +382,16 @@ static bool sequencer_apply_patch_kind(uint8_t synth_id, uint16_t patch,
                                                filter_authored, ks_feedback);
         return false;
     }
+    /* Every branch below configures a foreign osc topology on this slot:
+     * the lazy-LFO shape proof no longer holds (see voice_config.h). */
     if (patch >= SEQ_PATCH_BASS_BASE && patch <= SEQ_PATCH_BASS_MAX) {
+        voice_lfo_mark_foreign(synth_id);
         bass_preset_configure_track(synth_id, patch, num_voices);
         return false;
     }
 #if CONFIG_SYNTH_CUSTOM_FM
     if (patch >= SEQ_PATCH_FM_BASE && patch <= SEQ_PATCH_FM_MAX) {
+        voice_lfo_mark_foreign(synth_id);
         if (patch == SEQ_PATCH_FM_CUSTOM) {
             fm_voice_configure_track(synth_id, num_voices, &s_fm_voice);
         } else {
@@ -394,6 +402,7 @@ static bool sequencer_apply_patch_kind(uint8_t synth_id, uint16_t patch,
 #endif
 #if CONFIG_SYNTH_ADDITIVE
     if (patch >= SEQ_PATCH_ADDITIVE_BASE && patch <= SEQ_PATCH_ADDITIVE_MAX) {
+        voice_lfo_mark_foreign(synth_id);
         if (patch == SEQ_PATCH_ADDITIVE_CUSTOM) {
             additive_voice_configure_track(synth_id, num_voices, &s_additive_voice);
         } else {
@@ -402,6 +411,7 @@ static bool sequencer_apply_patch_kind(uint8_t synth_id, uint16_t patch,
         return false;
     }
 #endif
+    voice_lfo_mark_foreign(synth_id);
     amy_send_patch(synth_id, patch, num_voices, synth_flags);
     return true;
 }

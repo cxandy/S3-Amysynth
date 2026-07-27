@@ -143,6 +143,33 @@ typedef struct {
 /* Core-0 / UI-task only; pushes through amy_helpers (never amy_queue_lock). */
 void voice_build_wave(const voice_wave_cfg_t *cfg);
 
+/* ── Lazy LFO-sibling materialization ────────────────────────────────────
+ * voice_build_wave() reserves the osc1 (LFO carrier) and osc2 (wobble)
+ * INDEX slots in the pool shape, but AMY only allocates an osc's ~532 B
+ * synth struct when an event first addresses it. voice_config tracks, per
+ * synth, whether the siblings were ever materialized, so the disabled-path
+ * park events — which would otherwise BE the allocation — are skipped
+ * while the oscs are provably fresh (NULL, or AMY-reset by a pool-shape
+ * change: both silent, no mod coupling).
+ *
+ * The failure modes are asymmetric by design: a wrongly-SET state only
+ * costs the savings (parking fresh oscs allocates them), while a
+ * wrongly-CLEAR state skips parking a live carrier and resurrects the
+ * stale-COEF_MOD DC rail. The state therefore clears ONLY on a provable
+ * pool reset inside voice_build_wave, and every path that configures a
+ * wave-built synth with a foreign topology (patch string, bass/FM/additive
+ * preset, PCM pool) must call voice_lfo_mark_foreign() first. */
+
+/* True when this synth's LFO siblings (osc1/osc2) may exist or carry
+ * state, i.e. park events must be sent. Callers that pre-park osc1
+ * outside voice_apply_native_lfo (the melodic dormant slot) gate on it. */
+bool voice_lfo_siblings_materialized(uint8_t synth);
+
+/* This synth was configured outside voice_build_wave. Foreign topologies
+ * can leave live oscs at the sibling indices and stale-date the shape
+ * cache, so force park-always until a future build proves a pool reset. */
+void voice_lfo_mark_foreign(uint8_t synth);
+
 /* Apply the AMY-native mod-source LFO routing for one synth built by
  * voice_build_wave() with oscs_per_voice=2: osc0 gets mod_source=1 plus the
  * selected target's COEF_MOD depth, osc1 becomes the LFO carrier at the

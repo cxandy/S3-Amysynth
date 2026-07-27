@@ -4,10 +4,11 @@
 #include "live_play.h"
 #include "amy_helpers.h"
 #include "sequencer_core.h"
-#include "seq_core_config.h"
+#include "seq_core_config.h"  /* SEQ_LFO_SW_MAX_HZ, SEQ_MEL_PATCH */
 #include "voice_config.h"   /* voice_params_init_defaults, env bounds, LFO apply */
 #include "seq_clamp.h"
 #include "esp_log.h"
+#include <math.h>           /* sinf/powf - software LFO stepper (UI task) */
 
 static const char *TAG = "live_play";
 
@@ -21,11 +22,57 @@ static const char *TAG = "live_play";
 static uint16_t s_patch = SEQ_MEL_PATCH;
 static bool     s_ready = false;
 
+/* Browse-group toggle (Wireless page "Source" row). WAVE walks the contiguous
+ * raw-wave / bass / wavetable block (SEQ_PATCH_WAVE_BASE..WAVETABLE_MAX),
+ * PATCH everything else. Pure browse state - configuration stays patch-number
+ * driven through the kind dispatch - with per-group last-patch memory, the
+ * arp source model's twin. */
+static bool s_wave_mode =
+    (SEQ_MEL_PATCH >= SEQ_PATCH_WAVE_BASE && SEQ_MEL_PATCH <= SEQ_PATCH_WAVETABLE_MAX);
+static uint16_t s_patch_mem_wave  = SEQ_PATCH_WAVE_BASE;  /* SINE */
+static uint16_t s_patch_mem_patch = 138;                  /* DX7 E.PIANO 1 */
+
+/* Glide time (ms) between note pitches, AMY-native portamento. Same range as
+ * the arp / melodic NoteFX Glide (1 ms per encoder detent). */
+static uint16_t s_glide_ms = 0;
+
 /* Runtime-editable voice params (ADSR/EG1/filter/LFO/amp trim + authored
  * flags). Same block every other engine embeds; defaults installed on first
  * ensure_ready so amp_trim starts at unity rather than silent. */
 static voice_params_t s_vp;
 static bool           s_vp_inited = false;
+
+/* Out-of-the-box editor values - arp_state_defaults()'s structural twin, but
+ * voiced for held keys rather than a running sequence: high sustain so chords
+ * keep their body while pressed, controlled release. Everything stays
+ * unauthored until the user commits - except the EG0 shape, which
+ * live_apply_authored() force-pushes for wave patches (a raw wave with no
+ * envelope reads AMY's empty breakpoint set as a permanently open gate and
+ * rings forever after note-off; same rule as the melodic force_wave path). */
+static void live_seed_defaults(void)
+{
+    voice_params_init_defaults(&s_vp);
+    s_vp.env.attack_ms    = 4;    /* tiny ramp kills the note-on click */
+    s_vp.env.decay_ms     = 250;
+    s_vp.env.sustain_pct  = 75;   /* held keys keep their body */
+    s_vp.env.release_ms   = 250;
+    s_vp.env.eg_type      = 0;    /* ENVELOPE_NORMAL */
+    /* EG1 (filter sweep once a filter is authored): the arp's slower-tail pair. */
+    s_vp.env1.attack_ms   = 15;
+    s_vp.env1.decay_ms    = 400;
+    s_vp.env1.sustain_pct = 20;
+    s_vp.env1.release_ms  = 300;
+    s_vp.env1.eg_type     = 0;
+    /* Filter/LFO: bypass until committed, but seeded so the editors open on
+     * something musical instead of zeros. */
+    s_vp.filter.filter_type = 0;      /* SEQ_FILTER_NONE */
+    s_vp.filter.cutoff_hz   = 800.0f;
+    s_vp.filter.resonance   = 1.0f;
+    s_vp.lfo.wave    = LFO_WAVE_SINE;
+    s_vp.lfo.rate    = LFO_RATE_1BAR;
+    s_vp.lfo.depth   = 50;
+    s_vp.lfo.targets = LFO_TGT_BIT(LFO_TARGET_FILTER);
+}
 
 /* The editors can open before the radio session ever starts, i.e. before
  * ensure_ready() has installed the defaults - and a zero-initialised block has
@@ -36,7 +83,7 @@ static bool           s_vp_inited = false;
 static voice_params_t *live_vp(void)
 {
     if (!s_vp_inited) {
-        voice_params_init_defaults(&s_vp);
+        live_seed_defaults();
         s_vp_inited = true;
     }
     return &s_vp;
@@ -86,20 +133,53 @@ static void live_apply_filter(const seq_filter_t *f)
     }
 }
 
+/* Push the glide time straight to the live synth (fans out to every voice's
+ * base osc, same dispatch as the arp's portamento push). */
+static void live_push_glide(void)
+{
+    amy_event *e = amy_helpers_event_begin();
+    e->synth         = LIVE_SYNTH;
+    e->portamento_ms = s_glide_ms;
+    amy_helpers_event_send(e);
+}
+
+/* Apply or park the native LFO. WAVE-scope only: the 3-osc wave build
+ * reserves the carrier pair (osc1 LFO + osc2 wobble); a patch string owns
+ * its whole osc layout and is served by the software stepper below instead.
+ * Parking a never-authored voice is a cheap osc0-only clear - the sibling
+ * oscs stay unmaterialized (see voice_config.h). */
+static void live_apply_lfo(void)
+{
+    if (!live_play_lfo_native_eligible()) return;
+    bool on = s_vp.lfo_authored && s_vp.lfo.enabled;
+    voice_apply_native_lfo(LIVE_SYNTH, on ? &s_vp.lfo : NULL,
+                           sequencer_core_get_bpm());
+}
+
 /* Re-push whatever the user has authored. Called after every slot configure,
  * since a patch load rebuilds the voice and drops our overrides. */
 static void live_apply_authored(void)
 {
-    if (s_vp.env_authored)    sequencer_core_push_envelope(LIVE_SYNTH, &s_vp.env);
+    bool wave = sequencer_core_is_wave_patch(s_patch);
+    /* Wave patches carry no envelope of their own: with nothing pushed, a
+     * note-off never releases (see live_seed_defaults). Force the default
+     * shape onto them even unauthored; patch strings keep their built-in
+     * envelope until the user commits one. */
+    if (s_vp.env_authored || wave)
+        sequencer_core_push_envelope(LIVE_SYNTH, &s_vp.env);
     if (s_vp.env1_authored)   sequencer_core_push_envelope_eg1(LIVE_SYNTH, 0, &s_vp.env1);
     if (s_vp.filter_authored) live_apply_filter(&s_vp.filter);
+    if (wave) live_apply_lfo();
+    /* Patch loads reset per-osc portamento_alpha; reassert unconditionally
+     * (0 is a valid "off" reassert) - the arp_rebuild discipline. */
+    live_push_glide();
 }
 
 void live_play_ensure_ready(void)
 {
     if (s_ready) return;
     if (!s_vp_inited) {
-        voice_params_init_defaults(&s_vp);
+        live_seed_defaults();
         s_vp_inited = true;
     }
     sequencer_core_configure_synth_slot(LIVE_SYNTH, s_patch, LIVE_VOICES);
@@ -156,6 +236,145 @@ void live_play_set_patch(uint16_t patch_number)
         sequencer_core_configure_synth_slot(LIVE_SYNTH, s_patch, LIVE_VOICES);
         live_apply_authored();
     }
+}
+
+bool live_play_get_wave_mode(void)
+{
+    return s_wave_mode;
+}
+
+void live_play_set_wave_mode(bool wave)
+{
+    if (wave == s_wave_mode) return;
+    uint16_t restore;
+    if (wave) { s_patch_mem_patch = s_patch; restore = s_patch_mem_wave;  }
+    else      { s_patch_mem_wave  = s_patch; restore = s_patch_mem_patch; }
+    s_wave_mode = wave;
+    live_play_set_patch(restore);
+}
+
+uint16_t live_play_get_glide_ms(void)
+{
+    return s_glide_ms;
+}
+
+void live_play_set_glide_ms(uint16_t ms)
+{
+    ms = SEQ_CLAMP_U16(ms, 0, LIVE_PLAY_GLIDE_MAX_MS);
+    if (s_glide_ms == ms) return;
+    s_glide_ms = ms;
+    if (s_ready) live_push_glide();
+}
+
+bool live_play_lfo_native_eligible(void)
+{
+    return sequencer_core_is_wave_patch(s_patch);
+}
+
+/* Retune the BPM-synced carrier pair after a tempo change. Full re-apply
+ * rather than the arp's targeted freq pushes - menu-rate, and it keeps the
+ * depth/wobble coupling in one authoring path. (The software stepper below
+ * needs nothing here: it reads the BPM every frame.) */
+void live_play_refresh_lfo_freq(void)
+{
+    if (!s_ready || !s_vp.lfo_authored || !s_vp.lfo.enabled) return;
+    live_apply_lfo();
+}
+
+/* ── PATCH-mode software LFO fallback ────────────────────────────────────
+ * Wave patches get the AMY-native voice-local LFO (live_apply_lfo); a patch
+ * string owns its whole osc layout, so those run the same 20 Hz software
+ * stepper as non-wave melodic tracks and the arp's PATCH source
+ * (arp_swlfo_service, the shape this mirrors), modulating each checked
+ * target's COEF_CONST rail on the live synth. WOBBLE and SCAN have no
+ * software analog and are ignored, like on melodic patch tracks. */
+static float   s_swlfo_phase   = 0.0f;
+static float   s_swlfo_rnd     = 0.0f;
+static bool    s_swlfo_active  = false;
+static uint8_t s_swlfo_targets = 0;   /* rails driven while active - the set
+                                       * to restore, even if edited since */
+
+/* seq_core_editors.c internals shared with this stepper. Mirrored prototypes:
+ * seq_core_internal.h cannot be included here (it defines a TU-local TAG). */
+float lfo_next_rand(void);
+void  lfo_push_target_neutral(uint8_t synth_id, lfo_target_t target);
+
+static inline float live_swlfo_hz(lfo_rate_t rate, uint16_t bpm)
+{
+    float hz = lfo_rate_to_hz(rate, bpm);
+    return (hz > SEQ_LFO_SW_MAX_HZ) ? SEQ_LFO_SW_MAX_HZ : hz;
+}
+
+static float live_swlfo_eval(lfo_wave_t wave, float ph)
+{
+    switch (wave) {
+        case LFO_WAVE_SINE:     return sinf(2.0f * 3.14159265f * ph);
+        case LFO_WAVE_TRIANGLE: return (ph < 0.5f) ? (4.0f * ph - 1.0f)
+                                                   : (3.0f - 4.0f * ph);
+        case LFO_WAVE_SAW_UP:   return 2.0f * ph - 1.0f;
+        case LFO_WAVE_SAW_DOWN: return 1.0f - 2.0f * ph;
+        case LFO_WAVE_SQUARE:   return (ph < 0.5f) ? 1.0f : -1.0f;
+        case LFO_WAVE_RANDOM:   return s_swlfo_rnd;
+        default:                return 0.0f;
+    }
+}
+
+void live_play_lfo_service(void)
+{
+    const seq_lfo_t *lfo = &s_vp.lfo;
+    bool want = s_ready && !live_play_lfo_native_eligible() &&
+                s_vp.lfo_authored && lfo->enabled && lfo->targets != 0;
+
+    if (!want) {
+        if (s_swlfo_active) {
+            /* Restore every rail the stepper was driving (the melodic
+             * lfo_restore_target_neutrals rule: FILTER re-pushes the stored
+             * filter, the rest a neutral constant). */
+            s_swlfo_active = false;
+            for (int t = 0; t < LFO_TARGET_COUNT; t++) {
+                if (!(s_swlfo_targets & LFO_TGT_BIT(t))) continue;
+                if (t == LFO_TARGET_FILTER)
+                    live_apply_filter(&s_vp.filter);
+                else
+                    lfo_push_target_neutral(LIVE_SYNTH, (lfo_target_t)t);
+            }
+        }
+        return;
+    }
+
+    if (!s_swlfo_active) {
+        s_swlfo_active = true;
+        s_swlfo_phase  = 0.0f;
+    }
+    s_swlfo_targets = lfo->targets;
+
+    float ph = s_swlfo_phase +
+               live_swlfo_hz(lfo->rate, sequencer_core_get_bpm()) * 0.05f;
+    if (ph >= 1.0f) {
+        ph -= 1.0f;
+        if (lfo->wave == LFO_WAVE_RANDOM) s_swlfo_rnd = lfo_next_rand();
+    }
+    s_swlfo_phase = ph;
+
+    float val = live_swlfo_eval(lfo->wave, ph);
+    float d   = (float)lfo->depth / 100.0f;
+
+    amy_event *e = amy_helpers_event_begin();
+    e->synth = LIVE_SYNTH;
+    if (LFO_HAS_TGT(lfo, LFO_TARGET_FILTER)) {
+        float base = (s_vp.filter.enabled && s_vp.filter.cutoff_hz > 0.0f)
+                     ? s_vp.filter.cutoff_hz : 1000.0f;
+        e->filter_freq_coefs[COEF_CONST] =
+            base * powf(2.0f, voice_lfo_filter_octaves(lfo) * val);
+    }
+    if (LFO_HAS_TGT(lfo, LFO_TARGET_AMP))
+        e->amp_coefs[COEF_CONST] = 1.0f - d * (0.5f - 0.5f * val);
+    if (LFO_HAS_TGT(lfo, LFO_TARGET_PITCH))
+        e->freq_coefs[COEF_CONST] = powf(2.0f, d * val);
+    if (LFO_HAS_TGT(lfo, LFO_TARGET_PAN))
+        e->pan_coefs[COEF_CONST] = 0.5f + d * 0.5f * val;
+    /* SCAN needs a wavetable voice - wave patches / native only. */
+    amy_helpers_event_send(e);
 }
 
 /* ── Runtime-editable voice params (shared editors) ──────────────────────
@@ -217,16 +436,16 @@ void live_play_get_lfo(seq_lfo_t *out)
     if (out) *out = live_vp()->lfo;
 }
 
-/* Stored but NOT applied: the live slot is always a patch voice, and a patch
- * owns its own osc layout, so the native LFO carrier cannot be grafted on the
- * way a WAVE-mode voice takes it. Driving it would need the PATCH-mode
- * software stepper (arp_core.c "PATCH-mode software LFO fallback" + a service
- * call on the UI tick). Until then the editors skip the LFO page for this
- * target, the same way they skip it for the drone. */
+/* Applied natively for wave patches (the 3-osc build's reserved carrier
+ * pair); patch strings are picked up by the 20 Hz software stepper
+ * (live_play_lfo_service) on its next frame - the melodic/arp split. */
 void live_play_set_lfo(const seq_lfo_t *lfo)
 {
     if (!lfo) return;
-    live_vp()->lfo = *lfo;
+    voice_params_t *vp = live_vp();
+    vp->lfo = *lfo;
+    vp->lfo_authored = true;
+    if (s_ready) live_apply_lfo();
 }
 
 float live_play_get_amp_scale(void)

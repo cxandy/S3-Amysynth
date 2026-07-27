@@ -181,14 +181,39 @@ void synth_ui_arp_cycle_patch(int delta)
 }
 
 #if CONFIG_SYNTH_WIRELESS
-/* Cycle the live-play slot's patch (Wireless menu page's Patch row). Shares
- * the melodic domain: the live slot routes the full catalog through
- * sequencer_core_configure_synth_slot()'s kind dispatch, same as the arp. */
+/* The live slot's Source toggle partitions the shared catalog into two browse
+ * groups: WAVE = the contiguous raw-wave / bass / wavetable block (257..271,
+ * everything that plays like an oscillator you shape yourself), PATCH = the
+ * string/FM/additive presets. Both route through the same kind dispatch as
+ * ever; only the cycling domain differs. */
+static bool live_wave_group_excluded(uint16_t p)
+{
+    if (p < SEQ_PATCH_WAVE_BASE || p > SEQ_PATCH_WAVETABLE_MAX) return true;
+    return sequencer_core_patch_compiled_out(p);
+}
+
+static bool live_patch_group_excluded(uint16_t p)
+{
+    if (p >= SEQ_PATCH_WAVE_BASE && p <= SEQ_PATCH_WAVETABLE_MAX) return true;
+    return sequencer_core_patch_compiled_out(p);
+}
+
+static const patch_domain_t s_live_wave_domain = {
+    PATCH_DOMAIN_CATALOG, .excluded = live_wave_group_excluded
+};
+static const patch_domain_t s_live_patch_domain = {
+    PATCH_DOMAIN_CATALOG, .excluded = live_patch_group_excluded
+};
+
+/* Cycle the live-play slot's patch (Wireless menu page's Patch row) within
+ * the group selected by the Source toggle. */
 void synth_ui_cycle_live_patch(int delta)
 {
     if (delta == 0) return;
     int dir = (delta > 0) ? 1 : -1;
-    uint16_t next = patch_domain_step(&s_melodic_domain, live_play_get_patch(), dir);
+    const patch_domain_t *dom = live_play_get_wave_mode() ? &s_live_wave_domain
+                                                          : &s_live_patch_domain;
+    uint16_t next = patch_domain_step(dom, live_play_get_patch(), dir);
     live_play_set_patch(next);
 
     const char *name = patch_name_for(next);

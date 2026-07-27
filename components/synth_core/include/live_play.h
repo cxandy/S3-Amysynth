@@ -31,6 +31,33 @@ void live_play_all_notes_off(void);
 uint16_t live_play_get_patch(void);
 void     live_play_set_patch(uint16_t patch_number);
 
+/* Browse-group toggle (Wireless page "Source" row): WAVE cycles the raw
+ * wave / bass / wavetable block (257..271), PATCH everything else. Switching
+ * restores the group's last-used patch (arp source model). */
+bool live_play_get_wave_mode(void);
+void live_play_set_wave_mode(bool wave);
+
+/* Glide (AMY-native portamento) between note pitches, ms, 0 = off. Range
+ * matches the arp / melodic NoteFX Glide: 1 ms per encoder detent. */
+#define LIVE_PLAY_GLIDE_MAX_MS 100u
+uint16_t live_play_get_glide_ms(void);
+void     live_play_set_glide_ms(uint16_t ms);
+
+/* True when the current patch is a raw wave / wavetable (the 3-osc build
+ * with the reserved LFO carrier pair): live_play_set_lfo() applies natively.
+ * Bass presets and patch strings own their osc layout and fall back to the
+ * 20 Hz software stepper below - same split as the melodic tracks / arp. */
+bool live_play_lfo_native_eligible(void);
+
+/* Retune the BPM-synced LFO carriers after a tempo change; called from
+ * sequencer_core_set_bpm() alongside the arp/melodic/drone equivalents. */
+void live_play_refresh_lfo_freq(void);
+
+/* Software LFO stepper for non-native patches. Call once per UI frame from
+ * the synth_ui task, like arp_core_service(); cheap no-op when the live LFO
+ * is off, native, or the slot is not ready. */
+void live_play_lfo_service(void);
+
 /* ── Runtime-editable voice params (shared ADSR / filter / LFO editors) ──
  * Same contract as the arp's block, which is the structural template: one
  * voice, no layer/track scope, "patch owns it until the user commits, then

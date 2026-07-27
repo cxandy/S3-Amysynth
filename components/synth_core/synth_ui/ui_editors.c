@@ -46,8 +46,9 @@ typedef enum {
     GRAPH_TGT_ARP       = 2,
     GRAPH_TGT_DRONE_STD = 3,
     /* BLE MIDI live-play voice (slot 10). Structurally the arp's twin - one
-     * voice, no layer/track scope - so it follows the arp branch everywhere
-     * except the LFO editor, which it does not support (see live_play_set_lfo). */
+     * voice, no layer/track scope - so it follows the arp branch everywhere,
+     * including the LFO split: native carrier on wave patches, 20 Hz
+     * software stepper on patch strings (live_play_lfo_service). */
     GRAPH_TGT_LIVE      = 4,
 } graph_target_t;
 static graph_target_t s_graph_target = GRAPH_TGT_MELODIC;
@@ -1286,6 +1287,11 @@ static seq_filter_t s_filter_edit;   /* scratch copy while editing */
 /* ── LFO editor state ── */
 bool       s_lfo_active = false;
 static lfo_view_t s_lfo_view;
+#if CONFIG_SYNTH_WIRELESS
+/* Captured at open: the LFO editor targets the live voice (the Wireless page
+ * is a menu overlay, not a ui_mode, so commit cannot route off seq_state). */
+static bool s_lfo_live_target = false;
+#endif
 
 /* Normalisation helpers shared between open and commit. */
 static float filter_hz_to_norm(float hz)
@@ -1778,15 +1784,18 @@ bool synth_ui_lfo_is_active(void) { return s_lfo_active; }
 
 void synth_ui_lfo_open(void)
 {
-    // TODO: drone LFO = BPM-multiplier stutter only; implement constrained editor when needed
-    if (seq_state.ui_mode == UI_MODE_DRONE) return; // drone has no free LFO editor
 #if CONFIG_SYNTH_WIRELESS
-    /* Live voice: no LFO editor either. It is always a patch voice, and a patch
-     * owns its osc layout, so the native LFO carrier cannot be grafted on the
-     * way a WAVE-mode voice takes it; driving it would need the PATCH-mode
-     * software stepper (arp_core.c). Skipped in the editor cycle below. */
-    if (synth_ui_wireless_page_is_open()) return;
+    /* Wireless page first, before the mode ladder - it is a menu overlay, so
+     * the ui_mode underneath is whatever screen the user came from. The live
+     * voice always takes the editor: wave patches drive the native carrier,
+     * patch strings the 20 Hz software stepper (live_play_lfo_service). */
+    s_lfo_live_target = synth_ui_wireless_page_is_open();
+    if (!s_lfo_live_target)
 #endif
+    {
+        // TODO: drone LFO = BPM-multiplier stutter only; implement constrained editor when needed
+        if (seq_state.ui_mode == UI_MODE_DRONE) return; // drone has no free LFO editor
+    }
     uint8_t li = seq_state.active_layer_idx;
     uint8_t tr = seq_state.selected_track;
     seq_lfo_t existing = {
@@ -1797,6 +1806,11 @@ void synth_ui_lfo_open(void)
         .depth   = 50,
         .targets = LFO_TGT_BIT(LFO_TARGET_FILTER),
     };
+#if CONFIG_SYNTH_WIRELESS
+    if (s_lfo_live_target)
+        live_play_get_lfo(&existing);
+    else
+#endif
     if (seq_state.ui_mode == UI_MODE_ARP)
         arp_get_lfo(&existing);
     else if (seq_state.ui_mode == UI_MODE_DRONE_STD)
@@ -1812,6 +1826,9 @@ void synth_ui_lfo_open(void)
     s_lfo_view.target_label = (seq_state.ui_mode == UI_MODE_ARP)       ? "ARP"
                             : (seq_state.ui_mode == UI_MODE_DRONE_STD) ? "DRONE"
                             : NULL;
+#if CONFIG_SYNTH_WIRELESS
+    if (s_lfo_live_target) s_lfo_view.target_label = "LIVE";
+#endif
     s_lfo_active   = true;
     s_force_redraw = true;
     ESP_LOGI(TAG, "LFO editor open L%u T%u", li + 1u, tr + 1u);
@@ -1900,6 +1917,17 @@ bool synth_ui_lfo_handle_button(bool is_long)
 bool synth_ui_lfo_close_commit(void)
 {
     if (!s_lfo_active) return false;
+#if CONFIG_SYNTH_WIRELESS
+    /* Checked before the mode ladder: the Wireless page is an overlay, so the
+     * ui_mode underneath is whatever screen the user came from. */
+    if (s_lfo_live_target) {
+        live_play_set_lfo(&s_lfo_view.lfo);
+        s_lfo_active   = false;
+        s_force_redraw = true;
+        ESP_LOGI(TAG, "LFO editor committed (live voice)");
+        return true;
+    }
+#endif
     if (seq_state.ui_mode == UI_MODE_DRONE) return false; // stutter drone has no free LFO editor
     if (seq_state.ui_mode == UI_MODE_ARP) {
         arp_set_lfo(&s_lfo_view.lfo);
@@ -1965,8 +1993,11 @@ void synth_ui_cycle_editor(void)
         synth_ui_filter_close_commit();
         bool no_lfo_tab = (seq_state.ui_mode == UI_MODE_DRONE);
 #if CONFIG_SYNTH_WIRELESS
-        /* Live voice has no LFO editor either (see synth_ui_lfo_open). */
-        no_lfo_tab = no_lfo_tab || synth_ui_wireless_page_is_open();
+        /* Live voice: the wireless overlay overrides the mode underneath and
+         * always has an LFO tab (native for wave patches, software stepper
+         * for patch strings - see synth_ui_lfo_open). */
+        if (synth_ui_wireless_page_is_open())
+            no_lfo_tab = false;
 #endif
         if (no_lfo_tab)
             synth_ui_graph_open_envelope(); // skip LFO tab, cycle back to ADSR

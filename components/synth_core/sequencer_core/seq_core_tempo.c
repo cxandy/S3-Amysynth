@@ -1,6 +1,10 @@
 #include "sequencer_core/seq_core_internal.h"
 #include "custompatches/drone_std_core.h"   /* drone_std_core_refresh_lfo_freq */
 #include "seq_clamp.h"
+#include "sdkconfig.h"
+#if CONFIG_SYNTH_WIRELESS
+#include "live_play.h"                      /* live_play_refresh_lfo_freq */
+#endif
 
 /* ── State definitions — owns BPM and quantizer ─────────────────────── */
 uint16_t s_bpm = SEQ_DEFAULT_BPM;
@@ -98,6 +102,10 @@ void sequencer_core_set_bpm(uint16_t new_bpm)
     drone_std_core_refresh_lfo_freq();
     /* Sync native LFO carriers on all melodic wave-patch tracks. */
     melodic_lfo_refresh_native_freq();
+#if CONFIG_SYNTH_WIRELESS
+    /* And the BLE live voice's carrier (no-op unless authored + wave patch). */
+    live_play_refresh_lfo_freq();
+#endif
 }
 
 uint16_t sequencer_core_get_bpm(void) { return s_bpm; }

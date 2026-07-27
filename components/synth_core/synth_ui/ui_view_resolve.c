@@ -129,22 +129,28 @@ static const char *hint_menu_b2(void)
 }
 
 /* ─── The table: one row per view, indexed by ui_view_id_t ─────────────── */
+/* badge_x rationale (left header extents, 6x10 font ≈ 6 px/char):
+ * SEQ 44 = the gap between "BPM 123" (ends 43) and "L1 MEL" (starts 52);
+ * MENU/FM 52 clears the longest page titles ("WIRELESS"/"PROJECTS" end 50);
+ * LFO 68 clears "LFO L1 T2>L" (ends 67); DRONE_VIS 58 clears "DRONE VIS";
+ * PROG 30 sits after "PROG" (chips are right-aligned); TRACKOPTS/STEPEDIT
+ * have no free top-row slot (title runs long) - badge suppressed. */
 const ui_view_desc_t ui_view_table[UI_VIEW_COUNT] = {
-    [UI_VIEW_FILTER]    = { "FILTER", sig_filter,    draw_filter,    "On/Off", "-",     "Next",  NULL,               NULL },
-    [UI_VIEW_LFO]       = { "LFO",    sig_lfo,       draw_lfo,       "-",      NULL,    "Next",  NULL,               hint_lfo_b2 },
-    [UI_VIEW_STEPEDIT]  = { "STEP",   sig_stepedit,  draw_stepedit,  "Patch",  "-",     "Close", NULL,               NULL },
-    [UI_VIEW_GRAPH]     = { "GRAPH",  sig_graph,     draw_graph,     "Type",   NULL,    "Next",  NULL,               synth_ui_graph_hint_b2 },
-    [UI_VIEW_MENU]      = { "MENU",   sig_menu,      draw_menu,      NULL,     NULL,    "Menu",  hint_menu_b1,       hint_menu_b2 },
-    [UI_VIEW_ARP]       = { "ARP",    sig_arp,       draw_arp,       "Patch",  "-",     "Menu",  NULL,               NULL },
-    [UI_VIEW_DRONE_VIS] = { "DRONEV", sig_drone,     draw_drone_vis, "Patch",  "-",     "Menu",  NULL,               NULL },
-    [UI_VIEW_DRONE]     = { "DRONE",  sig_drone,     draw_drone,     "Patch",  "-",     "Menu",  NULL,               NULL },
-    [UI_VIEW_DRONE_STD] = { "DRONST", sig_drone_std, draw_drone_std, "Patch",  "-",     "Menu",  NULL,               NULL },
-    [UI_VIEW_PROG]      = { "PROG",   sig_prog,      draw_prog,      "Del",    "+Add",  "Menu",  NULL,               NULL },
-    [UI_VIEW_TRACKOPTS] = { "TRKOPT", sig_trackopts, draw_trackopts, "Patch",  "DelLy", "Menu",  NULL,               NULL },
+    [UI_VIEW_FILTER]    = { "FILTER", sig_filter,    draw_filter,    "On/Off", "-",     "Next",  NULL,               NULL,                   52 },
+    [UI_VIEW_LFO]       = { "LFO",    sig_lfo,       draw_lfo,       "-",      NULL,    "Next",  NULL,               hint_lfo_b2,            68 },
+    [UI_VIEW_STEPEDIT]  = { "STEP",   sig_stepedit,  draw_stepedit,  "Patch",  "-",     "Close", NULL,               NULL,                    0 },
+    [UI_VIEW_GRAPH]     = { "GRAPH",  sig_graph,     draw_graph,     "Type",   NULL,    "Next",  NULL,               synth_ui_graph_hint_b2, 52 },
+    [UI_VIEW_MENU]      = { "MENU",   sig_menu,      draw_menu,      NULL,     NULL,    "Menu",  hint_menu_b1,       hint_menu_b2,           52 },
+    [UI_VIEW_ARP]       = { "ARP",    sig_arp,       draw_arp,       "Patch",  "-",     "Menu",  NULL,               NULL,                   52 },
+    [UI_VIEW_DRONE_VIS] = { "DRONEV", sig_drone,     draw_drone_vis, "Patch",  "-",     "Menu",  NULL,               NULL,                   58 },
+    [UI_VIEW_DRONE]     = { "DRONE",  sig_drone,     draw_drone,     "Patch",  "-",     "Menu",  NULL,               NULL,                   52 },
+    [UI_VIEW_DRONE_STD] = { "DRONST", sig_drone_std, draw_drone_std, "Patch",  "-",     "Menu",  NULL,               NULL,                   52 },
+    [UI_VIEW_PROG]      = { "PROG",   sig_prog,      draw_prog,      "Del",    "+Add",  "Menu",  NULL,               NULL,                   30 },
+    [UI_VIEW_TRACKOPTS] = { "TRKOPT", sig_trackopts, draw_trackopts, "Patch",  "DelLy", "Menu",  NULL,               NULL,                    0 },
 #if CONFIG_SYNTH_CUSTOM_FM
-    [UI_VIEW_FM]        = { "FM",     sig_fm,        draw_fm,        "Patch",  "Pitch", "Menu",  NULL,               NULL },
+    [UI_VIEW_FM]        = { "FM",     sig_fm,        draw_fm,        "Patch",  "Pitch", "Menu",  NULL,               NULL,                   52 },
 #else
-    [UI_VIEW_FM]        = { "FM",     NULL,          NULL,           "Patch",  "Pitch", "Menu",  NULL,               NULL },
+    [UI_VIEW_FM]        = { "FM",     NULL,          NULL,           "Patch",  "Pitch", "Menu",  NULL,               NULL,                   52 },
 #endif
-    [UI_VIEW_SEQ]       = { "SEQ",    sig_seq,       draw_seq,       "Patch",  "Pitch", "Menu",  NULL,               NULL },
+    [UI_VIEW_SEQ]       = { "SEQ",    sig_seq,       draw_seq,       "Patch",  "Pitch", "Menu",  NULL,               NULL,                   44 },
 };

@@ -27,6 +27,7 @@
 #include "sdkconfig.h"
 #if CONFIG_SYNTH_WIRELESS
 #include "radio_manager.h"
+#include "live_play.h"      /* live_play_lfo_service (20 Hz software stepper) */
 #endif
 #include <string.h>
 
@@ -82,6 +83,11 @@ static void synth_ui_task(void *pvParameters)
         drone_std_core_service();
         sequencer_core_lfo_service();
         sequencer_core_progression_service();
+#if CONFIG_SYNTH_WIRELESS
+        /* Live voice: 20 Hz software LFO for non-native (patch-string)
+         * patches; cheap no-op otherwise. */
+        live_play_lfo_service();
+#endif
 
         /* Drain deferred layer-delete request (must run in synth_ui_task so that
          * the array compaction is serialized against all other seq_state readers
@@ -203,21 +209,25 @@ static void synth_ui_task(void *pvParameters)
                     u8g2_SetDrawColor(s_u8g2, 1);
                 }
 #if CONFIG_SYNTH_WIRELESS
-                /* BLE session badge, left of the CLIP/LOUD box (which owns
-                 * x=108..127): inverted box while a central is connected,
-                 * plain text while merely advertising. Same fill-only /
-                 * single-send discipline. */
+                /* BLE session badge: a 5x8 Bluetooth rune just left of the
+                 * CLIP/LOUD box (which owns x=108..127) - inverted plate
+                 * while a central is connected, bare rune while merely
+                 * advertising. Deliberately narrow: the old 16 px "BLE"
+                 * text box covered header content on every screen. Same
+                 * fill-only / single-send discipline. */
                 if (radio_manager_state() == RADIO_ACTIVE) {
-                    u8g2_SetFont(s_u8g2, u8g2_font_4x6_tr);
+                    static const unsigned char bt_rune[] = {
+                        0x04, 0x0C, 0x15, 0x0E, 0x0E, 0x15, 0x0C, 0x04
+                    };
                     if (radio_manager_connected()) {
                         u8g2_SetDrawColor(s_u8g2, 1);
-                        u8g2_DrawBox(s_u8g2, 90, 0, 16, 8);
+                        u8g2_DrawBox(s_u8g2, 100, 0, 7, 8);
                         u8g2_SetDrawColor(s_u8g2, 0);
-                        u8g2_DrawStr(s_u8g2, 92, 7, "BLE");
+                        u8g2_DrawXBM(s_u8g2, 101, 0, 5, 8, bt_rune);
                         u8g2_SetDrawColor(s_u8g2, 1);
                     } else {
                         u8g2_SetDrawColor(s_u8g2, 1);
-                        u8g2_DrawStr(s_u8g2, 92, 7, "ble");
+                        u8g2_DrawXBM(s_u8g2, 101, 0, 5, 8, bt_rune);
                     }
                 }
 #endif

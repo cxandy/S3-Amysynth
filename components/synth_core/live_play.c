@@ -143,17 +143,19 @@ static void live_push_glide(void)
     amy_helpers_event_send(e);
 }
 
-/* Apply or park the native LFO. WAVE-scope only: the 3-osc wave build
- * reserves the carrier pair (osc1 LFO + osc2 wobble); a patch string owns
- * its whole osc layout and is served by the software stepper below instead.
- * Parking a never-authored voice is a cheap osc0-only clear - the sibling
- * oscs stay unmaterialized (see voice_config.h). */
+/* Apply or park the native LFO on any patch with a reserved carrier pair
+ * (raw waves, wavetables, bass presets - sequencer_core_lfo_native_layout);
+ * patch strings own their whole osc layout and are served by the software
+ * stepper below instead. Parking a never-authored voice is a cheap
+ * coupled-osc-only clear - the carrier pair stays unmaterialized
+ * (see voice_config.h). */
 static void live_apply_lfo(void)
 {
-    if (!live_play_lfo_native_eligible()) return;
+    uint8_t carrier, coupled;
+    if (!sequencer_core_lfo_native_layout(s_patch, &carrier, &coupled)) return;
     bool on = s_vp.lfo_authored && s_vp.lfo.enabled;
-    voice_apply_native_lfo(LIVE_SYNTH, on ? &s_vp.lfo : NULL,
-                           sequencer_core_get_bpm());
+    voice_apply_native_lfo_topo(LIVE_SYNTH, on ? &s_vp.lfo : NULL,
+                                sequencer_core_get_bpm(), carrier, coupled);
 }
 
 /* Re-push whatever the user has authored. Called after every slot configure,
@@ -169,7 +171,7 @@ static void live_apply_authored(void)
         sequencer_core_push_envelope(LIVE_SYNTH, &s_vp.env);
     if (s_vp.env1_authored)   sequencer_core_push_envelope_eg1(LIVE_SYNTH, 0, &s_vp.env1);
     if (s_vp.filter_authored) live_apply_filter(&s_vp.filter);
-    if (wave) live_apply_lfo();
+    live_apply_lfo();   /* internal layout guard: no-op for patch strings */
     /* Patch loads reset per-osc portamento_alpha; reassert unconditionally
      * (0 is a valid "off" reassert) - the arp_rebuild discipline. */
     live_push_glide();
@@ -268,7 +270,7 @@ void live_play_set_glide_ms(uint16_t ms)
 
 bool live_play_lfo_native_eligible(void)
 {
-    return sequencer_core_is_wave_patch(s_patch);
+    return sequencer_core_lfo_native_layout(s_patch, NULL, NULL);
 }
 
 /* Retune the BPM-synced carrier pair after a tempo change. Full re-apply

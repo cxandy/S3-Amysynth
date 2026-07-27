@@ -170,6 +170,14 @@ bool voice_lfo_siblings_materialized(uint8_t synth);
  * cache, so force park-always until a future build proves a pool reset. */
 void voice_lfo_mark_foreign(uint8_t synth);
 
+/* Register a pool build that reserves a trailing LFO carrier pair but is
+ * issued outside voice_build_wave (custom builders - the bass presets).
+ * Same shape-proof rules as voice_build_wave: a known different shape
+ * clears the materialized state, anything ambiguous keeps it. A builder
+ * that calls this must NOT be routed through voice_lfo_mark_foreign. */
+void voice_lfo_note_pool_shape(uint8_t synth, uint8_t num_voices,
+                               uint8_t oscs_per_voice);
+
 /* Apply the AMY-native mod-source LFO routing for one synth built by
  * voice_build_wave() with oscs_per_voice=2: osc0 gets mod_source=1 plus the
  * selected target's COEF_MOD depth, osc1 becomes the LFO carrier at the
@@ -186,3 +194,14 @@ void voice_lfo_mark_foreign(uint8_t synth);
  * This is the function a future per-step p-lock caller uses from the tick
  * engine. */
 void voice_apply_native_lfo(uint8_t synth, const seq_lfo_t *lfo, uint16_t bpm);
+
+/* Topology-parameterized applier behind voice_apply_native_lfo (which is
+ * the wave-build special case: carrier 1, mask 0x01). carrier_osc is the
+ * voice-relative index of the reserved LFO carrier (wobble = carrier+1);
+ * coupled_mask selects the audible oscs that receive the mod_source wiring
+ * and COEF_MOD depths (bit n = osc n). Callers derive both from
+ * sequencer_core_lfo_native_layout() so engine code never hardcodes a
+ * family's osc indices. */
+void voice_apply_native_lfo_topo(uint8_t synth, const seq_lfo_t *lfo,
+                                 uint16_t bpm, uint8_t carrier_osc,
+                                 uint8_t coupled_mask);

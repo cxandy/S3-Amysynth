@@ -60,6 +60,20 @@ void voice_lfo_mark_foreign(uint8_t synth)
     lfo_set_materialized(synth, true);       /* park always until proven fresh */
 }
 
+void voice_lfo_note_pool_shape(uint8_t synth, uint8_t num_voices,
+                               uint8_t oscs_per_voice)
+{
+    if (synth >= VOICE_LFO_SYNTH_MAX) return;
+    /* A *known different* shape forces AMY to reallocate the voice oscs
+     * (patches.c only no-ops on an identical shape) and RESET_OSC each new
+     * one, so the LFO carrier pair is provably fresh: forget it. An unknown
+     * cache (first build, or foreign config since) proves nothing. */
+    uint16_t shape = (uint16_t)(((uint16_t)num_voices << 8) | oscs_per_voice);
+    if (s_pool_shape[synth] != 0 && s_pool_shape[synth] != shape)
+        lfo_set_materialized(synth, false);
+    s_pool_shape[synth] = shape;
+}
+
 uint16_t voice_lfo_wave_to_amy(lfo_wave_t wave)
 {
     switch (wave) {
@@ -89,17 +103,7 @@ void voice_build_wave(const voice_wave_cfg_t *cfg)
 {
     if (!cfg) return;
 
-    /* A *known different* shape forces AMY to reallocate the voice oscs
-     * (patches.c only no-ops on an identical shape) and RESET_OSC each new
-     * one, so the LFO siblings are provably fresh: forget them. An unknown
-     * cache (first build, or foreign config since) proves nothing. */
-    if (cfg->synth < VOICE_LFO_SYNTH_MAX) {
-        uint16_t shape = (uint16_t)(((uint16_t)cfg->num_voices << 8)
-                                    | cfg->oscs_per_voice);
-        if (s_pool_shape[cfg->synth] != 0 && s_pool_shape[cfg->synth] != shape)
-            lfo_set_materialized(cfg->synth, false);
-        s_pool_shape[cfg->synth] = shape;
-    }
+    voice_lfo_note_pool_shape(cfg->synth, cfg->num_voices, cfg->oscs_per_voice);
 
     /* Pool definition. Re-sending an unchanged shape is a no-op in AMY, so
      * callers may rebuild freely without resetting live voices. */
@@ -129,52 +133,60 @@ void voice_build_wave(const voice_wave_cfg_t *cfg)
     amy_helpers_event_send(e);
 }
 
-void voice_apply_native_lfo(uint8_t synth, const seq_lfo_t *lfo, uint16_t bpm)
+void voice_apply_native_lfo_topo(uint8_t synth, const seq_lfo_t *lfo,
+                                 uint16_t bpm, uint8_t carrier_osc,
+                                 uint8_t coupled_mask)
 {
     amy_event *e;
+    uint8_t wobble_osc = (uint8_t)(carrier_osc + 1u);
 
     if (lfo && lfo->enabled && lfo->targets) {
-        /* osc 0: wire mod_source to osc 1 (voice-local — AMY adds the base_osc
-         * offset, so it resolves within each voice) and set the COEF_MOD depth
-         * for every checked target, clearing every sibling first. One carrier
-         * feeds all targets; each gets the shared depth scaled by its own
-         * normalizing constant. */
+        /* Coupled (audible) oscs: wire mod_source to the carrier (voice-local
+         * — AMY adds the base_osc offset, so it resolves within each voice)
+         * and set the COEF_MOD depth for every checked target, clearing every
+         * sibling rail first. One carrier feeds all targets on all coupled
+         * oscs; each gets the shared depth scaled by its own normalizing
+         * constant. (Bass couples both audible oscs so vibrato/tremolo hits
+         * the sub too; the wave build couples osc0 only.) */
         float d = (float)lfo->depth / 100.0f;
-        e = amy_helpers_event_begin();
-        e->synth      = synth;
-        e->osc        = 0;
-        e->mod_source = 1;
-        e->filter_freq_coefs[COEF_MOD] = 0.0f;
-        e->amp_coefs[COEF_MOD]         = 0.0f;
-        e->freq_coefs[COEF_MOD]        = 0.0f;
-        e->duty_coefs[COEF_MOD]        = 0.0f;
-        e->pan_coefs[COEF_MOD]         = 0.0f;
-        if (LFO_HAS_TGT(lfo, LFO_TARGET_FILTER)) e->filter_freq_coefs[COEF_MOD] = voice_lfo_filter_octaves(lfo);
-        if (LFO_HAS_TGT(lfo, LFO_TARGET_AMP))    e->amp_coefs[COEF_MOD]         = d * VOICE_LFO_DEPTH_AMP;
-        if (LFO_HAS_TGT(lfo, LFO_TARGET_PITCH))  e->freq_coefs[COEF_MOD]        = d * VOICE_LFO_DEPTH_PITCH;
-        if (LFO_HAS_TGT(lfo, LFO_TARGET_SCAN))   e->duty_coefs[COEF_MOD]        = d * VOICE_LFO_DEPTH_SCAN;
-        if (LFO_HAS_TGT(lfo, LFO_TARGET_PAN)) {
-            /* Pan is [0,1], not bipolar: set the center baseline and swing
-             * COEF_MOD around it in the same event. */
-            e->pan_coefs[COEF_CONST] = 0.5f;
-            e->pan_coefs[COEF_MOD]   = d * VOICE_LFO_DEPTH_PAN;
+        for (uint8_t o = 0; (uint8_t)(coupled_mask >> o) != 0u; o++) {
+            if (!(coupled_mask & (uint8_t)(1u << o))) continue;
+            e = amy_helpers_event_begin();
+            e->synth      = synth;
+            e->osc        = o;
+            e->mod_source = carrier_osc;
+            e->filter_freq_coefs[COEF_MOD] = 0.0f;
+            e->amp_coefs[COEF_MOD]         = 0.0f;
+            e->freq_coefs[COEF_MOD]        = 0.0f;
+            e->duty_coefs[COEF_MOD]        = 0.0f;
+            e->pan_coefs[COEF_MOD]         = 0.0f;
+            if (LFO_HAS_TGT(lfo, LFO_TARGET_FILTER)) e->filter_freq_coefs[COEF_MOD] = voice_lfo_filter_octaves(lfo);
+            if (LFO_HAS_TGT(lfo, LFO_TARGET_AMP))    e->amp_coefs[COEF_MOD]         = d * VOICE_LFO_DEPTH_AMP;
+            if (LFO_HAS_TGT(lfo, LFO_TARGET_PITCH))  e->freq_coefs[COEF_MOD]        = d * VOICE_LFO_DEPTH_PITCH;
+            if (LFO_HAS_TGT(lfo, LFO_TARGET_SCAN))   e->duty_coefs[COEF_MOD]        = d * VOICE_LFO_DEPTH_SCAN;
+            if (LFO_HAS_TGT(lfo, LFO_TARGET_PAN)) {
+                /* Pan is [0,1], not bipolar: set the center baseline and swing
+                 * COEF_MOD around it in the same event. */
+                e->pan_coefs[COEF_CONST] = 0.5f;
+                e->pan_coefs[COEF_MOD]   = d * VOICE_LFO_DEPTH_PAN;
+            }
+            amy_helpers_event_send(e);
         }
-        amy_helpers_event_send(e);
 
-        /* osc 1: BPM-synced carrier — no pitch tracking, no velocity, no
-         * envelope; amp CONST=1 so AMY computes a mod value every block.
-         * WOBBLE (second-order LFO): osc2 is chained as osc1's own mod_source
-         * (AMY resolves the relative index within the voice), targeting BOTH
-         * the carrier's amplitude (= modulation depth breathing) and its
-         * log-frequency (= rate wobble), per the chained-modulator semantics
-         * (see AMY mod_osc_would_cause_loop / compute_mod_scale). Both coefs
-         * are ALWAYS written so a stale wobble from a previous config can
-         * never keep modulating after it is turned off (same clear-siblings
-         * contract as the target coefs above). */
+        /* Carrier: BPM-synced — no pitch tracking, no velocity, no envelope;
+         * amp CONST=1 so AMY computes a mod value every block. WOBBLE
+         * (second-order LFO): the next osc is chained as the carrier's own
+         * mod_source (AMY resolves the relative index within the voice),
+         * targeting BOTH the carrier's amplitude (= modulation depth
+         * breathing) and its log-frequency (= rate wobble), per the
+         * chained-modulator semantics (see AMY mod_osc_would_cause_loop /
+         * compute_mod_scale). Both coefs are ALWAYS written so a stale wobble
+         * from a previous config can never keep modulating after it is
+         * turned off (same clear-siblings contract as the target coefs). */
         float w = (float)lfo->wob_depth / 100.0f;
         e = amy_helpers_event_begin();
         e->synth                  = synth;
-        e->osc                    = 1;
+        e->osc                    = carrier_osc;
         e->wave                   = voice_lfo_wave_to_amy(lfo->wave);
         e->freq_coefs[COEF_CONST] = lfo_rate_to_hz(lfo->rate, bpm);
         e->freq_coefs[COEF_NOTE]  = 0.0f;
@@ -182,7 +194,7 @@ void voice_apply_native_lfo(uint8_t synth, const seq_lfo_t *lfo, uint16_t bpm)
         e->amp_coefs[COEF_CONST]  = 1.0f;
         e->amp_coefs[COEF_VEL]    = 0.0f;
         e->amp_coefs[COEF_EG0]    = 0.0f;
-        e->mod_source             = 2;
+        e->mod_source             = wobble_osc;
         e->amp_coefs[COEF_MOD]    = w * VOICE_WOB_DEPTH_AMP;
         /* Reach toggle: depth-only leaves the carrier's rate steady. Written
          * unconditionally (zero, not skipped) so switching to depth-only can
@@ -191,11 +203,11 @@ void voice_apply_native_lfo(uint8_t synth, const seq_lfo_t *lfo, uint16_t bpm)
                                   ? 0.0f : w * VOICE_WOB_DEPTH_RATE;
         amy_helpers_event_send(e);
 
-        /* osc 2: the wobble modulator itself — fixed TRIANGLE (smooth, no
-         * steps on the depth/rate rails), BPM-synced, dormant at 0 %. */
+        /* The wobble modulator itself — fixed TRIANGLE (smooth, no steps on
+         * the depth/rate rails), BPM-synced, dormant at 0 %. */
         e = amy_helpers_event_begin();
         e->synth                  = synth;
-        e->osc                    = 2;
+        e->osc                    = wobble_osc;
         e->wave                   = TRIANGLE;
         e->freq_coefs[COEF_CONST] = lfo_rate_to_hz((lfo_rate_t)lfo->wob_rate, bpm);
         e->freq_coefs[COEF_NOTE]  = 0.0f;
@@ -207,27 +219,31 @@ void voice_apply_native_lfo(uint8_t synth, const seq_lfo_t *lfo, uint16_t bpm)
 
         lfo_set_materialized(synth, true);
     } else {
-        /* Disabled: clear the mod coupling, silence the carrier. The osc0
-         * event always goes out (the carrier exists and costs nothing). */
-        e = amy_helpers_event_begin();
-        e->synth                       = synth;
-        e->osc                         = 0;
-        e->filter_freq_coefs[COEF_MOD] = 0.0f;
-        e->amp_coefs[COEF_MOD]         = 0.0f;
-        e->freq_coefs[COEF_MOD]        = 0.0f;
-        e->duty_coefs[COEF_MOD]        = 0.0f;
-        e->pan_coefs[COEF_MOD]         = 0.0f;
-        amy_helpers_event_send(e);
+        /* Disabled: clear the mod coupling on every coupled osc, silence the
+         * carrier. The coupled-osc events always go out (those oscs exist as
+         * part of the patch and cost nothing). */
+        for (uint8_t o = 0; (uint8_t)(coupled_mask >> o) != 0u; o++) {
+            if (!(coupled_mask & (uint8_t)(1u << o))) continue;
+            e = amy_helpers_event_begin();
+            e->synth                       = synth;
+            e->osc                         = o;
+            e->filter_freq_coefs[COEF_MOD] = 0.0f;
+            e->amp_coefs[COEF_MOD]         = 0.0f;
+            e->freq_coefs[COEF_MOD]        = 0.0f;
+            e->duty_coefs[COEF_MOD]        = 0.0f;
+            e->pan_coefs[COEF_MOD]         = 0.0f;
+            amy_helpers_event_send(e);
+        }
 
-        /* Never-materialized siblings are NULL or AMY-reset — silent, no
-         * coupling, nothing to park. Sending the events anyway would
-         * allocate them and forfeit the lazy reservation. */
+        /* A never-materialized carrier pair is NULL or AMY-reset — silent,
+         * no coupling, nothing to park. Sending the events anyway would
+         * allocate the oscs and forfeit the lazy reservation. */
         if (!lfo_materialized(synth))
             return;
 
         e = amy_helpers_event_begin();
         e->synth                 = synth;
-        e->osc                   = 1;
+        e->osc                   = carrier_osc;
         e->amp_coefs[COEF_CONST] = 0.0f;  /* dormant */
         e->amp_coefs[COEF_MOD]   = 0.0f;  /* clear wobble depth coupling */
         e->freq_coefs[COEF_MOD]  = 0.0f;  /* clear wobble rate coupling  */
@@ -235,8 +251,15 @@ void voice_apply_native_lfo(uint8_t synth, const seq_lfo_t *lfo, uint16_t bpm)
 
         e = amy_helpers_event_begin();
         e->synth                 = synth;
-        e->osc                   = 2;
+        e->osc                   = wobble_osc;
         e->amp_coefs[COEF_CONST] = 0.0f;  /* wobble modulator dormant */
         amy_helpers_event_send(e);
     }
+}
+
+/* The wave-build layout (carrier = osc1, osc0 coupled) — the historical
+ * signature every WAVE-mode engine calls. */
+void voice_apply_native_lfo(uint8_t synth, const seq_lfo_t *lfo, uint16_t bpm)
+{
+    voice_apply_native_lfo_topo(synth, lfo, bpm, 1, 0x01);
 }

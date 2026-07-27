@@ -288,20 +288,26 @@ static void arp_configure_wave_synth(void)
  * from the UI task, which is safe. */
 void arp_core_refresh_lfo_freq(void)
 {
-    if (!s_arp.vp.lfo_authored || !s_arp.vp.lfo.enabled || s_arp.source != ARP_SRC_WAVE)
+    if (!s_arp.vp.lfo_authored || !s_arp.vp.lfo.enabled)
+        return;
+    /* WAVE source always has the wave-build carrier at osc1; PATCH source
+     * only when the patch reserves a pair (wave numbers / bass presets). */
+    uint8_t carrier = 1;
+    if (s_arp.source != ARP_SRC_WAVE &&
+        !sequencer_core_lfo_native_layout(s_arp.patch, &carrier, NULL))
         return;
 
     amy_event *e = amy_helpers_event_begin();
     e->synth                  = sequencer_core_arp_synth();
-    e->osc                    = 1;
+    e->osc                    = carrier;
     e->freq_coefs[COEF_CONST] = lfo_rate_to_hz(s_arp.vp.lfo.rate,
                                                      sequencer_core_get_bpm());
     amy_helpers_event_send(e);
 
-    /* Keep the wobble modulator (osc 2) BPM-synced as well. */
+    /* Keep the wobble modulator (carrier+1) BPM-synced as well. */
     e = amy_helpers_event_begin();
     e->synth                  = sequencer_core_arp_synth();
-    e->osc                    = 2;
+    e->osc                    = (uint8_t)(carrier + 1u);
     e->freq_coefs[COEF_CONST] = lfo_rate_to_hz((lfo_rate_t)s_arp.vp.lfo.wob_rate,
                                                      sequencer_core_get_bpm());
     amy_helpers_event_send(e);
@@ -351,6 +357,17 @@ static void arp_rebuild(void)
          * character): only push over those when the user has authored one. */
         if (sequencer_core_is_wave_patch(s_arp.patch) || s_arp.vp.env_authored) {
             sequencer_core_push_envelope(sequencer_core_arp_synth(), &s_arp.vp.env);
+        }
+        /* Patches with a reserved carrier pair (wave numbers routed through
+         * the kind dispatch, bass presets) take the native LFO here; the
+         * software stepper's want-condition excludes them. */
+        uint8_t carrier, coupled;
+        if (sequencer_core_lfo_native_layout(s_arp.patch, &carrier, &coupled)) {
+            bool lfo_on = s_arp.vp.lfo_authored && s_arp.vp.lfo.enabled;
+            voice_apply_native_lfo_topo(sequencer_core_arp_synth(),
+                                        lfo_on ? &s_arp.vp.lfo : NULL,
+                                        sequencer_core_get_bpm(),
+                                        carrier, coupled);
         }
     }
     /* Filter re-apply is source-agnostic: both WAVE and PATCH respect it,
@@ -807,7 +824,12 @@ static float arp_swlfo_eval(lfo_wave_t wave, float ph)
 static void arp_swlfo_service(void)
 {
     const seq_lfo_t *lfo = &s_arp.vp.lfo;
+    /* PATCH source only, and only for patches with NO reserved carrier pair
+     * (patch strings / FM / additive) - wave numbers and bass presets are
+     * served natively by arp_rebuild, and stepping them here would double-
+     * modulate on top of the native carrier. */
     bool want = s_arp.enabled && s_arp.source == ARP_SRC_PATCH &&
+                !sequencer_core_lfo_native_layout(s_arp.patch, NULL, NULL) &&
                 lfo->enabled && lfo->targets != 0;
 
     if (!want) {

@@ -72,6 +72,32 @@ static inline bool sequencer_core_is_wave_patch(uint16_t patch)
     return false;
 }
 
+/* Native-LFO layout for a patch: which voice-relative osc carries the LFO
+ * pair (carrier; wobble = carrier+1) and which audible oscs take the
+ * COEF_MOD coupling (bitmask, bit n = osc n). True for every topology that
+ * reserves a trailing carrier pair: the raw-wave/wavetable 3-osc build and
+ * the custom bass 4-osc build. False = no reserved pair, LFO served by the
+ * 20 Hz software stepper. THE single native-vs-software predicate - every
+ * gate must use it (a site left on sequencer_core_is_wave_patch would run
+ * the software stepper on top of a native carrier: double modulation).
+ * Out-params may be NULL when only the predicate is needed. */
+static inline bool sequencer_core_lfo_native_layout(uint16_t patch,
+                                                    uint8_t *carrier_osc,
+                                                    uint8_t *coupled_mask)
+{
+    if (sequencer_core_is_wave_patch(patch)) {
+        if (carrier_osc)  *carrier_osc  = 1;
+        if (coupled_mask) *coupled_mask = 0x01;
+        return true;
+    }
+    if (patch >= SEQ_PATCH_BASS_BASE && patch <= SEQ_PATCH_BASS_MAX) {
+        if (carrier_osc)  *carrier_osc  = 2;    /* osc0/1 audible pair */
+        if (coupled_mask) *coupled_mask = 0x03; /* couple BOTH audible oscs */
+        return true;
+    }
+    return false;
+}
+
 /* ── DX7-style 6-operator FM/ALGO voices (melodic only; oscs_per_voice=7) ──
  * Osc 0 is the AMY ALGO control osc (algorithm + algo_source[0..5] wired to
  * relative oscs 1..6); oscs 1..6 are SINE operators. Intercepted before

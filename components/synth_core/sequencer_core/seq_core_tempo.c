@@ -85,11 +85,12 @@ void sequencer_core_set_bpm(uint16_t new_bpm)
     sequencer_push_tempo(s_bpm);
     for (int li = 0; li < s_num_layers; li++) {
 #if CONFIG_SEQ_MELODIC_AMY_NATIVE_LFO
-        /* Native-LFO (wave-patch) tracks keep s_lfo_hz == 0: their AMY carrier
-         * is retuned by melodic_lfo_refresh_native_freq() below, and a nonzero
-         * value here would set the 20 Hz software stepper double-modulating on
-         * top of the native carrier (mirrors sequencer_core_set_melodic_lfo). */
-        if (sequencer_core_is_wave_patch(s_layers[li].patch)) continue;
+        /* Native-LFO tracks (wave build / bass presets) keep s_lfo_hz == 0:
+         * their AMY carrier is retuned by melodic_lfo_refresh_native_freq()
+         * below, and a nonzero value here would set the 20 Hz software
+         * stepper double-modulating on top of the native carrier (mirrors
+         * sequencer_core_set_melodic_lfo). */
+        if (sequencer_core_lfo_native_layout(s_layers[li].patch, NULL, NULL)) continue;
 #endif
         for (int tr = 0; tr < SEQ_TRACKS; tr++) {
             if (s_layers[li].vp[tr].lfo_authored && s_layers[li].vp[tr].lfo.enabled)

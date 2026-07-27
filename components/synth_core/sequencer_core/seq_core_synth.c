@@ -382,10 +382,11 @@ static bool sequencer_apply_patch_kind(uint8_t synth_id, uint16_t patch,
                                                filter_authored, ks_feedback);
         return false;
     }
-    /* Every branch below configures a foreign osc topology on this slot:
-     * the lazy-LFO shape proof no longer holds (see voice_config.h). */
+    /* Bass presets participate in the reserved-LFO-pair contract (they
+     * register their own pool shape); every OTHER branch below configures a
+     * foreign osc topology, voiding the lazy-LFO shape proof
+     * (see voice_config.h). */
     if (patch >= SEQ_PATCH_BASS_BASE && patch <= SEQ_PATCH_BASS_MAX) {
-        voice_lfo_mark_foreign(synth_id);
         bass_preset_configure_track(synth_id, patch, num_voices);
         return false;
     }

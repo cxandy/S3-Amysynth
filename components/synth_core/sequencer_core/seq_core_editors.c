@@ -23,14 +23,19 @@ static bool is_native_lfo_track(const seq_lfo_t *lfo)
     return lfo->enabled;
 }
 
-/* Push native LFO config to one track's AMY synth (wave-patch layers only).
- * Handles both activation (carrier active) and deactivation (osc 1 dormant,
- * COEF_MOD cleared) so the caller always reaches a consistent AMY state. */
+/* Push native LFO config to one track's AMY synth (layers whose patch has a
+ * reserved carrier pair - wave build or bass presets). Handles both
+ * activation (carrier active) and deactivation (carrier dormant, COEF_MOD
+ * cleared) so the caller always reaches a consistent AMY state. */
 static void melodic_configure_native_lfo_track(const seq_layer_t *layer, uint8_t track)
 {
     const seq_lfo_t *lfo = &layer->vp[track].lfo;
-    voice_apply_native_lfo(layer->synth_id[track],
-                           is_native_lfo_track(lfo) ? lfo : NULL, s_bpm);
+    uint8_t carrier, coupled;
+    if (!sequencer_core_lfo_native_layout(layer->patch, &carrier, &coupled))
+        return;
+    voice_apply_native_lfo_topo(layer->synth_id[track],
+                                is_native_lfo_track(lfo) ? lfo : NULL, s_bpm,
+                                carrier, coupled);
 }
 
 #endif /* CONFIG_SEQ_MELODIC_AMY_NATIVE_LFO */
@@ -291,8 +296,8 @@ void sequencer_core_set_melodic_lfo(uint8_t layer_idx, uint8_t track,
     layer->vp[track].lfo_authored = true;
 
 #if CONFIG_SEQ_MELODIC_AMY_NATIVE_LFO
-    bool is_wave = sequencer_core_is_wave_patch(layer->patch);
-    if (is_wave) {
+    bool is_native = sequencer_core_lfo_native_layout(layer->patch, NULL, NULL);
+    if (is_native) {
         melodic_configure_native_lfo_track(layer, track);
         /* Restore static target value when disabled or on software-fallback path
          * (PAN/RANDOM): native clears COEF_MOD but doesn't push the neutral coef. */
@@ -398,14 +403,14 @@ void __attribute__((optimize("O3", "unroll-loops", "fast-math"))) sequencer_core
  * BPM changes so that native LFO carrier state stays consistent with the
  * current layer patch and tempo. */
 
-/* Re-apply the authored native LFO configuration for every track in a wave-patch
- * layer.  No-op for non-wave patches (software service loop handles those). */
+/* Re-apply the authored native LFO configuration for every track in a layer
+ * whose patch reserves a carrier pair (wave build / bass presets). No-op
+ * otherwise (software service loop handles those). */
 void sequencer_configure_melodic_lfo(uint8_t layer_idx)
 {
 #if CONFIG_SEQ_MELODIC_AMY_NATIVE_LFO
     const seq_layer_t *layer = &s_layers[layer_idx];
-    bool is_wave = sequencer_core_is_wave_patch(layer->patch);
-    if (!is_wave) return;
+    if (!sequencer_core_lfo_native_layout(layer->patch, NULL, NULL)) return;
     for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
         if (!layer->vp[t].lfo_authored) continue;
         melodic_configure_native_lfo_track(layer, t);
@@ -428,21 +433,22 @@ void melodic_lfo_refresh_native_freq(void)
 #if CONFIG_SEQ_MELODIC_AMY_NATIVE_LFO
     for (int li = 0; li < s_num_layers; li++) {
         const seq_layer_t *layer = &s_layers[li];
-        bool is_wave = sequencer_core_is_wave_patch(layer->patch);
-        if (!is_wave) continue;
+        uint8_t carrier;
+        if (!sequencer_core_lfo_native_layout(layer->patch, &carrier, NULL))
+            continue;
         for (int tr = 0; tr < SEQ_TRACKS; tr++) {
             if (!layer->vp[tr].lfo_authored) continue;
             const seq_lfo_t *lfo = &layer->vp[tr].lfo;
             if (!is_native_lfo_track(lfo)) continue;
             amy_event *e = amy_helpers_event_begin();
             e->synth                  = layer->synth_id[tr];
-            e->osc                    = 1;
+            e->osc                    = carrier;
             e->freq_coefs[COEF_CONST] = lfo_rate_to_hz(lfo->rate, s_bpm);
             amy_helpers_event_send(e);
-            /* Keep the wobble modulator (osc 2) BPM-synced as well. */
+            /* Keep the wobble modulator (carrier+1) BPM-synced as well. */
             e = amy_helpers_event_begin();
             e->synth                  = layer->synth_id[tr];
-            e->osc                    = 2;
+            e->osc                    = (uint8_t)(carrier + 1u);
             e->freq_coefs[COEF_CONST] = lfo_rate_to_hz((lfo_rate_t)lfo->wob_rate, s_bpm);
             amy_helpers_event_send(e);
         }

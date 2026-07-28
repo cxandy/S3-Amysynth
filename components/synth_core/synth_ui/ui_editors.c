@@ -1401,6 +1401,15 @@ static bool filter_target_is_feedback(void)
 static uint16_t s_scope_oscs[FILTER_SCOPE_MAX_OSCS];
 static uint8_t  s_scope_n = 0xFF;
 
+/* Last live cutoff shown, held across short silences. The engine only
+ * evaluates a filter while a voice is audible, so between sequenced notes
+ * there is nothing to read - and snapping to the authored cutoff there made
+ * slow LFO sweeps read as jumps (the sweep advances mostly BETWEEN notes).
+ * Holding the last value lets the cursor step along the sweep instead. */
+#define FILTER_SCOPE_HOLD_FRAMES 40   /* ~2 s at the 20 Hz UI rate */
+static float    s_scope_hold_norm;
+static uint16_t s_scope_hold_age = UINT16_MAX;   /* MAX = no held value */
+
 /* Disarm and invalidate the cache together. Keeping these paired matters: a
  * bare disarm would leave the cache describing a list that is no longer armed,
  * and the next rebind would compare equal and decline to re-arm it. */
@@ -1408,6 +1417,7 @@ static void filter_scope_drop(void)
 {
     filter_scope_disarm();
     s_scope_n = 0xFF;
+    s_scope_hold_age = UINT16_MAX;
 }
 
 static void filter_scope_bind_target(void)
@@ -1489,10 +1499,19 @@ static void filter_sync_live_band(void)
          * their center instead of aliased strobing. */
         norm = filter_hz_to_norm(freq_of_logfreq(0.5f * (lo_lf + hi_lf)));
         live = true;
+        s_scope_hold_norm = norm;
+        s_scope_hold_age  = 0;
     } else if (frozen) {
         /* Keep draining while frozen so the accumulator window stays fresh
-         * for the frame after the edit ends. */
+         * for the frame after the edit ends. Drop the hold: after an edit the
+         * authored value is the reference until the next live read. */
         (void)filter_scope_read(NULL, NULL);
+        s_scope_hold_age = UINT16_MAX;
+    } else if (s_scope_hold_age < FILTER_SCOPE_HOLD_FRAMES) {
+        /* Silence gap: no audible voice, so the engine computed no cutoff
+         * this frame. Show the last live one instead of snapping back. */
+        norm = s_scope_hold_norm;
+        s_scope_hold_age++;
     }
 
     /* EG1 can push the live cutoff beyond the graph's authored Hz range;

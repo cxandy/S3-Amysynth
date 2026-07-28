@@ -34,6 +34,23 @@ config OUTPUT_WATCHDOG
         buffer from the UI task on Core 0 every 50 ms; the render task and
         Core 1 do no extra work.
 
+config FILTER_SCOPE
+    bool "Live filter overlay in the filter editor (filter scope)"
+    default n
+    help
+        Draws a live band on the filter editor's response curve showing where
+        the filter cutoff is actually travelling, so EG1 sweeps and filter LFO
+        motion are visible instead of having to be inferred from the authored
+        numbers.
+
+        This does not sample audio: AMY already computes the modulated cutoff
+        as a control-rate scalar once per block, and the render task publishes
+        min/max of it into a small cell that the UI drains at 20 Hz. The
+        accumulator is armed only while the filter editor is open; when it is
+        closed the render task does one load and one branch per block.
+
+        Default off until hardware-verified.
+
 endmenu
 
 menu "Render Clock Source"

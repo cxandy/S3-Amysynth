@@ -969,6 +969,20 @@ void sequencer_core_arp_configure(uint16_t patch_number, uint8_t num_voices,
              (unsigned)SEQ_ARP_SYNTH, (unsigned)patch_number, (unsigned)num_voices);
 }
 
+/* The AMY synth slot backing a melodic row. Exposed so UI code that has to
+ * address the row's actual voices - the live filter overlay reads their
+ * modulated cutoff - does not duplicate the layer/track -> slot mapping, which
+ * is assigned at layer build time and is not derivable from the indices.
+ * Returns 0 (never a melodic slot; melodic starts at SEQ_MEL_SYNTH_BASE) when
+ * the indices are out of range, so callers can treat 0 as "no such row". */
+uint8_t sequencer_core_get_track_synth(uint8_t layer_idx, uint8_t track)
+{
+    if (layer_idx >= MAX_LAYERS || track >= SEQ_TRACKS) {
+        return 0;
+    }
+    return s_layers[layer_idx].synth_id[track];
+}
+
 void sequencer_core_configure_synth_slot(uint8_t synth_id, uint16_t patch_number,
                                          uint8_t num_voices)
 {

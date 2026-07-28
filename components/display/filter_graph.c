@@ -316,6 +316,28 @@ void filter_graph_draw(u8g2_t *u8g2, const filter_graph_t *fg)
     u8g2_DrawVLine(u8g2, cx, FG_PLOT_Y0, FG_PLOT_H - 1);
     u8g2_SetDrawColor(u8g2, 1);
 
+    /* ── Live sweep ruler: where the modulated cutoff actually went ──
+     * Confined to a short strip along the baseline rather than the full plot
+     * height, so it can never be confused with the authored cutoff cursor
+     * above and the two stay readable when they overlap. XOR again, which
+     * shows up both against the solid fill under the passband and against
+     * empty plot in the stopband. A steady cutoff draws as a single-column
+     * tick; a sweep draws as a bar spanning where it travelled. */
+    if (fg->live_valid) {
+        float lo_n = SEQ_CLAMP_F32(fg->live_lo_norm, 0.0f, 1.0f);
+        float hi_n = SEQ_CLAMP_F32(fg->live_hi_norm, 0.0f, 1.0f);
+        if (hi_n < lo_n) { float t = lo_n; lo_n = hi_n; hi_n = t; }
+
+        uint8_t lx = (uint8_t)(lo_n * (float)(FG_PLOT_W - 1));
+        uint8_t hx = (uint8_t)(hi_n * (float)(FG_PLOT_W - 1));
+
+        const uint8_t band_h = 5;
+        u8g2_SetDrawColor(u8g2, 2);
+        u8g2_DrawBox(u8g2, lx, (uint8_t)(baseline_y - band_h + 1),
+                     (uint8_t)(hx - lx + 1), band_h);
+        u8g2_SetDrawColor(u8g2, 1);
+    }
+
     /* Last so its blanked background wins over the curve and cutoff cursor. */
     draw_feedback_box(u8g2, fg);
 }

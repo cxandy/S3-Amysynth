@@ -1153,6 +1153,9 @@ extern int instrument_all_notes_off(int instrument_number, uint16_t *amy_voices)
 extern int instrument_sustain(int instrument_number, bool sustain, uint16_t *amy_voices);
 extern int instrument_get_patch_number(int instrument_number);
 extern int instrument_get_oscs_per_voice(int instrument_number);
+// LOCAL EDIT (S3-Amysynth, 2026-07-28): expose the voice -> base oscillator
+// mapping read-only; the table itself has no header declaration. See AMY-EDITS.md.
+extern bool amy_voice_base_osc(uint16_t voice, uint16_t *base_osc);
 extern uint32_t instrument_get_flags(int instrument_number);
 extern void instrument_set_flags(int instrument_number, uint32_t flags);
 extern uint8_t instrument_get_bus(int instrument_number);

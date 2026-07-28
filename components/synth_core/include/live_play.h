@@ -27,6 +27,11 @@ void live_play_note_off(uint8_t channel, uint8_t note);
  * safety). Cross-task safe. */
 void live_play_all_notes_off(void);
 
+/* AMY synth slot owned by the live voice. Exposed so UI code that has to
+ * address its actual voices (the live filter overlay reads their modulated
+ * cutoff) does not hard-code the slot number a second time. */
+uint8_t  live_play_synth_slot(void);
+
 /* Patch selection (Wireless menu page; same catalog as melodic/arp). */
 uint16_t live_play_get_patch(void);
 void     live_play_set_patch(uint16_t patch_number);

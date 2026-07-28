@@ -19,6 +19,11 @@ static const char *TAG = "live_play";
 #define LIVE_SYNTH   10
 #define LIVE_VOICES  4
 
+uint8_t live_play_synth_slot(void)
+{
+    return LIVE_SYNTH;
+}
+
 static uint16_t s_patch = SEQ_MEL_PATCH;
 static bool     s_ready = false;
 

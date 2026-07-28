@@ -12,6 +12,11 @@
 #include "display_lfo.h"
 #include "seq_defaults.h"
 #include "amy_helpers.h"
+#include "filter_scope.h"
+#if CONFIG_FILTER_SCOPE
+#include "amy.h"              /* instrument_get_num_voices, amy_voice_base_osc */
+#include "seq_core_config.h"  /* SEQ_ARP_SYNTH */
+#endif
 #include "seq_clamp.h"
 #include "voice_config.h"  /* shared voice constants incl. envelope bounds */
 #include "esp_log.h"
@@ -1382,6 +1387,117 @@ static bool filter_target_is_feedback(void)
     return sequencer_core_get_layer_patch(seq_state.active_layer_idx) == SEQ_PATCH_KS;
 }
 
+#if CONFIG_FILTER_SCOPE
+/* Bind the live overlay to the oscillators of whatever target the popup is
+ * editing. Called on open and on any event that can rebuild the target's
+ * voices, because a cached oscillator index survives a patch change while the
+ * slot behind it may not - and the consumer of that index is the render task.
+ *
+ * The drone targets are deliberately not armed: the stutter drone's editor
+ * shows a sweep MIDPOINT rather than a cutoff (see filter_load_from_target),
+ * so a live band would not correspond to the curve being drawn. */
+/* Last list handed to filter_scope_arm(), so the per-frame rebind below is a
+ * comparison rather than a re-arm. 0xFF means "cache invalid, force a rebind". */
+static uint16_t s_scope_oscs[FILTER_SCOPE_MAX_OSCS];
+static uint8_t  s_scope_n = 0xFF;
+
+/* Disarm and invalidate the cache together. Keeping these paired matters: a
+ * bare disarm would leave the cache describing a list that is no longer armed,
+ * and the next rebind would compare equal and decline to re-arm it. */
+static void filter_scope_drop(void)
+{
+    filter_scope_disarm();
+    s_scope_n = 0xFF;
+}
+
+static void filter_scope_bind_target(void)
+{
+    uint8_t slot = 0;
+
+    if (filter_tgt_is_live()) {
+#if CONFIG_SYNTH_WIRELESS
+        slot = live_play_synth_slot();
+#endif
+    } else if (filter_tgt_is_arp()) {
+        slot = SEQ_ARP_SYNTH;
+    } else if (filter_tgt_is_drone() || filter_tgt_is_drone_std()) {
+        filter_scope_drop();
+        return;
+    } else {
+        slot = sequencer_core_get_track_synth(seq_state.active_layer_idx,
+                                              seq_state.selected_track);
+    }
+
+    if (slot == 0) {
+        filter_scope_drop();
+        return;
+    }
+
+    uint16_t voices[MAX_VOICES_PER_INSTRUMENT];
+    int nv = instrument_get_num_voices(slot, voices);
+    if (nv <= 0) {
+        filter_scope_drop();
+        return;
+    }
+
+    /* Oscillator 0 of each voice is the audible carrier that owns the filter;
+     * the voice's other oscillators are mod/algo sources. A voice's base osc IS
+     * its oscillator 0, since event osc numbers are relative to the base. */
+    uint16_t oscs[FILTER_SCOPE_MAX_OSCS];
+    uint8_t  n = 0;
+    for (int i = 0; i < nv && n < FILTER_SCOPE_MAX_OSCS; i++) {
+        uint16_t base;
+        if (amy_voice_base_osc(voices[i], &base)) {
+            oscs[n++] = base;
+        }
+    }
+
+    /* Re-arm only on an actual change. This runs every UI frame so that a voice
+     * rebuild under the open popup (project load, chord-preset reallocation)
+     * cannot leave the render tap reading another target's oscillators - but
+     * re-arming unconditionally would clear the armed flag every frame and cost
+     * the tap a block each time. */
+    if (n == s_scope_n && memcmp(oscs, s_scope_oscs, n * sizeof(oscs[0])) == 0) {
+        return;
+    }
+    memcpy(s_scope_oscs, oscs, n * sizeof(oscs[0]));
+    s_scope_n = n;
+    filter_scope_arm(oscs, n);
+}
+
+/* Drain the published band into s_fgraph, quantised to plot columns.
+ *
+ * Quantisation is not cosmetic: filter_view_signature() hashes the whole
+ * struct, so unrounded floats would hash differently every frame and redraw the
+ * screen continuously while nothing visibly moved. */
+static void filter_sync_live_band(void)
+{
+    /* Condition 1 from the spec: while cutoff or resonance is actually being
+     * adjusted, the authored value is the truth. A band moving under the
+     * encoder would fight the very edit being made. */
+    if (s_fgraph.editing && (s_fgraph.cursor == 0 || s_fgraph.cursor == 1)) {
+        s_fgraph.live_valid = false;
+        return;
+    }
+
+    float lo_lf, hi_lf;
+    if (!filter_scope_read(&lo_lf, &hi_lf)) {
+        s_fgraph.live_valid = false;   /* nothing armed, or nothing sounding */
+        return;
+    }
+
+    /* AMY log-frequency -> Hz -> the graph's own 0..1 log axis. */
+    const float lo_norm = filter_hz_to_norm(freq_of_logfreq(lo_lf));
+    const float hi_norm = filter_hz_to_norm(freq_of_logfreq(hi_lf));
+
+    /* Round to plot columns (the renderer maps norm * (FG_PLOT_W - 1)). */
+    const float cols = 127.0f;
+    s_fgraph.live_lo_norm = (float)(int)(lo_norm * cols + 0.5f) / cols;
+    s_fgraph.live_hi_norm = (float)(int)(hi_norm * cols + 0.5f) / cols;
+    s_fgraph.live_valid   = true;
+}
+#endif /* CONFIG_FILTER_SCOPE */
+
 /* Populate s_fgraph from s_filter_edit and the current graph target. */
 static void filter_sync_fgraph(void)
 {
@@ -1597,6 +1713,11 @@ void synth_ui_filter_open(void)
     }
     s_filter_active = true;
     s_force_redraw  = true;
+#if CONFIG_FILTER_SCOPE
+    s_fgraph.live_valid = false;
+    filter_scope_drop();            /* force a fresh bind for the new target */
+    filter_scope_bind_target();
+#endif
     ESP_LOGI(TAG, "filter editor open: %s type%u %.0fHz Q%.2f",
              s_fgraph.label, s_filter_edit.filter_type,
              (double)s_filter_edit.cutoff_hz, (double)s_filter_edit.resonance);
@@ -1691,6 +1812,10 @@ bool synth_ui_filter_handle_button(bool is_long)
         filter_sync_fgraph();
         s_filter_active = false;
         s_force_redraw  = true;
+#if CONFIG_FILTER_SCOPE
+        filter_scope_drop();
+        s_fgraph.live_valid = false;
+#endif
         ESP_LOGI(TAG, "filter editor cancelled");
         return true;
     }
@@ -1713,6 +1838,14 @@ void synth_ui_filter_toggle_enabled(void)
 bool synth_ui_filter_close_commit(void)
 {
     if (!s_filter_active) return false;
+
+#if CONFIG_FILTER_SCOPE
+    /* Stop the render-side tap before anything else: from here the target's
+     * voices may be rebuilt by the commit below, which would leave the armed
+     * oscillator list pointing at slots that no longer belong to this target. */
+    filter_scope_drop();
+    s_fgraph.live_valid = false;
+#endif
 
 #if CONFIG_SYNTH_WIRELESS
     if (synth_ui_wireless_page_is_open()) {
@@ -1762,6 +1895,17 @@ bool synth_ui_filter_close_commit(void)
 void synth_ui_editors_live_service(void)
 {
     graph_amp_live_flush(false);
+
+#if CONFIG_FILTER_SCOPE
+    /* Drain the live band once per UI frame, before the view signature is
+     * taken. It cannot live inside filter_view_signature(): that is declared
+     * pure, so a side effect there would be both a broken contract and liable
+     * to be optimised away. */
+    if (s_filter_active) {
+        filter_scope_bind_target();   /* cheap no-op unless the voices changed */
+        filter_sync_live_band();
+    }
+#endif
 }
 
 /* ── Filter editor: end ──────────────────────────────────────────────────── */

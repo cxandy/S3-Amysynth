@@ -17,6 +17,7 @@
 #include "sequencer_core.h"
 #include "amy_helpers.h"   /* amy_helpers_set_render_task */
 #include "custompatches/sample_rec.h"
+#include "filter_scope.h"
 #include "usb_audio.h"
 #include "esp_timer.h"
 #include "esp_log.h"
@@ -270,6 +271,14 @@ static void amy_usb_render_task(void *arg) {
             // Must run after amy_update() so amy_queue_lock is already released
             // (see amy-internals.md's lock-ownership section).
             sample_rec_render_tick(block, AMY_BLOCK_SIZE);
+
+#if CONFIG_FILTER_SCOPE
+            // Live filter overlay for the filter editor. Same reason as above:
+            // it reads msynth[]/synth[], so it must run here, after amy_update()
+            // has released amy_queue_lock. Armed only while that editor is open;
+            // otherwise one load and one branch.
+            filter_scope_render_tick();
+#endif
 
 #if CONFIG_USB_AUDIO_BLOCKING_WRITE
             // Resilient path: retry until the host consumes the data, slaving the

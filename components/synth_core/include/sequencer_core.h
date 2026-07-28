@@ -492,6 +492,11 @@ void sequencer_core_arp_configure(uint16_t patch_number, uint8_t num_voices,
 void sequencer_core_configure_synth_slot(uint8_t synth_id, uint16_t patch_number,
                                          uint8_t num_voices);
 
+/* AMY synth slot backing a melodic row, or 0 when layer_idx/track are out of
+ * range (0 is never a melodic slot). The mapping is assigned at layer build
+ * time, so it cannot be derived from the indices by the caller. */
+uint8_t sequencer_core_get_track_synth(uint8_t layer_idx, uint8_t track);
+
 /* Schedule a repeating note-on + note-off pair on the arp synth.
  *  tag_base  : unique tag for this arp step (off uses tag_base+1)
  *  midi_note : already-snapped/clamped pitch to play

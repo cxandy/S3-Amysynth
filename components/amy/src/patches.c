@@ -67,6 +67,21 @@ void patches_reset() {
     next_user_patch_index = 0;
 }
 
+// LOCAL EDIT (S3-Amysynth, 2026-07-28): read accessor for voice_to_base_osc.
+// The table is a plain global with no declaration in any header, so an embedder
+// that needs a voice's oscillators - to display live per-voice engine state, for
+// instance - has no supported way to ask for it. Read-only, and checked for both
+// "not yet initialised" and "voice out of range / unallocated". See AMY-EDITS.md.
+bool amy_voice_base_osc(uint16_t voice, uint16_t *base_osc) {
+    if (voice_to_base_osc == NULL || voice >= amy_global.config.max_voices)
+        return false;
+    if (!AMY_IS_SET(voice_to_base_osc[voice]))
+        return false;
+    if (base_osc != NULL)
+        *base_osc = voice_to_base_osc[voice];
+    return true;
+}
+
 void patches_debug() {
     for(uint8_t v = 0; v < amy_global.config.max_voices; v++) {
         if (AMY_IS_SET(voice_to_base_osc[v]))

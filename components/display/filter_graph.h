@@ -45,21 +45,16 @@ typedef struct {
                               * compact enable checkbox. */
     char    label[16];       /* left side of top bar, e.g. "L1 T2" or "ARP" */
 
-    /* Live cutoff band (CONFIG_FILTER_SCOPE). Where the modulated cutoff has
-     * actually travelled since the previous frame, so EG1 sweeps and filter LFO
-     * motion are visible. Same 0..1 normalisation as cutoff_norm.
-     *
-     * A band rather than a point because the engine advances at 187.5 Hz while
-     * this redraws at 20 Hz: sampling one value per frame would alias any sweep
-     * faster than ~10 Hz into strobing. lo == hi is the legitimate steady case
-     * and draws as a single column.
-     *
-     * The caller must quantise both edges to pixel columns before storing them,
-     * otherwise the view signature hashes differently every frame and the
-     * screen redraws continuously with nothing visibly moving. */
-    bool    live_valid;      /* false → draw no band at all */
-    float   live_lo_norm;
-    float   live_hi_norm;
+    /* Note on liveness (CONFIG_FILTER_SCOPE): when the filter scope is armed,
+     * the caller drives cutoff_norm from the live modulated cutoff, so the
+     * curve and cursor move as if the cutoff were being turned by hand. This
+     * struct stays a pure value snapshot - the renderer neither knows nor
+     * cares whether the value is authored or live. The caller must quantise
+     * cutoff_norm to pixel columns, or the view signature hashes differently
+     * every frame and the screen redraws continuously. Bottom rows 57-63 are
+     * overwritten by the hint strip after this draws - never put content
+     * there (the first version of the scope drew a baseline band exactly
+     * there and it was invisibly erased every frame). */
 } filter_graph_t;
 
 /* Draw the full-screen filter editor (clears + sends the buffer).

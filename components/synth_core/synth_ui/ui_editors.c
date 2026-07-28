@@ -1465,40 +1465,49 @@ static void filter_scope_bind_target(void)
     filter_scope_arm(oscs, n);
 }
 
-/* Drain the published band into s_fgraph, quantised to plot columns.
+/* Drive the graph's cutoff from the live modulated value, so the curve and
+ * full-height cursor move exactly as if someone were turning the cutoff by
+ * hand while EG1/LFO act on it. Frozen only while a value is actually being
+ * input on the Hz/Q fields (select pressed + cursor there); on any other
+ * cursor, or when nothing is sounding, the authored value shows.
  *
- * Quantisation is not cosmetic: filter_view_signature() hashes the whole
- * struct, so unrounded floats would hash differently every frame and redraw the
- * screen continuously while nothing visibly moved. */
+ * Column quantisation is not cosmetic: filter_view_signature() hashes the
+ * whole struct, so an unrounded float would hash differently every frame and
+ * redraw continuously while nothing visibly moved. */
 static void filter_sync_live_band(void)
 {
-    /* Condition 1 from the spec: while cutoff or resonance is actually being
-     * adjusted, the authored value is the truth. A band moving under the
-     * encoder would fight the very edit being made. */
-    if (s_fgraph.editing && (s_fgraph.cursor == 0 || s_fgraph.cursor == 1)) {
-        /* Keep draining while frozen: an unbumped epoch would let the tap
-         * widen min/max across the whole edit, flashing a band spanning the
-         * entire sweep on the first frame after the encoder is released. */
-        (void)filter_scope_read(NULL, NULL);
-        s_fgraph.live_valid = false;
-        return;
-    }
+    float norm = filter_hz_to_norm(s_filter_edit.cutoff_hz);   /* authored */
+
+    const bool frozen = s_fgraph.editing &&
+                        (s_fgraph.cursor == 0 || s_fgraph.cursor == 1);
 
     float lo_lf, hi_lf;
-    if (!filter_scope_read(&lo_lf, &hi_lf)) {
-        s_fgraph.live_valid = false;   /* nothing armed, or nothing sounding */
-        return;
+    bool  live = false;
+    if (!frozen && filter_scope_read(&lo_lf, &hi_lf)) {
+        /* Midpoint of the min/max window since the last frame: tracks EG1
+         * sweeps and slow LFOs faithfully; fast LFOs read as a wobble around
+         * their center instead of aliased strobing. */
+        norm = filter_hz_to_norm(freq_of_logfreq(0.5f * (lo_lf + hi_lf)));
+        live = true;
+    } else if (frozen) {
+        /* Keep draining while frozen so the accumulator window stays fresh
+         * for the frame after the edit ends. */
+        (void)filter_scope_read(NULL, NULL);
     }
 
-    /* AMY log-frequency -> Hz -> the graph's own 0..1 log axis. */
-    const float lo_norm = filter_hz_to_norm(freq_of_logfreq(lo_lf));
-    const float hi_norm = filter_hz_to_norm(freq_of_logfreq(hi_lf));
-
-    /* Round to plot columns (the renderer maps norm * (FG_PLOT_W - 1)). */
+    /* EG1 can push the live cutoff beyond the graph's authored Hz range;
+     * clamp so the cursor pegs at the plot edge instead of wrapping. */
+    norm = SEQ_CLAMP_F32(norm, 0.0f, 1.0f);
     const float cols = 127.0f;
-    s_fgraph.live_lo_norm = (float)(int)(lo_norm * cols + 0.5f) / cols;
-    s_fgraph.live_hi_norm = (float)(int)(hi_norm * cols + 0.5f) / cols;
-    s_fgraph.live_valid   = true;
+    s_fgraph.cutoff_norm = (float)(int)(norm * cols + 0.5f) / cols;
+
+    /* ~1 Hz data-flow diagnostic (UI task, debug level only). */
+    static uint8_t s_scope_dbg;
+    if (++s_scope_dbg >= 20) {
+        s_scope_dbg = 0;
+        ESP_LOGD(TAG, "scope: live=%d frozen=%d norm=%.3f",
+                 (int)live, (int)frozen, (double)s_fgraph.cutoff_norm);
+    }
 }
 #endif /* CONFIG_FILTER_SCOPE */
 
@@ -1718,7 +1727,6 @@ void synth_ui_filter_open(void)
     s_filter_active = true;
     s_force_redraw  = true;
 #if CONFIG_FILTER_SCOPE
-    s_fgraph.live_valid = false;
     filter_scope_drop();            /* force a fresh bind for the new target */
     filter_scope_bind_target();
 #endif
@@ -1818,7 +1826,6 @@ bool synth_ui_filter_handle_button(bool is_long)
         s_force_redraw  = true;
 #if CONFIG_FILTER_SCOPE
         filter_scope_drop();
-        s_fgraph.live_valid = false;
 #endif
         ESP_LOGI(TAG, "filter editor cancelled");
         return true;
@@ -1848,7 +1855,6 @@ bool synth_ui_filter_close_commit(void)
      * voices may be rebuilt by the commit below, which would leave the armed
      * oscillator list pointing at slots that no longer belong to this target. */
     filter_scope_drop();
-    s_fgraph.live_valid = false;
 #endif
 
 #if CONFIG_SYNTH_WIRELESS

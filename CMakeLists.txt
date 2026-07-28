@@ -13,15 +13,12 @@ idf_build_set_property(COMPILE_OPTIONS "-Werror=infinite-recursion" APPEND)
 project(S3-Amysynth)
 
 # GCC LTO: cross-TU inlining is the primary DSP gain, so it stays on for the
-# shipping toolchain. cmake_utilities' gcc.cmake keys solely on
-# CONFIG_CU_GCC_LTO_ENABLE and never inspects the compiler, so it would inject
-# -flto-compression-level=9 / -ffat-lto-objects into a clang build as well --
-# flags clang rejects outright. Gate the call on the toolchain instead.
-# (gcc.cmake only defines cu_gcc_lto_set when the Kconfig symbol is set, so the
-# symbol has to be part of the condition or the call becomes an unknown command.)
-if(CMAKE_C_COMPILER_ID STREQUAL "GNU" AND CONFIG_CU_GCC_LTO_ENABLE)
-    include(gcc)
-    cu_gcc_lto_set(COMPONENTS main synth_core display u8g2 amy)
+# shipping toolchain (clang rejects several of the flags, hence the compiler
+# gate). Standalone recipe in cmake/gcc_lto.cmake; disable for A/B builds with
+# -DAMYSYNTH_LTO=OFF.
+include(${CMAKE_CURRENT_LIST_DIR}/cmake/gcc_lto.cmake)
+if(CMAKE_C_COMPILER_ID STREQUAL "GNU" AND AMYSYNTH_LTO)
+    gcc_lto_enable(COMPONENTS main synth_core display u8g2 amy)
 endif()
 
 # esp-clang 20.1.1 crashes in instruction selection on patches_load_patch

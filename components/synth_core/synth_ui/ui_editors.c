@@ -1902,9 +1902,10 @@ void synth_ui_editors_live_service(void)
 
 #if CONFIG_FILTER_SCOPE
     /* Drain the live band once per UI frame, before the view signature is
-     * taken. It cannot live inside filter_view_signature(): that is declared
-     * pure, so a side effect there would be both a broken contract and liable
-     * to be optimised away. */
+     * taken. It cannot live inside filter_view_signature(): signature
+     * functions are side-effect-free by contract (synth_ui_internal.h), and
+     * an epoch bump hidden in one would couple the scope's read cadence to
+     * how often the redraw gate happens to hash this view. */
     if (s_filter_active) {
         filter_scope_bind_target();   /* cheap no-op unless the voices changed */
         filter_sync_live_band();
@@ -2161,14 +2162,14 @@ void synth_ui_cycle_editor(void)
 
 /* ── View signatures ─────────────────────────────────────────────────────── */
 
-[[gnu::pure]] uint32_t filter_view_signature(void)
+uint32_t filter_view_signature(void)
 {
     uint32_t h = FNV1A_OFFSET;
     h = fnv1a_bytes(h, &s_fgraph, sizeof(s_fgraph));
     return h;
 }
 
-[[gnu::pure]] uint32_t graph_view_signature(void)
+uint32_t graph_view_signature(void)
 {
     uint32_t h = FNV1A_OFFSET;
     h = fnv1a_bytes(h, &s_graph_popup.cursor, sizeof(s_graph_popup.cursor));

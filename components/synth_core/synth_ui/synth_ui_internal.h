@@ -47,6 +47,10 @@ void     sync_layer_to_core(uint8_t li);
 void     synth_ui_reload_mirror_from_core(void);
 
 /* ─── View signatures (each defined in its screen/editor file) ──────────
+ * Contract: signature functions are side-effect-free. The task's redraw gate
+ * calls one per frame and compares the hash against the previous frame's to
+ * decide whether to rebuild the screen; any state mutation belongs in the
+ * live-service hooks that run before the gate, never in a signature.
  * The view-struct screens build the view once and return it through `out`
  * alongside the hash, so the task's draw switch reuses it instead of
  * running the whole snprintf build a second time in the same frame. */

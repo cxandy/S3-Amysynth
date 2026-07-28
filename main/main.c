@@ -905,6 +905,19 @@ static void encoder_init_task(void *pvParameters)
               0);
     }
 
+    // One-time post-init heap baseline, deliberately not Kconfig-gated: every
+    // memory-placement change (IRAM Kconfig flips, DRAM_ATTR moves, pool
+    // sizing) shifts this number and the build-time map cannot predict it.
+    // This delayed bring-up is the last init step (encoder task just spawned
+    // above), so free-internal here is the steady-state figure placement
+    // decisions should be based on.
+    ESP_LOGI(TAG,
+             "post-init heap: internal free=%u largest=%u min_free=%u | psram free=%u",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+
     vTaskDelete(NULL);
 }
 

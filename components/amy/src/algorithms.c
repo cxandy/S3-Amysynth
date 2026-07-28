@@ -145,7 +145,7 @@ SAMPLE render_mod(SAMPLE *in, SAMPLE* out, uint16_t osc, SAMPLE feedback_level, 
 void note_on_mod(uint16_t osc, uint16_t algo_osc) {
     // Perform the vital parts of amy.c:1089 ff since these oscs aren't turned on elsewhere.
     synth[osc]->note_on_clock = amy_global.total_blocks * AMY_BLOCK_SIZE;
-    synth[osc]->status = SYNTH_IS_ALGO_SOURCE; // to ensure it's rendered
+    synth[osc]->role = SYNTH_IS_ALGO_SOURCE; // to ensure it's rendered
     if (AMY_IS_SET(synth[osc]->trigger_phase))
         synth[osc]->phase = F2P(synth[osc]->trigger_phase);
     if(synth[osc]->wave==SINE) fm_sine_note_on(osc, algo_osc);
@@ -174,26 +174,23 @@ void algo_note_on(uint16_t osc, float freq) {
     }
 }
 
-SAMPLE *** scratch;
+// One contiguous allocation of AMY_CORES * 3 sample blocks (BUS_ONE, BUS_TWO,
+// SCRATCH per core), replacing a pointer-array-of-pointer-arrays. One malloc
+// instead of 1 + AMY_CORES * 4, and render_algo() reaches its buffers with
+// constant offsets instead of two dependent pointer loads.
+SAMPLE * scratch;
+
+#define SCRATCH_BLOCKS_PER_CORE 3
 
 void algo_deinit() {
-    for(uint16_t i=0;i<AMY_CORES;i++) {
-        for(uint16_t j=0;j<3;j++) free(scratch[i][j]);
-        free(scratch[i]);
-    }
     free(scratch);
 }
 
 void algo_init() {
-    scratch = malloc_caps(sizeof(SAMPLE**)*AMY_CORES, amy_global.config.ram_caps_fbl);
-    for(uint16_t i=0;i<AMY_CORES;i++) {
-        scratch[i] = malloc_caps(sizeof(SAMPLE*)*3, amy_global.config.ram_caps_fbl);
-        for(uint16_t j=0;j<3;j++) {
-            // 16-byte aligned so zero()/copy() take their PIE vector path.
-            scratch[i][j] = malloc_caps_block(sizeof(SAMPLE)*AMY_BLOCK_SIZE, amy_global.config.ram_caps_fbl);
-        }
-    }
-
+    // 16-byte aligned so zero()/copy() take the ESP32-S3 PIE vector path; each
+    // block stays aligned because AMY_BLOCK_SIZE*sizeof(SAMPLE) is a multiple of 16.
+    scratch = malloc_caps_block(sizeof(SAMPLE)*AMY_BLOCK_SIZE*SCRATCH_BLOCKS_PER_CORE*AMY_CORES,
+                                amy_global.config.ram_caps_fbl);
 }
 
 SAMPLE render_algo(SAMPLE* buf, uint16_t osc, uint8_t core) {
@@ -204,12 +201,12 @@ SAMPLE render_algo(SAMPLE* buf, uint16_t osc, uint8_t core) {
     SAMPLE* in_buf;
     SAMPLE* out_buf = NULL;
 
-    SAMPLE* const BUS_ONE = scratch[core][0];
-    SAMPLE* const BUS_TWO = scratch[core][1];
-    SAMPLE* const SCRATCH = scratch[core][2];
+    SAMPLE* const BUS_ONE = scratch + (SCRATCH_BLOCKS_PER_CORE * core) * AMY_BLOCK_SIZE;
+    SAMPLE* const BUS_TWO = BUS_ONE + AMY_BLOCK_SIZE;
+    SAMPLE* const SCRATCH = BUS_TWO + AMY_BLOCK_SIZE;
 
-    //for (int i = 0; i < 3; ++i)
-    //    zero(scratch[core][i]);
+    //for (int i = 0; i < SCRATCH_BLOCKS_PER_CORE; ++i)
+    //    zero(BUS_ONE + i * AMY_BLOCK_SIZE);
     
     SAMPLE amp = SHIFTR(F2S(msynth[osc]->amp), 2);  // Arbitrarily divide FM voice output by 4 to make it more in line with other oscs.
     for(uint8_t op=0;op<MAX_ALGO_OPS;op++) {
@@ -248,7 +245,7 @@ SAMPLE render_algo(SAMPLE* buf, uint16_t osc, uint8_t core) {
 
         SAMPLE value = 0;
         if(AMY_IS_SET(synth[osc]->algo_source[op])
-           && synth[synth[osc]->algo_source[op]]->status == SYNTH_IS_ALGO_SOURCE) {
+           && synth[synth[osc]->algo_source[op]]->role == SYNTH_IS_ALGO_SOURCE) {
             value = render_mod(in_buf, out_buf, synth[osc]->algo_source[op], feedback_level, osc, mod_amp);
         } // If osc is not set, output has already been cleared.
         if (out_buf == buf && value > max_value)  max_value = value;

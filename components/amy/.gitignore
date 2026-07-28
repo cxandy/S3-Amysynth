@@ -3,6 +3,7 @@ amy-example
 amy-message
 failed_tests.txt
 tests/tst
+tests/test_clock_wrap
 amy-piano
 src/build/
 *.DS_Store*
@@ -14,6 +15,7 @@ src/amy.egg-info/
 amy.egg-info/
 build/
 venv/
+load/
 
 
 # Prerequisites

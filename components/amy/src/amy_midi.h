@@ -3,6 +3,15 @@
 #ifndef __MIDI_H
 #define __MIDI_H
 
+// AMY_HOST_MIDI: the embedding host owns the MIDI device layer (run_midi /
+// stop_midi / midi_out) and amy_midi.c compiles only the platform-neutral
+// message parsing. MACOS implies it — the macOS desktop host layer is
+// macos_midi.m. Other hosts (e.g. the AMYboard VCV Rack plugin, which
+// provides its own MIDI on every platform) define AMY_HOST_MIDI directly.
+#if defined(MACOS) && !defined(AMY_HOST_MIDI)
+#define AMY_HOST_MIDI 1
+#endif
+
 #ifdef ESP_PLATFORM 
 #include "driver/uart.h"
 #include "soc/uart_reg.h"
@@ -15,7 +24,27 @@
 void convert_midi_bytes_to_messages(uint8_t * data, size_t len, uint8_t usb);
 void amy_process_single_midi_byte(uint8_t byte, uint8_t from_web_or_usb);
 void amy_external_midi_output(uint8_t * data, uint32_t len);
-void amy_external_midi_sync(uint8_t enabled);
+
+// Modes for amy_external_midi_sync() (wire command zC / external_midi_sync=).
+#define AMY_MIDI_SYNC_OFF 0     // internal clock; ignore and don't send realtime messages (default)
+#define AMY_MIDI_SYNC_FOLLOW 1  // sequencer follows incoming 0xF8/0xFA/0xFC
+#define AMY_MIDI_SYNC_SEND 2    // sequencer sends 0xF8/0xFA/0xFC (AMY is the clock master)
+void amy_external_midi_sync(uint8_t mode);
+
+// MIDI clock out, driven by the sequencer when in AMY_MIDI_SYNC_SEND mode.
+// Stubbed in godot/src/amy_platform_stubs.c (amy_midi.c is excluded there).
+uint8_t midi_clock_out_enabled();
+void midi_clock_out_tick();
+void midi_clock_out_start();
+void midi_clock_out_stop();
+#ifdef __EMSCRIPTEN__
+void midi_clock_out_flush();  // called from the browser main loop
+#endif
+
+// Track which midi channels not to ignore
+void midi_active_channels_reset(void);
+void midi_active_channel_set(uint8_t channel, bool state);
+void midi_active_channels_debug(void);
 
 
 #define MAX_MIDI_BYTES_TO_PARSE 1024
@@ -29,13 +58,17 @@ extern uint8_t *sysex_buffer;
 // Only AMYBOARD creates and reads these slots (see parse_sysex()): the ring
 // exists for the SPSS z* sketch-transfer bursts over USB-gadget MIDI, which
 // only AMYboard receives. Size the ring to 0 everywhere else so we don't
-// malloc SYSEX_COPY_SLOTS x MAX_SYSEX_BYTES (32 x 16KB = 512KB): that alone
-// would exhaust e.g. the rp2350's 520KB of SRAM, and on Tulip ESP32-S3 it ate
-// a third of the free SPIRAM. With 0 slots, parse_sysex() finds a NULL slot
-// and the scheduled callback ACKs SPSS messages without processing them;
-// non-SPSS sysex is unaffected.
+// malloc SYSEX_COPY_SLOTS x MAX_SYSEX_BYTES: that alone would exhaust e.g.
+// the rp2350's 520KB of SRAM, and on Tulip ESP32-S3 it ate a third of the
+// free SPIRAM. With 0 slots, parse_sysex() finds a NULL slot and the
+// scheduled callback ACKs SPSS messages without processing them; non-SPSS
+// sysex is unaffected.
+// 8 slots (128KB SPIRAM) is enough on AMYboard: the sender is flow-controlled
+// (the ACK is sent only after a slot is drained, see parse_sysex()), so it
+// can never run more than the ring depth ahead. 32 slots cost 512KB of
+// SPIRAM better spent on memorypcm samples.
 #if defined(AMYBOARD)
-#define SYSEX_COPY_SLOTS 32
+#define SYSEX_COPY_SLOTS 8
 #else
 #define SYSEX_COPY_SLOTS 0
 #endif

@@ -7,11 +7,15 @@
 
 /* ── LOCAL EDIT (S3-Amysynth): Sequence-array lock ───────────────────────
  * sequences[] is written by sequencer_add_event() (called from any task)
- * and read by sequencer_process_tick() (called from the esp_timer task on
- * ESP, or the sequencer thread on POSIX).  On SMP these run concurrently.
+ * and read by sequencer_process_tick() (since v1.2.104 driven per block from
+ * amy_execute_deltas() on the render task; previously an esp_timer task).
+ * On SMP these run concurrently.
  * Use a dedicated mutex so we don't conflict with amy_queue_lock, which
  * guards delta_queue and is re-acquired inside add_delta_to_queue() while
- * sequencer_process_tick() is still running. See AMY-EDITS.md.
+ * sequencer_process_tick() is still running. (amy_execute_deltas() calls
+ * sequencer_check_and_fill() BEFORE it takes amy_queue_lock, so the
+ * SEQ_LOCK -> amy_queue_lock ordering here is the only ordering that exists.)
+ * See AMY-EDITS.md.
  */
 #ifdef ESP_PLATFORM
 #  include "freertos/FreeRTOS.h"
@@ -81,11 +85,11 @@ static inline void seq_active_remove(int32_t tag) {
     s_tag_slot[tag]    = -1;
 }
 
-// Declared per-platform below.
-void _sequencer_start();
-void _sequencer_stop();
-
 void sequencer_init(int max_sequencer_tags) {
+    // These are statics, so a stop/start of AMY within one process needs them
+    // put back to their boot state (internal clock, running).
+    sequencer_running = true;
+    sequencer_external_clock = false;
     /* LOCAL EDIT (S3-Amysynth): the active-tag index stores tags as int16_t
      * (see above); clamp so tag values and the -1 sentinel always fit. */
     if (max_sequencer_tags > 32766) max_sequencer_tags = 32766;
@@ -116,12 +120,10 @@ void sequencer_init(int max_sequencer_tags) {
         s_tag_slot[i] = -1;
     }
     // We are read to go.
-    //sequencer_start();
     sequencer_recompute();
 #ifdef ESP_PLATFORM
     if (s_seq_lock == NULL) s_seq_lock = xSemaphoreCreateMutex();
 #endif
-    _sequencer_start();
 }
 
 void sequencer_reset() {
@@ -140,11 +142,11 @@ void sequencer_reset() {
 }
 
 void sequencer_deinit() {
-    _sequencer_stop();
     sequencer_reset();
     if (sequences != NULL) free(sequences);
     if (s_active_tags != NULL) { free(s_active_tags); s_active_tags = NULL; }
     if (s_tag_slot != NULL)    { free(s_tag_slot);    s_tag_slot = NULL; }
+    sequences = NULL;  // sequencer_check_and_fill guards on this
     max_sequences = 0;
 }
 
@@ -159,17 +161,15 @@ void sequencer_debug() {
 }
 
 void sequencer_recompute() {
-    // LOCAL EDIT (S3-Amysynth): all-float, single divide. The unsuffixed
-    // 1000000.0 / 60.0 literals promoted the whole expression to double,
-    // which is software-emulated on this target (and most 32-bit ports).
-    // 60000000 us/min / (bpm * ticks-per-beat) == the original expression.
-    // Upstream-PR candidate.
+    // 60000000 us/min / (bpm * ticks per beat); keep it single-precision -
+    // unsuffixed double literals pull in software double emulation on 32-bit.
     amy_global.us_per_tick = (uint32_t) (60000000.0f / (amy_global.tempo * (float)AMY_SEQUENCER_PPQ));
-    amy_global.next_amy_tick_us = (((uint64_t)amy_sysclock()) * 1000L) + (uint64_t)amy_global.us_per_tick;
+    amy_global.next_amy_tick_us = (amy_sysclock64() * 1000ULL) + (uint64_t)amy_global.us_per_tick;
 }
 
 static void sequencer_process_tick(void) {
     amy_global.sequencer_tick_count++;
+    midi_clock_out_tick();  // no-op unless in AMY_MIDI_SYNC_SEND mode
     // LOCAL EDIT (S3-Amysynth): scan only the currently-active tags O(active),
     // not 0..highest_tag O(highest_tag_ever). Walk backwards so swap-remove
     // inside seq_active_remove never skips an entry. See AMY-EDITS.md.
@@ -216,6 +216,33 @@ static void sequencer_process_tick(void) {
     }
 }
 
+#ifdef __EMSCRIPTEN__
+// On the web, ticks are counted in the render loop, which runs in the
+// AudioWorklet thread -- EM_ASM there can't reach the page's JS, where
+// amy_sequencer_js_hook is defined. The emscripten main loop calls this from
+// the browser main thread to replay elapsed ticks to the hook.
+void sequencer_check_and_call_js_hook() {
+    static uint32_t last_reported_tick = 0;
+    uint32_t tick = amy_global.sequencer_tick_count;
+    if (tick < last_reported_tick) last_reported_tick = tick;  // sequencer was reset
+    // If we're more than a second of ticks behind (e.g. the page was
+    // backgrounded and the main loop paused), skip ahead rather than firing a
+    // burst of stale hook calls.
+    if (amy_global.us_per_tick > 0) {
+        uint32_t ticks_per_sec = 1000000 / amy_global.us_per_tick;
+        if (tick - last_reported_tick > ticks_per_sec) last_reported_tick = tick - ticks_per_sec;
+    }
+    while (last_reported_tick < tick) {
+        ++last_reported_tick;
+        EM_ASM({
+            if(typeof amy_sequencer_js_hook === 'function') {
+                amy_sequencer_js_hook($0);
+            }
+        }, last_reported_tick);
+    }
+}
+#endif
+
 void sequencer_midi_start() {
     // MIDI "Start" restarts the sequencer.
     // If external clock was not previously enabled, keep using internal clock
@@ -225,12 +252,14 @@ void sequencer_midi_start() {
     }
     // Reset the tick timer to now so sequencer_check_and_fill doesn't try to
     // catch up all the ticks that elapsed while stopped.
-    amy_global.next_amy_tick_us = (uint64_t)amy_sysclock() * 1000L;
+    amy_global.next_amy_tick_us = amy_sysclock64() * 1000ULL;
     sequencer_running = true;
+    midi_clock_out_start();  // tell downstream slaves, if we're the clock master
 }
 
 void sequencer_midi_stop() {
     sequencer_running = false;
+    midi_clock_out_stop();  // tell downstream slaves, if we're the clock master
 }
 
 void sequencer_midi_clock_tick() {
@@ -251,7 +280,7 @@ void sequencer_external_clock_disable() {
     sequencer_running = true;
     // Re-anchor the tick timer to now so sequencer_check_and_fill doesn't try to
     // replay every tick that elapsed while we were on external clock.
-    amy_global.next_amy_tick_us = (uint64_t)amy_sysclock() * 1000L;
+    amy_global.next_amy_tick_us = amy_sysclock64() * 1000ULL;
 }
 
 uint8_t sequencer_add_event(amy_event *e) {
@@ -295,120 +324,32 @@ uint8_t sequencer_add_event(amy_event *e) {
 }
 
 
+// Called once per block from amy_execute_deltas(). Ticks are decided against
+// amy_sysclock(), which counts rendered samples, so the sequencer advances on
+// AMY time in any rendering context (live, offline, tests).
 void sequencer_check_and_fill() {
-    if (!sequencer_running || sequencer_external_clock) return;
+    if (sequences == NULL) return;  // sequencer_init hasn't run
+    if (sequencer_external_clock) return;
+    // When we're the MIDI clock master, realtime clock keeps flowing even while
+    // the transport is stopped so slaves stay tempo-locked; otherwise a stopped
+    // sequencer has nothing to do.
+    if (!sequencer_running && !midi_clock_out_enabled()) return;
     // If we've fallen behind by more than 1 second (e.g. sequencer was stopped
     // and restarted, or a long blocking operation occurred), skip ahead instead
     // of processing hundreds of backed-up ticks at once.
-    uint64_t now_us = (uint64_t)amy_sysclock() * 1000L;
+    // next_amy_tick_us is a 64-bit accumulator, so it must be anchored to the
+    // 64-bit clock. Seeding it from the 32-bit amy_sysclock() used to kill the
+    // sequencer permanently at the 49.7-day rollover: now_us collapsed to ~0
+    // while next_amy_tick_us stayed at ~4.3e12, and neither the catch-up guard
+    // (which only handles falling behind) nor the tick loop could ever fire.
+    uint64_t now_us = amy_sysclock64() * 1000ULL;
     if (now_us > amy_global.next_amy_tick_us + 1000000ULL) {
         amy_global.next_amy_tick_us = now_us;
     }
     // The while is in case the timer fires later than a tick; (on esp this would be due to SPI or wifi ops)
-    // LOCAL EDIT (S3-Amysynth): compare in the us domain against the now_us
-    // already computed above. The old ms-domain compare re-read amy_sysclock()
-    // AND paid a 64-bit divide (next_amy_tick_us / 1000) on every check - a
-    // real __udivdi3 libcall per 500 us timer callback on 32-bit targets,
-    // since GCC cannot strength-reduce a 64-bit divide by a constant there.
-    // Behavior delta: a tick's deadline is no longer rounded down to the ms
-    // boundary, so a tick can fire up to 1 ms later (never earlier) within
-    // the same 500 us callback grid; the accumulated tick rate is unchanged.
-    // Upstream-PR candidate.
     while(now_us >= amy_global.next_amy_tick_us) {
-        sequencer_process_tick();
+        if (sequencer_running) sequencer_process_tick();
+        else midi_clock_out_tick();  // transport stopped: clock only, no sequence events
         amy_global.next_amy_tick_us = amy_global.next_amy_tick_us + (uint64_t)amy_global.us_per_tick;
     }
 }
-
-///// Sequencers per platform
-
-#ifdef ESP_PLATFORM
-// ESP: do it with hardware timer
-#include "esp_timer.h"
-esp_timer_handle_t periodic_timer = NULL;
-
-static void sequencer_timer_callback(void* arg) {
-    sequencer_check_and_fill();
-}
-
-void _sequencer_start() {
-    const esp_timer_create_args_t periodic_timer_args = {
-            .callback = &sequencer_timer_callback,
-            //.dispatch_method = ESP_TIMER_ISR,
-            .name = "sequencer"
-    };
-    ESP_ERROR_CHECK(esp_timer_create(&periodic_timer_args, &periodic_timer));
-    // 500us = 0.5ms
-    ESP_ERROR_CHECK(esp_timer_start_periodic(periodic_timer, 500));
-}
-
-void _sequencer_stop() {
-    if (periodic_timer) {
-        ESP_ERROR_CHECK(esp_timer_stop(periodic_timer));
-        ESP_ERROR_CHECK(esp_timer_delete(periodic_timer));
-        periodic_timer = NULL;
-    }
-}
-
-#elif defined(PICO_RP2350) || defined(PICO_RP2040)
-// pico: do it with a hardware timer
-
-#include "pico/time.h"
-repeating_timer_t pico_sequencer_timer;
-
-static bool sequencer_timer_callback(repeating_timer_t *rt) {
-    sequencer_check_and_fill();
-    return true;
-}
-
-void _sequencer_start() {
-    add_repeating_timer_us(-500, sequencer_timer_callback, NULL, &pico_sequencer_timer);
-}
-
-void _sequencer_stop() {
-    cancel_repeating_timer(&pico_sequencer_timer);
-}
-
-#elif defined _POSIX_THREADS
-#include <pthread.h>
-
-static volatile bool sequencer_thread_should_exit = false;
-
-// posix: threads
-void * sequencer_thread(void *vargs) {
-    // Loop forever, checking for time and sleeping
-    while(!sequencer_thread_should_exit) {
-        sequencer_check_and_fill();            
-        // 500000ns = 500us = 0.5ms
-        nanosleep((const struct timespec[]){{0, 500000L}}, NULL);
-    }
-    return NULL;
-}
-pthread_t sequencer_thread_id;
-void _sequencer_start() {
-    sequencer_thread_should_exit = false;
-    pthread_create(&sequencer_thread_id, NULL, sequencer_thread, NULL);
-}
-void _sequencer_stop() {
-    //pthread_cancel(sequencer_thread_id);
-    sequencer_thread_should_exit = true;
-}
-
-#elif defined AMY_DAISY
-void _sequencer_start() {
-    // Set up in DaisyMain.cc
-}
-void _sequencer_stop() {
-    // Not supported on Daisy.
-}
-
-#else
-
-void _sequencer_start() {
-    fprintf(stderr, "No sequencer support for this chip / platform\n");
-}
-void _sequencer_stop() {
-    fprintf(stderr, "No sequencer support for this chip / platform\n");
-}
-
-#endif

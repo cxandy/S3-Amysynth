@@ -313,36 +313,79 @@ void esp_read_i2s_input() {
 }
 
 // Make AMY's FABT run forever , as a FreeRTOS task
+
+#ifdef ARDUINO_SPEEDTEST
+/* rl-patch */
+#include "esp_timer.h"
+#include <stdio.h>
+static int64_t _rl_last_print = 0;
+static int32_t _rl_render_us = 0;
+#endif // ARDUINO_SPEEDTEST
+
 // LOCAL EDIT (S3-Amysynth, 2026-06): IDF 6.0 requires void* param for xTaskCreate.
 void esp_fill_audio_buffer_task(void *pvParameters) {
     (void)pvParameters;
     while(1) {
+        int64_t t;
+        uint32_t blocked_us = 0;
         AMY_PROFILE_START(AMY_ESP_FILL_BUFFER)
         if(AMY_HAS_I2S && AMY_HAS_AUDIO_IN) {
+            t = amy_get_us();
             esp_read_i2s_input();
+            blocked_us += (uint32_t)(amy_get_us() - t);
 	}
+        t = amy_get_us();
+#ifdef ARDUINO_SPEEDTEST
+        int64_t _rl_start_t = esp_timer_get_time();
+#endif // ARDUINO_SPEEDTEST
         // Get ready to render
         amy_execute_deltas();
 
         // Render on whichever cores we have available.
         esp_render_on_cores();
-        
+
         // Write to i2s
         output_sample_type *block = amy_fill_buffer();
+        uint32_t busy_us = (uint32_t)(amy_get_us() - t);
 	AMY_PROFILE_STOP(AMY_ESP_FILL_BUFFER)
 
         last_audio_buffer = block;
-        
+
         // Notify amy_update() that a block is ready (so it can return from amy_render_audio).
         if (amy_update_handle)
             xTaskNotifyGive(amy_update_handle);  // to amy_render_audio
 
+#ifdef ARDUINO_SPEEDTEST
+        {
+            int64_t _rl_now = esp_timer_get_time();
+            int32_t _rl_render_us_unsmooth = (int32_t)(_rl_now - _rl_start_t);
+            _rl_render_us += (_rl_render_us_unsmooth - _rl_render_us) >> 5;  // 0.03125 * delta, settle time ~30 steps
+            if (_rl_now - _rl_last_print > 500000) {
+                _rl_last_print = _rl_now;
+                fprintf(stderr, "RENDER_LOAD ms=%lu render_us=%d\n", (unsigned long)(_rl_now/1000), _rl_render_us);
+                fflush(stderr);
+            }
+        }
+#endif // ARDUINO_SPEEDTEST
+
+        t = amy_get_us();
         if (AMY_HAS_I2S) {
             amy_i2s_write((uint8_t *)block, AMY_BLOCK_SIZE * AMY_NCHANS * sizeof(int16_t));
         } else {
             // Wait for update sync.
             ulTaskNotifyTake(pdTRUE, portMAX_DELAY);  // from amy_render_audio:!AMY_HAS_I2S
         }
+        blocked_us += (uint32_t)(amy_get_us() - t);
+
+        // When rendering keeps up, this task spends most of each block parked in the
+        // i2s DMA write (or the update-sync wait) above, which is when lower-priority
+        // tasks on this core get to run.
+        amy_overload_check(busy_us);
+        // If the audio output didn't block at all, we're past overloaded, and this
+        // max-priority task would starve everything else on this core (USB, MIDI,
+        // the host app).  Audio is already breaking up, so give the rest of the
+        // system a tick.
+        if (blocked_us < 150) vTaskDelay(1);
     }
 }
 
@@ -415,8 +458,10 @@ int16_t *amy_render_audio() {
         }
     } else {
         // No multithread, we have to render here.
+        int64_t t0 = amy_get_us();
         esp_render_on_cores();
         buf = amy_fill_buffer();
+        amy_overload_check((uint32_t)(amy_get_us() - t0));
     }
     return buf;
 }
@@ -494,6 +539,7 @@ int32_t render_other_core(int32_t data) {
 }
 
 int16_t *amy_render_audio() {
+    int64_t t0 = amy_get_us();
 #ifdef USE_SECOND_CORE
     if (amy_global.config.platform.multicore) {
         int32_t res;
@@ -505,6 +551,7 @@ int16_t *amy_render_audio() {
 #endif
         amy_render(0, AMY_OSCS, 0);
     int16_t *block = amy_fill_buffer();
+    amy_overload_check((uint32_t)(amy_get_us() - t0));
     return block;
 }
 
@@ -630,8 +677,10 @@ void amy_update_tasks() {
 }
 
 int16_t *amy_render_audio() {
+    int64_t t0 = amy_get_us();
     amy_render(0, AMY_OSCS, 0);
     int16_t *block = amy_fill_buffer();
+    amy_overload_check((uint32_t)(amy_get_us() - t0));
     return block;
 }
 

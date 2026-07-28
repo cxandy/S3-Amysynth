@@ -408,6 +408,7 @@ cat > "${ADDON_DIR}/src/amy_platform_stubs.c" << 'STUBEOF'
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 
 // --- i2s.c stubs ---
 void amy_platform_init(void) {}
@@ -420,7 +421,17 @@ size_t amy_i2s_write(const uint8_t *buffer, size_t nbytes) {
 
 // --- MIDI stubs (amy_midi.c / macos_midi.m) ---
 void midi_out(uint8_t *bytes, uint16_t len) { (void)bytes; (void)len; }
-void amy_external_midi_sync(uint8_t enabled) { (void)enabled; }
+void amy_external_midi_sync(uint8_t mode) { (void)mode; }
+// Called from sequencer.c; no MIDI output on Godot so clock out stays off.
+uint8_t midi_clock_out_enabled(void) { return 0; }
+void midi_clock_out_tick(void) {}
+void midi_clock_out_start(void) {}
+void midi_clock_out_stop(void) {}
+// Called from amy.c / instrument.c / midi_mappings.c to track which MIDI
+// channels are in use; no MIDI hardware on Godot so these are no-ops.
+void midi_active_channels_reset(void) {}
+void midi_active_channel_set(uint8_t channel, bool state) { (void)channel; (void)state; }
+void midi_active_channels_debug(void) {}
 void midi_local(uint8_t *bytes, uint16_t len) { (void)bytes; (void)len; }
 void run_midi(void) {}
 void stop_midi(void) {}
@@ -492,6 +503,11 @@ env.Append(CCFLAGS=["-DAMY_WAVETABLE", "-DAMY_NO_MINIAUDIO"])
 if sys.platform == "darwin":
     env.Append(CCFLAGS=["-DMACOS"])
     env.Append(LINKFLAGS=["-framework", "CoreFoundation"])
+elif sys.platform.startswith("linux"):
+    env.Append(LIBS=["pthread", "m"])
+    # Fail the link on unresolved symbols (matches Windows DLL behavior), so a
+    # missing amy_platform_stubs.c entry fails at build time instead of runtime.
+    env.Append(LINKFLAGS=["-Wl,--no-undefined"])
 
 # Build all sources together - AMY C files + GDExtension C++ files
 all_sources = []

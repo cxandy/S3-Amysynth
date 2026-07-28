@@ -300,7 +300,7 @@ void parse_voices(char *message, uint16_t *vals) {
 uint32_t ms_to_samples(uint32_t ms) {
     uint32_t samps = 0;
     if (AMY_IS_UNSET(ms)) return AMY_UNSET_VALUE(samps);
-    samps = (uint32_t)(((float)ms / 1000.0) * (float)AMY_SAMPLE_RATE);
+    samps = (uint32_t)(((float)ms / 1000.0f) * (float)AMY_SAMPLE_RATE);
     return samps;
 }
 
@@ -453,6 +453,7 @@ int amy_parse_synth_layer_message(char *message, amy_event *e) {
     else if (cmd == 'p')  e->pedal = atoi(message);
     else if (cmd == 't')  e->to_synth = atoi(message);
     else if (cmd == 'v')  e->num_voices = atoi(message);
+    else if (cmd == 'V')  e->synth_level = atoff(message);  // Per-instrument level, default 1.
     else if (cmd == 'y')  e->bus = atoi(message);  // 'i1iy1' is the same as 'i1y1'.
     else if (cmd == 'c' || cmd == 'o') skip_chars = midi_mapping_from_message(message, cmd, e->synth, skip_chars);
     else fprintf(stderr, "Unrecognized synth-level command '%s'\n", message - 1);
@@ -470,6 +471,7 @@ uint16_t amy_parse_transfer_layer_message(char *message) {
         if(sm[1]==0) { // remove preset
             pcm_unload_preset(sm[0]);
         } else {
+            amy_execute_deltas();
             int16_t * ram = pcm_load(sm[0], sm[1], sm[2], 1, sm[3], sm[4], sm[5]);
             start_receiving_transfer(sm[1]*2, (uint8_t*)ram);
         }
@@ -558,36 +560,6 @@ uint16_t amy_parse_transfer_layer_message(char *message) {
             return total;
         }
     }
-    else if (cmd == 'A') {
-        // zA: Update sketch.py on disk with current AMY state (calls update_file_hook).
-        // Takes optional filename; defaults to /user/current/sketch.py on AMYboard.
-        // Payload semantics match zD: the filename is "rest of message", a
-        // trailing 'Z' terminator is stripped, and interior capital-Z chars
-        // in the filename are preserved.
-        char filename[MAX_FILENAME_LEN];
-        uint16_t len = 0;
-        while (message[len] && len < MAX_FILENAME_LEN - 1) {
-            filename[len] = message[len];
-            len++;
-        }
-        filename[len] = '\0';
-        if (len > 0 && filename[len - 1] == 'Z') {
-            filename[--len] = '\0';
-        }
-        if (amy_global.config.amy_external_update_file_hook) {
-            if (filename[0]) {
-                amy_global.config.amy_external_update_file_hook(filename);
-            } else {
-                amy_global.config.amy_external_update_file_hook("/user/current/sketch.py");
-            }
-        }
-        {
-            uint16_t total = 0;
-            const char *scan = message - 1;
-            while (scan[total]) total++;
-            return total;
-        }
-    }
     else if (cmd == 'P') {
         // zP: Execute Python code on host (e.g. zPimport amyboard; amyboard.restart_sketch()Z).
         // Payload semantics match zD: the code string is "rest of message",
@@ -622,11 +594,13 @@ uint16_t amy_parse_transfer_layer_message(char *message) {
     }
     else if (cmd == 'C') {
         // zC: external MIDI clock sync. zC1 makes the sequencer follow incoming
-        // MIDI realtime clock/start/stop (0xF8/0xFA/0xFC); zC0 (the default)
-        // ignores them and uses the internal clock. Same switch as the C API's
-        // amy_external_midi_sync(), reachable over the wire so hosts that only
-        // speak the wire protocol (web builds, sysex) can flip it.
-        amy_external_midi_sync(atoi(message) ? 1 : 0);
+        // MIDI realtime clock/start/stop (0xF8/0xFA/0xFC); zC2 makes AMY the
+        // clock master, sending those messages out (0xF8 at 24 PPQ from the
+        // internal tempo, 0xFA/0xFC on transport start/stop); zC0 (the default)
+        // neither follows nor sends and uses the internal clock. Same switch as
+        // the C API's amy_external_midi_sync(), reachable over the wire so hosts
+        // that only speak the wire protocol (web builds, sysex) can flip it.
+        amy_external_midi_sync((uint8_t)atoi(message));
         return 1;
     }
     else fprintf(stderr, "Unrecognized transfer-level command '%s'\n", message - 1);
@@ -647,9 +621,12 @@ int _next_alpha(char *s) {
 
 
 size_t yield_event_from_message(char *message, amy_event *e, size_t pos) {
+    //fprintf(stderr, "yield_event_from_message in:  pos %d message %s\n", pos, message);
     // Parse the wire string into an event
     if (message[pos] == '\0')  pos = 0;  // Hit end of string
     else pos += amy_parse_message(message + pos, e);
+    //fprintf(stderr, "yield_event_from_message out: pos %d event\n", pos);
+    //fprintf_event_stderr(e);
     return pos;
 }
 
@@ -677,7 +654,6 @@ int amy_parse_message(char * message, amy_event *e) {
     if (amy_global.transfer_flag == AMY_TRANSFER_TYPE_AUDIO ||
         (amy_parsing_from_sysex && amy_global.transfer_flag == AMY_TRANSFER_TYPE_FILE)) {
         parse_transfer_message(message, length);
-        e->status = EVENT_TRANSFER_DATA;
         return length;
     }
 
@@ -757,7 +733,7 @@ int amy_parse_message(char * message, amy_event *e) {
             case 'P': e->trigger_phase=atoff(arg); break;
             /* q unused */
             case 'Q': parse_coef_message(arg, e->pan_coefs); break;
-            case 'r': parse_voices(arg, e->voices); break;
+            //case 'r': parse_voices(arg, e->voices); break;  // 'r' deprecated, you basically never control a voice directly from the API.  Planning to use it for multi-amyboard.
             case 'R': e->resonance=atoff(arg); break;
             case 's': e->pitch_bend = atoff(arg); break;
             case 'S':

@@ -194,7 +194,7 @@ void set_cv_from_osc(int cv_channel, int osc) {
         osc_for_cv[cv_channel] = -1;
         return;
     }
-    synth[osc]->status = SYNTH_IS_MOD_SOURCE;
+    synth[osc]->role = SYNTH_IS_MOD_SOURCE;
     // No longer record this osc in note_off state.
     AMY_UNSET(synth[osc]->note_off_clock);
     // Remove default amplitude dependence on velocity when an oscillator is made a modulator.

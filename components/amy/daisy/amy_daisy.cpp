@@ -7,7 +7,6 @@
 extern "C" {
     #include "amy.h"
     #include "examples.h"
-    extern void sequencer_check_and_fill();
 }
 
 using namespace daisy;
@@ -66,12 +65,12 @@ void midi_polyphony(uint32_t start, uint16_t patch) {
 #define MAX_POLYPHONY 17
 
 void event_polyphony(uint32_t start, uint16_t patch) {
-    // Verify polyphony by directly configuring a lot of voices and playing them all at once.
+    // Verify polyphony by directly configuring a synth with a lot of voices and playing them all at once.
     amy_event e = amy_default_event();
     e.time = start;
     e.patch_number = patch;
-    for (int i = 0; i < MAX_POLYPHONY; ++i)
-	e.voices[i] = i;
+    e.synth = 1;
+    e.num_voices = MAX_POLYPHONY;
     amy_add_event(&e);
     start += 250;
     uint8_t note = 40;
@@ -79,7 +78,7 @@ void event_polyphony(uint32_t start, uint16_t patch) {
         e = amy_default_event();
         e.time = start;
         e.velocity = 0.5;
-        e.voices[0] = i;
+        e.synth = 1;
         e.midi_note = note;
         amy_add_event(&e);
         start += 1000;
@@ -122,32 +121,6 @@ void HandleMidiMessage(MidiEvent m) {
     }
 }
 
-void sequencer_timer_callback(void* arg) {
-    sequencer_check_and_fill();
-}
-
-void init_sequencer() {
-    // Platform support of sequencer is to call sequencer_check_and_fill() every 0.5 ms.
-    TimerHandle         tim5;
-    TimerHandle::Config tim_cfg;
-
-    /** TIM5 with IRQ enabled */
-    tim_cfg.periph     = TimerHandle::Config::Peripheral::TIM_5;
-    tim_cfg.enable_irq = true;
-
-    /** Configure frequency (2000Hz) */
-    auto tim_target_freq = 2000;
-    auto tim_base_freq   = System::GetPClk2Freq();
-    tim_cfg.period       = tim_base_freq / tim_target_freq;
-
-    /** Initialize timer */
-    tim5.Init(tim_cfg);
-    tim5.SetCallback(sequencer_timer_callback);
-
-    /** Start the timer, and generate callbacks at the end of each period */
-    tim5.Start();
-}
-
 int main(void)
 {
     // Configure and Initialize the Daisy Seed
@@ -172,10 +145,7 @@ int main(void)
     // Initialize Amy
     amy_config_t amy_config = amy_default_config();
     amy_config.features.startup_bleep = 1; 
-    amy_start(amy_config); // initializes amy 
-
-    // Start the sequencer timer for AMY.
-    init_sequencer();
+    amy_start(amy_config); // initializes amy
 
     //example_sequencer_drums_synth(1000);
     //event_polyphony(0, 0);

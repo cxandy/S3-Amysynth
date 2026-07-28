@@ -33,9 +33,14 @@ AMY_IRAM_ATTR SAMPLE compute_mod_value(uint16_t mod_osc) {
 }
 
 AMY_IRAM_ATTR SAMPLE compute_mod_scale(uint16_t osc) {
+    // hold_and_modify(source) evaluates the modulator's own COEF_MOD input,
+    // so modulators can themselves be modulated (chained modulators). Cycles
+    // are rejected at assignment time (mod_osc_would_cause_loop in amy.c), so
+    // the recursion is bounded; the per-block memo in compute_mod_value keeps
+    // shared modulators cheap.
     uint16_t source = synth[osc]->mod_source;
     if(AMY_IS_SET(source)) {
-        if(source != osc) {  // that would be weird
+        if(source != osc) {  // belt-and-braces; assignment already rejects this
             hold_and_modify(source);
             return compute_mod_value(source);
         }
@@ -55,7 +60,7 @@ AMY_IRAM_ATTR SAMPLE compute_breakpoint_scale(uint16_t osc, uint8_t bp_set, uint
     int8_t bp_r = 0;
     t0 = 0; v0 = 0;
     // exp2(4.328085) = exp(3.0)
-    #define EXP_RATE_VAL -4.328085
+    #define EXP_RATE_VAL -4.328085f
     const SAMPLE exponential_rate = F2S(EXP_RATE_VAL);
     // We have to aim to overshoot to the desired gap so that we hit the target by exponential_rate time.
     const SAMPLE exponential_rate_overshoot_factor = F2S(1.0f / (1.0f - exp2f(EXP_RATE_VAL)));
@@ -118,7 +123,6 @@ AMY_IRAM_ATTR SAMPLE compute_breakpoint_scale(uint16_t osc, uint8_t bp_set, uint
         if(elapsed > synth[osc]->breakpoint_times[bp_set][bp_r]) {
             //printf("cbp: time %f osc %d amp %f OFF\n", amy_global.total_blocks*AMY_BLOCK_SIZE / (float)AMY_SAMPLE_RATE, osc, msynth[osc]->amp);
             // Synth is now turned off in hold_and_modify, which tracks when the amplitude goes to zero (and waits a bit).
-            //synth[osc]->status=SYNTH_OFF;
             //AMY_UNSET(synth[osc]->note_off_clock);
             scale = F2S(synth[osc]->breakpoint_values[bp_set][bp_r]);
             synth[osc]->last_scale[bp_set] = scale;
@@ -140,7 +144,7 @@ AMY_IRAM_ATTR SAMPLE compute_breakpoint_scale(uint16_t osc, uint8_t bp_set, uint
         sign = -1;
         v0 = -v0; v1 = -v1;
     }
-    if(t1==t0 || elapsed==t1) {
+    if(t1==t0 || elapsed==t1 || v1 == v0) {
         // This way we return exact zero for v1 at the end of the segment, rather than BREAKPOINT_EPS
         scale = v1;
     } else {
@@ -150,7 +154,7 @@ AMY_IRAM_ATTR SAMPLE compute_breakpoint_scale(uint16_t osc, uint8_t bp_set, uint
         if(eg_type == ENVELOPE_LINEAR) {
             scale = v0 + MUL4_SS(v1 - v0, F2S(time_ratio));
         } else if(eg_type == ENVELOPE_TRUE_EXPONENTIAL || eg_type == ENVELOPE_DX7) {
-#define BREAKPOINT_EPS 0.0002
+#define BREAKPOINT_EPS 0.0002f
             v0 = MAX(v0, F2S(BREAKPOINT_EPS));
             v1 = MAX(v1, F2S(BREAKPOINT_EPS));
             if (eg_type == ENVELOPE_DX7) {
@@ -161,10 +165,10 @@ AMY_IRAM_ATTR SAMPLE compute_breakpoint_scale(uint16_t osc, uint8_t bp_set, uint
             if (eg_type == ENVELOPE_DX7 && (v1 > v0)) {
                 // Somewhat complicated relationship, see https://colab.research.google.com/drive/1qZmOw4r24IDijUFlel_eSoWEf3L5VSok#scrollTo=F5zkeACrOlum
                 // in SAMPLE version, DX7 levels are div 8 i.e. 0 to 12.375 instead of 0 to 99.
-#define LINEAR_SAMP_TO_DX7_LEVEL(samp) (S2F(log2_lut(MAX(F2S(BREAKPOINT_EPS), samp))) + 12.375)
-#define DX7_LEVEL_TO_LINEAR_SAMP(level) (exp2_lut(F2S(level - 12.375)))
-#define MIN_LEVEL_S 4.25
-#define ATTACK_RANGE_S 9.375
+#define LINEAR_SAMP_TO_DX7_LEVEL(samp) (S2F(log2_lut(MAX(F2S(BREAKPOINT_EPS), samp))) + 12.375f)
+#define DX7_LEVEL_TO_LINEAR_SAMP(level) (exp2_lut(F2S(level - 12.375f)))
+#define MIN_LEVEL_S 4.25f
+#define ATTACK_RANGE_S 9.375f
 #define MAP_ATTACK_LEVEL_S(level) (1 - MAX(level - MIN_LEVEL_S, 0) / ATTACK_RANGE_S)
                 SAMPLE mapped_current_level = F2S(MAP_ATTACK_LEVEL_S(LINEAR_SAMP_TO_DX7_LEVEL(v0)));
                 SAMPLE mapped_target_level = F2S(MAP_ATTACK_LEVEL_S(LINEAR_SAMP_TO_DX7_LEVEL(v1)));

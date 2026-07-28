@@ -113,6 +113,7 @@ struct instrument_info {
     uint16_t patch_number;  // What patch this instrument is currently set to.  Stored for convenience.
     int16_t bank_number;    // Optional top-7-bit word of Program, set by MIDI CC 0 (-1 if not set).
     uint32_t flags;         // Bitmask of special instrument properties (for MIDI Drums translation).
+    float level;            // Per-instrument level (iV): scales every osc of the synth at render, default 1.
     // AMY "voice" index for each of the num_voices allocated voices.
     uint16_t amy_voices[MAX_VOICES_PER_INSTRUMENT];
     // Track which note each voice is sounding.  We use int16 so we can store PCM_PRESET *127 + midi_note
@@ -152,6 +153,23 @@ void _instrument_reset_forgotten_pool(struct instrument_info *instrument) {
     }
 }
 
+// Per-(amy)voice copy of the owning instrument's level, so the render loop
+// (hold_and_modify) can look up an osc's scale in O(1) via
+// osc_to_voice[osc] -> voice_level[voice]. Written whenever an instrument
+// gains/loses voices or its level (iV) changes; 1.0 for unowned voices.
+static float *voice_level = NULL;
+static int voice_level_size = 0;
+
+static void _voice_level_set(uint16_t voice, float level) {
+    if (voice_level != NULL && voice < voice_level_size)
+        voice_level[voice] = level;
+}
+
+float instrument_level_for_voice(uint16_t voice) {
+    if (voice_level == NULL || voice >= voice_level_size) return 1.0f;
+    return voice_level[voice];
+}
+
 struct instrument_info *instrument_init(int id, int num_voices, uint16_t* amy_voices, uint16_t patch_number, uint16_t oscs_per_voice, uint8_t bus, uint32_t flags) {
     struct instrument_info *instrument = (struct instrument_info *)malloc_caps(sizeof(struct instrument_info), amy_global.config.ram_caps_synth);
     // NULL already means "synth not defined" to all callers.
@@ -171,6 +189,7 @@ struct instrument_info *instrument_init(int id, int num_voices, uint16_t* amy_vo
     instrument->bank_number = -1;
     instrument->bus = bus;
     instrument->flags = flags;
+    instrument->level = 1.0f;
     instrument->noteon_delay_ms = 0;
     instrument->in_sustain = false;
     instrument->grab_midi_notes = true;
@@ -187,12 +206,17 @@ struct instrument_info *instrument_init(int id, int num_voices, uint16_t* amy_vo
         voice_fifo_put(instrument->released_voices, voice);
         instrument->note_per_voice[voice] = _INSTRUMENT_NO_NOTE;
         instrument->pending_release[voice] = false;
+        _voice_level_set(amy_voices[voice], 1.0f);
     }
     _instrument_reset_forgotten_pool(instrument);
     return instrument;
 }
 
 void instrument_free(struct instrument_info *instrument) {
+    // Clear this instrument's per-voice render levels so a later owner of
+    // these voices doesn't inherit a stale scale.
+    for (uint8_t voice = 0; voice < instrument->num_voices; ++voice)
+        _voice_level_set(instrument->amy_voices[voice], 1.0f);
     voice_fifo_free(instrument->active_voices);
     voice_fifo_free(instrument->released_voices);
     free(instrument);
@@ -331,6 +355,11 @@ void instruments_deinit() {
         instruments_reset();
         free(instruments);
     }
+    if (voice_level != NULL) {
+        free(voice_level);
+        voice_level = NULL;
+        voice_level_size = 0;
+    }
 }
 
 void instruments_init(int num_instruments) {
@@ -339,6 +368,9 @@ void instruments_init(int num_instruments) {
     for(uint16_t i = 0; i < max_instruments; i++) {
         instruments[i]  = NULL;
     }
+    voice_level_size = amy_global.config.max_voices;
+    voice_level = (float *)malloc_caps(voice_level_size * sizeof(float), amy_global.config.ram_caps_synth);
+    for (int v = 0; v < voice_level_size; ++v)  voice_level[v] = 1.0f;
 }
 
 void instruments_reset() {
@@ -355,6 +387,9 @@ void instrument_release(int instrument_number) {
         instrument_free(instruments[instrument_number]);
     }
     instruments[instrument_number] = NULL;
+    // Unless there are active midi_mappings, stop listening to this channel.
+    if (!midi_mappings_exist_for_channel(instrument_number))
+        midi_active_channel_set(instrument_number, false);
 }
 
 bool instrument_number_ok(int instrument_number, const char *tag) {
@@ -381,6 +416,8 @@ void instrument_add_new(int instrument_number, int num_voices, uint16_t *amy_voi
         instrument_free(instruments[instrument_number]);
     }
     instruments[instrument_number] = instrument_init(instrument_number, num_voices, amy_voices, patch_number, oscs_per_voice, bus, flags);
+    // Make sure we start listning to this channel.
+    midi_active_channel_set(instrument_number, true);
 }
 
 void instrument_change_number(int old_instrument_number, int new_instrument_number) {
@@ -470,7 +507,7 @@ int instrument_sustain(int instrument_number, bool sustain, uint16_t *amy_voices
     return num_voices_turned_off;
 }
 
-uint8_t instrument_get_bus(int instrument_number) {
+int instrument_get_bus(int instrument_number) {
     if (!instrument_number_exists(instrument_number, "get_bus")) return -1;
     struct instrument_info *instrument = instruments[instrument_number];
     return instrument->bus;
@@ -480,6 +517,20 @@ void instrument_set_bus(int instrument_number, uint8_t bus) {
     if (!instrument_number_exists(instrument_number, "set_bus")) return;
     struct instrument_info *instrument = instruments[instrument_number];
     instrument->bus = bus;
+}
+
+float instrument_get_level(int instrument_number) {
+    if (!instrument_number_exists(instrument_number, NULL)) return 1.0f;
+    return instruments[instrument_number]->level;
+}
+
+void instrument_set_level(int instrument_number, float level) {
+    if (!instrument_number_exists(instrument_number, "set_level")) return;
+    if (level < 0)  level = 0;
+    struct instrument_info *instrument = instruments[instrument_number];
+    instrument->level = level;
+    for (uint8_t voice = 0; voice < instrument->num_voices; ++voice)
+        _voice_level_set(instrument->amy_voices[voice], level);
 }
 
 int instrument_get_patch_number(int instrument_number) {

@@ -155,8 +155,92 @@ typedef int32_t s16_15; // s16.15 general
 #define S_FRAC_OF_S(S, B) (((S) & ((1 << (S_FRAC_BITS - (B))) - 1)) << (B))
 
 // Convert between SAMPLE and float
-#define S2F(s) ((float)(s) / (float)(1 << S_FRAC_BITS))
-#define F2S(f) (SAMPLE)((f) * (float)(1 << S_FRAC_BITS))
+
+#define S2F_orig(s) ((float)(s) / (float)(1 << S_FRAC_BITS))
+#define F2S_orig(f) (SAMPLE)((f) * (float)(1 << S_FRAC_BITS))
+
+
+// Non-FPU S2F/F2S
+// Define the union
+typedef union {
+    float f;
+    uint32_t u;
+} float_cast;
+
+static inline float S2F_nofpu(SAMPLE s) {
+    if (s == 0) return 0.0f;
+
+    // 1. Extract and handle the sign
+    uint32_t sign = (s < 0) ? 0x80000000 : 0x00000000;
+    uint32_t abs_val = (s < 0) ? -s : s;
+
+    // 2. Count leading zeros to find the exponent
+    // __builtin_clz finds the position of the first set bit
+    int leading_zeros = __builtin_clz(abs_val);
+    int shift = leading_zeros - 8;
+
+    // 3. Align mantissa and calculate biased exponent
+    uint32_t mantissa;
+    int32_t biased_exponent = 127 - shift;
+
+    if (shift >= 0) {
+        mantissa = (abs_val << shift) & 0x007FFFFF;
+    } else {
+        mantissa = (abs_val >> (-shift)) & 0x007FFFFF;
+    }
+
+    // 4. Combine into final IEEE 754 bit pattern
+    float_cast num;
+    num.u = sign | (biased_exponent << 23) | mantissa;
+    return num.f;
+}
+
+static inline SAMPLE F2S_nofpu(float f) {
+    // 1. Interpret float bits as an unsigned 32-bit integer
+    float_cast num;
+    num.f = f;
+    uint32_t bits = num.u;
+
+    // 2. Extract sign, biased exponent, and mantissa
+    uint32_t sign     = bits >> 31;
+    int32_t  exponent = (int32_t)((bits >> 23) & 0xFF) - 127;
+    uint32_t mantissa = bits & 0x7FFFFF;
+
+    int32_t fixed_point;
+
+    // 3. Handle special cases
+    if (exponent == 128) {  // Can skip
+        // Infinity or NaN -> Saturation to max/min limits
+        return sign ? INT32_MIN : INT32_MAX;
+    }
+
+    // Segfault if you comment this out
+    if (exponent < -23) {
+        // Underflow: number is too small to represent in Q8.23
+        return 0;
+    }
+
+    // 4. Restore the implicit leading 1 bit for normalized numbers
+    // For denormalized numbers (exponent == -127), the leading bit is 0
+    uint32_t value = (exponent == -127) ? mantissa : (mantissa | 0x800000);
+
+    // 5. Align the binary point to the 23rd fractional position
+    // Since the float mantissa inherently occupies the lower 23 bits,
+    // an exponent of 0 requires exactly 0 shifting.
+    if (exponent >= 0) {
+        // Ensure shifting left won't overflow the 32-bit boundary safely (can skip)
+        if (exponent > 7) return sign ? INT32_MIN : INT32_MAX; // Overflow protection
+        fixed_point = (int32_t)(value << exponent);
+    } else {
+        fixed_point = (int32_t)(value >> (-exponent));
+    }
+
+    // 6. Apply two's complement if the sign bit was negative
+    return sign ? -fixed_point : fixed_point;
+}
+// _orig is faster than _nofpu on ESP32 "make speedtest" (4352 vs 4245 us for 6 Juno 1's).
+#define F2S(f) F2S_orig(f)
+#define S2F(s) S2F_orig(s)
 
 // Convert between GENFXP and float
 #define G2F(s) ((float)(s) / (float)(1 << G_FRAC_BITS))
@@ -165,14 +249,62 @@ typedef int32_t s16_15; // s16.15 general
 // Convert between PHASOR and float
 // 1 << P_FRAC_BITS is 1 << 31 which actually flips to (-2^31).
 // So make the constant one less and do the last power of 2 in float.
-#define P2F(s) ((float)(s) / (2.0 * (float)(1 << (P_FRAC_BITS - 1))))
-#define F2P(f) ((PHASOR)((f) * 2.0 * (float)(1 << (P_FRAC_BITS - 1))))
+#define P2F(s) ((float)(s) / (2.0f * (float)(1 << (P_FRAC_BITS - 1))))
+#define F2P(f) ((PHASOR)((f) * 2.0f * (float)(1 << (P_FRAC_BITS - 1))))
 
 // Fixed-point multiply routines
 
+#if !defined(__ARM_ARCH_6M__)  // Should cover cortex-M0, cortex-M0-plus (including RP2040), cortex-M1 - the only processors we're likely to encounter that don't have 32x32 -> 64
+// 64 x 64 -> 64 is fast on ESP32-S3
+// Also use MUL64 for non-MCU builds
+#define AMY_HAS_MUL64
+#endif
+
+// When ee have only 32x32 -> 32, we have to worry about preserving resolution.
 #define FXMUL_TEMPLATE(a, b, a_bitloss, b_bitloss, reqd_bitloss) ((((a) >> a_bitloss) * ((b) >> b_bitloss)) >> (reqd_bitloss - a_bitloss - b_bitloss))
 
-// from https://colab.research.google.com/drive/1_uQto5WSVMiSPHQ34cHbCC6qkF614EoN#scrollTo=73JbLFhg44QG
+#ifdef AMY_HAS_MUL64
+static inline SAMPLE SMUL64R(SAMPLE a, SAMPLE b) {
+#if 0 && defined(__XTENSA__) && defined(CONFIG_IDF_TARGET_ESP32S3)
+    // To my surprise, this minimal LX7-optimized version is slower than the int64_t C version on ESP32-S3 (speedtest of 3029 us vs. 2495us (2721us with rounding)).
+
+    // Multiply two s8.23 fixed-point numbers, result also s8.23.
+    // Uses Xtensa LX7 MUL32 (mull/mulsh) + SRC funnel shift.
+    int32_t result, lo, hi;
+
+    __asm__ volatile (
+        "mull    %[lo], %[a], %[b]     \n\t"   // lo = low 32 bits of a*b
+        "mulsh   %[hi], %[a], %[b]     \n\t"   // hi = high 32 bits (signed) of a*b
+        "ssai    23                    \n\t"   // SAR = 23
+        "src     %[res], %[hi], %[lo]  \n\t"   // res = ({hi:lo} >> SAR)[31:0]
+        : [res] "=&r" (result), [lo] "=&r" (lo), [hi] "=&r" (hi)
+        : [a] "r" (a), [b] "r" (b)
+          /* : "sar" */
+    );
+
+    return result;
+#endif
+#ifdef USE_ROUNDING_IN_SMUL64
+    return (SAMPLE)((((int64_t)a * (int64_t)b) + (1 << (S_FRAC_BITS - 1))) >> S_FRAC_BITS);
+#else
+    // Rounding is not critical with so much resolution....
+    return (SAMPLE)((((int64_t)a * (int64_t)b)) >> S_FRAC_BITS);
+#endif
+}
+
+// All the different (rounded) mults are just SMUL64R
+//#define MUL0_SS(a, b) SMUL64R(a, b)
+//#define MUL4_SS(a, b) SMUL64R(a, b)
+//#define MUL5A_SS(a, b) SMUL64R(a, b)
+//#define MUL6A_SS(a, b) SMUL64R(a, b)
+//#define MUL8_SS(a, b) SMUL64R(a, b)
+//#define MUL8F_SS(a, b) SMUL64R(a, b)
+//#define MUL4E_SS(a, b) SMUL64R(a, b)
+//#define MUL4_SP_S(a, b) SMUL64R(a, b)
+#define SMULR6(a, b) SMUL64R(a, b)
+#define SMULR7(a, b) SMUL64R(a, b)
+
+#else  // !AMY_HAS_MUL64
 static inline SAMPLE SMULR6(SAMPLE a, SAMPLE b) {
     // s8.23 fixed-point multiplication with rounding, 1 zero on output (-128..128)
     SAMPLE r = 1 + ((a + (1 << 10)) >> 11) * ((b + (1 << 10)) >> 11);
@@ -184,6 +316,9 @@ static inline SAMPLE SMULR7(SAMPLE a, SAMPLE b) {
     SAMPLE r = 4 + ((a + (1 << 9)) >> 10) * ((b + (1 << 9)) >> 10);
     return r >> 3;
 }
+#endif
+// from https://colab.research.google.com/drive/1_uQto5WSVMiSPHQ34cHbCC6qkF614EoN#scrollTo=73JbLFhg44QG
+
 
 // Multiply two SAMPLE values when the result will always be [-1.0, 1.0).
 #define MUL0_SS(a, b) FXMUL_TEMPLATE(a, b, 8, 7, S_FRAC_BITS)  // 8+7 = 15, so additional 8 bits shift right on output to make 23 req'd total.
@@ -214,7 +349,7 @@ static inline SAMPLE SMULR7(SAMPLE a, SAMPLE b) {
 // Add 1 to B shift-up and cast to uint32_t to strip sign bit, pad a zero sign bit on way down.
 #define S_FRAC_OF_P(P, B) (int32_t)(((uint32_t)(((P) << ((B) + 1)))) >> (1 + P_FRAC_BITS - S_FRAC_BITS))
 // Increment phasor but wrap at +1.0
-#define P_WRAPPED_SUM(P, I) (int32_t)(((uint32_t)((((uint32_t)(P)) + ((uint32_t)(I))) << 1)) >> 1)
+#define P_WRAPPED_SUM(P, I) (int32_t)(((uint32_t)((((uint32_t)(P)) + ((uint32_t)(I))) << (32 - P_FRAC_BITS))) >> (32 - P_FRAC_BITS))
 
 #endif // AMY_USED_FIXEDPOINT
 

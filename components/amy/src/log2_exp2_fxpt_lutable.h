@@ -74,7 +74,6 @@ const int16_t exp2_fxpt_lutable[257] PROGMEM = {
 -32768,
 };
 
-
 const int16_t qsin_fxpt_lutable[257] PROGMEM = {
 0,-201,-402,-603,-804,-1005,-1206,-1407,
 -1608,-1809,-2009,-2210,-2411,-2611,-2811,-3012,

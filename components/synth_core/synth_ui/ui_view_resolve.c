@@ -129,12 +129,19 @@ static const char *hint_menu_b2(void)
 }
 
 /* ─── The table: one row per view, indexed by ui_view_id_t ─────────────── */
-/* badge_x rationale (left header extents, 6x10 font ≈ 6 px/char):
+/* badge_x is the BLE badge's *preferred* left edge, not a promise:
+ * display_badge_draw() probes the finished frame buffer and only lands the
+ * badge on blank pixels, sliding to the nearest free slot (or dropping the
+ * badge entirely) when a header has grown into this spot. So these values are
+ * a taste choice about where the badge looks best, and a stale one can no
+ * longer overdraw header text. 0 means "no preference, put it where it fits".
+ *
+ * Rationale for the current picks (left header extents, 6x10 font ~6 px/char):
  * SEQ 44 = the gap between "BPM 123" (ends 43) and "L1 MEL" (starts 52);
  * MENU/FM 52 clears the longest page titles ("WIRELESS"/"PROJECTS" end 50);
  * LFO 68 clears "LFO L1 T2>L" (ends 67); DRONE_VIS 58 clears "DRONE VIS";
  * PROG 30 sits after "PROG" (chips are right-aligned); TRACKOPTS/STEPEDIT
- * have no free top-row slot (title runs long) - badge suppressed. */
+ * have long titles and no obvious slot, so they let the probe choose. */
 const ui_view_desc_t ui_view_table[UI_VIEW_COUNT] = {
     [UI_VIEW_FILTER]    = { "FILTER", sig_filter,    draw_filter,    "On/Off", "-",     "Next",  NULL,               NULL,                   52 },
     [UI_VIEW_LFO]       = { "LFO",    sig_lfo,       draw_lfo,       "-",      NULL,    "Next",  NULL,               hint_lfo_b2,            68 },

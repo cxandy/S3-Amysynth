@@ -88,10 +88,11 @@ typedef struct {
     const char *b1, *b2, *b3;
     const char *(*b1_fn)(void);
     const char *(*b2_fn)(void);
-    /* X of the BLE session badge plate (7 px wide, top row) for this view,
-     * chosen per screen to sit just right of its left header label - the
-     * top-right corner belongs to editor value readouts and CLIP/LOUD.
-     * 0 = no safe slot on this view, badge suppressed. */
+    /* Preferred X of the BLE session badge plate (7 px wide, top row) for this
+     * view, chosen per screen to sit just right of its left header label - the
+     * top-right corner belongs to editor value readouts and CLIP/LOUD. Only a
+     * hint: display_badge_draw() keeps the badge off lit pixels regardless.
+     * 0 = no preference, let the placement probe choose. */
     uint8_t badge_x;
 } ui_view_desc_t;
 

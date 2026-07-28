@@ -14,6 +14,7 @@
 #include "display_menu.h"
 #include "display_arp.h"
 #include "display_hint.h"
+#include "display_badge.h"
 #include "synth_ui_hint.h"
 #include "usb_audio_watchdog.h"
 #include "amy_helpers.h"
@@ -211,25 +212,15 @@ static void synth_ui_task(void *pvParameters)
 #if CONFIG_SYNTH_WIRELESS
                 /* BLE session badge: a 5x8 Bluetooth rune - inverted plate
                  * while a central is connected, bare rune while merely
-                 * advertising. Sits just right of each view's left header
-                 * label (per-view x from ui_view_table; the top-right corner
-                 * belongs to editor value readouts and CLIP/LOUD). Same
-                 * fill-only / single-send discipline. */
-                uint8_t badge_x = ui_view_table[view].badge_x;
-                if (badge_x != 0 && radio_manager_state() == RADIO_ACTIVE) {
-                    static const unsigned char bt_rune[] = {
-                        0x04, 0x0C, 0x15, 0x0E, 0x0E, 0x15, 0x0C, 0x04
-                    };
-                    if (radio_manager_connected()) {
-                        u8g2_SetDrawColor(s_u8g2, 1);
-                        u8g2_DrawBox(s_u8g2, badge_x, 0, 7, 8);
-                        u8g2_SetDrawColor(s_u8g2, 0);
-                        u8g2_DrawXBM(s_u8g2, (u8g2_uint_t)(badge_x + 1), 0, 5, 8, bt_rune);
-                        u8g2_SetDrawColor(s_u8g2, 1);
-                    } else {
-                        u8g2_SetDrawColor(s_u8g2, 1);
-                        u8g2_DrawXBM(s_u8g2, (u8g2_uint_t)(badge_x + 1), 0, 5, 8, bt_rune);
-                    }
+                 * advertising. Composited last, so display_badge_draw() can
+                 * read the finished buffer back and place the rune in blank
+                 * top-row pixels only: ui_view_table's badge_x is now just the
+                 * preferred slot, and header text that grows into it pushes
+                 * the badge aside (or off screen) instead of being overdrawn.
+                 * Same fill-only / single-send discipline. */
+                if (radio_manager_state() == RADIO_ACTIVE) {
+                    display_badge_draw(s_u8g2, ui_view_table[view].badge_x,
+                                       radio_manager_connected());
                 }
 #endif
                 u8g2_SendBuffer(s_u8g2);

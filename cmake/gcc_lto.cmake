@@ -21,11 +21,29 @@
 
 option(AMYSYNTH_LTO "Compile the hot components with GCC LTO" ON)
 
-# -ffat-lto-objects keeps full native code alongside the LTO IR so non-LTO
-# consumers of the archives (and tools like objdump) still work.
-# -flto-partition=max at link maximizes dead-symbol removal.
-set(GCC_LTO_COMPILE_OPTIONS -flto=auto -ffat-lto-objects -flto-compression-level=9)
-set(GCC_LTO_LINK_OPTIONS    -flto -fuse-linker-plugin -ffat-lto-objects -flto-partition=max)
+# ltrans partitioning: "max" (upstream script's choice) favors parallel link;
+# "one"/"none" compile the whole program as a single ltrans unit, widening
+# cross-TU inlining scope at the cost of link time. A/B via
+# -DAMYSYNTH_LTO_PARTITION=one + full clean; ELF codegen diff is the judge.
+set(AMYSYNTH_LTO_PARTITION "max" CACHE STRING "GCC -flto-partition mode (max|one|none|balanced)")
+
+# -ffat-lto-objects keeps full native code alongside the LTO IR so plain
+# ar/nm/objdump (and asmdiff object mode) keep working on the archives.
+# -Werror=lto-type-mismatch: LTO sees all TUs at once, so cross-TU
+# declaration/definition mismatches become detectable - fail the link on them.
+# Unexplored candidate: the whole-program inline budget
+# (--param inline-unit-growth=, --param max-inline-insns-auto=) binds harder
+# under LTO than per-TU; a bump may unlock hot-path inlining, but verify IRAM
+# growth and ZOL survival (register pressure) before adopting.
+# LTO IR compression inside the fat objects: build-time/disk trade only, the
+# IR is decompressed before ltrans so codegen should be identical at any level.
+set(AMYSYNTH_LTO_COMPRESSION "9" CACHE STRING "GCC -flto-compression-level (0-19)")
+
+set(GCC_LTO_COMPILE_OPTIONS -flto=auto -ffat-lto-objects
+                            -flto-compression-level=${AMYSYNTH_LTO_COMPRESSION})
+set(GCC_LTO_LINK_OPTIONS    -flto -fuse-linker-plugin -ffat-lto-objects
+                            -flto-partition=${AMYSYNTH_LTO_PARTITION}
+                            -Werror=lto-type-mismatch)
 
 function(gcc_lto_enable)
     cmake_parse_arguments(LTO "" "" "COMPONENTS" ${ARGN})

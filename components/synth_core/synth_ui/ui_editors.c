@@ -1357,15 +1357,15 @@ static bool filter_tgt_is_live(void)
 }
 static bool filter_tgt_is_drone(void)
 {
-    return !filter_tgt_is_live() && filter_tgt_is_drone();
+    return !filter_tgt_is_live() && seq_state.ui_mode == UI_MODE_DRONE;
 }
 static bool filter_tgt_is_drone_std(void)
 {
-    return !filter_tgt_is_live() && filter_tgt_is_drone_std();
+    return !filter_tgt_is_live() && seq_state.ui_mode == UI_MODE_DRONE_STD;
 }
 static bool filter_tgt_is_arp(void)
 {
-    return !filter_tgt_is_live() && filter_tgt_is_arp();
+    return !filter_tgt_is_live() && seq_state.ui_mode == UI_MODE_ARP;
 }
 
 static bool filter_target_is_feedback(void)

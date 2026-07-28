@@ -1476,6 +1476,10 @@ static void filter_sync_live_band(void)
      * adjusted, the authored value is the truth. A band moving under the
      * encoder would fight the very edit being made. */
     if (s_fgraph.editing && (s_fgraph.cursor == 0 || s_fgraph.cursor == 1)) {
+        /* Keep draining while frozen: an unbumped epoch would let the tap
+         * widen min/max across the whole edit, flashing a band spanning the
+         * entire sweep on the first frame after the encoder is released. */
+        (void)filter_scope_read(NULL, NULL);
         s_fgraph.live_valid = false;
         return;
     }

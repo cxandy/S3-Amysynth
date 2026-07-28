@@ -3,15 +3,11 @@
 #include "synth_ui.h"
 #include <stdio.h>
 
-/* The button-hint strip reads its labels straight from the view descriptor
- * table, indexed by the single precedence resolver (synth_ui_active_view()).
- * This used to be three functions (hint_b1/b2/b3) that each re-walked the
- * overlay precedence ladder by hand; the labels now live one row per view in
- * ui_view_table[] (ui_view_resolve.c), so the hint strip can never disagree
- * with the draw switch about which view is active. A NULL static label means
- * the cell is dynamic — it depends on ui_mode, which the view id does not
- * carry (only the two scope-capable editors' b1 and the LFO editor's b2) — and
- * is filled by the row's b*_fn. */
+/* The button-hint strip reads its labels from the view descriptor table,
+ * indexed by the single precedence resolver (synth_ui_active_view()), so it can
+ * never disagree with the draw switch about which view is active. A NULL static
+ * label means the cell is dynamic - it depends on ui_mode, which the view id
+ * does not carry - and is filled by the row's b*_fn. */
 static const char *hint_cell(const char *label, const char *(*fn)(void))
 {
     return label ? label : fn();

@@ -32,9 +32,8 @@ uint8_t quantizer_snap_midi_note(uint8_t midi_note, uint8_t root_note,
 uint8_t quantizer_snap_to_chord(uint8_t midi_note, uint8_t root,
                                 chord_type_t chord_type);
 
-/* Return the -1-terminated semitone interval row (6 slots, max 5 notes) for a
- * chord type, or NULL if out of range. Lets other modules voice chords from the
- * single shared interval table. */
+/* The -1-terminated semitone interval row (6 slots, max 5 notes) for a chord
+ * type, or NULL if out of range - the single shared interval table. */
 const int8_t *quantizer_chord_intervals(chord_type_t chord_type);
 
 #ifdef __cplusplus

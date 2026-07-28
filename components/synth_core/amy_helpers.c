@@ -13,10 +13,10 @@ static amy_event s_event;
 static SemaphoreHandle_t s_event_mutex = NULL;
 static TaskHandle_t s_render_task = NULL;
 
-/* Bounded wait so a leaked begin/send pair surfaces as a loud assert instead
- * of hanging every AMY sender. Sized well above the worst-case legitimate hold
- * (a patch-string load building four FX reassert events); if we ever wait this
- * long the mutex was leaked, not merely contended. */
+/* Bounded wait so a leaked begin/send pair asserts loudly instead of hanging
+ * every AMY sender. Well above the worst-case legitimate hold (a patch-string
+ * load building four FX reassert events): waiting this long means leaked, not
+ * contended. */
 #define AMY_HELPERS_EVENT_TIMEOUT_MS 250
 
 void amy_helpers_init(void)
@@ -72,9 +72,9 @@ void amy_helpers_event_cancel(amy_event *event)
 /* ── Typed ingress entry points ─────────────────────────────────────────
  * amy_add_event() routes by shape: an event with sequence[] set is
  * tick-scheduled whole (sequencer_add_event / SEQ_LOCK); one without is
- * applied now (add_delta_to_queue / amy_queue_lock). The two entry points
- * below make that route visible at the call site. The note-send signature is
- * also the seam where per-step parameter-lock fields will attach. */
+ * applied now (add_delta_to_queue / amy_queue_lock). These entry points make
+ * the route visible at the call site; the note-send signature is also where
+ * per-step parameter-lock fields will attach. */
 
 void amy_helpers_note_send(uint8_t synth, float midi_note, float velocity,
                            uint32_t tag, uint32_t tick, uint32_t period)
@@ -91,10 +91,9 @@ void amy_helpers_note_send(uint8_t synth, float midi_note, float velocity,
 
 void amy_helpers_config_send(amy_event *event)
 {
-    /* Config sends must not carry a sequence[] tuple — that shape would be
-     * silently rerouted to the tick scheduler instead of applying now. AMY's
-     * "unset" state is the AMY_UNSET sentinel, NOT zero (amy_default_event
-     * UNSETs all three fields); mirror amy_add_event's own routing test. */
+    /* A sequence[] tuple would silently reroute this to the tick scheduler
+     * instead of applying now. "Unset" is the AMY_UNSET sentinel, NOT zero;
+     * mirrors amy_add_event's own routing test. */
     configASSERT(AMY_IS_UNSET(event->sequence[SEQUENCE_TAG]) &&
                  AMY_IS_UNSET(event->sequence[SEQUENCE_TICK]) &&
                  AMY_IS_UNSET(event->sequence[SEQUENCE_PERIOD]));

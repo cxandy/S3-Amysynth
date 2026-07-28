@@ -11,17 +11,16 @@
  *  ARP SCREEN
  * ════════════════════════════════════════════════════════════════════════ */
 
-/* Same view-resolved test as the drone screens: true only while this screen is
- * what the display shows. The input isolation guard in main.c keys off this, so
+/* View-resolved, not ui_mode: main.c's input isolation guard keys off this, so
  * answering true under the filter/LFO overlays (which leave ui_mode alone) would
- * swallow those editors' own MY_BUTTON_0 commit/cancel taps. */
+ * swallow those editors' own MY_BUTTON_0 taps. */
 bool synth_ui_arp_is_active(void)
 {
     return synth_ui_active_view() == UI_VIEW_ARP;
 }
 
-/* The arp screen keeps its own cursor + editing flags, independent of the
- * menu's. We stash them in file-static state (the screen is a singleton). */
+/* Cursor + editing flags are the arp screen's own, independent of the menu's;
+ * file-static because the screen is a singleton. */
 static uint8_t s_arp_cursor  = ARP_CUR_ENABLE;
 static bool    s_arp_editing = false;
 
@@ -56,15 +55,14 @@ void arp_build_view(arp_view_t *out)
     out->wave_str      = drone_wave_name(arp_get_wave());
     out->portamento_ms = arp_get_portamento_ms();
 
-    /* Patch indicator: mirror the sequencer view. Number is always available;
-     * the name banner shows only while the patch hold+turn gesture is active. */
+    /* Patch indicator mirrors the sequencer view: number always, name banner
+     * only while the patch hold+turn gesture is active. */
     out->patch        = arp_get_patch();
     out->patch_select = seq_state.patch_select_mode;
     out->patch_name   = patch_name_for(out->patch);
 }
 
-/* Signature of the arp screen. Builds the view into *out so the caller can
- * draw from it without a second build. */
+/* Builds the view into *out so the caller can draw from it without rebuilding. */
 uint32_t arp_view_signature(arp_view_t *out)
 {
     uint32_t h = FNV1A_OFFSET;
@@ -138,8 +136,7 @@ static void arp_edit_value(uint8_t cursor, int delta)
             break;
         }
         case ARP_CUR_PORTA:
-            /* 1ms/detent over a 0..100ms range: fine control for short, snappy
-             * glides (100 turns edge-to-edge) without a drag UI for one scalar. */
+            /* 1ms/detent: fine control for short, snappy glides. */
             arp_set_portamento_ms((uint16_t)SEQ_CLAMP_INT(
                 (int)arp_get_portamento_ms() + dir * 1, 0, ARP_PORTAMENTO_MAX_MS));
             break;
@@ -153,10 +150,10 @@ static void arp_edit_value(uint8_t cursor, int delta)
                 if (dir > 0) arp_set_slot(slot, (int16_t)arp_get_root_note());
                 else         arp_set_slot(slot, ARP_REST);
             } else if (cur == ARP_REST) {
-                /* REST is the floor: up goes to empty (not root note, so recovery
-                 * is two turns up rather than scrolling through octaves); down clamps. */
+                /* REST is the floor: up goes to empty, not root note, so recovery
+                 * is two turns rather than scrolling through octaves. */
                 if (dir > 0) arp_set_slot(slot, -1);
-                /* dir < 0: stay at REST — no bounce back to empty */
+                /* dir < 0: stay at REST, no bounce back to empty */
             } else {
                 int nv = (int)cur + dir;
                 if (nv < 24) {

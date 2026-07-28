@@ -2,19 +2,17 @@
 #include "custompatches/additive_voice.h"
 #include "sequencer_core.h"   /* SEQ_PATCH_ADDITIVE_* */
 
-/* Drawbar organ: exactly the shared default — first 8 harmonics at 1/n, no
- * per-partial decay, so the whole spectrum follows the row's ADSR. Kept as
- * its own function so the preset can drift from the default later without
- * touching the custom voice's starting point. */
+/* Drawbar organ: the shared default (first 8 harmonics at 1/n, no per-partial
+ * decay, so the whole spectrum follows the row's ADSR). Its own function so it
+ * can drift from the default without moving the custom voice's start point. */
 static void additive_preset_organ(additive_voice_t *v)
 {
     additive_voice_default(v);
 }
 
-/* Inharmonic bell: transverse free-bar partial ratios (1 : 2.76 : 5.40 :
- * 8.93 : 13.34 : 18.64). The bell character comes from the staggered
- * per-partial decays — upper partials ring down quickly, the hum and prime
- * linger — layered under whatever parent envelope the row authors. */
+/* Inharmonic bell: transverse free-bar partial ratios. The character comes
+ * from the staggered per-partial decays - upper partials ring down fast, hum
+ * and prime linger - under whatever parent envelope the row authors. */
 static void additive_preset_bell(additive_voice_t *v)
 {
     additive_voice_default(v);

@@ -10,10 +10,9 @@
 
 /* ── File-local helpers ─────────────────────────────────────────────────── */
 
-/* Normalised-coordinate clamp. Delegates to seq_clamp_f32 rather than testing
- * the bounds directly so that a NaN degrades to 0.0f instead of propagating:
- * several of these results feed an (int) cast on the way to the draw path, and
- * converting NaN to int is undefined behaviour. */
+/* Normalised-coordinate clamp. Via seq_clamp_f32 so NaN degrades to 0.0f
+ * instead of propagating: these results feed (int) casts on the draw path,
+ * and NaN->int is undefined behaviour. */
 static inline float clampf01(float v) { return SEQ_CLAMP_F32(v, 0.0f, 1.0f); }
 
 /* Inset (in px) of the plot region inside the box border. Leaves room for the
@@ -23,15 +22,14 @@ static inline float clampf01(float v) { return SEQ_CLAMP_F32(v, 0.0f, 1.0f); }
 #define GPOPUP_PAD_BOT  4
 #define GPOPUP_TITLE_H  8   /* extra top inset when a title is shown */
 
-/* Fallback minimum normalised X separation between consecutive points, used
- * until a host installs its own via graph_popup_set_min_x_gap(). Sized for
- * marker legibility on a 128 px plot; a host that knows the real floor in its
- * own units should install that instead, so the plot never ends up being the
- * stricter of the two constraints. */
+/* Fallback minimum normalised X gap between points until a host installs its
+ * own via graph_popup_set_min_x_gap(). Sized for marker legibility on a 128 px
+ * plot; a host that knows the real floor in its own units should install that,
+ * so the plot is never the stricter constraint. */
 #define GPOPUP_DEFAULT_MIN_X_GAP 0.004f
 
-/* Accepted range for an installed gap. Zero is legal (no spacing rule at all);
- * the ceiling stops a bad conversion from silently distorting real edits. */
+/* Accepted range for an installed gap. Zero is legal (no spacing rule); the
+ * ceiling stops a bad conversion from silently distorting real edits. */
 #define GPOPUP_MIN_X_GAP_LO      0.0f
 #define GPOPUP_MIN_X_GAP_HI      0.05f
 
@@ -42,9 +40,8 @@ static inline float clampf01(float v) { return SEQ_CLAMP_F32(v, 0.0f, 1.0f); }
 static void plot_rect(const gpopup_t *p,
                       uint8_t *px, uint8_t *py, uint8_t *pw, uint8_t *ph)
 {
-    /* ADSR style has no internal title strip (host draws the top bar) and uses
-     * tighter insets to maximise the full-screen plot; it reserves 3px at the
-     * bottom for the margin tick marks. */
+    /* ADSR style has no internal title strip (host draws the top bar), uses
+     * tighter insets, and reserves 3px at the bottom for tick marks. */
     bool adsr = (p->style == GPOPUP_STYLE_ADSR);
     uint8_t top_pad = adsr ? 2 : (GPOPUP_PAD_TOP + (p->title ? GPOPUP_TITLE_H : 0));
     uint8_t bot_pad = adsr ? (GPOPUP_PAD_BOT + 3) : GPOPUP_PAD_BOT;
@@ -160,12 +157,10 @@ void graph_popup_set_xstep(gpopup_t *p, gpopup_xstep_fn fn)
 
 /* ── ADSR role-aware constraints ─────────────────────────────────────────────
  * Points are [origin, A(attack peak), D(decay end / sustain level), R(release
- * end)]. Enforce a musically-valid shape so the user cannot create nonsensical
- * curves:
- *   - X is monotonic with a tiny minimum gap so points can't cross or collapse.
+ * end)] - index roles assume the host's standard 4-point ADSR seed:
+ *   - X monotonic with a minimum gap so points can't cross or collapse.
  *   - origin pinned to (0,0); A.y pinned to 1.0; R.y pinned to 0.0.
- *   - only the D point's Y (the sustain level) is freely movable.
- * Index roles assume the standard 4-point ADSR seed used by the host. */
+ *   - only D's Y (the sustain level) is freely movable. */
 static void adsr_apply_constraints(gpopup_t *p)
 {
     if (p->style != GPOPUP_STYLE_ADSR || p->num_points < 4) return;
@@ -179,10 +174,9 @@ static void adsr_apply_constraints(gpopup_t *p)
     /* pt[2].y is the sustain level — left as edited, just bounded 0..1. */
     pt[2].y = clampf01(pt[2].y);
 
-    /* Monotonic X with a minimum gap, walking forward from the fixed origin.
-     * Each editable point is bounded below by its predecessor + gap and above
-     * by 1.0; a second backward pass keeps an earlier point from being pushed
-     * past a later one when the later point was dragged left. */
+    /* Monotonic X with a minimum gap: forward pass bounds each point below by
+     * its predecessor + gap, backward pass keeps an earlier point from being
+     * pushed past a later one that was dragged left. */
     for (uint8_t i = 1; i < p->num_points; ++i) {
         float lo = pt[i - 1].x + p->min_x_gap;
         if (pt[i].x < lo) pt[i].x = lo;
@@ -203,10 +197,9 @@ static bool adsr_y_editable(const gpopup_t *p, uint8_t idx)
     return (idx == 2);
 }
 
-/* Whether the selected point's X (time) is editable in ADSR style. When
- * adsr_lock_sx is set, the sustain point (index 2) is Y-only: its X is owned by
- * the host (auto-derived decay time), so user X nudges are ignored. A and R
- * remain X-editable; the origin (0) is fixed regardless. */
+/* Whether the selected point's X (time) is editable in ADSR style. With
+ * adsr_lock_sx the sustain point (2) is Y-only - its X is the host's
+ * auto-derived decay time. A and R stay X-editable; the origin never is. */
 static bool adsr_x_editable(const gpopup_t *p, uint8_t idx)
 {
     if (p->style != GPOPUP_STYLE_ADSR) return true;
@@ -215,23 +208,19 @@ static bool adsr_x_editable(const gpopup_t *p, uint8_t idx)
     return true;
 }
 
-/* True when a point can move on BOTH axes: the explicit-decay sustain point
- * (lock_sx off) is X (decay time) and Y (sustain level) at once. In the derived
- * decay mode (lock_sx on) no point is ever dual-free, so all the two-axis
- * handling below stays dormant and behaviour is byte-identical to before. */
+/* True when a point moves on BOTH axes: the explicit-decay sustain point
+ * (lock_sx off) carries decay time (X) and sustain level (Y). With lock_sx on
+ * no point is dual-free and the two-axis handling below stays dormant. */
 static bool adsr_point_dual_free(const gpopup_t *p, uint8_t idx)
 {
     return p->style == GPOPUP_STYLE_ADSR
         && adsr_x_editable(p, idx) && adsr_y_editable(p, idx);
 }
 
-/* In ADSR style each single-axis point moves on exactly one axis (A/R = time/X,
- * S = level/Y when its X is host-owned), so there is nothing to toggle: the
- * editor auto-selects the axis the selected point can actually move on. Returns
- * true if the encoder should adjust Y for this point, false for X. For the
- * dual-free sustain point (explicit decay) the manual axis flag decides, so the
- * user can switch between sustain level (Y) and decay time (X). Also the
- * fallback for the generic (non-ADSR) curve editor. */
+/* Returns true if the encoder should adjust Y, false for X. Single-axis ADSR
+ * points (A/R = time/X, S = level/Y when its X is host-owned) auto-select, so
+ * there is nothing to toggle; the dual-free sustain point and the generic
+ * (non-ADSR) editor honour the manual adjust_axis_y flag. */
 static bool adsr_effective_axis_is_y(const gpopup_t *p, uint8_t idx)
 {
     if (p->style != GPOPUP_STYLE_ADSR) return p->adjust_axis_y;
@@ -277,8 +266,7 @@ static int curve_y_at_col(const gpopup_t *p, int col,
     int px0, py0, px1, py1;
     point_to_px(p, &p->points[0], plot_x, plot_y, plot_w, plot_h, &px0, &py0);
     if (col <= px0) return py0;
-    /* Hold the first point's level if there is no segment to walk (<=1 point);
-     * updated to each segment's far end as we iterate. */
+    /* Holds the first point's level when there is no segment to walk. */
     py1 = py0;
     for (uint8_t i = 1; i < p->num_points; ++i) {
         point_to_px(p, &p->points[i], plot_x, plot_y, plot_w, plot_h, &px1, &py1);
@@ -286,15 +274,13 @@ static int curve_y_at_col(const gpopup_t *p, int col,
             int span = px1 - px0;
             if (span <= 0) return py1;
             if (p->shape) {
-                /* Shaped segment: evaluate in normalised level space so the
-                 * callback sees the same v0/v1/t domain the synth engine uses,
-                 * then map the result back to a pixel row. */
+                /* Evaluate in normalised level space so the callback sees the
+                 * same v0/v1/t domain the synth engine uses. */
                 float t  = (float)(col - px0) / (float)span;
                 float yn = p->shape(clampf01(p->points[i - 1].y),
                                     clampf01(p->points[i].y), t);
                 return (int)(plot_y + (1.0f - clampf01(yn)) * (plot_h - 1));
             }
-            /* Linear interpolation between the two bracketing points. */
             return py0 + ((py1 - py0) * (col - px0)) / span;
         }
         px0 = px1; py0 = py1;
@@ -309,8 +295,8 @@ void graph_popup_draw(u8g2_t *u8g2, const gpopup_t *p)
 
     const bool adsr = (p->style == GPOPUP_STYLE_ADSR);
 
-    /* Background clear of the box area. ADSR style is full-screen and framed by
-     * the host's top bar, so it skips the rounded border for max plot area. */
+    /* ADSR style is full-screen and framed by the host's top bar, so it skips
+     * the rounded border for max plot area. */
     u8g2_SetDrawColor(u8g2, 0);
     u8g2_DrawBox(u8g2, p->x, p->y, p->w, p->h);
     u8g2_SetDrawColor(u8g2, 1);
@@ -335,9 +321,8 @@ void graph_popup_draw(u8g2_t *u8g2, const gpopup_t *p)
 
     if (p->num_points == 0) return;
 
-    /* ADSR: fill the area under the curve before the line/markers so points and
-     * the crisp curve edge sit on top. One VLine per column from the curve down
-     * to the baseline. */
+    /* ADSR: fill under the curve first (one VLine per column down to the
+     * baseline) so the points and curve edge sit on top. */
     if (adsr) {
         int last_x;
         {
@@ -356,10 +341,10 @@ void graph_popup_draw(u8g2_t *u8g2, const gpopup_t *p)
         }
     }
 
-    /* Curve: drawn on top of any fill. With a shape callback the path is
-     * evaluated per column so non-linear segments render their true profile;
-     * adjacent columns are joined with short lines to keep steep runs solid.
-     * Without one, straight segments between points as before. */
+    /* Curve, on top of any fill. With a shape callback the path is evaluated
+     * per column so non-linear segments render their true profile, joining
+     * adjacent columns with lines to keep steep runs solid; otherwise straight
+     * segments between points. */
     if (p->shape && p->num_points > 1) {
         int fx, fy, lx, ly;
         point_to_px(p, &p->points[0], plot_x, plot_y, plot_w, plot_h, &fx, &fy);
@@ -396,9 +381,8 @@ void graph_popup_draw(u8g2_t *u8g2, const gpopup_t *p)
         }
     }
 
-    /* ADSR: level tick marks on the left (Y) axis at the quarter divisions, so
-     * both box edges carry a scale reference — time along the bottom, amplitude
-     * up the side (0%/100% are the axis ends). Drawn in the 2px left margin. */
+    /* ADSR: amplitude ticks at the quarter divisions in the 2px left margin,
+     * so both edges carry a scale (0%/100% are the axis ends). */
     if (adsr && plot_x >= 2) {
         for (uint8_t i = 1; i < 4; ++i) {   /* 25%, 50%, 75% */
             int tyy = (int)plot_y + (int)((4u - i) * (plot_h - 1)) / 4;
@@ -415,10 +399,10 @@ void graph_popup_draw(u8g2_t *u8g2, const gpopup_t *p)
             int cx, cy;
             point_to_px(p, &p->points[i], plot_x, plot_y, plot_w, plot_h, &cx, &cy);
 
-            /* Label above-left of the point (ADSR style, skip the origin).
-             * The sustain marker reads 'D' while its decay-time (X) axis is the
-             * one being adjusted, 'S' otherwise, so the dual-axis point shows
-             * which value the encoder currently moves. */
+            /* Label above-left of the point (ADSR style, skip the origin). The
+             * sustain marker reads 'D' while its decay-time (X) axis is being
+             * adjusted, 'S' otherwise, so the dual-axis point shows which
+             * value the encoder moves. */
             char letter = adsr_letters[i];
             if (i == 2 && i == p->cursor && p->editing_value
                 && adsr_point_dual_free(p, i) && !adsr_effective_axis_is_y(p, i)) {
@@ -454,16 +438,14 @@ void graph_popup_draw(u8g2_t *u8g2, const gpopup_t *p)
             }
         }
 
-        /* Value readout for the selected point while adjusting (PLAIN style).
-         * In ADSR style the host top bar shows the real ms/percent readout, so
-         * the in-plot text is suppressed to keep the plot clean. */
+        /* Value readout while adjusting (PLAIN only; in ADSR style the host top
+         * bar carries the real ms/percent readout). */
         if (!adsr && p->editing_value && p->cursor < p->num_points) {
             char buf[16];
             const gpopup_point_t *pt = &p->points[p->cursor];
-            /* Held in uint8_t so the percentages are provably three digits:
-             * the float clamp already bounds them to 0..100, but that range
-             * does not survive the float->int conversion, and -Wformat-
-             * truncation then has to assume a full-width int per %d. */
+            /* uint8_t so the percentages are provably three digits: the 0..100
+             * float bound does not survive the float->int conversion, and
+             * -Wformat-truncation then assumes a full-width int per %d. */
             uint8_t rx = SEQ_CLAMP_U8((int)(clampf01(pt->x) * 100.0f + 0.5f), 0, 100);
             uint8_t ry = SEQ_CLAMP_U8((int)(clampf01(pt->y) * 100.0f + 0.5f), 0, 100);
             snprintf(buf, sizeof(buf), "%c %d,%d",
@@ -497,9 +479,8 @@ gpopup_result_t graph_popup_handle_encoder(gpopup_t *p, long delta)
         idx = SEQ_CLAMP_INT(idx, min_idx, (long)p->num_points - 1);
         p->cursor = (uint8_t)idx;
     } else {
-        /* Adjusting: change the selected point along its editable axis. In ADSR
-         * mode the axis is auto-selected per point (no X/Y toggle needed); the
-         * generic curve editor still honours the manual adjust_axis_y flag. */
+        /* Adjusting along the point's editable axis (auto-selected in ADSR
+         * mode, manual adjust_axis_y flag in the generic editor). */
         gpopup_point_t *pt = &p->points[p->cursor];
         float step = (float)delta * GPOPUP_ADJUST_STEP;
         if (adsr_effective_axis_is_y(p, p->cursor)) {
@@ -508,9 +489,9 @@ gpopup_result_t graph_popup_handle_encoder(gpopup_t *p, long delta)
                 pt->y = clampf01(pt->y + step);
             }
         } else {
-            /* Locked points (origin, host-owned S.x) ignore X nudges. The host
-             * xstep override (audio-taper time stride) wins over the fixed
-             * normalised step when installed. */
+            /* Locked points (origin, host-owned S.x) ignore X nudges. An
+             * installed xstep (audio-taper time stride) wins over the fixed
+             * normalised step. */
             if (adsr_x_editable(p, p->cursor)) {
                 if (p->xstep) {
                     pt->x = clampf01(p->xstep(p->cursor, pt->x, delta));
@@ -532,10 +513,9 @@ gpopup_result_t graph_popup_handle_button(gpopup_t *p)
         /* VIEW mode: short press confirms (dismiss the preview). */
         return GPOPUP_RESULT_CONFIRMED;
     }
-    /* EDIT mode. A dual-axis point (the explicit-decay sustain point) carries
-     * two independent values on one marker, so a single toggle can't reach both.
-     * Cycle it: select -> adjust level (Y) -> adjust decay time (X) -> select.
-     * Single-axis points keep the plain select <-> adjust toggle. */
+    /* EDIT mode. A dual-axis point carries two values on one marker, so a
+     * single toggle can't reach both: cycle select -> level (Y) -> decay time
+     * (X) -> select. Single-axis points keep the plain select/adjust toggle. */
     if (adsr_point_dual_free(p, p->cursor)) {
         if (!p->editing_value) {
             p->editing_value = true;

@@ -13,9 +13,8 @@
 static const char *TAG = "live_play";
 
 /* Slot 10 is the gap between the drum block (6..9) and the melodic base (11)
- * in the fixed synth-slot map (seq_core_config.h); max_synths=68 already
- * covers it. 4 voices matches the arp - enough for chords under one hand,
- * ample osc headroom even for 7-osc FM voices against AMY's 250-osc pool. */
+ * in the fixed slot map (seq_core_config.h). 4 voices matches the arp: chords
+ * under one hand, with osc headroom even for 7-osc FM voices. */
 #define LIVE_SYNTH   10
 #define LIVE_VOICES  4
 
@@ -27,11 +26,10 @@ uint8_t live_play_synth_slot(void)
 static uint16_t s_patch = SEQ_MEL_PATCH;
 static bool     s_ready = false;
 
-/* Browse-group toggle (Wireless page "Source" row). WAVE walks the contiguous
- * raw-wave / bass / wavetable block (SEQ_PATCH_WAVE_BASE..WAVETABLE_MAX),
- * PATCH everything else. Pure browse state - configuration stays patch-number
- * driven through the kind dispatch - with per-group last-patch memory, the
- * arp source model's twin. */
+/* Browse-group toggle (Wireless page "Source" row), the arp source model's
+ * twin: WAVE walks the raw-wave/bass/wavetable block, PATCH everything else.
+ * Pure browse state with per-group last-patch memory - configuration stays
+ * patch-number driven through the kind dispatch. */
 static bool s_wave_mode =
     (SEQ_MEL_PATCH >= SEQ_PATCH_WAVE_BASE && SEQ_MEL_PATCH <= SEQ_PATCH_WAVETABLE_MAX);
 static uint16_t s_patch_mem_wave  = SEQ_PATCH_WAVE_BASE;  /* SINE */
@@ -41,19 +39,17 @@ static uint16_t s_patch_mem_patch = 138;                  /* DX7 E.PIANO 1 */
  * the arp / melodic NoteFX Glide (1 ms per encoder detent). */
 static uint16_t s_glide_ms = 0;
 
-/* Runtime-editable voice params (ADSR/EG1/filter/LFO/amp trim + authored
- * flags). Same block every other engine embeds; defaults installed on first
- * ensure_ready so amp_trim starts at unity rather than silent. */
+/* Runtime-editable voice params, the same block every other engine embeds.
+ * Defaults land on first ensure_ready so amp_trim starts at unity, not 0. */
 static voice_params_t s_vp;
 static bool           s_vp_inited = false;
 
-/* Out-of-the-box editor values - arp_state_defaults()'s structural twin, but
- * voiced for held keys rather than a running sequence: high sustain so chords
- * keep their body while pressed, controlled release. Everything stays
- * unauthored until the user commits - except the EG0 shape, which
- * live_apply_authored() force-pushes for wave patches (a raw wave with no
- * envelope reads AMY's empty breakpoint set as a permanently open gate and
- * rings forever after note-off; same rule as the melodic force_wave path). */
+/* Out-of-the-box editor values, voiced for held keys rather than a running
+ * sequence: high sustain, controlled release. Everything stays unauthored
+ * until the user commits, except the EG0 shape that live_apply_authored()
+ * force-pushes for wave patches - a raw wave with no envelope reads AMY's
+ * empty breakpoint set as a permanently open gate and rings forever after
+ * note-off (the melodic force_wave rule). */
 static void live_seed_defaults(void)
 {
     voice_params_init_defaults(&s_vp);
@@ -79,12 +75,11 @@ static void live_seed_defaults(void)
     s_vp.lfo.targets = LFO_TGT_BIT(LFO_TARGET_FILTER);
 }
 
-/* The editors can open before the radio session ever starts, i.e. before
- * ensure_ready() has installed the defaults - and a zero-initialised block has
- * amp_trim 0.0, which the graph editor would read as 0% and commit as silence.
- * Every accessor below goes through this. UI task only (single-threaded), so
- * the check needs no guard; live_note() deliberately does NOT call it, since it
- * runs on the transport task and ensure_ready() always precedes any note. */
+/* The editors can open before ensure_ready() installs the defaults, and a
+ * zero-initialised block has amp_trim 0.0 - which the graph editor reads as 0%
+ * and commits as silence. Every accessor goes through this. UI task only, so
+ * no guard needed; live_note() deliberately skips it, running on the transport
+ * task where ensure_ready() always precedes any note. */
 static voice_params_t *live_vp(void)
 {
     if (!s_vp_inited) {
@@ -94,10 +89,10 @@ static voice_params_t *live_vp(void)
     return &s_vp;
 }
 
-/* Held-note bitmap (128 bits) so all_notes_off releases exactly what is
- * sounding. Written from the transport task, drained from synth_ui / NimBLE
- * host on stop/disconnect; per-bit races are harmless (a spurious note-off
- * to an idle voice is a no-op in AMY). */
+/* Held-note bitmap so all_notes_off releases exactly what is sounding. Written
+ * from the transport task, drained from synth_ui / NimBLE host on
+ * stop/disconnect; per-bit races are harmless - a spurious note-off to an idle
+ * voice is a no-op in AMY. */
 static volatile uint32_t s_held[4];
 
 static void live_note(uint8_t note, float velocity)
@@ -112,10 +107,10 @@ static void live_note(uint8_t note, float velocity)
 }
 
 /* Push the stored filter including the bipolar EG1->cutoff sweep depth.
- * Mirrors arp_apply_filter() minus its KS branch: the live slot is always a
- * patch voice, never a WAVE-mode osc build. Valid EG1 breakpoints go out
- * alongside a nonzero sweep so filter_freq_coefs[COEF_EG1] never reads AMY's
- * never-configured always-open unity gate. */
+ * Mirrors arp_apply_filter() minus its KS branch (the live slot is always a
+ * patch voice). EG1 breakpoints go out alongside a nonzero sweep so
+ * filter_freq_coefs[COEF_EG1] never reads AMY's never-configured
+ * always-open unity gate. */
 static void live_apply_filter(const seq_filter_t *f)
 {
     if (!f) return;
@@ -149,11 +144,10 @@ static void live_push_glide(void)
 }
 
 /* Apply or park the native LFO on any patch with a reserved carrier pair
- * (raw waves, wavetables, bass presets - sequencer_core_lfo_native_layout);
- * patch strings own their whole osc layout and are served by the software
- * stepper below instead. Parking a never-authored voice is a cheap
- * coupled-osc-only clear - the carrier pair stays unmaterialized
- * (see voice_config.h). */
+ * (sequencer_core_lfo_native_layout); patch strings own their whole osc layout
+ * and get the software stepper below instead. Parking a never-authored voice
+ * is a coupled-osc-only clear - the carrier pair stays unmaterialized
+ * (voice_config.h). */
 static void live_apply_lfo(void)
 {
     uint8_t carrier, coupled;
@@ -168,10 +162,9 @@ static void live_apply_lfo(void)
 static void live_apply_authored(void)
 {
     bool wave = sequencer_core_is_wave_patch(s_patch);
-    /* Wave patches carry no envelope of their own: with nothing pushed, a
-     * note-off never releases (see live_seed_defaults). Force the default
-     * shape onto them even unauthored; patch strings keep their built-in
-     * envelope until the user commits one. */
+    /* Wave patches carry no envelope of their own: with nothing pushed a
+     * note-off never releases, so force the default shape even unauthored.
+     * Patch strings keep their built-in envelope until the user commits. */
     if (s_vp.env_authored || wave)
         sequencer_core_push_envelope(LIVE_SYNTH, &s_vp.env);
     if (s_vp.env1_authored)   sequencer_core_push_envelope_eg1(LIVE_SYNTH, 0, &s_vp.env1);
@@ -279,9 +272,9 @@ bool live_play_lfo_native_eligible(void)
 }
 
 /* Retune the BPM-synced carrier pair after a tempo change. Full re-apply
- * rather than the arp's targeted freq pushes - menu-rate, and it keeps the
- * depth/wobble coupling in one authoring path. (The software stepper below
- * needs nothing here: it reads the BPM every frame.) */
+ * rather than the arp's targeted freq pushes: menu-rate, and it keeps the
+ * depth/wobble coupling in one authoring path. The software stepper needs
+ * nothing here - it reads the BPM every frame. */
 void live_play_refresh_lfo_freq(void)
 {
     if (!s_ready || !s_vp.lfo_authored || !s_vp.lfo.enabled) return;
@@ -289,12 +282,11 @@ void live_play_refresh_lfo_freq(void)
 }
 
 /* ── PATCH-mode software LFO fallback ────────────────────────────────────
- * Wave patches get the AMY-native voice-local LFO (live_apply_lfo); a patch
- * string owns its whole osc layout, so those run the same 20 Hz software
- * stepper as non-wave melodic tracks and the arp's PATCH source
- * (arp_swlfo_service, the shape this mirrors), modulating each checked
- * target's COEF_CONST rail on the live synth. WOBBLE and SCAN have no
- * software analog and are ignored, like on melodic patch tracks. */
+ * Wave patches get the AMY-native voice-local LFO (live_apply_lfo). A patch
+ * string owns its whole osc layout, so it runs the same 20 Hz software stepper
+ * as non-wave melodic tracks and the arp's PATCH source (mirrors
+ * arp_swlfo_service), modulating each checked target's COEF_CONST rail.
+ * WOBBLE and SCAN have no software analog and are ignored. */
 static float   s_swlfo_phase   = 0.0f;
 static float   s_swlfo_rnd     = 0.0f;
 static bool    s_swlfo_active  = false;
@@ -334,7 +326,7 @@ void live_play_lfo_service(void)
 
     if (!want) {
         if (s_swlfo_active) {
-            /* Restore every rail the stepper was driving (the melodic
+            /* Restore every rail the stepper drove (melodic
              * lfo_restore_target_neutrals rule: FILTER re-pushes the stored
              * filter, the rest a neutral constant). */
             s_swlfo_active = false;
@@ -443,9 +435,8 @@ void live_play_get_lfo(seq_lfo_t *out)
     if (out) *out = live_vp()->lfo;
 }
 
-/* Applied natively for wave patches (the 3-osc build's reserved carrier
- * pair); patch strings are picked up by the 20 Hz software stepper
- * (live_play_lfo_service) on its next frame - the melodic/arp split. */
+/* Native for wave patches (reserved carrier pair); patch strings get picked up
+ * by live_play_lfo_service on its next frame - the melodic/arp split. */
 void live_play_set_lfo(const seq_lfo_t *lfo)
 {
     if (!lfo) return;

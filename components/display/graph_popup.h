@@ -2,25 +2,19 @@
 /*
  * graph_popup — reusable pop-up graph box for the U8g2 (SSD1315 128x64) UI.
  *
- * Purpose:
- *   A single, self-contained widget for drawing and (optionally) editing a
- *   curve inside a framed pop-up box that overlays the main screen. It is used
- *   for AD/ADSR envelopes, filter curves, and waveform visualisation without
- *   re-implementing the graphing/editing logic each time.
+ * Draws and optionally edits a curve inside a framed pop-up box overlaying the
+ * main screen (AD/ADSR envelopes, filter curves, waveform previews).
  *
  * Design:
- *   - The widget is AMY-agnostic and sequencer-agnostic. It operates purely on
- *     a caller-owned array of *normalised* points (x and y each in 0.0..1.0).
- *   - The host decides WHEN to open it, seeds the points, routes input to it,
- *     and reads the (possibly edited) points back. Mapping domain values
- *     (ms, levels, log-freq) to/from the normalised 0..1 space lives in
- *     adapters outside this file (e.g. graph_popup_amy.c in synth_core).
+ *   - AMY- and sequencer-agnostic: operates purely on caller-owned *normalised*
+ *     points (x and y each in 0.0..1.0).
+ *   - The host opens it, seeds the points, routes input, and reads them back.
+ *     Domain mapping (ms, levels, log-freq) lives in adapters outside this file
+ *     (e.g. graph_popup_amy.c in synth_core).
  *
  * Rendering contract:
- *   graph_popup_draw() draws ONLY the pop-up box (background, frame, axes,
- *   curve and — in edit mode — point markers/cursor). The host is responsible
- *   for u8g2_ClearBuffer(), any context frame around the box, and
- *   u8g2_SendBuffer().
+ *   graph_popup_draw() draws ONLY the pop-up box. The host owns
+ *   u8g2_ClearBuffer(), any surrounding frame, and u8g2_SendBuffer().
  *
  * Threading:
  *   Plain state, no internal locking. If input and render run on different
@@ -58,16 +52,11 @@ typedef enum {
     GPOPUP_RESULT_CANCELLED, /* user cancelled (caller should discard)        */
 } gpopup_result_t;
 
-/* Optional rendering / editing style. PLAIN keeps the original generic widget
- * behaviour. ADSR turns on envelope-specific behaviour: the 4 points are treated
- * as [origin, Attack-peak, Decay/Sustain, Release-end], which enables
- *   - role-aware clamping (monotonic time; A.y pinned to 1.0, R.y to 0.0; only
- *     the sustain level is freely movable in Y) so only valid, musical envelopes
- *     are reachable;
- *   - filled area under the curve;
- *   - A/D/S/R letter labels over the points;
- *   - minimal time tick marks in the bottom margin.
- * The widget stays AMY-agnostic: it only knows the ADSR point ROLES, not ms. */
+/* Rendering/editing style. PLAIN is the generic widget. ADSR treats the 4
+ * points as [origin, Attack-peak, Decay/Sustain, Release-end] and adds
+ * role-aware clamping (monotonic time; A.y pinned to 1.0, R.y to 0.0; only the
+ * sustain level free in Y), an area fill, A/D/S/R labels, and bottom-margin
+ * time ticks. Still AMY-agnostic: it knows the point ROLES, not ms. */
 typedef enum {
     GPOPUP_STYLE_PLAIN = 0,
     GPOPUP_STYLE_ADSR  = 1,
@@ -76,16 +65,14 @@ typedef enum {
 /* Optional per-segment curve shaping. Called per plot column with the segment's
  * endpoint levels v0/v1 (normalised 0..1) and the position t (0..1) within the
  * segment; returns the curve level at t. NULL = straight-line segments. Lets
- * the host render the true shape of a non-linear envelope (exponential, DX7)
- * while the widget itself stays domain-agnostic: points remain the editable
+ * the host render a non-linear envelope's true shape; points stay the editable
  * anchors, only the drawn path between them changes. */
 typedef float (*gpopup_shape_fn)(float v0, float v1, float t);
 
 /* Optional X-axis stepping override for point editing. Called with the point
  * index, its current normalised X and the encoder detent count; returns the new
- * normalised X (clamped to 0..1 by the widget). Lets the host implement a
- * non-linear (e.g. audio-taper time) stride in its own domain units instead of
- * the widget's fixed normalised step. NULL = fixed linear step. */
+ * normalised X (clamped to 0..1 by the widget). Lets the host step in its own
+ * domain units (e.g. audio-taper time). NULL = fixed linear step. */
 typedef float (*gpopup_xstep_fn)(uint8_t idx, float x, long delta);
 
 typedef struct {
@@ -99,23 +86,21 @@ typedef struct {
     uint8_t        cursor;                       /* selected point index (edit) */
     bool           editing_value;                /* false=selecting, true=adjusting */
     bool           adjust_axis_y;                /* true=encoder edits Y, false=X   */
-    /* Normalised X tick positions drawn in the bottom margin (ADSR style only).
-     * Host fills these via graph_popup_set_ticks() since the time->X mapping
-     * lives outside this widget. */
+    /* Normalised X tick positions for the bottom margin (ADSR style only).
+     * Host-filled via graph_popup_set_ticks(): the time->X mapping lives
+     * outside this widget. */
     float          ticks[GPOPUP_MAX_POINTS];
     uint8_t        num_ticks;
-    /* ADSR style: when true, the sustain point (index 2) is Y-only — its X
-     * (decay time) is owned by the host (auto-derived), never user-draggable.
-     * Removes the hidden decay-time control and the A/S marker overlap. */
+    /* ADSR style: when true the sustain point (index 2) is Y-only - its X
+     * (decay time) is host-derived, never user-draggable. */
     bool           adsr_lock_sx;
     /* Optional segment shaping for the drawn curve (see gpopup_shape_fn). */
     gpopup_shape_fn shape;
     /* Optional X-axis stepping override for edits (see gpopup_xstep_fn). */
     gpopup_xstep_fn xstep;
-    /* Minimum normalised X separation enforced between consecutive points.
-     * Host-settable because the meaningful floor lives in the host's domain
-     * units (milliseconds), and its normalised equivalent changes whenever the
-     * host rescales its time axis. Defaults to GPOPUP_DEFAULT_MIN_X_GAP. */
+    /* Minimum normalised X separation between consecutive points. Host-settable
+     * because the real floor is in the host's units (ms) and its normalised
+     * equivalent shifts with the time axis. Default GPOPUP_DEFAULT_MIN_X_GAP. */
     float           min_x_gap;
 } gpopup_t;
 
@@ -128,10 +113,9 @@ void graph_popup_init(gpopup_t *p, uint8_t x, uint8_t y, uint8_t w, uint8_t h);
  * GPOPUP_MAX_POINTS. Safe to call before or after open(). */
 void graph_popup_set_points(gpopup_t *p, const gpopup_point_t *pts, uint8_t n);
 
-/* Set the minimum normalised X separation between consecutive points. Pass the
- * normalised equivalent of whatever floor the host's own domain enforces, so the
- * plot never becomes the stricter of the two constraints. Values are clamped to
- * a sane range; call again after any change to the host's axis scaling. */
+/* Set the minimum normalised X separation between consecutive points: pass the
+ * normalised equivalent of the host's own floor so the plot is never the
+ * stricter constraint. Clamped; re-call after any host axis rescale. */
 void graph_popup_set_min_x_gap(gpopup_t *p, float gap);
 
 /* Open the pop-up in the given mode with an optional title. Resets the edit
@@ -146,9 +130,8 @@ void graph_popup_set_style(gpopup_t *p, gpopup_style_t style);
  * in ADSR style. n is clamped to GPOPUP_MAX_POINTS. Pass n=0 to clear. */
 void graph_popup_set_ticks(gpopup_t *p, const float *xs, uint8_t n);
 
-/* ADSR style: lock the sustain point's X (decay time) so it is not user-editable.
- * The host derives and writes S.x (e.g. from attack time + sustain level). The
- * sustain point remains Y-editable (level). No-op outside ADSR style. */
+/* ADSR style: lock the sustain point's X (decay time); the host derives and
+ * writes S.x. The point stays Y-editable. No-op outside ADSR style. */
 void graph_popup_set_adsr_lock_sx(gpopup_t *p, bool lock);
 
 /* Install (or clear, with NULL) the segment-shaping callback used when drawing
@@ -185,10 +168,9 @@ gpopup_result_t graph_popup_handle_button(gpopup_t *p);       /* short press   *
 gpopup_result_t graph_popup_handle_button_long(gpopup_t *p);  /* long = cancel */
 
 /* ───────────────────────────────────────────────────────────────────────────
- * Optional AMY adapter (implemented in components/synth_core/graph_popup_amy.c).
- * Declared here for convenience; the core widget above has NO AMY dependency.
- * These helpers convert between AMY envelope arrays (times in ms, values 0..1)
- * and the normalised point model used by the widget.
+ * Optional AMY adapter (components/synth_core/graph_popup_amy.c): converts
+ * between AMY envelope arrays (ms, values 0..1) and the widget's normalised
+ * points. Declared here for convenience; the widget above has NO AMY dependency.
  * ───────────────────────────────────────────────────────────────────────── */
 
 /* Build normalised points from an AMY EG (times in ms, values 0..1).

@@ -63,10 +63,9 @@ void display_trackopts_draw_frame(u8g2_t *u8g2, const trackopts_view_t *view)
 
     if (view == NULL) { return; }
 
-    /* Content rows, indexed relative to TO_ROW_REPEAT: 0=Repeat 1=Mute 2=Solo
-     * 3=Chord 4=Root 5=Type. Drum layers stop at Solo (3 rows); melodic
-     * layers have all 6 and need the same scroll-window technique as the
-     * drone screen to fit the 4 rows visible below the title bar. */
+    /* Content rows relative to TO_ROW_REPEAT: 0=Repeat 1=Mute 2=Solo 3=Chord
+     * 4=Root 5=Type. Drum layers stop at Solo; melodic layers have all 6 and
+     * need the scroll window to fit below the title bar. */
     uint8_t content_count = view->melodic ? 6 : 3;
     uint8_t content_cursor = (view->cursor >= TO_ROW_REPEAT)
                              ? (uint8_t)(view->cursor - TO_ROW_REPEAT) : 0;
@@ -98,8 +97,8 @@ void display_trackopts_draw_frame(u8g2_t *u8g2, const trackopts_view_t *view)
                         selected, view->editing);
             break;
         case 3:
-            /* When the global progression is driving harmony, the chord rows
-             * are read-only — show "(prog)" so edits don't silently no-op. */
+            /* Chord rows are read-only while the global progression drives
+             * harmony - show "(prog)" so edits don't silently no-op. */
             to_draw_row(u8g2, y, "Chord Mode",
                         view->chord_locked ? "(prog)" : (view->chord_mode ? "ON" : "OFF"),
                         selected, view->editing && !view->chord_locked);
@@ -117,8 +116,7 @@ void display_trackopts_draw_frame(u8g2_t *u8g2, const trackopts_view_t *view)
         }
     }
 
-    /* Scroll-position arrows in the yellow header (right side), clear of the
-     * L/T title values and the yellow/blue seam. ▲ above, ▼ below. */
+    /* Scroll arrows in the yellow header, clear of the L/T title values. */
     if (first > 0) {
         u8g2_DrawTriangle(u8g2, 112, 2, 108, 8, 116, 8);
     }

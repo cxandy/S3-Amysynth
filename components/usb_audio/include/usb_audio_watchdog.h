@@ -3,15 +3,13 @@
  * continuously near full scale (filter self-oscillation, runaway feedback,
  * a stuck voice).
  *
- * Rather than metering inside the render path, it peeks at the most recent
- * audio already committed to the USB ring buffer - the exact PCM the host
- * receives - via usb_audio_peek_levels(). Poll it from one low-priority task
- * on the non-render core (here: synth_ui_task, Core 0, 50 ms cadence); the
- * render task and Core 1 do no work for this feature.
+ * Meters via usb_audio_peek_levels() on the USB ring - the exact PCM the host
+ * receives - so the render path and Core 1 do no work for this. Poll from one
+ * low-priority task on the non-render core (synth_ui_task, Core 0, 50 ms).
  *
  * Single-client: output_wd_poll() and output_wd_state() must be called from
- * the same task. When CONFIG_OUTPUT_WATCHDOG is disabled the inline stubs
- * below compile every call site away, so callers need no #if guards. */
+ * the same task. With CONFIG_OUTPUT_WATCHDOG off the stubs below compile every
+ * call site away, so callers need no #if guards. */
 
 #include "sdkconfig.h"
 

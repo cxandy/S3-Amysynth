@@ -4,11 +4,10 @@
 #include <stdio.h>
 #include <string.h>
 
-/* Two-panel layout (128x64): a left checklist of the 5 modulation targets
- * (each an independent checkbox — the one LFO carrier drives every checked
- * one) and a right column with the shared WAVE/RATE/DEPTH/EN parameters.
- * Both panels use the 5x7 font at a tight pitch so every row (incl. the
- * last target and the En row) ends above the hint strip at y=57. */
+/* Two-panel layout (128x64): left checklist of the 5 modulation targets (one
+ * LFO carrier drives every checked one), right column of shared
+ * WAVE/RATE/DEPTH/EN parameters. Both use the 5x7 font at a tight pitch so
+ * every row ends above the hint strip at y=57. */
 #define LFO_DIV_X      60      /* vertical divider between the two panels */
 #define LFO_ROW0_Y     21      /* first checklist row baseline            */
 #define LFO_ROW_DY      8      /* checklist row pitch                      */
@@ -81,11 +80,10 @@ static void draw_wave_icon(u8g2_t *u8g2, uint8_t x0, uint8_t y_center,
     u8g2_SetDrawColor(u8g2, 1);
 }
 
-/* Draw a right-column parameter row ("Label  value"), inverted when selected,
- * with a small caret to the far right while it is being adjusted. `scroll` is
- * '^' / 'v' on the window's edge rows when more parameters lie that way, or 0.
- * It is drawn inside the row's colour context so it stays legible on the
- * inverted selection bar. */
+/* Right-column parameter row ("Label  value"), inverted when selected, with a
+ * caret at the far right while adjusting. `scroll` is '^'/'v' on the window's
+ * edge rows when more parameters lie that way, or 0; drawn inside the row's
+ * colour context so it stays legible on the inverted bar. */
 static void draw_right_row(u8g2_t *u8g2, uint8_t baseline, const char *text,
                            bool selected, bool editing, char scroll)
 {
@@ -120,8 +118,8 @@ void lfo_view_draw(u8g2_t *u8g2, const lfo_view_t *v)
                  v->layer_idx + 1u, v->track_idx + 1u, v->apply_all ? ">L" : ">T");
     }
     u8g2_DrawStr(u8g2, 1, 10, hdr);
-    /* En indicator chip lives in the header (the right panel is full with the
-     * five parameter rows). Cursor on LFO_FLD_EN highlights the chip. */
+    /* En chip lives in the header: the right panel is full with the five
+     * parameter rows. Cursor on LFO_FLD_EN highlights it. */
     {
         bool en_sel = (v->cursor == LFO_FLD_EN);
         const char *en_txt = l->enabled ? "ON" : "--";
@@ -159,10 +157,9 @@ void lfo_view_draw(u8g2_t *u8g2, const lfo_view_t *v)
         if (selected) u8g2_SetDrawColor(u8g2, 1);
     }
 
-    /* ── Right panel: shared LFO parameters, LFO_PANEL_SLOTS rows at an 8 px
-     * pitch. There are more parameters than slots, so this is a window that
-     * scrolls by one when the cursor reaches the last row (En lives in the
-     * header chip, and the target checklist owns the left panel). ── */
+    /* ── Right panel: shared LFO parameters, LFO_PANEL_SLOTS rows at 8 px
+     * pitch. More parameters than slots, so the window scrolls by one when the
+     * cursor reaches the last row. ── */
     static const uint8_t slot_y[LFO_PANEL_SLOTS] = { 22, 31, 39, 47, 55 };
     char buf[14];
 
@@ -179,8 +176,7 @@ void lfo_view_draw(u8g2_t *u8g2, const lfo_view_t *v)
         uint8_t fld  = (uint8_t)(LFO_FLD_WAVE + row);
         bool    sel  = (v->cursor == fld);
 
-        /* Carets on the window edges: the off-screen rows are the only thing
-         * telling the user the panel continues. */
+        /* Edge carets are the only cue that the panel continues off-screen. */
         char scroll = 0;
         if (s == 0 && first > 0)                                    scroll = '^';
         if (s == LFO_PANEL_SLOTS - 1 && row + 1u < LFO_PANEL_ROWS)  scroll = 'v';
@@ -207,10 +203,9 @@ void lfo_view_draw(u8g2_t *u8g2, const lfo_view_t *v)
                 snprintf(buf, sizeof(buf), "Dep %u%%", (unsigned)l->depth);
                 break;
             case LFO_FLD_FLT_OCT:
-                /* FILTER swing reads in octaves around the authored cutoff -
-                 * the unit the log2 filter rail works in (voice_config.h).
-                 * Resolves the legacy depth-derived sentinel, so the row
-                 * always shows the effective swing. */
+                /* Octaves around the authored cutoff - the unit the log2 filter
+                 * rail works in (voice_config.h). Resolves the legacy
+                 * depth-derived sentinel, so this is the effective swing. */
                 snprintf(buf, sizeof(buf), "Flt %.2foc",
                          (double)voice_lfo_filter_octaves(l));
                 break;
@@ -218,8 +213,7 @@ void lfo_view_draw(u8g2_t *u8g2, const lfo_view_t *v)
                 snprintf(buf, sizeof(buf), "WRt %s", rate_label((lfo_rate_t)l->wob_rate));
                 break;
             case LFO_FLD_WOB_DEPTH: {
-                /* Amount reads as the carrier's peak dB swing (voice_config.h),
-                 * so the number means something to the ear instead of being a
+                /* Carrier's peak dB swing (voice_config.h) rather than a
                  * percentage of an internal coefficient. Zero swing is OFF. */
                 uint8_t wob_db = voice_wob_depth_to_db(l->wob_depth);
                 if (wob_db == 0) snprintf(buf, sizeof(buf), "Wob OFF");

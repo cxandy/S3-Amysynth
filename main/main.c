@@ -42,10 +42,9 @@
 
 static const char *TAG = "main"; // For ESP_LOG and related logs in this file
 
-/* DEBUG: bisect heap corruption. Gated by CONFIG_AMYSYNTH_HEAP_CHECK; when the
- * option is off (default) this compiles to nothing. Enable it in menuconfig
- * (Heap Diagnostics) only while hunting corruption — the integrity scan is slow
- * under comprehensive poisoning. */
+/* Heap-corruption bisect probe; compiles to nothing unless
+ * CONFIG_AMYSYNTH_HEAP_CHECK. Slow under comprehensive poisoning - enable only
+ * while hunting. */
 #if CONFIG_AMYSYNTH_HEAP_CHECK
 #define HEAP_CHECK(where) do { \
     if (!heap_caps_check_integrity_all(true)) { \
@@ -66,38 +65,29 @@ static u8g2_t *s_u8g2 = NULL;
 static volatile uint32_t s_last_seq_tick = 0;
 static volatile uint32_t s_seq_tick_hook_count = 0;
 static volatile uint32_t s_render_block_count = 0;
-// Counts render ticks that arrived while the previous block was still rendering
-// (i.e. amy_update() took >1 block period). Pure diagnostic — strict 1:1 pacing
-// never renders the backlog. A climbing value means render is falling behind
-// realtime (reduce per-block cost), mirroring the reference's "i2s underrun".
+// Diagnostic only: render ticks that arrived while the previous block was
+// still rendering. Strict 1:1 pacing never renders the backlog; a climbing
+// value means render is falling behind realtime.
 static volatile uint32_t s_render_overruns = 0;
-// Counts render blocks dropped because the USB ring buffer was full (host slow /
-// not draining). Pure diagnostic. In the real-time drop path a full buffer means
-// the whole block is discarded (all-or-nothing) to keep AMY phase aligned.
+// Diagnostic only: blocks dropped because the USB ring was full (host not
+// draining). Drops are all-or-nothing to keep AMY phase-aligned.
 static volatile uint32_t s_usb_drops = 0;
-// Set true while the patch-select button (MY_BUTTON_1) is held; encoder turns
-// then cycle the patch (melodic layer's patch on the sequencer screen, or the
-// arp's own patch on the arp screen) instead of moving the selection. This is
-// a plain hold+turn gesture — no timer/latch. BPM lives in the menu overlay.
+// MY_BUTTON_1 held: encoder turns cycle the active screen's patch instead of
+// moving the selection.
 static volatile bool s_patch_held = false;
-// Set true while the pitch-edit button (MY_BUTTON_2) is held; encoder turns
-// transpose the selected track's pitch (both drum and melodic layers). Drum
-// patch selection is the patch-hold gesture (MY_BUTTON_1 + encoder) instead.
+// MY_BUTTON_2 held: encoder turns transpose the selected track's pitch.
 static volatile bool s_drum_select_held = false;
 
-// MY_BUTTON_SHIFT (GPIO47) hold-modifier state, plus a per-button latch so a
-// button chorded with SHIFT is swallowed for its whole press (its normal
-// hold/click/long behaviour never runs and the release can't leave a latch
-// stuck). Touched only from the button-dispatch task, so no volatile needed.
+// SHIFT hold state + per-button latch so a SHIFT-chorded button is swallowed
+// for its whole press (its normal gestures never fire, no stuck latch on
+// release). Touched only from the button-dispatch task, so no volatile.
 static bool s_shift_held = false;
 static bool s_shift_chord_latched[MY_BUTTON_MAX] = { false };
 
 static QueueHandle_t s_button_queue = NULL;
 
-// Every button event is queued to button_task (a press produces up to three
-// consumed events: PRESS_DOWN, PRESS_UP, SINGLE_CLICK/LONG_PRESS_START across
-// five buttons), so the queue must absorb a short burst of simultaneous
-// presses. Overflow drops the event (send with zero timeout).
+// One press yields up to three queued events across five buttons; the queue
+// must absorb a simultaneous burst. Overflow drops (zero-timeout send).
 #define BUTTON_QUEUE_DEPTH 16
 
 typedef struct {
@@ -109,10 +99,9 @@ static void main_sequencer_tick_hook(uint32_t tick_count)
 {
     s_last_seq_tick = tick_count;
     s_seq_tick_hook_count++;
-    /* Per-step probability/ratchet/conditional-trig engine (seq_core_trig.c) —
-     * needs to run at the same cadence as the AMY sequencer tick itself, not
-     * the 20 Hz UI task, so ratchets (which subdivide a single step) resolve
-     * correctly. No-op unless at least one step in the pattern is "decorated". */
+    /* Per-step trig engine (seq_core_trig.c): must run at sequencer-tick
+     * cadence (not the 20 Hz UI task) so ratchets resolve; no-op unless a
+     * step is decorated. */
     sequencer_core_service_tick();
 }
 
@@ -135,18 +124,11 @@ static void main_log_audio_diagnostics(void)
 
 #if CONFIG_AMYSYNTH_RTOS_STATS
 #include "esp_heap_caps.h"
-// Periodic RTOS profiling dump. Gated by CONFIG_AMYSYNTH_RTOS_STATS so release
-// builds carry zero overhead. Relies on CONFIG_FREERTOS_USE_TRACE_FACILITY,
-// CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS,
-// CONFIG_FREERTOS_VTASKLIST_INCLUDE_COREID and
-// CONFIG_FREERTOS_RUN_TIME_STATS_USING_ESP_TIMER (all enabled in sdkconfig).
-//
-// This project uses the IDF (non-SMP) dual-core FreeRTOS kernel, so we drive
-// everything off uxTaskGetSystemState(): it fills a TaskStatus_t[] with each
-// task's name, priority, stack high-water mark, cumulative run-time counter,
-// and the core it is pinned to (xCoreID, present because COREID is enabled).
-// From that single snapshot we derive both the per-task breakdown and the
-// per-core busy %, avoiding the SMP-only helpers that aren't declared here.
+// Periodic RTOS profiling dump; needs the FreeRTOS trace/run-time-stats
+// Kconfig set (trace facility, run-time stats via esp_timer, COREID).
+// Non-SMP kernel: one uxTaskGetSystemState() snapshot supplies the per-task
+// table and (via xCoreID + IDLE counters) the per-core busy %, avoiding the
+// SMP-only helpers that aren't declared here.
 static const char *task_state_str(eTaskState st)
 {
     switch (st) {
@@ -176,8 +158,7 @@ static void log_rtos_stats(void)
         return;
     }
 
-    // Per-task table + accumulate cumulative idle time per core for the
-    // per-core busy % (computed over the interval since the previous dump).
+    // Per-task table; also collect per-core IDLE counters for the busy % below.
     uint64_t idle_now[portNUM_PROCESSORS] = {0};
     ESP_LOGI(TAG, "RTOS tasks: name             core prio stack_hwm cpu%%(cumulative)");
     for (UBaseType_t i = 0; i < num_tasks; i++) {
@@ -199,9 +180,8 @@ static void log_rtos_stats(void)
         }
     }
 
-    // Per-core busy %, diffing each core's IDLE-task counter against wall time.
-    // RUN_TIME_STATS_USING_ESP_TIMER=y => counters are in microseconds and
-    // share the esp_timer time base, so the interval == esp_timer delta.
+    // Busy % = IDLE-counter delta vs esp_timer wall time (same us time base
+    // with RUN_TIME_STATS_USING_ESP_TIMER=y).
     static uint64_t s_prev_wall_us = 0;
     static uint64_t s_prev_idle_us[portNUM_PROCESSORS] = {0};
     uint64_t now_us = (uint64_t)esp_timer_get_time();
@@ -239,12 +219,10 @@ static void log_rtos_stats(void)
 static void amy_usb_render_task(void *arg) {
     (void)arg;
 
-    // Master clock: by default a GPTimer fires every block period (256
-    // samples @ 48 kHz = 5333.33 us), tick-rate-independent (the old
-    // vTaskDelay(pdMS_TO_TICKS(5)) floored to 0 ticks at FREERTOS_HZ=100 and
-    // busy-spun the core). CONFIG_RENDER_CLOCK_I2S_ENABLE (default off) swaps
-    // in an I2S-DMA-paced backend instead; see render_clock.h. Started from
-    // inside the task so either backend's ISR registers on the render core.
+    // Master clock: a GPTimer fires every block period (256 samples @ 48 kHz
+    // = 5333.33 us); CONFIG_RENDER_CLOCK_I2S_ENABLE swaps in an I2S-DMA-paced
+    // backend (render_clock.h). Started inside the task so either backend's
+    // ISR registers on the render core.
     if (render_clock_start(AMY_BLOCK_SIZE, AMY_SAMPLE_RATE) != ESP_OK) {
         ESP_LOGE(TAG, "render_clock_start failed; render task aborting");
         vTaskDelete(NULL);
@@ -252,11 +230,9 @@ static void amy_usb_render_task(void *arg) {
     }
 
     while (1) {
-        // Block until the next tick. Returns the accumulated tick count; >1 means
-        // the previous block overran its period. STRICT 1:1: we render exactly
-        // ONE block regardless, so AMY's total_blocks stays locked to realtime
-        // (sequencer tempo, derived from amy_sysclock(), cannot drift). The
-        // 170 ms USB ring buffer absorbs transient jitter, not a catch-up queue.
+        // STRICT 1:1: render exactly one block even after an overrun (ticks
+        // > 1), so amy_sysclock-derived tempo can't drift. The USB ring
+        // absorbs jitter; it is not a catch-up queue.
         uint32_t ticks = render_clock_wait();
         if (unlikely(ticks > 1)) {
             s_render_overruns += (ticks - 1);  // diagnostic only
@@ -266,36 +242,29 @@ static void amy_usb_render_task(void *arg) {
         if (likely(block != NULL)) {
             s_render_block_count++;
 
-            // Runtime PCM sampler (custompatches/sample_rec): alloc-free/non-
-            // blocking no-op unless a recording is actually armed/in-progress.
-            // Must run after amy_update() so amy_queue_lock is already released
-            // (see amy-internals.md's lock-ownership section).
+            // Runtime PCM sampler: non-blocking no-op unless a recording is
+            // armed. Must run after amy_update() releases amy_queue_lock.
             sample_rec_render_tick(block, AMY_BLOCK_SIZE);
 
 #if CONFIG_FILTER_SCOPE
-            // Live filter overlay for the filter editor. Same reason as above:
-            // it reads msynth[]/synth[], so it must run here, after amy_update()
-            // has released amy_queue_lock. Armed only while that editor is open;
-            // otherwise one load and one branch.
+            // Filter-editor overlay: reads msynth[]/synth[], so it too must
+            // run after amy_update() releases amy_queue_lock. Armed only
+            // while that editor is open.
             filter_scope_render_tick();
 #endif
 
 #if CONFIG_USB_AUDIO_BLOCKING_WRITE
-            // Resilient path: retry until the host consumes the data, slaving the
-            // synth to the PC's consumption rate. NOTE: vTaskDelay(1) waits one
-            // whole tick (>=1, never floors to 0 like pdMS_TO_TICKS(1) does at
-            // FREERTOS_HZ=100) so this cannot degrade into a busy-spin.
+            // Resilient path: retry until the host drains, slaving the synth
+            // to the PC's consumption rate. vTaskDelay(1) waits a full tick
+            // (never floors to 0), so this cannot busy-spin.
             while (usb_audio_write_stereo(block, AMY_BLOCK_SIZE) == ESP_ERR_NO_MEM) {
                 vTaskDelay(1);
             }
 #else
-            // Real-time path: the write is all-or-nothing. If the ring buffer is
-            // full the whole block is dropped to keep AMY's clock phase-aligned;
-            // we do NOT delay here (the strict-1:1 GPTimer already paces us, and
-            // the previous pdMS_TO_TICKS(1) backoff floored to 0 ticks and did
-            // nothing anyway). Just count the drop for diagnostics.
-            // Only a real drop if a host is consuming; write_stereo returns
-            // ESP_OK (skips the ring) when idle, so this is belt-and-suspenders.
+            // Real-time path: all-or-nothing write; a full ring drops the
+            // whole block to keep AMY phase-aligned, with no backoff (the
+            // GPTimer already paces us). Counted as a drop only while a host
+            // is actually consuming.
             if (unlikely(usb_audio_write_stereo(block, AMY_BLOCK_SIZE) == ESP_ERR_NO_MEM)
                 && usb_audio_consumer_active()) {
                 s_usb_drops++;
@@ -306,12 +275,9 @@ static void amy_usb_render_task(void *arg) {
 }
 static void dispatch_button_event(my_button_id_t button_id, button_event_t event);
 
-// Drains the button queue and runs the full per-screen dispatch in task
-// context. iot_button delivers events on the esp_timer task — the same task
-// that runs the 500 µs sequencer tick callback — so the heavy editor/screen
-// branches must not execute there: a long handler would delay sequencer ticks,
-// and the esp_timer stack (CONFIG_ESP_TIMER_TASK_STACK_SIZE) is not budgeted
-// for them. The callback below only enqueues; all handling lands here.
+// Runs the full per-screen dispatch in task context. iot_button delivers on
+// the esp_timer task, whose stack and latency budget can't carry the heavy
+// editor/screen branches; the callback below only enqueues.
 static void button_handler_task(void *pvParameters)
 {
     (void)pvParameters;
@@ -323,11 +289,9 @@ static void button_handler_task(void *pvParameters)
     }
 }
 
-// Thin enqueue shim running on the esp_timer task (iot_button's dispatch
-// context). Filters to the event types the dispatcher consumes and posts to
-// button_task. Inline fallback only when the queue never got created — never
-// on a full queue, since handling one event ahead of already-queued ones
-// would reorder presses (a drop is less harmful than reordering).
+// Thin enqueue shim on the esp_timer task. Inline fallback only if the queue
+// was never created — never on a full queue, since that would reorder presses
+// (a drop is less harmful than reordering).
 static void main_button_event_cb(my_button_id_t button_id, button_event_t event, void *user_data)
 {
     (void)user_data;
@@ -349,52 +313,35 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
 // on the esp_timer task only if queue creation failed at startup).
 static void dispatch_button_event(my_button_id_t button_id, button_event_t event)
 {
-    /* MY_BUTTON_SHOULDER: per-view bindings. On the
-     * sequencer grid a press toggles the step under the cursor, so one hand
-     * rides the encoder while the other enters steps (tracker-style two-handed
-     * entry); on the envelope editor it flips the EG1 sweep polarity. Fires on
-     * PRESS_DOWN for zero tap latency; all events are consumed here so they
-     * never leak into screen logic. */
+    /* MY_BUTTON_SHOULDER, per view: SEQ toggles the step under the cursor
+     * (two-handed tracker-style entry), GRAPH flips the EG1 sweep polarity.
+     * PRESS_DOWN for zero tap latency; all events consumed here. */
     if (button_id == MY_BUTTON_SHOULDER) {
         if (event == BUTTON_PRESS_DOWN) {
             ui_view_id_t sv = synth_ui_active_view();
             if (sv == UI_VIEW_SEQ) {
                 synth_ui_toggle_step_at_cursor();
             } else if (sv == UI_VIEW_GRAPH) {
-                /* Envelope editor: flip the melodic EG1 sweep polarity
-                 * (no-op on the EG0 page and for arp/drone targets). */
+                /* No-op on the EG0 page and for arp/drone targets. */
                 synth_ui_graph_flip_eg1_polarity();
             }
         }
         return;
     }
 
-    /* MY_BUTTON_SHIFT (GPIO47, new shoulder): hold-modifier layer. Track the
-     * held state here; the chord interception just below turns SHIFT + digit
-     * into the "open editor" gestures that used to live on long-presses. A bare
-     * SHIFT tap does nothing. */
+    /* MY_BUTTON_SHIFT: hold-modifier layer; a bare tap does nothing. */
     if (button_id == MY_BUTTON_SHIFT) {
         if (event == BUTTON_PRESS_DOWN)      s_shift_held = true;
         else if (event == BUTTON_PRESS_UP)   s_shift_held = false;
         return;
     }
 
-    /* SHIFT chords (replace the former open-editor long-presses):
-     *   SHIFT + MY_BUTTON_1 -> from a mode screen: open the ADSR/graph editor;
-     *                          inside an editor: close+commit it (graph/LFO/filter)
-     *   SHIFT + MY_BUTTON_2 -> toggle the step probability / trig editor
-     *                          (open, or close+commit if already open;
-     *                           open was the former MY_BUTTON_3 long-press)
-     *   SHIFT + MY_BUTTON_3 -> inside the envelope/LFO editor: apply-to-whole-
-     *                          layer scope toggle (moved off SHIFT+1 so that
-     *                          combo can both open and close the editor); a
-     *                          no-op elsewhere
-     * The chord fires on the digit's PRESS_DOWN and latches that button until
-     * its NEXT press-down, swallowing the rest of the chorded press (PRESS_UP
-     * plus the trailing SINGLE_CLICK / LONG_PRESS_START) so the button's normal
-     * gesture (patch-hold on 1, drum-select on 2, menu toggle / editor-page
-     * cycle on 3) never runs. synth_ui_stepedit_open() self-gates to the
-     * sequencer screen, so SHIFT+2 elsewhere is a no-op. */
+    /* SHIFT chords, fired on the digit's PRESS_DOWN:
+     *   SHIFT+1 -> open the ADSR/graph editor, or close+commit an open one
+     *   SHIFT+2 -> toggle the step probability/trig editor
+     *   SHIFT+3 -> apply-to-whole-layer scope toggle inside envelope/LFO
+     * The chord latches the button until its next PRESS_DOWN, swallowing the
+     * rest of the press so the button's normal gesture never runs. */
     if (s_shift_chord_latched[button_id]) {
         if (event == BUTTON_PRESS_DOWN) {
             s_shift_chord_latched[button_id] = false;  /* fresh press: re-evaluate */
@@ -408,17 +355,12 @@ static void dispatch_button_event(my_button_id_t button_id, button_event_t event
         s_shift_chord_latched[button_id] = true;
         ui_view_id_t sv = synth_ui_active_view();
         if (button_id == MY_BUTTON_1) {
-            /* From a mode screen SHIFT+1 opens the ADSR/graph editor; inside an
-             * open editor the same chord closes+commits it (mirrors the
-             * MY_BUTTON_0 tap). The former in-editor apply-scope toggle moved to
-             * SHIFT+3 so this one combo both opens and closes the editor. */
             bool open_from_screen = (sv == UI_VIEW_SEQ || sv == UI_VIEW_ARP ||
                                      sv == UI_VIEW_DRONE || sv == UI_VIEW_DRONE_VIS ||
                                      sv == UI_VIEW_DRONE_STD);
 #if CONFIG_SYNTH_WIRELESS
-            /* The Wireless page is an overlay page rather than a mode screen,
-             * but the same chord opens the editors there, bound to the BLE MIDI
-             * live-play voice (synth_ui_graph_open_envelope picks the target). */
+            /* Wireless overlay page: same chord, bound to the BLE live-play
+             * voice (synth_ui_graph_open_envelope picks the target). */
             open_from_screen = open_from_screen ||
                                (sv == UI_VIEW_MENU && synth_ui_wireless_page_is_open());
 #endif
@@ -432,16 +374,13 @@ static void dispatch_button_event(my_button_id_t button_id, button_event_t event
                 synth_ui_filter_close_commit();
             }
         } else if (button_id == MY_BUTTON_2) {
-            /* Same chord toggles: SHIFT+2 closes the step editor when it is
-             * already open, in addition to the existing MY_BUTTON_0 tap /
-             * MY_BUTTON_3 close. stepedit has no discard path, so close ==
-             * commit. */
+            /* stepedit has no discard path, so close == commit.
+             * synth_ui_stepedit_open() self-gates to the sequencer screen. */
             if (synth_ui_stepedit_is_active())   synth_ui_stepedit_close();
             else if (!synth_ui_menu_is_active()) synth_ui_stepedit_open();
         } else { /* MY_BUTTON_3 */
-            /* SHIFT+3: apply-to-whole-layer scope toggle inside the envelope/LFO
-             * editor (moved off SHIFT+1). Kept a chord so it can't be hit by an
-             * accidental bare press and overwrite the whole layer's config. */
+            /* Chorded so an accidental bare press can't overwrite the whole
+             * layer's config. */
             if (sv == UI_VIEW_GRAPH || sv == UI_VIEW_LFO) {
                 synth_ui_toggle_editor_apply_scope();
             }
@@ -449,12 +388,9 @@ static void dispatch_button_event(my_button_id_t button_id, button_event_t event
         return;
     }
 
-    /* Project rename editor: while a project name is being typed, MY_BUTTON_1
-     * saves it and MY_BUTTON_2 discards it (MY_BUTTON_3 still closes the whole
-     * menu). synth_ui_menu_rename_active() is the authoritative gate (menu open
-     * on the projects page mid-rename) and short-circuits instantly otherwise,
-     * so this runs before the normal patch-hold / drum-select gestures without
-     * disturbing them elsewhere. Fires on PRESS_DOWN and swallows the rest. */
+    /* Project rename editor: MY_BUTTON_1 saves, MY_BUTTON_2 discards.
+     * synth_ui_menu_rename_active() short-circuits instantly otherwise, so
+     * the normal gestures below are undisturbed elsewhere. */
     if ((button_id == MY_BUTTON_1 || button_id == MY_BUTTON_2) &&
         synth_ui_menu_rename_active()) {
         if (event == BUTTON_PRESS_DOWN) {
@@ -464,13 +400,9 @@ static void dispatch_button_event(my_button_id_t button_id, button_event_t event
         return;
     }
 
-    // MY_BUTTON_1 is the patch-select hold button, repurposed per editor:
-    //   filter editor    → enabled on/off toggle (single press)
-    //   envelope editor  → cycle EG curve type (Normal/Linear/DX7/Exp)
-    //   LFO editor       → unused (apply-scope moved to SHIFT+3)
-    // The apply-to-whole-layer scope toggle that used to live here is now
-    // SHIFT+3 (handled in the chord block above) so it can't be pressed by
-    // accident and overwrite the whole layer's envelope/filter config.
+    // MY_BUTTON_1, per editor: filter = enabled toggle, envelope = cycle EG
+    // curve type, LFO = unused (apply-scope is SHIFT+3). Otherwise it is the
+    // patch-select hold.
     if (button_id == MY_BUTTON_1) {
         if (synth_ui_filter_is_active()) {
             if (event == BUTTON_PRESS_DOWN) {
@@ -485,10 +417,9 @@ static void dispatch_button_event(my_button_id_t button_id, button_event_t event
             return;
         }
         if (synth_ui_lfo_is_active()) {
-            return;   /* scope is now SHIFT+3; bare press is a no-op here */
+            return;   /* bare press is a no-op; scope is SHIFT+3 */
         }
-        /* PROG screen: MY_BUTTON_1 deletes the entry at the cursor (the patch-hold
-         * gesture has no meaning here). */
+        /* PROG screen: delete the entry at the cursor. */
         if (synth_ui_prog_is_active()) {
             if (event == BUTTON_PRESS_DOWN) {
                 synth_ui_prog_delete_entry();
@@ -505,25 +436,19 @@ static void dispatch_button_event(my_button_id_t button_id, button_event_t event
         return;
     }
 
-    /* Arp screen isolation: while the arp screen is showing (and neither the
-     * graph editor nor the menu is up), the sequencer's editing gestures must
-     * NOT leak through and mutate sequencer state behind the hidden grid. The
-     * arp screen's own input (encoder nav + MY_BUTTON_ENC field edit + the
-     * MY_BUTTON_1 patch hold/turn) is handled elsewhere and is unaffected; the
-     * menu toggle (MY_BUTTON_3) and global play/pause (MY_BUTTON_0 long-press)
-     * also stay live. Everything else is suppressed here. */
+    /* Arp screen isolation: sequencer editing gestures must not leak through
+     * and mutate state behind the hidden grid. The arp's own input is handled
+     * elsewhere; menu toggle (3) and play/pause (0 long) stay live. */
     if (synth_ui_arp_is_active()) {
         switch (button_id) {
             case MY_BUTTON_2:
-                /* Drum-sound-select hold: pure sequencer state. Block, and make
-                 * sure we never leave the latch stuck on if it was held when the
-                 * screen switched. */
+                /* Block drum-select and clear the latch in case it was held
+                 * when the screen switched. */
                 s_drum_select_held = false;
                 synth_ui_set_drum_select_mode(false);
                 return;
             case MY_BUTTON_0:
-                /* Layer cycle (single-click) is sequencer-only; suppress it.
-                 * Keep global play/pause on long-press. */
+                /* Layer cycle is sequencer-only; keep play/pause. */
                 if (event == BUTTON_LONG_PRESS_START) {
                     synth_ui_toggle_playing();
                 }
@@ -533,9 +458,8 @@ static void dispatch_button_event(my_button_id_t button_id, button_event_t event
         }
     }
 
-    /* Prog screen isolation: suppress sequencer-only gestures (MY_BUTTON_2
-     * drum-select hold, MY_BUTTON_0 layer-cycle) while the PROG screen is up.
-     * MY_BUTTON_2 is repurposed as "+entry"; MY_BUTTON_1 as "del" (handled above). */
+    /* PROG screen: same isolation; MY_BUTTON_2 is repurposed as "+entry"
+     * (MY_BUTTON_1 "del" handled above). */
     if (synth_ui_prog_is_active()) {
         switch (button_id) {
             case MY_BUTTON_2:
@@ -555,13 +479,8 @@ static void dispatch_button_event(my_button_id_t button_id, button_event_t event
         }
     }
 
-    /* Track Options screen isolation: suppress sequencer-only gestures and
-     * repurpose spare buttons for layer management.
-     *   MY_BUTTON_1 click  → add a melodic layer (if below MAX_LAYERS)
-     *   MY_BUTTON_2 click  → delete the layer currently shown (s_to_layer);
-     *                        no-op if it is the drum layer or the last layer
-     *   MY_BUTTON_0 long   → play / pause (keep live)
-     * MY_BUTTON_1 normally drives patch-hold; suppress that in this context. */
+    /* Track Options: same isolation; 1 click = add melodic layer, 2 click =
+     * delete shown layer (no-op on drum/last), 0 long = play/pause. */
     if (synth_ui_trackopts_is_active()) {
         switch (button_id) {
             case MY_BUTTON_1:
@@ -586,12 +505,7 @@ static void dispatch_button_event(my_button_id_t button_id, button_event_t event
         }
     }
 
-    /* Drone screen isolation: same rationale as the arp guard above. While the
-     * drone screen is showing (no graph/menu), suppress the sequencer's editing
-     * gestures so they don't mutate sequencer state behind the hidden grid. The
-     * drone's own input (encoder nav + MY_BUTTON_ENC row edit + MY_BUTTON_1
-     * patch hold/turn in PATCH mode) is handled elsewhere; the menu toggle
-     * (MY_BUTTON_3) and play/pause (MY_BUTTON_0 long-press) stay live. */
+    /* Drone screens: same isolation as the arp guard above. */
     if (synth_ui_drone_is_active() || synth_ui_drone_std_is_active()) {
         switch (button_id) {
             case MY_BUTTON_2:
@@ -608,28 +522,23 @@ static void dispatch_button_event(my_button_id_t button_id, button_event_t event
         }
     }
 
-    /* Below the mode-screen isolation guards, the overlay-editor buttons all
-     * dispatch on the single precedence resolver instead of re-deriving "which
-     * overlay is on top" ad hoc. Resolving once here also removes the former
-     * MY_BUTTON_3 stepedit-vs-graph skew (S1): every button now agrees with the
-     * draw switch about the active view. */
+    /* Below the isolation guards every button dispatches on the single
+     * precedence resolver, so input always agrees with the draw switch about
+     * the active view. */
     ui_view_id_t v = synth_ui_active_view();
 
-    // MY_BUTTON_2 is normally the pitch-edit hold button (transpose the selected
-    // track via the encoder). While the graph editor is open it toggles amp-edit
-    // mode so the encoder adjusts the target's amplitude trim instead of ADSR
-    // points. Time-range is now auto-switched; MY_BUTTON_2 is freed for this use.
+    // MY_BUTTON_2: pitch-edit hold normally; in the graph editor it toggles
+    // amp-edit mode (encoder adjusts amplitude trim instead of ADSR points).
     if (button_id == MY_BUTTON_2) {
         switch (v) {
             case UI_VIEW_FILTER:
-                /* Suppress drum-select hold so the latch never gets stuck. */
+                /* Suppress drum-select hold so the latch can't stick. */
                 return;
             case UI_VIEW_GRAPH:
                 if (event == BUTTON_PRESS_DOWN) synth_ui_graph_toggle_amp_mode();
                 return;
             case UI_VIEW_STEPEDIT:
-                /* Suppress drum-select hold while the popup owns the encoder.
-                 * (Step Trig editor open/close now lives on MY_BUTTON_3.) */
+                /* Popup owns the encoder; suppress drum-select hold. */
                 return;
             default:
                 break;
@@ -644,15 +553,9 @@ static void dispatch_button_event(my_button_id_t button_id, button_event_t event
         return;
     }
 
-    // MY_BUTTON_3: while any editor (ADSR/filter/LFO) is open, single-click
-    // cycles to the next editor page (EG0 -> EG1 -> filter -> LFO). The EG1
-    // sweep polarity flip lives on MY_BUTTON_SHOULDER (handled above). Step Trig
-    // editor: single-click closes it; opening it moved to SHIFT+2 (the former
-    // long-press open was replaced). Outside all of that it is the menu toggle.
+    // MY_BUTTON_3: inside an editor, click cycles editor pages (EG0 -> EG1 ->
+    // filter -> LFO); in STEPEDIT it closes; otherwise it is the menu toggle.
     if (button_id == MY_BUTTON_3) {
-        /* STEPEDIT outranks GRAPH in the canonical order, so resolving via v
-         * fixes the former skew where this block checked graph/filter/lfo
-         * before stepedit — input now matches what the OLED draws. */
         if (v == UI_VIEW_GRAPH || v == UI_VIEW_FILTER || v == UI_VIEW_LFO) {
             if (event == BUTTON_SINGLE_CLICK) {
                 synth_ui_cycle_editor();
@@ -665,25 +568,16 @@ static void dispatch_button_event(my_button_id_t button_id, button_event_t event
             }
             return;
         }
-        /* Opening the step-trig editor moved to SHIFT+2 (see the chord block
-         * above); MY_BUTTON_3 here is just the menu toggle. */
         if (event == BUTTON_SINGLE_CLICK) {
             synth_ui_menu_toggle();
         }
         return;
     }
 
-    /* graph pop-up: encoder push is the editor's select/adjust toggle only. The
-     * commit/close gesture moved off the encoder long-press onto a MY_BUTTON_0
-     * short tap (handled below) so finishing an edit is a fast tap, not a ~1.5 s
-     * hold. Opening the editor is SHIFT+1 (chord block above).
-     * Remove this block to revert the integration. */
+    /* MY_BUTTON_ENC: in the editors a short press toggles select<->adjust
+     * (commit/close is a MY_BUTTON_0 tap, open is SHIFT+1); the mode screens
+     * edit their focused row/field. */
     if (button_id == MY_BUTTON_ENC) {
-        /* Encoder-push is a clean per-view dispatch — the old cascade was
-         * already in canonical order, so this is a direct lift onto v. For the
-         * editors the short press toggles select<->adjust (commit/close is now
-         * MY_BUTTON_0); the mode screens edit their focused row (opening the
-         * bound ADSR editor is SHIFT+1, not the encoder long-press). */
         switch (v) {
             case UI_VIEW_FILTER:
                 if (event == BUTTON_PRESS_DOWN)  synth_ui_filter_handle_button(false);
@@ -701,12 +595,10 @@ static void dispatch_button_event(my_button_id_t button_id, button_event_t event
                 if (event == BUTTON_PRESS_DOWN) synth_ui_menu_handle_button();
                 return;
             case UI_VIEW_ARP:
-                /* Open moved to SHIFT+1; encoder push edits the focused field. */
                 if (event == BUTTON_PRESS_DOWN)  synth_ui_arp_handle_button();
                 return;
             case UI_VIEW_DRONE:
             case UI_VIEW_DRONE_VIS:
-                /* Open moved to SHIFT+1; encoder push edits the focused row. */
                 if (event == BUTTON_PRESS_DOWN)  synth_ui_drone_handle_button();
                 return;
             case UI_VIEW_DRONE_STD:
@@ -726,19 +618,12 @@ static void dispatch_button_event(my_button_id_t button_id, button_event_t event
             default:  /* UI_VIEW_SEQ */
                 break;
         }
-        /* Editor-open moved to SHIFT+1; on SEQ the encoder push falls through to
-         * the normal PRESS_DOWN queueing below. */
+        /* SEQ: fall through to the normal PRESS_DOWN handling below. */
     }
 
-    /* MY_BUTTON_0 is the open editor's commit/cancel button. Commit moved here
-     * off the encoder long-press so finishing an edit is a single fast tap
-     * instead of a ~1.5 s hold (the editing-loop bottleneck):
-     *   short tap  -> commit & close
-     *   long press -> cancel / discard (the deliberate, rarer gesture)
-     * STEPEDIT has no discard path, so both gestures just close it (it also
-     * still closes on MY_BUTTON_3, per its hint bar). All MY_BUTTON_0 events are
-     * consumed while an editor is open, so transport (play/stop) is unavailable
-     * here — already the convention for the cancel-on-hold editors. */
+    /* MY_BUTTON_0 while an editor is open: tap = commit & close, long press =
+     * cancel/discard (STEPEDIT has no discard path; both just close it). All
+     * events consumed, so transport is unavailable until the editor closes. */
     if (button_id == MY_BUTTON_0 &&
         (v == UI_VIEW_GRAPH || v == UI_VIEW_FILTER ||
          v == UI_VIEW_LFO   || v == UI_VIEW_STEPEDIT)) {
@@ -778,7 +663,6 @@ static void dispatch_button_event(my_button_id_t button_id, button_event_t event
     }
 }
 
-//encoder
 static void encoder_task(void *pvParameters)
 {
     rotary_encoder_handle_t enc = (rotary_encoder_handle_t)pvParameters;
@@ -801,12 +685,10 @@ static void encoder_task(void *pvParameters)
             enc_accum %= 2;
             if (steps == 0) goto next_poll;
 
-            /* One precedence resolver drives both input routers and the draw
-             * switch, so input and the OLED can never target different views.
-             * The five overlays (canonical order FILTER>LFO>STEPEDIT>GRAPH>MENU)
-             * capture the encoder outright; below them the mode screens are
-             * dispatched by resolved view, with the patch-hold / drum-select
-             * modifiers taking over exactly as before. */
+            /* Same precedence resolver as the buttons: the overlays
+             * (FILTER>LFO>STEPEDIT>GRAPH>MENU) capture the encoder outright;
+             * below them the mode screens dispatch by view, with the
+             * patch-hold / drum-select modifiers applied. */
             ui_view_id_t v = synth_ui_active_view();
             switch (v) {
                 case UI_VIEW_FILTER:   synth_ui_filter_handle_encoder(steps);   goto next_poll;
@@ -818,12 +700,8 @@ static void encoder_task(void *pvParameters)
             }
 
             if (s_patch_held) {
-                // Plain patch hold+turn. On the arp screen this cycles the
-                // arp's own patch; on the drone screen the drone's PATCH-mode
-                // preset. On the sequencer screen it cycles the active layer's
-                // patch: the melodic layer's shared patch, or — for a drum
-                // layer — the SELECTED drum track's own patch (drums are
-                // per-track Juno patches now).
+                // Patch hold+turn cycles the active screen's patch; on a drum
+                // layer that is the SELECTED track's own patch.
                 if (v == UI_VIEW_DRONE || v == UI_VIEW_DRONE_VIS) {
                     synth_ui_drone_cycle_patch((int)steps);
                 } else if (v == UI_VIEW_DRONE_STD) {
@@ -837,26 +715,21 @@ static void encoder_task(void *pvParameters)
                     synth_ui_cycle_melodic_patch((int)steps);
                 }
             } else if (v == UI_VIEW_DRONE || v == UI_VIEW_DRONE_VIS) {
-                // Drone screen: encoder moves the cursor / edits the focused row.
                 synth_ui_drone_handle_encoder(steps);
             } else if (v == UI_VIEW_DRONE_STD) {
                 synth_ui_drone_std_handle_encoder(steps);
             } else if (s_drum_select_held) {
-                // Pitch-edit mode: hold MY_BUTTON_2 + turn encoder edits the
-                // selected track's pitch (works for both drum and melodic).
+                // Pitch-edit hold: transpose the selected track (drum or
+                // melodic).
                 synth_ui_adjust_track_note((int)steps);
             } else if (v == UI_VIEW_ARP) {
-                // Arp screen: encoder moves the cursor / edits the focused field.
                 synth_ui_arp_handle_encoder(steps);
             } else if (v == UI_VIEW_PROG) {
-                // Prog screen: encoder scrolls cursor / edits the focused entry field.
                 synth_ui_prog_handle_encoder((int)steps);
             } else if (v == UI_VIEW_TRACKOPTS) {
-                // Track Options screen: encoder scrolls rows / edits focused value.
                 synth_ui_trackopts_handle_encoder((int)steps);
 #if CONFIG_SYNTH_CUSTOM_FM
             } else if (v == UI_VIEW_FM) {
-                // FM screen: encoder scrolls rows / edits focused value.
                 synth_ui_fm_handle_encoder((int)steps);
 #endif
             } else {
@@ -876,21 +749,16 @@ static void encoder_init_task(void *pvParameters)
     vTaskDelay(pdMS_TO_TICKS(1000));
 
     ESP_LOGI(TAG, "[encoder_init] starting after delay");
-    // Button GPIO (GPIO16) is now managed by my_buttons/iot_button.
 
     rotary_encoder_config_t enc_cfg = rotary_encoder_default_config(ENCODER_PIN_A, ENCODER_PIN_B);
     rotary_encoder_handle_t enc = NULL;
     esp_err_t err = rotary_encoder_new_with_config(&enc_cfg, &enc);
     ESP_LOGI(TAG, "[encoder_init] rotary_encoder_new_with_config returned %d", err);
     if (err == ESP_OK && enc) {
-        // 8192, not 4096: the patch-toggle gesture runs AMY's patch-string
-        // parse inline on this stack (amy_send_patch -> amy_add_event; the
-        // amy_event itself is static in amy_helpers, but the nested
-        // amy_parse_message frame is ~3.4 KB and lands here). A 4096 stack
-        // overflowed intermittently on exactly this path once already -
-        // re-trim only after the parse moves to its own task (amy_ingest
-        // pump). Pin to Core 0 so the encoder poll never migrates onto
-        // Core 1 and jitters the audio DSP.
+        // 8192: the patch-toggle gesture runs amy_parse_message's ~3.4 KB
+        // frame inline on this stack; 4096 overflowed intermittently. Re-trim
+        // once the amy_ingest pump moves the parse to its own task. Pinned to
+        // Core 0 so the poll never jitters the Core 1 DSP.
         xTaskCreatePinnedToCore(encoder_task,
              "encoder_task",
              8192,
@@ -900,13 +768,9 @@ static void encoder_init_task(void *pvParameters)
               0);
     }
 
-    // One-time post-init heap baseline, deliberately not Kconfig-gated: every
-    // memory-placement change (IRAM Kconfig flips, DRAM_ATTR moves, pool
-    // sizing) shifts this number and the build-time map cannot predict it.
-    // This delayed bring-up is the last init step (encoder task just spawned
-    // above), so free-internal here is the steady-state figure placement
-    // decisions should be based on.
-    // Piggybacks on the encoders dying task to not  
+    // One-time post-init heap baseline (deliberately not Kconfig-gated): this
+    // runs last in init, so free-internal here is the steady-state figure
+    // placement decisions budget against. Piggybacks on this dying init task.
     ESP_LOGI(TAG,
              "post-init heap: internal free=%u largest=%u min_free=%u | psram free=%u",
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
@@ -918,11 +782,8 @@ static void encoder_init_task(void *pvParameters)
 }
 
 #if defined(CONFIG_AMY_PROFILE_COARSE) || defined(CONFIG_AMY_PROFILE_FULL)
-// Measure the AMY profiler's own per-timestamp cost on-target so the per-stage
-// numbers can be corrected for instrumentation overhead. AMY's profiler uses
-// amy_get_us() == esp_timer_get_time() on ESP; each START/STOP is two reads.
-// Coarse mode does ~8 reads/block; full mode does 2*(sum of tag 'calls')/block,
-// which the dump itself reports per tag.
+// Measure esp_timer_get_time() cost so profile dumps can be read net of
+// instrumentation overhead (coarse ~8 reads/block; full = 2*sum(tag calls)).
 static void amy_profiler_overhead_selftest(void)
 {
     const int N = 20000;
@@ -931,7 +792,6 @@ static void amy_profiler_overhead_selftest(void)
     for (int i = 0; i < N; ++i) sink ^= esp_timer_get_time();
     int64_t t1 = esp_timer_get_time();
     (void)sink;
-    // Subtract one read (t1) negligibly; report ns/read averaged over N reads.
     double ns_per_read = ((double)(t1 - t0) * 1000.0) / (double)N;
     double coarse_us_per_block = (ns_per_read * 8.0) / 1000.0;  // 4 START/STOP pairs
     const uint32_t block_us = (uint32_t)(((uint64_t)AMY_BLOCK_SIZE * 1000000ULL)
@@ -946,12 +806,9 @@ static void amy_profiler_overhead_selftest(void)
 
 #ifdef GAMMA9001
 /* Feed AMY the gamma9001 drum-bank blob (PCM presets 256-391) from the
- * 'drums' data partition. Preferred path is a read-only flash mmap of
- * exactly the blob's size, but PSRAM XIP (SPIRAM_FETCH_INSTRUCTIONS +
- * SPIRAM_RODATA) leaves too few data-cache MMU pages for ~3.6 MB on this
- * config, so the fallback copies the blob into PSRAM heap instead (~3.6 MB
- * of the ~7 MB free; same placement class as the FX delay lines). Every
- * failure path is non-fatal: AMY keeps those presets disabled. */
+ * 'drums' partition. Flash mmap preferred, but PSRAM XIP leaves too few MMU
+ * pages for ~3.6 MB, so the fallback copies the blob into PSRAM heap. All
+ * failure paths are non-fatal: those presets just stay disabled. */
 static void gamma9001_pcm_mount(void)
 {
     const esp_partition_t *part = esp_partition_find_first(
@@ -961,8 +818,7 @@ static void gamma9001_pcm_mount(void)
         return;
     }
 
-    /* A never-flashed partition reads as erased flash (all 0xFF); don't hand
-     * AMY full-scale noise as samples. */
+    /* A never-flashed partition reads all 0xFF; don't play noise. */
     uint16_t probe[4];
     if (esp_partition_read(part, 0, probe, sizeof(probe)) != ESP_OK ||
         (probe[0] == 0xFFFFu && probe[1] == 0xFFFFu &&
@@ -1012,30 +868,7 @@ void app_main(void)
 {
    
     ESP_LOGI(TAG, "Hello world!");
-/*
-    // I2C recover: Flush Sequence ensure SDA released and toggle SCL 9 times
-    printf("[startup] before i2c_recover\n");
-    gpio_set_direction(CONFIG_I2C_U8G2_SDA_GPIO, GPIO_MODE_INPUT);
-
-    gpio_config_t io_conf = {
-        .pin_bit_mask = 1ULL << CONFIG_I2C_U8G2_SCL_GPIO,
-        .mode = GPIO_MODE_OUTPUT_OD,
-        .pull_up_en = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE
-    };
-    gpio_config(&io_conf);
-
-    for (int i = 0; i < 9; i++) {
-        gpio_set_level(CONFIG_I2C_U8G2_SCL_GPIO, 0);
-        ets_delay_us(5);
-        gpio_set_level(CONFIG_I2C_U8G2_SCL_GPIO, 1);
-        ets_delay_us(5);
-    }
-    printf("[startup] after i2c_recover\n");
-*/
     ESP_LOGI(TAG, "[startup] before i2c_u8g2_init");
-    // Display configuration is now managed through menuconfig (Kconfig)
     i2c_u8g2_config_t display_cfg = i2c_u8g2_config_default();
     ESP_LOGI(TAG, "[startup] display i2c cfg: SDA=%d SCL=%d Freq=%d Addr=0x%02X Timeout=%dms",
              (int)display_cfg.sda_io_num,
@@ -1060,72 +893,34 @@ void app_main(void)
     // Configure and start AMY
     amy_config_t amy_cfg = amy_default_config();
     amy_cfg.audio = AMY_AUDIO_IS_NONE;
-    /* Disable AMY's internal FABT/render tasks: our amy_usb_render_task owns the
-    // render loop entirely (AMY_AUDIO_IS_NONE mode). With multithread=1(?? I think 0) (the default),
-    // amy_platform_init spawns esp_fill_audio_buffer_task (FABT) and stores app_main's
-    // task handle as amy_update_handle. FABT then notifies app_main instead of our
-    // render task, causing a permanent deadlock — render_blocks and seq_tick stay 0.*/
+    /* Our amy_usb_render_task owns the render loop; multicore/multithread
+     * must be 0 or amy_platform_init spawns its own fill task, which then
+     * notifies app_main instead of our render task - permanent deadlock. */
     amy_cfg.platform.multicore = 0;
     amy_cfg.platform.multithread = 0;
     amy_cfg.amy_external_sequencer_hook = main_sequencer_tick_hook;
-    /* PERF (2026-06): force the render-hot AMY allocations into internal SRAM.
-     * amy_default_config() leaves these at MALLOC_CAP_DEFAULT (0), which only
-     * lands internal for blocks < CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL (16 KB);
-     * larger blocks (the ~40 KB delta pool, FX delay lines, reverb buffers) fall
-     * back to Octal PSRAM. synth[]/msynth[] structs (ram_caps_events) and the
-     * delta pool (ram_caps_synth) are dereferenced for every audible oscillator
-     * every 256-sample block on Core 1; the echo/reverb/chorus delay lines
-     * (ram_caps_delay) are walked sample-by-sample in the FX stage. Pinning them
-     * to internal SRAM removes PSRAM access latency from the audio hot path. We
-     * have ample internal RAM headroom (heap checks below confirm). */
+    /* PERF: pin the render-hot AMY allocations internal. The default caps
+     * fall back to PSRAM above SPIRAM_MALLOC_ALWAYSINTERNAL (16 KB), putting
+     * synth[]/msynth[], the delta pool and block buffers - all dereferenced
+     * every block - behind PSRAM latency. */
     amy_cfg.ram_caps_events = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
     amy_cfg.ram_caps_synth  = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
     amy_cfg.ram_caps_block  = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
     amy_cfg.ram_caps_fbl    = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
-    /* FX delay lines are too large for internal SRAM: the reverb needs ~108 KB
-     * across 10 lines and echo a single 256 KB (65536-sample) line, while the
-     * internal heap's largest free block is ~32 KB. Pinning them internal made
-     * reverb/echo allocation fail (and previously crashed on the resulting NULL
-     * deref). Route them to the 8 MB Octal PSRAM, which sits almost entirely
-     * free. The per-sample PSRAM latency in the FX stage is acceptable; the
-     * lines simply do not fit internally. */
+    /* FX delay lines (~108 KB reverb + 256 KB echo) don't fit internal -
+     * pinning them internal made allocation fail (and once crashed on the
+     * NULL deref). PSRAM latency in the FX stage is acceptable. */
     amy_cfg.ram_caps_delay  = MALLOC_CAP_SPIRAM;
-    /* Runtime PCM sampler (custompatches/sample_rec): a 1.5 s mono recording
-     * is ~140 KB, comfortably above the SPIRAM_MALLOC_ALWAYSINTERNAL (16 KB)
-     * threshold, so pcm_load()'s malloc_caps() call would already land in
-     * PSRAM with the default MALLOC_CAP_DEFAULT (0). Set explicitly anyway so
-     * that intent doesn't depend on staying above that threshold. */
+    /* Sample recordings (~140 KB) would land in PSRAM anyway; set explicitly
+     * so intent doesn't depend on the size threshold. */
     amy_cfg.ram_caps_sample = MALLOC_CAP_SPIRAM;
-    /* Default is 256, which only covers layer 0 (drum).  Each additional
-     * layer needs SEQ_TRACKS * SEQ_MAX_STEPS * 2 extra tags.  With
-     * MAX_LAYERS=4, SEQ_TRACKS=4, SEQ_MAX_STEPS=32 the sequencer's highest tag
-     * is 1055 (preview slots).  The standalone arp then occupies tags
-     * 1056..1119 (SEQ_ARP_TAG_BASE + ARP_MAX_SLOTS*ARP_OCT_MAX*2).  Set to 1200
-     * so the table covers the arp range AND stays clear of the off-by-one in
-     * sequencer_add_event's `tag > max_sequences` guard (writes sequences[tag]).
-     * Keep in sync with SEQ_ARP_TAG_BASE/COUNT in sequencer_core.c.
-     *
-     * Per-step ratchet trigs (seq_core_trig.c) then claim a further
-     * MAX_LAYERS*SEQ_TRACKS*SEQ_MAX_RATCHET*2 = 128 dedicated one-shot tags
-     * right above the arp range: 1120..1247 (SEQ_RATCHET_TAG_BASE/MAX in
-     * seq_core_config.h).
-     *
-     * Chord presets add two one-shot blocks above that (seq_core_config.h):
-     * extra chord tones per ratchet slot 1248..1631 (SEQ_CHORD_TAG_*) and
-     * chord edit-preview pairs 1632..1727 (SEQ_CHORD_PREVIEW_TAG_*). Set to
-     * 1730 = SEQ_CHORD_PREVIEW_TAG_MAX (1727) + the +2 off-by-one margin +1.
-     * Cost note: each tag is 16 B of internal DRAM (12 B sequence_info_t +
-     * two int16 active-index entries), so this table is ~28 KB — grow it
-     * deliberately (see docs/internal-dram-audit-2026-07-23.md). */
+    /* Default 256 covers only layer 0. Tag ranges: sequencer 0..1055, arp
+     * 1056..1119, ratchet trigs 1120..1247, chord one-shots up to 1727
+     * (seq_core_config.h); 1730 also clears the off-by-one in
+     * sequencer_add_event's tag guard. */
     amy_cfg.max_sequencer_tags = 1730;
-    /* Raise the instrument table from the default 64 so the standalone drones
-     * (custompatches/drone_core + drone_std_core) can claim dedicated slots
-     * above the existing map (drum 6..9, melodic 11..62, arp 63). The stutter
-     * drone uses DRONE_SYNTH_MAIN=64 / DRONE_SYNTH_SUB=65; the normal drone
-     * DRONE_STD_SYNTH_MAIN=66 / DRONE_STD_SYNTH_SUB=67, so both can sound at
-     * once. instruments_init() sizes the table from this value. AMY's default
-     * 250 oscs leave ample headroom for both drones' voices. Keep in sync with
-     * drone_core.c / drone_std_core.c. */
+    /* Above the default-64 instrument table: stutter drone 64/65, normal
+     * drone 66/67. Keep in sync with drone_core.c / drone_std_core.c. */
     amy_cfg.max_synths = 68;
 #ifdef GAMMA9001
     gamma9001_pcm_mount();
@@ -1138,8 +933,7 @@ void app_main(void)
     HEAP_CHECK("after amy_start");
 
 #if defined(CONFIG_AMY_PROFILE_COARSE) || defined(CONFIG_AMY_PROFILE_FULL)
-    // One-shot: characterize profiler timestamp cost so the dumps below can be
-    // read net of instrumentation overhead. See docs/dual-core-render-analysis.md.
+    // Characterize profiler timestamp cost before the dumps below.
     amy_profiler_overhead_selftest();
 #endif
 
@@ -1147,10 +941,9 @@ void app_main(void)
     ESP_ERROR_CHECK(usb_audio_init());
     HEAP_CHECK("after usb_audio_init");
 
-    /* Project storage: non-fatal if the partition is absent/corrupt. Mounted
-     * before synth_ui_init so the snapshot selftest inside it can run against
-     * the boot layers, single-threaded, before the layers-applier task is
-     * registered. */
+    /* Project storage: non-fatal if absent/corrupt. Mounted before
+     * synth_ui_init so the snapshot selftest runs single-threaded against the
+     * boot layers. */
     project_fs_init();
     if (project_fs_ok()) project_store_cleanup_tmp();
 #if CONFIG_SYNTH_PROJECT_SELFTEST
@@ -1163,13 +956,10 @@ void app_main(void)
     HEAP_CHECK("after synth_ui_init");
 
 #if CONFIG_SYNTH_WIRELESS
-    /* Wire the MIDI transports to the live-play voice. The wireless component
-     * knows nothing of synth_core (P4 portability seam): notes reach the
-     * synth only through these sink callbacks, and the radio session calls
-     * back through the hooks (session_start prepares the live slot on the
-     * synth_ui task; stop/disconnect release held notes - stuck-note safety).
-     * No radio is initialized here: sessions start on demand from the
-     * Wireless menu page. */
+    /* Wire the MIDI transports to the live-play voice. wireless knows
+     * nothing of synth_core (P4 portability seam); stop/disconnect hooks
+     * release held notes (stuck-note safety). Radio sessions start on demand
+     * from the Wireless menu page. */
     static const midi_sink_t s_live_sink = {
         .note_on  = live_play_note_on,
         .note_off = live_play_note_off,
@@ -1195,10 +985,8 @@ void app_main(void)
          &amy_render_task_handle,
          0);
 #else
-    // Pin the entire AMY DSP to Core 1. With multicore/multithread=0 AMY spawns
-    // no tasks, so all synthesis runs inside amy_update() in this task. Keeping
-    // it on Core 1 gives the synth a dedicated core away from the USB UAC task
-    // and the esp_timer/sequencer tick, both of which live on Core 0.
+    // All synthesis runs inside amy_update() in this task; pin it to Core 1,
+    // away from USB and esp_timer on Core 0.
     render_task_ok = xTaskCreatePinnedToCore(amy_usb_render_task,
          "amy_render",
          8192,
@@ -1231,14 +1019,10 @@ void app_main(void)
     if (s_button_queue == NULL) {
         ESP_LOGW(TAG, "Button queue creation failed; callbacks will run inline");
     } else {
-        // 8192: carries the full dispatch_button_event chain (synth_ui_* /
-        // sequencer_core_* setters), which shares the patch-toggle parse path
-        // that runs amy_parse_message's ~3.4 KB frame INLINE on the caller
-        // stack. A 4096 stack could not absorb that inline frame plus an ISR
-        // frame, giving this task the same intermittent stack-overflow exposure
-        // as encoder_task (regression from the 8192->4096 trim in 4258556).
-        // Restored to 8192 (~8 KB DRAM back). Longer-term DRAM-preserving fix:
-        // port the amy_ingest pump task to offload the parse onto its own stack.
+        // 8192: dispatch_button_event shares the patch-toggle path that runs
+        // amy_parse_message's ~3.4 KB frame inline; 4096 overflowed
+        // intermittently (same exposure as encoder_task). Re-trim once the
+        // amy_ingest pump moves the parse to its own task.
         if (xTaskCreatePinnedToCore(button_handler_task,
              "button_task",
              8192,
@@ -1260,8 +1044,7 @@ void app_main(void)
         my_buttons_register_cb(main_button_event_cb, NULL);
     }
 
-        // Setup rotary encoder
-    // Defer rotary encoder initialization to a task to avoid early-boot conflicts
+    // Defer rotary encoder init to a task to avoid early-boot conflicts.
     xTaskCreatePinnedToCore(encoder_init_task,
          "encoder_init_task",
          2048,
@@ -1272,7 +1055,7 @@ void app_main(void)
 
     ESP_LOGI(TAG, "Main loop started.");
    
-    // Idle loop; pot_reader_task handles all pot->synth updates.
+    // Idle diagnostics loop.
 #if CONFIG_AMYSYNTH_RTOS_STATS
     const uint32_t idle_loop_ms = CONFIG_AMYSYNTH_RTOS_STATS_PERIOD_MS;
       void heap_caps_get_info( multi_heap_info_t *info, uint32_t caps );
@@ -1294,9 +1077,8 @@ void app_main(void)
         log_rtos_stats();
 #endif
 #if defined(CONFIG_AMY_PROFILE_COARSE) || defined(CONFIG_AMY_PROFILE_FULL)
-        // Dump and reset the AMY profile accumulated over this window. The
-        // "% render" column in COARSE mode is the parallelizable fraction:
-        // AMY_RENDER us / (AMY_RENDER + AMY_FILL_BUFFER + AMY_EXECUTE_DELTAS).
+        // Dump+reset the AMY profile window; COARSE's "% render" column is
+        // the parallelizable fraction.
         amy_profiles_print();
 #endif
         vTaskDelay(pdMS_TO_TICKS(idle_loop_ms));

@@ -50,16 +50,14 @@ bool usb_audio_consumer_active(void);
 /**
  * @brief Lock-free advisory peek at the most recent audio committed to the ring.
  *
- * Computes the peak and mean absolute sample value over the n_samples
- * interleaved samples immediately behind the write index, and stores a
- * snapshot of the write index in *write_idx (compare across calls to detect
- * "no new audio has been produced").
+ * Peak and mean |sample| over the n_samples immediately behind the write
+ * index; *write_idx receives a snapshot of that index (compare across calls to
+ * detect "no new audio produced").
  *
- * Safe from any task/core without touching the SPSC contract: the acquire
- * load of the write index guarantees every sample behind it is committed,
- * and the producer cannot rewrite that region until it has wrapped the whole
- * ring (~170 ms of audio), far longer than one scan. Only compiled with
- * CONFIG_OUTPUT_WATCHDOG.
+ * Safe from any task/core without touching the SPSC contract: the acquire load
+ * guarantees every sample behind the index is committed, and the producer
+ * cannot rewrite that region until it wraps the whole ring (~170 ms), far
+ * longer than one scan. Only compiled with CONFIG_OUTPUT_WATCHDOG.
  *
  * @return false if the driver is not initialized (outputs are zeroed).
  */

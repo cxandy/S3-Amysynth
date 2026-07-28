@@ -1,12 +1,11 @@
-/* drone_std_core.c — normal (free-running) drone synth.
+/* drone_std_core.c - normal (free-running) drone synth.
  *
- * The stutter drone's sibling (see drone_std_core.h for the design split and
- * drone_core.c for the concurrency rationale shared by both): chord + mono
- * sub voicing on its own AMY slots, sustained output, and the standard
- * per-voice toolset (free filter, native LFO, graph-editor envelopes) instead
- * of the stutter machinery.
+ * The stutter drone's sibling: chord + mono sub voicing on its own AMY slots,
+ * sustained output, and the standard per-voice toolset (free filter, native
+ * LFO, graph-editor envelopes) instead of the stutter machinery. Design split:
+ * drone_std_core.h; shared concurrency rationale: drone_core.c.
  *
- * All AMY interaction goes through amy_helpers deltas — never amy_queue_lock,
+ * All AMY interaction goes through amy_helpers deltas - never amy_queue_lock,
  * never direct synth[] access. Callers are FreeRTOS tasks, never ISRs. */
 
 #include "custompatches/drone_std_core.h"
@@ -54,10 +53,10 @@ typedef struct {
 
 static drone_std_state_t s_ds;
 
-/* Coalesced rebuild, mirroring drone_core's s_d_dirty discipline: setters on
- * the Core-0 input tasks mark dirty; drone_std_core_service() (Core-0 UI task)
- * drains once per frame. Enable/chord/root stay synchronous (note-off the old
- * voicing before state changes, or voices stick). */
+/* Coalesced rebuild, mirroring drone_core's s_d_dirty discipline: Core-0 input
+ * tasks mark dirty; drone_std_core_service() (Core-0 UI task) drains once per
+ * frame. Enable/chord/root stay synchronous - they must note-off the old
+ * voicing before state changes or voices stick. */
 static volatile bool s_ds_dirty = false;
 static inline void drone_std_mark_dirty(void) { s_ds_dirty = true; }
 
@@ -92,7 +91,7 @@ static void drone_std_push_filter(uint8_t synth, const seq_filter_t *f)
 
 /* ── Synth configuration (WAVE mode) ──
  * Shared skeleton + free filter + native LFO. No amp MOD coupling: under the
- * 1.2.12 dB combine model a plain CONST level is exactly level_lin (EG0 =1). */
+ * dB combine model a plain CONST level is exactly level_lin (EG0 = 1). */
 static void drone_std_configure_wave_synth(uint8_t synth, uint8_t voices,
                                            uint16_t wave, int16_t wt_preset)
 {
@@ -113,7 +112,7 @@ static void drone_std_configure_wave_synth(uint8_t synth, uint8_t voices,
 
     /* ALWAYS applied (NULL clears): re-sending the same voice count does not
      * reset the osc pool, so a stale COEF_MOD from a prior LFO target would
-     * keep modulating (the stale-AMP case rails — see voice_config.h). */
+     * keep modulating - the stale-AMP case rails (voice_config.h). */
     voice_apply_native_lfo(synth, drone_std_lfo_on() ? &s_ds.vp.lfo : NULL,
                            seq_get_bpm());
 }
@@ -152,8 +151,8 @@ static void drone_std_rebuild(void)
                                            s_ds.wave, -1);
         }
     } else if (s_ds.source == DRONE_SRC_PATCH && s_ds.patch >= SEQ_PATCH_WAVE_BASE) {
-        /* Wave/wavetable virtual patches: not real AMY patches — intercept and
-         * build as a wave synth, same mapping as the stutter drone/melodic. */
+        /* Virtual wave/wavetable patches are not real AMY patches: intercept
+         * and build as a wave synth, same mapping as stutter drone/melodic. */
         static const uint16_t s_wave_for_patch[] = {
             SINE, SAW_DOWN, SAW_UP, PULSE, TRIANGLE,
         };
@@ -181,8 +180,7 @@ static void drone_std_rebuild(void)
         }
     }
 
-    /* Deferred authority: re-impose the user's envelopes after any rebuild.
-     * Applied verbatim — no KS/NOISE special-case floor exists anymore. */
+    /* Deferred authority: re-impose the user's envelopes after any rebuild. */
     if (s_ds.vp.env_authored) {
         sequencer_core_push_envelope(DRONE_STD_SYNTH_MAIN, &s_ds.vp.env);
         if (s_ds.sub_enabled) {

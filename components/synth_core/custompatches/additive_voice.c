@@ -4,12 +4,12 @@
 #include "seq_clamp.h"
 #include <math.h>          /* log2f */
 
-/* The live-editable "custom" additive voice — see additive_voice.h for the
- * ownership convention (mirrors s_fm_voice / amy_fx.h's s_fx). */
+/* The live-editable "custom" additive voice; ownership convention in
+ * additive_voice.h (mirrors s_fm_voice / amy_fx.h's s_fx). */
 additive_voice_t s_additive_voice;
 
-/* A ratio must be strictly positive before log2f() — 0 would put -inf into
- * the child's freq_coefs. Anything at or below this floor plays as ratio 1. */
+/* Ratios must be strictly positive before log2f() - 0 would put -inf into the
+ * child's freq_coefs. At or below this floor plays as ratio 1. */
 #define ADD_MIN_RATIO 0.01f
 
 static float add_ratio_octaves(float ratio)
@@ -65,11 +65,10 @@ void additive_voice_configure_track(uint8_t synth_id, uint16_t num_voices,
     amy_helpers_event_send(e);
 
     /* 3) oscs 1..N: one PARTIAL sine per harmonic. partials_note_on() sets
-     *    each child's status/pitch base but not its wave — PARTIAL selects
-     *    the intended render_partial path and hold_and_modify's fade-in
-     *    special case. Pitch offset in octaves is log2(ratio); amp is the
-     *    additive spectrum level, scaled per block by the parent's envelope
-     *    through COEF_VEL. */
+     *    each child's status/pitch base but NOT its wave - PARTIAL selects the
+     *    render_partial path and hold_and_modify's fade-in special case.
+     *    Pitch offset is log2(ratio); amp is the spectrum level, scaled per
+     *    block by the parent's envelope through COEF_VEL. */
     for (uint8_t i = 0; i < n; i++) {
         e = amy_helpers_event_begin();
         e->synth                  = synth_id;
@@ -80,8 +79,8 @@ void additive_voice_configure_track(uint8_t synth_id, uint16_t num_voices,
         e->amp_coefs[COEF_CONST]  = voice->level[i];
         e->amp_coefs[COEF_VEL]    = 1.0f;   /* receives parent amp each block */
         if (voice->decay_ms[i] > 0.0f) {
-            /* Local ring-down: fast attack, decay to silence, no sustain —
-             * lets upper partials die before the parent envelope releases. */
+            /* Local ring-down (fast attack, decay to silence, no sustain) so
+             * upper partials die before the parent envelope releases. */
             e->amp_coefs[COEF_EG0] = 1.0f;
             e->eg_type[0]          = ENVELOPE_NORMAL;
             e->eg0_times[0] = 3;   e->eg0_values[0] = 1.0f;

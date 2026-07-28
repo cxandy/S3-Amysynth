@@ -25,14 +25,13 @@ enum {
 };
 
 /* Right-panel geometry. The parameter rows (WAVE..WOB_MODE) outnumber the slots
- * that fit above the hint strip, so the panel is a window that scrolls by one
- * when the cursor reaches the bottom row; carets mark the off-screen direction.
- * Adding a parameter field only requires it to sit inside this range. */
+ * that fit above the hint strip, so the panel scrolls by one when the cursor
+ * reaches the bottom row. A new parameter field only has to sit in this range. */
 #define LFO_PANEL_SLOTS  5
 #define LFO_PANEL_ROWS   (LFO_FLD_WOB_MODE - LFO_FLD_WAVE + 1)
 
-/* View state for the LFO editor overlay.  Holds the working copy being
- * edited plus display metadata (cursor, editing flag, target track). */
+/* View state for the LFO editor overlay: the working copy being edited plus
+ * display metadata (cursor, editing flag, target track). */
 typedef struct {
     seq_lfo_t   lfo;
     uint8_t     cursor;       /* 0..LFO_TARGET_COUNT-1 = target checkbox;

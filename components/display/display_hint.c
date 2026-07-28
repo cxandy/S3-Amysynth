@@ -1,11 +1,9 @@
 #include "display_hint.h"
 
-/* Bottom strip geometry. GRAPH_TOPBAR_H-style ADSR editors already leave a
- * blank 5-6px margin below their bottom axis tick marks (graph_popup.c's
- * ADSR bot_pad reserves 7px, of which only the first 2 hold tick marks); the
- * grid-heavy screens (sequencer/arp/drone-vis) do not, so this strip
- * deliberately overwrites their last couple of content rows rather than
- * shrinking their layouts -- see docs/handoff/c1-hint-bar.md. */
+/* Bottom strip geometry. ADSR editors already leave a blank margin below their
+ * tick marks (graph_popup.c's ADSR bot_pad); the grid-heavy screens
+ * (sequencer/arp/drone-vis) do not, so this strip deliberately overwrites
+ * their last content rows rather than shrinking their layouts. */
 #define HINT_Y0       57
 #define HINT_H         7
 #define HINT_BASELINE 63

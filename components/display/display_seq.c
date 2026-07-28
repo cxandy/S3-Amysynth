@@ -3,16 +3,14 @@
 #include "seq_chords.h"   /* chord sentinel test for the track pitch label */
 #include <stdio.h>
 
-/* Static role labels for the four drum tracks, by purpose/frequency range
- * (low body, mid attack, high tick, percussive accent). The loaded preset
- * is shown by name in the patch-select overlay instead. */
+/* Static role labels for the four drum tracks (low body, mid attack, high
+ * tick, percussive accent); the loaded preset is named in the patch overlay. */
 static const char *const drum_track_labels[SEQ_TRACKS] = {
     "LOW", "MID", "TOP", "PERC"
 };
 
-/* Produce a 3-char null-terminated note name: "C4", "C#4", "D4" … — or the
- * chord-slot label "CHn" when the stored note is a chord preset sentinel
- * (seq_chords.h, via seq_model.h's engine model). */
+/* 3-char note name ("C4", "C#4", ...), or the chord-slot label "CHn" when the
+ * stored note is a chord preset sentinel (seq_chords.h). */
 static void note_name_str(uint8_t midi_note, char buf[4])
 {
     if (SEQ_NOTE_IS_CHORD(midi_note)) {
@@ -54,10 +52,8 @@ void display_seq_draw_frame(u8g2_t *u8g2, const display_seq_state_t *state, uint
     u8g2_DrawStr(u8g2, 52, 8, buf);
 
     if (layer->type == SEQ_LAYER_MELODIC) {
-        /* Patch number, right-aligned to a fixed right edge so a 1-3 digit
-         * value never grows into the play-icon column at x=105. The "Pt"
-         * prefix is dropped and a smaller 5x7 font is used to stay within the
-         * 84..102 budget regardless of digit count. */
+        /* Patch number, right-aligned and in 5x7 so 1-3 digits always fit the
+         * 84..102 budget and never grow into the play-icon column at x=105. */
         const uint8_t patch_right = 102;   /* last column the digits may touch */
         snprintf(buf, sizeof(buf), "%u", (unsigned)layer->patch);
         u8g2_SetFont(u8g2, u8g2_font_5x7_tr);
@@ -101,9 +97,7 @@ void display_seq_draw_frame(u8g2_t *u8g2, const display_seq_state_t *state, uint
     for (int t = 0; t < SEQ_TRACKS; t++) {
         int y = grid_top + t * row_h;
 
-        /* Track label: drums show the track's static role (the assigned
-         * preset is browsed by name in the patch-select overlay); melodic
-         * shows the pitch name. */
+        /* Track label: drums show the static role, melodic the pitch name. */
         char note_buf[4];
         const char *label;
         if (layer->type == SEQ_LAYER_DRUM) {
@@ -161,12 +155,9 @@ void display_seq_draw_frame(u8g2_t *u8g2, const display_seq_state_t *state, uint
     }
 
     /* === PATCH-SELECT NAME OVERLAY ===
-     * While the user is browsing patches (BPM button held into patch-select),
-     * show the current patch's human name in a centred banner over the grid so
-     * the full-range browser is legible. Only drawn when the name table is
-     * compiled in (CONFIG_SEQ_PATCH_SHOW_NAMES); otherwise the top-bar number
-     * is the only readout. patch_name_for() is a no-op returning NULL when the
-     * table is excluded, so this whole block costs nothing then. */
+     * Centred banner with the current patch's human name while browsing. Only
+     * drawn when the name table is compiled in (CONFIG_SEQ_PATCH_SHOW_NAMES);
+     * patch_name_for() returns NULL otherwise, so this block costs nothing. */
     if (state->patch_select_mode) {
         const char *pname;
         if (layer->type == SEQ_LAYER_MELODIC) {

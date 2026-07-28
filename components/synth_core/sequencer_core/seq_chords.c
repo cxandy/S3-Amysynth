@@ -3,10 +3,10 @@
 
 /* ── Chord preset table ────────────────────────────────────────────────────
  * Plain static state alongside s_prog / s_quantizer. All mutation happens on
- * the synth_ui task (chord editor + project load run there), the same
- * single-applier discipline as every other chord/progression edit; readers on
- * the trig service task only ever see a whole uint8_t tone or count, and a
- * mid-edit fire at worst plays the half-updated voicing for one step. */
+ * the synth_ui task (chord editor and project load), the same single-applier
+ * discipline as every other chord edit. Readers on the trig service task only
+ * ever see a whole uint8_t tone or count, so a mid-edit fire at worst plays the
+ * half-updated voicing for one step. */
 static seq_chord_t s_chords[SEQ_CHORD_SLOTS];
 
 bool seq_chords_get(uint8_t idx, seq_chord_t *out)
@@ -41,8 +41,8 @@ void seq_chords_set(uint8_t idx, const seq_chord_t *chord)
     s_chords[idx] = chord_normalize(chord);
     ESP_LOGI(TAG, "chord CH%u -> %u tone(s)", idx + 1u, s_chords[idx].count);
 
-    /* Referencing tracks re-emit / reconfigure voices; undefined slots make
-     * them fall back to their last plain note. Single owner of that sweep. */
+    /* The single owner of the referencing-track sweep: re-emit, reconfigure
+     * voices, and fall back to the last plain note for undefined slots. */
     sequencer_core_chord_slot_changed(idx);
 }
 

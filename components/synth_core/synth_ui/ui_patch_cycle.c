@@ -15,12 +15,11 @@
 static const char *TAG = "synth_ui";
 
 #if !CONFIG_SEQ_PATCH_BROWSE_FULL_RANGE
-/* THE shared patch catalog: one curated, musical shortlist for every cycling
- * consumer (melodic, arp, drone). Used only when the browse mode is
- * "preselected"; the full-range mode walks 0..SEQ_PATCH_FULL_MAX instead.
- * Consumers that cannot play an entry EXCLUDE it via their domain's
- * `excluded` predicate (see patch_cycle.h) — new patches added here (or new
- * ranges under SEQ_PATCH_FULL_MAX) reach every consumer automatically. */
+/* THE shared patch catalog: one curated shortlist for every cycling consumer
+ * (melodic, arp, drone), used only in "preselected" browse mode; full-range
+ * mode walks 0..SEQ_PATCH_FULL_MAX instead. Consumers that cannot play an entry
+ * EXCLUDE it via their domain's `excluded` predicate (patch_cycle.h), so
+ * anything added here reaches every consumer automatically. */
 static const uint16_t s_patch_catalog[] = {
     138, /* DX7 E.PIANO 1 */
     135, /* DX7 PIANO 1 */
@@ -39,10 +38,9 @@ static const uint16_t s_patch_catalog[] = {
     264, /* Bass 1: Sub-Heavy Detune (PULSE + detuned SAW, LPF24) */
     265, /* Bass 2: Sine-Reinforced Acid/Pluck (SINE + SAW, LPF24) */
     266, /* Bass 3: FM DX7-Style (SINE + sub-octave SINE, DX7 env) */
-    /* Kconfig-gated ranges are listed unconditionally: when a feature is
-     * compiled out, its numbers are skipped at cycle time by the domains'
-     * sequencer_core_patch_compiled_out() exclusion — one mechanism for
-     * curated and full-range browse alike, no #if bookkeeping here. */
+    /* Kconfig-gated ranges are listed unconditionally: a compiled-out feature's
+     * numbers are skipped at cycle time by the domains'
+     * sequencer_core_patch_compiled_out() exclusion, so no #if here. */
     267, /* Wavetable: 111.WAV      */
     268, /* Wavetable: BRAIDS01.WAV */
     269, /* Wavetable: PPG_WA00.WAV */
@@ -52,18 +50,16 @@ static const uint16_t s_patch_catalog[] = {
     273, /* FM E.Piano (6-op ALGO) */
     274, /* FM Bell (6-op ALGO) */
     275, /* FM Lead (6-op ALGO) */
-    276, /* FM Custom — opens the FM edit screen (Menu > Screen: FM) */
+    276, /* FM Custom - edited via Menu > Screen: FM */
     277, /* Add Organ (BYO_PARTIALS, 8 harmonics) */
     278, /* Add Bell (inharmonic partial ratios)  */
-    279, /* Add Custom — live-editable additive voice (editor screen TBD) */
+    279, /* Add Custom - live-editable additive voice (editor screen TBD) */
 };
 #define SEQ_RUNTIME_PATCH_COUNT ((int)(sizeof(s_patch_catalog) / sizeof(s_patch_catalog[0])))
 #endif
 
-/* Full-range browse walks 0..SEQ_PATCH_FULL_MAX (sequencer_core.h — always
- * the top of the fixed numbering space): Juno 0..127, DX7 128..255,
- * piano 256, waves 257..263, bass 264..266, wavetable banks 267..271,
- * FM/ALGO 272..276, additive 277..279. Ranges whose Kconfig gate is off are
+/* Full-range browse walks 0..SEQ_PATCH_FULL_MAX (sequencer_core.h, always the
+ * top of the fixed numbering space). Ranges whose Kconfig gate is off are
  * interior holes skipped by the domains' compiled-out exclusion. */
 #if CONFIG_SEQ_PATCH_BROWSE_FULL_RANGE
 #define PATCH_DOMAIN_CATALOG .list = NULL, .count = 0, .full_max = SEQ_PATCH_FULL_MAX
@@ -72,18 +68,17 @@ static const uint16_t s_patch_catalog[] = {
     .count = SEQ_RUNTIME_PATCH_COUNT, .full_max = SEQ_PATCH_FULL_MAX
 #endif
 
-/* Melodic and arp play everything in the catalog that is compiled into this
- * build — ranges gated off by Kconfig (wavetable/FM/additive) are interior
- * holes in the fixed numbering and get skipped dynamically. */
+/* Melodic and arp play everything in the catalog that is compiled in; gated-off
+ * ranges are interior holes skipped dynamically. */
 static const patch_domain_t s_melodic_domain = {
     PATCH_DOMAIN_CATALOG, .excluded = sequencer_core_patch_compiled_out
 };
 
-/* Drone: same catalog, minus what its excitation model can't play
- * (NOISE/KS/bass/FM/additive — see drone_patch_excluded() in drone_core.c,
- * which also folds in the compiled-out check above). The
- * predicate is skipped during stepping, so cycling stays monotonic in both
- * browse modes and never trips drone_set_patch()'s snap-back. */
+/* Drone: same catalog minus what its excitation model cannot play (see
+ * drone_patch_excluded() in drone_core.c, which folds in the compiled-out check
+ * too). Excluded entries are skipped during stepping, so cycling stays
+ * monotonic in both browse modes and never trips drone_set_patch()'s
+ * snap-back. */
 static const patch_domain_t s_drone_domain = {
     PATCH_DOMAIN_CATALOG, .excluded = drone_patch_excluded
 };
@@ -112,10 +107,9 @@ void synth_ui_cycle_melodic_patch(int delta)
     }
 }
 
-/* Cycle the SELECTED drum track's patch through the curated drum list. The drum
+/* Cycle the SELECTED drum track's patch through the curated drum list: the drum
  * layer is per-track, so this targets seq_state.selected_track on the active
- * layer (must be a drum layer). Mirrors the applied patch into the UI copy so
- * the on-screen patch number updates. */
+ * layer. Mirrors the applied patch into the UI copy for the on-screen label. */
 void synth_ui_cycle_drum_patch(int delta)
 {
     if (delta == 0) return;
@@ -129,9 +123,8 @@ void synth_ui_cycle_drum_patch(int delta)
 
     int dir = (delta > 0) ? 1 : -1;
 
-    /* PCM engine: the control browses the ROM drum samples instead of the
-     * curated SYNTH patch list (which stays stored for the next engine
-     * switch). Mirror + name lookup use the PCM preset table. */
+    /* PCM engine: browse the drum samples instead of the curated SYNTH list,
+     * which stays stored for the next engine switch. */
     if (sequencer_core_get_drum_engine() == SEQ_DRUM_PCM) {
         uint16_t preset = sequencer_core_cycle_drum_pcm_preset(li, track, dir);
         seq_state.layers[li].track_pcm_preset[track] = preset;
@@ -163,8 +156,7 @@ void synth_ui_cycle_drum_patch(int delta)
     }
 }
 
-/* Cycle the arp's OWN patch (independent of the sequencer's melodic patch).
- * Reuses the same browse-mode stepping + name lookup as the sequencer. */
+/* Cycle the arp's OWN patch, independent of the melodic patch. */
 void synth_ui_arp_cycle_patch(int delta)
 {
     if (delta == 0) return;
@@ -182,10 +174,9 @@ void synth_ui_arp_cycle_patch(int delta)
 
 #if CONFIG_SYNTH_WIRELESS
 /* The live slot's Source toggle partitions the shared catalog into two browse
- * groups: WAVE = the contiguous raw-wave / bass / wavetable block (257..271,
- * everything that plays like an oscillator you shape yourself), PATCH = the
- * string/FM/additive presets. Both route through the same kind dispatch as
- * ever; only the cycling domain differs. */
+ * groups: WAVE = the contiguous raw-wave / bass / wavetable block, PATCH = the
+ * string/FM/additive presets. Both route through the same kind dispatch; only
+ * the cycling domain differs. */
 static bool live_wave_group_excluded(uint16_t p)
 {
     if (p < SEQ_PATCH_WAVE_BASE || p > SEQ_PATCH_WAVETABLE_MAX) return true;
@@ -225,8 +216,7 @@ void synth_ui_cycle_live_patch(int delta)
 }
 #endif
 
-/* Cycle the drone's PATCH-mode preset (hold+turn gesture on the drone screen).
- * Reuses the same browse-mode stepping + name lookup as the others. */
+/* Cycle the drone's PATCH-mode preset (hold+turn on the drone screen). */
 void synth_ui_drone_cycle_patch(int delta)
 {
     if (delta == 0) return;
@@ -243,8 +233,8 @@ void synth_ui_drone_cycle_patch(int delta)
     s_force_redraw = true;
 }
 
-/* Same gesture on the normal drone screen; the two drones share the patch
- * domain (identical exclusion predicate), only the store differs. */
+/* Same gesture on the normal drone screen: the two drones share the patch
+ * domain, only the store differs. */
 void synth_ui_drone_std_cycle_patch(int delta)
 {
     if (delta == 0) return;

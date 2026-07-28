@@ -2,15 +2,12 @@
 /*
  * patch_names — optional human-readable names for the AMY built-in patch banks.
  *
- * Lives in the display component so both the OLED renderer
- * (display_seq.c) and the synth UI layer can use it without a dependency
- * cycle. The Kconfig option CONFIG_SEQ_PATCH_SHOW_NAMES is global, so it gates
- * this table regardless of which component defines the symbol.
+ * Lives in the display component so both the OLED renderer (display_seq.c) and
+ * the synth UI layer can use it without a dependency cycle.
  *
- * The name strings are large-ish (≈257 short strings + a pointer table) so they
- * are fully gated behind CONFIG_SEQ_PATCH_SHOW_NAMES. When that option is off,
- * the table is NOT compiled in and patch_name_for() resolves (via the macro
- * below) to a no-op that returns NULL, costing zero flash.
+ * Fully gated behind CONFIG_SEQ_PATCH_SHOW_NAMES: with it off the table is not
+ * compiled in and patch_name_for() becomes a NULL-returning inline, costing
+ * zero flash.
  *
  * Patch number map (matches components/amy/src/patches.h):
  *   0..127  : Roland Juno-106 presets
@@ -27,21 +24,18 @@ extern "C" {
 
 #if CONFIG_SEQ_PATCH_SHOW_NAMES
 
-/* Returns a static human-readable name for the given patch number, or NULL if
- * the number is out of the known 0..256 range. The returned pointer is valid
- * for the lifetime of the program (points into a const table). */
+/* Static human-readable name for the patch number, or NULL when out of the
+ * known range. The pointer is valid for the program's lifetime. */
 const char *patch_name_for(uint16_t patch);
 
-/* Returns a static name for a PCM ROM drum preset, or NULL if out of range
- * (wavetable entries and runtime memory presets have no names — callers show
- * the bare number). The table matches the compiled-in ROM bank: gamma808
- * (CONFIG_AMY_PCM_GAMMA808) or the legacy pcm_tiny set. */
+/* Static name for a PCM ROM drum preset, or NULL if out of range (wavetable
+ * and runtime memory presets have no names). Matches the compiled-in ROM bank:
+ * gamma808 (CONFIG_AMY_PCM_GAMMA808) or the legacy pcm_tiny set. */
 const char *pcm_preset_name_for(uint16_t preset);
 
 #else  /* names compiled out */
 
-/* No name table linked; callers fall back to showing the bare number. The
- * static inline keeps call sites identical without pulling in any data. */
+/* No name table linked; callers fall back to the bare number. */
 static inline const char *patch_name_for(uint16_t patch)
 {
     (void)patch;

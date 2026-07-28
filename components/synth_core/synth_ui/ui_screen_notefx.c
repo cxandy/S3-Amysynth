@@ -11,15 +11,14 @@
  * page (page state and input routing live in ui_screen_menu.c; this file only
  * builds the rows and applies encoder edits). Two controls, both acting on the
  * currently ACTIVE melodic layer (seq_state.active_layer_idx):
- *   GATE   — note-hold as % of the step (10..100; 100 = full-step legato)
- *   GLIDE  — AMY-native portamento between step pitches (0..cap ms)
- *   GROOVE — how much of the baked accent/humanize velocity curve applies
- *            (0..100%; 100 = full legacy feel, 0 = flat velocity 1.0)
- * Kept off the crowded global-FX list because these are per-layer, not global.
+ *   GATE   - note-hold as % of the step (10..100; 100 = full-step legato)
+ *   GLIDE  - AMY-native portamento between step pitches (0..cap ms)
+ *   GROOVE - how much of the baked accent/humanize velocity curve applies
+ *            (0..100%; 100 = full feel, 0 = flat velocity 1.0)
+ * Per-layer, not global, hence off the global-FX list.
  *
- * When the active layer is a drum layer (or otherwise not melodic) there is
- * nothing to edit: the rows render "--" and edits no-op, so the page is always
- * safe to open regardless of which layer is selected. */
+ * Non-melodic active layer: rows render "--" and edits no-op, so the page is
+ * always safe to open. */
 
 typedef enum {
     NFX_GATE = 0,
@@ -101,7 +100,7 @@ void notefx_menu_edit_value(uint8_t idx, int delta)
             break;
         }
         case NFX_GLIDE: {
-            /* 1ms/detent, same fine resolution as the re-capped arp glide. */
+            /* 1ms/detent, matching the arp glide resolution. */
             int v = SEQ_CLAMP_INT(
                 (int)sequencer_core_get_melodic_portamento_ms(li) + dir * 1,
                 0, (int)SEQ_MELODIC_PORTAMENTO_MAX_MS);

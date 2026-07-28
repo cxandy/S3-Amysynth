@@ -14,8 +14,8 @@
 static const char *TAG = "radio_mgr";
 
 /* Pre-flight thresholds: a trimmed NimBLE session costs ~20-25 KB of internal
- * heap; refuse below these so a session can never OOM the synth (the reverb /
- * delta-pool lesson). Tune against the Phase 0 numbers once measured. */
+ * heap; refuse below these so a session can never OOM the synth. Retune once
+ * the real on-target numbers are measured. */
 #define RADIO_MIN_FREE_INTERNAL   (40 * 1024)
 #define RADIO_MIN_LARGEST_BLOCK   (16 * 1024)
 
@@ -55,9 +55,8 @@ bool radio_manager_connected(void)
 }
 
 /* NVS backs both the PHY calibration cache and BLE bond persistence. Mounted
- * lazily on first session and left mounted (its footprint is small and
- * repeated init/deinit buys nothing). A failure is non-fatal: the session
- * still runs, bonds just do not persist - and we never auto-erase the
+ * lazily on the first session and left mounted. Failure is non-fatal: the
+ * session still runs, bonds just do not persist - never auto-erase the
  * partition to "fix" it. */
 static void radio_nvs_ensure(void)
 {

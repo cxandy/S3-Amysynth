@@ -14,28 +14,27 @@ extern "C" {
 #endif
 
 /* ── Virtual wave-patch IDs ─────────────────────────────────────────────────
- * Patch numbers beyond the 0..256 built-in (Juno/DX7/piano) range.
- * Intercepted before amy_send_patch() so they never collide with real patches.
- * Melodic tracks, arp, and drone all use these constants for wave-patch routing.
- * Melodic and arp route the FULL 0..SEQ_PATCH_FULL_MAX range; the drone opts
- * out of the ranges its excitation model can't play via drone_patch_excluded()
- * (drone_core.c). Exclusions are per-consumer predicates on one shared catalog
- * (patch_cycle.h / ui_patch_cycle.c) — never per-consumer copies of the list. */
+ * Patch numbers beyond the 0..256 built-in (Juno/DX7/piano) range, intercepted
+ * before amy_send_patch() so they never collide with real patches. Melodic and
+ * arp route the FULL 0..SEQ_PATCH_FULL_MAX range; the drone opts out of what
+ * its excitation model can't play via drone_patch_excluded() (drone_core.c).
+ * Exclusions are per-consumer predicates over one shared catalog
+ * (patch_cycle.h / ui_patch_cycle.c) - never per-consumer copies. */
 #define SEQ_PATCH_WAVE_BASE   257
 #define SEQ_PATCH_SINE        257   /* AMY SINE     */
 #define SEQ_PATCH_SAW_DOWN    258   /* AMY SAW_DOWN */
 #define SEQ_PATCH_SAW_UP      259   /* AMY SAW_UP   */
 #define SEQ_PATCH_PULSE       260   /* AMY PULSE    */
 #define SEQ_PATCH_TRIANGLE    261   /* AMY TRIANGLE */
-#define SEQ_PATCH_NOISE       262   /* AMY NOISE    — arp only; drone excludes */
-#define SEQ_PATCH_KS          263   /* AMY KS       — arp only; drone excludes */
+#define SEQ_PATCH_NOISE       262   /* AMY NOISE    - drone excludes */
+#define SEQ_PATCH_KS          263   /* AMY KS       - drone excludes */
 #define SEQ_PATCH_WAVE_MAX    263
 
 /* ── Multi-osc bass presets (melodic only; oscs_per_voice=2) ────────────
- * Intercepted before amy_send_patch() — never routed to the Juno/DX7 loader.
- * Osc 0 is the primary audio carrier; osc 1 is the secondary/sub layer.
- * Osc 0 envelope is overwritten by sequencer_configure_melodic_envelope()
- * after configure; characteristic sound comes from osc structure + filter. */
+ * Intercepted before amy_send_patch(). Osc 0 is the primary carrier, osc 1 the
+ * secondary/sub layer. Osc 0's envelope is overwritten by
+ * sequencer_configure_melodic_envelope() after configure; the character comes
+ * from osc structure + filter. */
 #define SEQ_PATCH_BASS_BASE   264
 #define SEQ_PATCH_BASS_1      264   /* Classic Sub-Heavy Detune (PULSE + detuned SAW, LPF24) */
 #define SEQ_PATCH_BASS_2      265   /* Solid Sine-Reinforced Acid/Pluck (SINE + SAW, LPF24) */
@@ -43,14 +42,12 @@ extern "C" {
 #define SEQ_PATCH_BASS_MAX    266
 
 /* ── Wavetable virtual patches (melodic, arp, drone; AMY_WAVETABLE only) ──
- * One virtual patch per built-in wavetable bank (see pcm_tiny.h /
- * pcm_wavetable_base). wave=WAVETABLE, preset=pcm_wavetable_base+index.
- * Intercepted the same way as SEQ_PATCH_WAVE_BASE — never sent to
- * amy_send_patch(). Range kept separate from SEQ_PATCH_WAVE_BASE so it can be
- * added without renumbering the bass presets above. */
-/* The numbers exist unconditionally (like every virtual range) so that
- * compile-aware code — sequencer_core_patch_compiled_out() below — can name
- * them in any build; only their *routability* is gated on the Kconfig flag. */
+ * One virtual patch per built-in wavetable bank (pcm_tiny.h /
+ * pcm_wavetable_base): wave=WAVETABLE, preset=pcm_wavetable_base+index,
+ * intercepted like SEQ_PATCH_WAVE_BASE. Its own range so it could be added
+ * without renumbering the bass presets. The numbers exist unconditionally, like
+ * every virtual range, so sequencer_core_patch_compiled_out() can name them in
+ * any build; only routability is Kconfig-gated. */
 #define SEQ_PATCH_WAVETABLE_BASE  267
 #define SEQ_PATCH_WAVETABLE_0     267   /* 111.WAV      */
 #define SEQ_PATCH_WAVETABLE_1     268   /* BRAIDS01.WAV */
@@ -59,10 +56,10 @@ extern "C" {
 #define SEQ_PATCH_WAVETABLE_4     271   /* VIRAL.WAV    */
 #define SEQ_PATCH_WAVETABLE_MAX   271
 
-/* True for any raw-waveform virtual patch (SINE..KS, and — when AMY_WAVETABLE
- * is compiled in — the wavetable bank patches). Shared by the melodic
- * synth/LFO configurators so both ranges route the same way (direct oscillator
- * config, no amy_send_patch(), native-LFO eligible). */
+/* True for any raw-waveform virtual patch (SINE..KS, plus the wavetable banks
+ * when AMY_WAVETABLE is compiled in). Shared by the melodic synth/LFO
+ * configurators so both ranges route the same way: direct oscillator config,
+ * no amy_send_patch(), native-LFO eligible. */
 static inline bool sequencer_core_is_wave_patch(uint16_t patch)
 {
     if (patch >= SEQ_PATCH_WAVE_BASE && patch <= SEQ_PATCH_WAVE_MAX) return true;
@@ -72,15 +69,14 @@ static inline bool sequencer_core_is_wave_patch(uint16_t patch)
     return false;
 }
 
-/* Native-LFO layout for a patch: which voice-relative osc carries the LFO
- * pair (carrier; wobble = carrier+1) and which audible oscs take the
- * COEF_MOD coupling (bitmask, bit n = osc n). True for every topology that
- * reserves a trailing carrier pair: the raw-wave/wavetable 3-osc build and
- * the custom bass 4-osc build. False = no reserved pair, LFO served by the
- * 20 Hz software stepper. THE single native-vs-software predicate - every
- * gate must use it (a site left on sequencer_core_is_wave_patch would run
- * the software stepper on top of a native carrier: double modulation).
- * Out-params may be NULL when only the predicate is needed. */
+/* Native-LFO layout for a patch: which voice-relative osc carries the LFO pair
+ * (carrier; wobble = carrier+1) and which audible oscs take the COEF_MOD
+ * coupling (bitmask, bit n = osc n). True for every topology reserving a
+ * trailing carrier pair (raw-wave/wavetable 3-osc, custom bass 4-osc); false
+ * means the 20 Hz software stepper serves the LFO. THE single
+ * native-vs-software predicate - every gate must use it, since a site left on
+ * sequencer_core_is_wave_patch would stack the software stepper on a native
+ * carrier (double modulation). Out-params may be NULL. */
 static inline bool sequencer_core_lfo_native_layout(uint16_t patch,
                                                     uint8_t *carrier_osc,
                                                     uint8_t *coupled_mask)
@@ -101,15 +97,12 @@ static inline bool sequencer_core_lfo_native_layout(uint16_t patch,
 /* ── DX7-style 6-operator FM/ALGO voices (melodic only; oscs_per_voice=7) ──
  * Osc 0 is the AMY ALGO control osc (algorithm + algo_source[0..5] wired to
  * relative oscs 1..6); oscs 1..6 are SINE operators. Intercepted before
- * amy_send_patch() exactly like the bass presets above.
- * FM_BASS/EPIANO/BELL/LEAD are fixed starter presets (see fm_presets.c).
- * FM_CUSTOM is the single live-editable voice driven by the FM UI screen
- * (see custompatches/fm_voice.h); its parameters are global, not per-layer —
- * every melodic row currently on this patch shares the same edited voice.
- * Numbered to start unconditionally after the wavetable range (267-271, only
- * ever compiled in under CONFIG_AMY_WAVETABLE) rather than reusing it, so FM
- * patch numbers never shift under a build-flag change and the two virtual
- * patch features can never collide. */
+ * amy_send_patch() like the bass presets. FM_BASS/EPIANO/BELL/LEAD are fixed
+ * starter presets (fm_presets.c). FM_CUSTOM is the single live-editable voice
+ * driven by the FM UI screen (custompatches/fm_voice.h); its parameters are
+ * global, so every melodic row on this patch shares one voice. Numbered
+ * unconditionally after the wavetable range rather than reusing it, so patch
+ * numbers never shift under a build-flag change. */
 #define SEQ_PATCH_FM_BASE     272
 #define SEQ_PATCH_FM_BASS     272   /* FM Bass (2-op chain, algorithm 0) */
 #define SEQ_PATCH_FM_EPIANO   273   /* FM E.Piano (2 carriers, algorithm 0) */
@@ -120,15 +113,13 @@ static inline bool sequencer_core_lfo_native_layout(uint16_t patch,
 
 /* ── Additive/partials voices (melodic + arp; oscs_per_voice = N+1) ────────
  * Osc 0 is the AMY BYO_PARTIALS control osc (preset = partial count, shared
- * envelope); oscs 1..N are PARTIAL sines summed additively — no algo_source
+ * envelope); oscs 1..N are PARTIAL sines summed additively - no algo_source
  * routing, AMY derives the child set from preset + osc adjacency. Intercepted
- * before amy_send_patch() exactly like the FM range. ORGAN/BELL are fixed
- * presets (see additive_presets.c); ADDITIVE_CUSTOM is the single
- * live-editable voice (custompatches/additive_voice.h), global not per-layer,
- * playing its drawbar-organ default until an additive editor screen lands.
- * Numbered to start unconditionally after the FM range for the same reason FM
- * sits above the wavetables: patch numbers never shift under a build-flag
- * change and the virtual ranges can never collide. */
+ * before amy_send_patch() like the FM range. ORGAN/BELL are fixed presets
+ * (additive_presets.c); ADDITIVE_CUSTOM is the single live-editable voice
+ * (custompatches/additive_voice.h), global not per-layer, playing its
+ * drawbar-organ default until an additive editor screen lands. Numbered
+ * unconditionally after the FM range, same reason as FM above the wavetables. */
 #define SEQ_PATCH_ADDITIVE_BASE    277
 #define SEQ_PATCH_ADDITIVE_ORGAN   277   /* drawbar organ, 8 harmonics, 1/n  */
 #define SEQ_PATCH_ADDITIVE_BELL    278   /* inharmonic free-bar bell ratios  */
@@ -136,14 +127,12 @@ static inline bool sequencer_core_lfo_native_layout(uint16_t patch,
 #define SEQ_PATCH_ADDITIVE_MAX     279
 #define SEQ_PATCH_ROUTABLE_MAX SEQ_PATCH_ADDITIVE_MAX
 
-/* True when `patch` falls in a virtual range whose feature is NOT compiled
- * into this build. The single compile-awareness point for the whole patch
- * space: browse domains skip these numbers via their `excluded` predicate
- * (patch_cycle.h) and the patch-kind dispatch snaps them to a safe fallback,
- * so a new gated range only needs a clause here — no ceiling cascade, no
- * per-consumer hardcoded holes. Patch numbers are fixed unconditionally
- * (ranges never renumber under build flags), which is what makes holes
- * possible in the first place. */
+/* True when `patch` falls in a virtual range whose feature is NOT compiled in.
+ * The single compile-awareness point for the whole patch space: browse domains
+ * skip these via their `excluded` predicate (patch_cycle.h) and the patch-kind
+ * dispatch snaps them to a safe fallback, so a new gated range needs only a
+ * clause here - no ceiling cascade, no per-consumer hardcoded holes. Ranges
+ * never renumber under build flags, which is what makes holes possible. */
 static inline bool sequencer_core_patch_compiled_out(uint16_t patch)
 {
 #if !CONFIG_AMY_WAVETABLE
@@ -159,10 +148,10 @@ static inline bool sequencer_core_patch_compiled_out(uint16_t patch)
     return false;
 }
 
-/* Browse/clamp ceiling. Always the top of the numbering space: compiled-out
- * ranges inside it are skipped dynamically by
- * sequencer_core_patch_compiled_out() rather than by shrinking the ceiling
- * (which could not express interior holes, e.g. additive on with FM off). */
+/* Browse/clamp ceiling: always the top of the numbering space. Compiled-out
+ * ranges are skipped dynamically by sequencer_core_patch_compiled_out(), not by
+ * shrinking this, which could not express interior holes (additive on, FM
+ * off). */
 #define SEQ_PATCH_FULL_MAX SEQ_PATCH_ROUTABLE_MAX
 
 /* ── BPM range & default (shared with synth_ui for boot initialisation) ── */
@@ -187,24 +176,18 @@ uint8_t sequencer_core_get_quantizer_scale(void);
 void     sequencer_core_set_layer_patch(uint8_t layer_idx, uint16_t patch_number);
 uint16_t sequencer_core_get_layer_patch(uint8_t layer_idx);
 
-/* Re-push the live custom FM voice (custompatches/fm_voice.h's s_fm_voice) to
- * every melodic row currently on SEQ_PATCH_FM_CUSTOM. Called by the FM UI
- * screen after any encoder edit to algorithm/ratio/level/feedback. No-op if
- * no row is on that patch. */
+/* Re-push the live custom FM voice (s_fm_voice) to every melodic row on
+ * SEQ_PATCH_FM_CUSTOM. Called by the FM UI screen after any edit. */
 void sequencer_core_fm_voice_changed(void);
 
-/* Re-push the live custom additive voice (custompatches/additive_voice.h's
- * s_additive_voice) to every melodic row currently on
- * SEQ_PATCH_ADDITIVE_CUSTOM, plus the arp if it is playing it. Called by the
- * (future) additive UI screen after any encoder edit to ratio/level. No-op if
- * nothing is on that patch. */
+/* Re-push the live custom additive voice (s_additive_voice) to every melodic
+ * row on SEQ_PATCH_ADDITIVE_CUSTOM, plus the arp if it is playing it. For the
+ * future additive UI screen. */
 void sequencer_core_additive_voice_changed(void);
 
 /* ── Drum per-track patch (curated Juno list) ──
- * Drum layers are per-track Juno-patch layers: each track owns its own patch.
- * set/get operate on (layer_idx, track); cycle steps the curated drum list by
- * `dir` (+/-1) and returns the newly-applied patch. No-ops for non-drum/out-of-
- * range layers. */
+ * Each drum track owns its own patch. cycle steps the curated list by `dir`
+ * and returns the newly-applied patch. No-ops for non-drum/out-of-range. */
 void     sequencer_core_set_drum_patch(uint8_t layer_idx, uint8_t track,
                                        uint16_t patch_number);
 uint16_t sequencer_core_get_drum_patch(uint8_t layer_idx, uint8_t track);
@@ -212,13 +195,10 @@ uint16_t sequencer_core_cycle_drum_patch(uint8_t layer_idx, uint8_t track,
                                          int dir);
 
 /* ── Drum sound source (whole-layer Synth vs PCM) ──
- * SEQ_DRUM_SYNTH = tonal AMY patches (Juno/DX7) per track, shaped by the
- * accent/jitter velocity + per-track pitch + EG0 path. SEQ_DRUM_PCM = the
- * built-in Roland-808 samples per track, routed through the SAME velocity +
- * pitch path (render_pcm tunes the sample by midi_note), so PCM hits are
- * humanized rather than the old fixed-velocity "machine-gun" feel. The toggle
- * applies to the entire drum layer; set re-configures the drum synth slots in
- * place (safe while playing). */
+ * SEQ_DRUM_SYNTH = tonal AMY patches per track; SEQ_DRUM_PCM = built-in 808
+ * samples. Both route through the SAME velocity + pitch path (render_pcm tunes
+ * the sample by midi_note), so PCM hits are humanized too. Whole-layer; set
+ * reconfigures the drum synth slots in place, safe while playing. */
 typedef enum {
     SEQ_DRUM_SYNTH = 0,
     SEQ_DRUM_PCM   = 1,
@@ -228,47 +208,40 @@ void              sequencer_core_set_drum_engine(seq_drum_engine_t engine);
 seq_drum_engine_t sequencer_core_get_drum_engine(void);
 
 /* ── Drum per-track PCM preset override ──
- * PCM mode plays SEQ_DRUM_PCM_PRESET[track] (built-in 808 samples) by
- * default; this lets a runtime-recorded sample (custompatches/sample_rec)
- * replace one track's preset without adding a shared-struct field. Live-
- * reloads the track's osc immediately if the layer is already in PCM mode;
- * otherwise the override is stored and takes effect on the next
- * sequencer_core_set_drum_engine(SEQ_DRUM_PCM) call. No-op for non-drum/
- * out-of-range layers. */
+ * PCM mode defaults to SEQ_DRUM_PCM_PRESET[track]; this lets a runtime-recorded
+ * sample (custompatches/sample_rec) replace one track's preset without a
+ * shared-struct field. Live-reloads the track's osc when PCM is already active,
+ * otherwise takes effect on the next set_drum_engine(SEQ_DRUM_PCM). No-op for
+ * non-drum/out-of-range layers. */
 void     sequencer_core_set_drum_pcm_preset(uint8_t layer_idx, uint8_t track,
                                             uint16_t preset_number);
 uint16_t sequencer_core_get_drum_pcm_preset(uint8_t layer_idx, uint8_t track);
 
-/* Step one drum track's PCM preset dir (+/-1) through the combined drum
- * sample space: the compiled-in ROM bank (0 .. pcm_wavetable_base-1) followed
- * by the gamma9001 banks (presets 256..391) when their sample blob is mounted
- * — wavetable and runtime memory presets excluded, wrapping at the ends. A
- * track currently on a memory preset (sample_rec override) steps back into
- * the domain at the near end. Live-reloads the track's osc when the PCM
- * engine is active. Returns the newly-applied preset, or 0 for non-drum/
- * out-of-range layers. */
+/* Step one drum track's PCM preset by `dir` through the combined drum sample
+ * space: the ROM bank (0 .. pcm_wavetable_base-1) then the gamma9001 banks
+ * (256..391) when their blob is mounted, wrapping, with wavetable and memory
+ * presets excluded. A track on a memory preset (sample_rec override) steps back
+ * in at the near end. Live-reloads the osc when PCM is active. Returns the new
+ * preset, or 0 for non-drum/out-of-range layers. */
 uint16_t sequencer_core_cycle_drum_pcm_preset(uint8_t layer_idx, uint8_t track,
                                               int dir);
 
 /* ── Drum source selector (menu "Drum Bank") ──
- * One flat domain for the menu item: optionally the Synth engine
- * (CONFIG_SYNTH_DRUM_SYNTH_MODE), then the ROM 808 bank, then each gamma9001
- * bank (909/Linn/MR12/...; listed only while the drums partition is mounted).
- * Selecting a PCM bank forces the PCM engine and re-seeds every drum track
- * with that bank's role defaults (kick/snare/hat/clap analog) — the pattern
- * keeps playing, only the sound source swaps. The selector position reflects
- * the last applied source; per-track presets remain freely cyclable across
- * banks afterwards. */
+ * One flat domain: optionally the Synth engine (CONFIG_SYNTH_DRUM_SYNTH_MODE),
+ * then the ROM 808 bank, then each gamma9001 bank (listed only while the drums
+ * partition is mounted). Selecting a PCM bank forces the PCM engine and
+ * re-seeds every drum track with that bank's role defaults; the pattern keeps
+ * playing. The selector shows the last applied source, and per-track presets
+ * stay freely cyclable across banks afterwards. */
 uint8_t     sequencer_core_drum_source_count(void);
 const char *sequencer_core_drum_source_name(uint8_t idx);
 uint8_t     sequencer_core_get_drum_source(void);
 void        sequencer_core_set_drum_source(uint8_t idx);
 
 /* ── Per-row melodic ADSR envelope (runtime-editable) ──
- * Scoped per row (per track); each row has its own AMY synth, so its envelope
- * is fully independent. See seq_env_t in seq_model.h for the extension path
- * to per-step. get returns false for non-melodic/out-of-range. set clamps,
- * stores, and pushes the envelope to that row's own synth. */
+ * Per track; each row has its own AMY synth, so envelopes are independent (see
+ * seq_env_t in seq_model.h for the per-step extension path). get returns false
+ * for non-melodic/out-of-range; set clamps, stores and pushes to the row. */
 bool sequencer_core_get_melodic_envelope(uint8_t layer_idx, uint8_t track,
                                          seq_env_t *out);
 void sequencer_core_set_melodic_envelope(uint8_t layer_idx, uint8_t track,
@@ -276,19 +249,18 @@ void sequencer_core_set_melodic_envelope(uint8_t layer_idx, uint8_t track,
 
 /* ── Per-row second envelope (EG1, runtime-editable) ──
  * Independent AMY breakpoint generator, parallel to the EG0 accessors above.
- * Whether it is audible depends entirely on the loaded patch/preset: it does
- * nothing unless some coef (typically filter_freq_coefs) targets COEF_EG1 —
- * either baked into a patch string, or into one of our own custom presets
- * (see AMY-EDITS.md / bass_presets.c). Same deferred-authority model as EG0. */
+ * Audible only if some coef (typically filter_freq_coefs) targets COEF_EG1,
+ * whether baked into a patch string or into one of our custom presets (see
+ * AMY-EDITS.md / bass_presets.c). Same deferred-authority model as EG0. */
 bool sequencer_core_get_melodic_envelope2(uint8_t layer_idx, uint8_t track,
                                           seq_env_t *out);
 void sequencer_core_set_melodic_envelope2(uint8_t layer_idx, uint8_t track,
                                           const seq_env_t *env);
 
 /* ── Per-track amplitude trim (graph editor amp mode) ──
- * 0..1 multiplier on note velocity. Default 1.0 (unity; set init in add_layer).
- * get returns 1.0 for invalid layer/track. set is a store-only op; the new
- * value is applied on the next sequencer_emit_step() call for that track. */
+ * 0..1 multiplier on note velocity, default 1.0 (initialised in add_layer).
+ * get returns 1.0 for invalid layer/track. set is store-only: the value applies
+ * on that track's next sequencer_emit_step(). */
 float sequencer_core_get_melodic_amp_scale(uint8_t layer_idx, uint8_t track);
 void  sequencer_core_set_melodic_amp_scale(uint8_t layer_idx, uint8_t track,
                                            float v);
@@ -303,17 +275,16 @@ void sequencer_core_set_melodic_filter(uint8_t layer_idx, uint8_t track,
                                        const seq_filter_t *f);
 
 /* Push a filter directly to an arbitrary AMY synth slot (shared by arp/drone).
- * is_ks: when true, also pushes f->resonance through sequencer_core_ks_feedback_from_q()
- * into the synth's KS feedback field (independent of f->enabled — KS feedback is
- * intrinsic to the oscillator, not the optional post-render filter). */
+ * is_ks also pushes f->resonance through sequencer_core_ks_feedback_from_q()
+ * into the synth's KS feedback field, independent of f->enabled: KS feedback is
+ * intrinsic to the oscillator, not the optional post-render filter. */
 void sequencer_core_push_filter(uint8_t synth, const seq_filter_t *f, bool is_ks);
 
-/* ── Editor live-preview (AMY only; the store and authored flags are untouched) ──
- * Audition scratch editor values against the running engine. Cancel restores by
- * re-pushing the stored state through these same calls — or, for rows never
- * authored (whose live state came from the patch itself), by
- * sequencer_core_reload_layer_synth(), which re-applies the patch and every
- * stored parameter to the layer's slots (brief voice restart). */
+/* ── Editor live-preview (AMY only; store and authored flags untouched) ──
+ * Audition scratch editor values against the running engine. Cancel re-pushes
+ * the stored state through these same calls - or, for never-authored rows whose
+ * live state came from the patch itself, calls
+ * sequencer_core_reload_layer_synth() (brief voice restart). */
 void sequencer_core_preview_melodic_envelope(uint8_t layer_idx, uint8_t track,
                                              const seq_env_t *env);
 void sequencer_core_preview_melodic_envelope2(uint8_t layer_idx, uint8_t track,
@@ -325,10 +296,10 @@ bool sequencer_core_melodic_env_authored(uint8_t layer_idx, uint8_t track,
 bool sequencer_core_melodic_filter_authored(uint8_t layer_idx, uint8_t track);
 void sequencer_core_reload_layer_synth(uint8_t layer_idx);
 
-/* Map a Q value (same [0.51, 8.0] range enforced by sequencer_core_set_melodic_filter)
- * linearly onto AMY's KS oscillator feedback range [0.0, 1.0]. Q=8.0 -> feedback=1.0
- * is the verified-safe ceiling (lossless two-tap averaging filter, the classic
- * "infinite sustain" Karplus-Strong case); above 1.0 the KS buffer would diverge. */
+/* Map a Q value (the [0.51, 8.0] range set_melodic_filter enforces) linearly
+ * onto AMY's KS feedback range [0.0, 1.0]. Q=8.0 -> feedback=1.0 is the safe
+ * ceiling (lossless two-tap average, classic infinite-sustain Karplus-Strong);
+ * above 1.0 the KS buffer diverges. */
 float sequencer_core_ks_feedback_from_q(float q);
 
 /* ── Per-track melodic LFO (tempo-synced software modulator) ─────────────
@@ -346,43 +317,37 @@ uint8_t sequencer_core_get_current_step(uint8_t layer_idx);
 
 /* ── Layer management ── */
 
-/* Single-applier contract for structural s_layers edits: after boot-time init,
- * every add_layer/delete_layer call must run on ONE task (synth_ui_task, which
- * drains the UI's deferred add/delete requests) — the same discipline
- * s_prog_apply_pending uses for chord edits. Other contexts request the edit
- * via synth_ui_request_add_layer()/synth_ui_request_delete_to_layer() instead
- * of calling these directly. Register the applier task here so debug builds
- * can assert the contract; until a handle is registered (single-threaded
- * boot init) the assert is skipped. */
+/* Single-applier contract for structural s_layers edits: after boot init every
+ * add_layer/delete_layer must run on ONE task (synth_ui_task, which drains the
+ * UI's deferred requests) - the same discipline s_prog_apply_pending uses.
+ * Other contexts go through synth_ui_request_add_layer() /
+ * synth_ui_request_delete_to_layer(). Registering the applier here lets debug
+ * builds assert the contract; before registration the assert is skipped. */
 void             sequencer_core_set_layers_applier(TaskHandle_t applier);
 
-/* Add a new layer. Returns the new layer index (0..MAX_LAYERS-1), or
- * 0xFF if the layer table is full. Configures the AMY synth immediately.
- * Structural edit — applier-task only (see above). */
+/* Add a new layer, returning its index or 0xFF when the table is full.
+ * Configures the AMY synth immediately. Applier-task only (see above). */
 uint8_t          sequencer_core_add_layer(seq_layer_type_t type, uint8_t num_steps);
-/* Delete a melodic layer by index. Returns false if the layer is the drum
- * layer (idx 0), the only remaining layer, or out of range. Cancels all
- * scheduled tags for all layers, frees the deleted layer's AMY oscillator
- * slots, compacts the layer array, and resyncs surviving layers if playing.
- * Structural edit — applier-task only (see above). */
+/* Delete a melodic layer. False for the drum layer (idx 0), the last remaining
+ * layer, or out of range. Cancels all scheduled tags, frees the layer's AMY
+ * oscillator slots, compacts the array and resyncs survivors if playing.
+ * Applier-task only (see above). */
 bool             sequencer_core_delete_layer(uint8_t layer_idx);
 uint8_t          sequencer_core_get_num_layers(void);
 seq_layer_type_t sequencer_core_get_layer_type(uint8_t layer_idx);
 
 /* ── Project snapshot support ──
- * Bulk export/import of one layer's full persistable state, for the project
- * loader (components/project_store) to serialize/restore without going
- * through per-field setters. Applier-task only — same single-writer contract
- * as add_layer/delete_layer above (synth_ui_task drains these). */
+ * Bulk export/import of one layer's persistable state, so the project loader
+ * (components/project_store) need not go through per-field setters.
+ * Applier-task only - same single-writer contract as add/delete_layer. */
 
 /* Copy layer layer_idx's persistable state into *out. False if out of range. */
 bool sequencer_core_export_layer(uint8_t layer_idx, seq_layer_t *out);
 
-/* Overwrite layer layer_idx's persistable fields from *src, re-push patches /
- * envelopes / filters / LFO to the layer's synths, and resync scheduled steps.
- * Runtime-owned fields (synth_id, num_tracks) keep their live values;
- * step_page resets to 0. Applier-task only (same contract as
- * add/delete_layer). */
+/* Overwrite the layer's persistable fields from *src, re-push
+ * patches/envelopes/filters/LFO, and resync scheduled steps. Runtime-owned
+ * fields (synth_id, num_tracks) keep their live values; step_page resets to 0.
+ * Applier-task only. */
 bool sequencer_core_import_layer(uint8_t layer_idx, const seq_layer_t *src);
 
 /* ── Per-layer step / note control ── */
@@ -393,27 +358,23 @@ void    sequencer_core_set_track_midi_note(uint8_t layer_idx, uint8_t track,
 uint8_t sequencer_core_get_track_midi_note(uint8_t layer_idx, uint8_t track);
 uint8_t sequencer_core_get_track_source_note(uint8_t layer_idx, uint8_t track);
 
-/* ── Chord presets (seq_chords.h) — engine hooks ──
- * chord_slot_changed: sweep every melodic track referencing chord slot `idx`
- * after a table edit — re-emit, reconfigure the voice count when it changed,
- * and fall back to the track's last plain note when the slot went undefined.
- * Called automatically by seq_chords_set/clear; UI-task (single-applier) only.
- * audition_chord: one-shot preview of an arbitrary chord (not necessarily
- * stored yet) through track (layer_idx,track)'s synth — the chord editor's
- * per-edit audition. */
+/* ── Chord presets (seq_chords.h) - engine hooks ──
+ * chord_slot_changed: after a table edit, sweep every melodic track referencing
+ * slot `idx` - re-emit, reconfigure the voice count when it changed, fall back
+ * to the track's last plain note when the slot went undefined. Called
+ * automatically by seq_chords_set/clear; UI-task (single-applier) only.
+ * audition_chord: one-shot preview of an arbitrary, possibly unstored chord
+ * through that track's synth. */
 void sequencer_core_chord_slot_changed(uint8_t idx);
 void sequencer_core_audition_chord(uint8_t layer_idx, uint8_t track,
                                    const seq_chord_t *chord);
 
 /* ── Per-step probability / ratchet / conditional trig ────────────────────
  * A step with prob==100 && ratchet==1 && cond==NONE is "plain" and costs
- * nothing extra (same always-on periodic AMY tag as before this feature).
- * Any other combination routes that one step through
- * sequencer_core_service_tick()'s one-shot per-loop scheduling instead — see
- * seq_core_trig.c for the engine. All four setters clamp their input and
- * immediately re-emit the step so the change is audible on its next
- * occurrence; all four getters return the "plain" default for an
- * out-of-range layer/track/step. */
+ * nothing extra: an always-on periodic AMY tag. Any other combination routes
+ * that step through sequencer_core_service_tick()'s one-shot per-loop
+ * scheduling instead (engine in seq_core_trig.c). Setters clamp and re-emit the
+ * step immediately; getters return the "plain" default when out of range. */
 void    sequencer_core_set_step_prob(uint8_t layer_idx, uint8_t track,
                                      uint8_t step, uint8_t prob_pct);
 uint8_t sequencer_core_get_step_prob(uint8_t layer_idx, uint8_t track,
@@ -430,11 +391,11 @@ void    sequencer_core_get_step_cond(uint8_t layer_idx, uint8_t track,
                                      uint8_t *param);
 
 /* ── Per-step note transform + quantize bypass (OP-Z step-component subset) ──
- * A step with transform==SEQ_STEP_TRANSFORM_NONE is unchanged (plain path). Any
- * other mode offsets the emitted pitch per fire and routes the step through the
- * decorated one-shot scheduler. quant_bypass rides on the transform: when set,
- * the transformed pitch skips the scale/chord snap and plays chromatically;
- * with NONE it has no effect. The setter clamps and re-emits the step. */
+ * transform==SEQ_STEP_TRANSFORM_NONE keeps the plain path. Any other mode
+ * offsets the emitted pitch per fire and routes the step through the decorated
+ * one-shot scheduler. quant_bypass rides on the transform: it makes the
+ * transformed pitch skip the scale/chord snap, and does nothing under NONE.
+ * The setter clamps and re-emits the step. */
 void    sequencer_core_set_step_transform(uint8_t layer_idx, uint8_t track,
                                           uint8_t step, seq_step_transform_t mode,
                                           bool quant_bypass);
@@ -442,34 +403,30 @@ void    sequencer_core_get_step_transform(uint8_t layer_idx, uint8_t track,
                                           uint8_t step, seq_step_transform_t *mode,
                                           bool *quant_bypass);
 
-/* Evaluate one AMY sequencer tick's worth of decorated-step bookkeeping:
- * detects step-boundary crossings per layer and, for any step that is
- * "decorated" (see above), rolls its conditional trig + probability and
- * one-shot schedules its ratchet sub-hits. Must be called once per AMY
- * sequencer tick — main.c wires this into amy_cfg.amy_external_sequencer_hook,
- * which already runs at that cadence (~2 kHz worst case, esp_timer task,
- * Core 0). No-op while paused. */
+/* One AMY sequencer tick's worth of decorated-step bookkeeping: detect
+ * step-boundary crossings per layer and, for any decorated step, roll its
+ * conditional trig + probability and one-shot schedule its ratchet sub-hits.
+ * Must run once per AMY sequencer tick - main.c wires it into
+ * amy_cfg.amy_external_sequencer_hook, which runs at that cadence. No-op while
+ * paused. */
 void sequencer_core_service_tick(void);
 
 /* ── Generic envelope push ────────────────────────────────────────────────
- * Push an ADSR (EG0 breakpoint set) to an arbitrary AMY synth slot's voices.
- * Shared by the arp and the standalone drone so they reuse the exact same EG0
- * delta path as the melodic layers. The synth's osc0 must have its amp EG0 coef
- * enabled (patch-loaded synths do by default; the drone enables it explicitly).
- * Does nothing for an out-of-range eg_type. */
+ * Push an ADSR (EG0 breakpoint set) to an arbitrary AMY synth slot's voices, so
+ * the arp and drone reuse the melodic layers' EG0 delta path. The synth's osc0
+ * must have its amp EG0 coef enabled - patch-loaded synths do by default, the
+ * drone enables it explicitly. No-op for an out-of-range eg_type. */
 void sequencer_core_push_envelope(uint8_t synth, const seq_env_t *env);
 
 /* Push env into the given synth/osc's EG1 breakpoint set (bp_is_set[1]).
- * `osc` lets a caller target a non-zero oscillator (e.g. a bass preset whose
- * filter lives on osc 1); melodic rows, the arp, and the drone all target
- * osc 0. Whichever coef is wired to COEF_EG1 (filter_freq_coefs in every
- * current use) is what actually moves — this call only supplies the timing. */
+ * `osc` lets a caller target a non-zero oscillator (a bass preset whose filter
+ * lives on osc 1); melodic rows, arp and drone all target osc 0. This supplies
+ * only the timing - whatever coef is wired to COEF_EG1 is what moves. */
 void sequencer_core_push_envelope_eg1(uint8_t synth, uint8_t osc, const seq_env_t *env);
 
 /* ── Arpeggiator support ──────────────────────────────────────────────────
- * The arp lives in its own module (arp_core) but routes all AMY traffic
- * through these helpers so it reuses the one shared event buffer + mutex and
- * never races the sequencer. The arp owns a dedicated synth slot. */
+ * The arp lives in arp_core but routes all AMY traffic through these helpers,
+ * so it shares the one event buffer + mutex and never races the sequencer. */
 
 /* Dedicated AMY synth slot reserved for the arp. */
 uint8_t sequencer_core_arp_synth(void);
@@ -486,9 +443,8 @@ void sequencer_core_arp_configure(uint16_t patch_number, uint8_t num_voices,
 
 /* (Re)configure an out-of-band dedicated synth slot with any routable patch
  * (flags = 0, neutral filter/KS authoring). Kills sounding voices first and
- * reasserts global FX when the patch was a string patch. For slot owners
- * outside the track allocator (live play); track and arp slots have their
- * own entry points above. */
+ * reasserts global FX for string patches. For slot owners outside the track
+ * allocator (live play); track and arp slots have their own entry points. */
 void sequencer_core_configure_synth_slot(uint8_t synth_id, uint16_t patch_number,
                                          uint8_t num_voices);
 
@@ -524,21 +480,19 @@ seq_repeat_rate_t sequencer_core_get_track_repeat_rate(uint8_t layer_idx,
                                                        uint8_t track);
 
 /* ── Per-layer swing / shuffle ────────────────────────────────────────────
- * Delays odd 16th-steps by swing_pct% of one step (0..SEQ_SWING_MAX). Whole
- * layer, all tracks. 0 = straight (default). Re-emits the layer immediately so
- * AMY re-schedules every step at its swung tick. Mirrors the drone swing model
- * (drone_set_swing). Engine + API only for now; no UI wiring yet. */
+ * Delays odd 16th-steps by swing_pct% of one step (0..SEQ_SWING_MAX), whole
+ * layer, 0 = straight. Re-emits the layer so AMY reschedules every step at its
+ * swung tick. Mirrors drone_set_swing. Engine + API only; no UI wiring yet. */
 void    sequencer_core_set_layer_swing(uint8_t layer_idx, uint8_t swing_pct);
 uint8_t sequencer_core_get_layer_swing(uint8_t layer_idx);
 
 /* ── Per-layer melodic NoteFX (gate length + glide + groove) ──────────────────
- * GATE: melodic note-hold as a % of the step (10..100; 100 = full-step legato),
- * applied at emit time. GLIDE: AMY-native portamento between step pitches
- * (0..SEQ_MELODIC_PORTAMENTO_MAX_MS, 0 = off). GROOVE: how much of the baked
- * accent/humanize velocity curve applies (0..100; 100 = full legacy feel,
- * 0 = flat velocity 1.0), scaled at emit time in sequencer_step_velocity().
- * All are per-layer and no-op on drum layers. Edited from the NoteFX menu page
- * (ui_screen_notefx.c). */
+ * GATE: note-hold as a % of the step (10..100, 100 = legato), applied at emit
+ * time. GLIDE: AMY-native portamento between step pitches
+ * (0..SEQ_MELODIC_PORTAMENTO_MAX_MS, 0 = off). GROOVE: how much of the
+ * accent/humanize velocity curve applies (0..100, 0 = flat 1.0), scaled at emit
+ * time in sequencer_step_velocity(). All per-layer, all no-ops on drum layers.
+ * Edited from the NoteFX menu page (ui_screen_notefx.c). */
 void     sequencer_core_set_melodic_gate_pct(uint8_t layer_idx, uint8_t gate_pct);
 uint8_t  sequencer_core_get_melodic_gate_pct(uint8_t layer_idx);
 void     sequencer_core_set_melodic_portamento_ms(uint8_t layer_idx, uint16_t ms);
@@ -547,14 +501,12 @@ void     sequencer_core_set_melodic_groove_pct(uint8_t layer_idx, uint8_t groove
 uint8_t  sequencer_core_get_melodic_groove_pct(uint8_t layer_idx);
 
 /* ── Per-track mute / solo ────────────────────────────────────────────────
- * Scoped per layer: solo only compares against the other tracks of the SAME
- * layer, not across layers. Standard mixing-desk semantics — if any track in
- * the layer is soloed, only soloed tracks are audible; solo overrides mute,
- * including on a track that is itself both muted and soloed. Gated in the
- * tick/emit path (sequencer_emit_step): an inaudible track's grid steps are
- * cancelled instead of scheduled, so it never produces a note-on. Both setters
- * hard-kill the affected synth slot's live voices so the change is heard
- * immediately, not just on the next scheduled note. */
+ * Scoped per layer: solo compares only against tracks of the SAME layer.
+ * Mixing-desk semantics - any solo in the layer mutes the rest, and solo
+ * overrides mute even on a track that is both. Gated in sequencer_emit_step():
+ * an inaudible track's steps are cancelled rather than scheduled, so it never
+ * produces a note-on. Both setters hard-kill the affected slot's live voices so
+ * the change is heard immediately. */
 void sequencer_core_set_track_mute(uint8_t layer_idx, uint8_t track, bool mute);
 bool sequencer_core_get_track_mute(uint8_t layer_idx, uint8_t track);
 void sequencer_core_set_track_solo(uint8_t layer_idx, uint8_t track, bool solo);
@@ -571,13 +523,13 @@ bool    sequencer_core_progression_get_enabled(void);
 void    sequencer_core_progression_set_apply_at_bar(bool at_bar);
 bool    sequencer_core_progression_get_apply_at_bar(void);
 /* Drop the progression's captured pre-enable arp root/scale without restoring
- * it. For project load only: the freshly loaded arp values become the new
- * baseline, so a stale capture must not be restored over them on disable. */
+ * it. Project load only: the freshly loaded arp values are the new baseline, so
+ * a stale capture must not be restored over them on disable. */
 void    sequencer_core_progression_reset_arp_capture(void);
-/* True while the progression is driving the arp's root/scale (from the first
- * chord apply until disable restores the captured values). Used by the arp's
- * follow-global-quantizer mode: an active progression chord wins over the
- * global scale, mirroring melodic chord_mode precedence. */
+/* True while the progression drives the arp's root/scale (first chord apply
+ * until disable restores the capture). The arp's follow-global-quantizer mode
+ * uses this so an active progression chord wins over the global scale,
+ * mirroring melodic chord_mode precedence. */
 bool    sequencer_core_progression_arp_owned(void);
 void    sequencer_core_progression_set_entry(uint8_t idx, uint8_t root,
                                              chord_type_t chord_type,

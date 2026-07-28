@@ -6,39 +6,34 @@
  * ════════════════════════════════════════════════════════════════════════
  *
  * A step is "plain" when step_prob==100 && step_ratchet==1 &&
- * step_cond_type==NONE: it keeps using sequencer_emit_step()'s original
- * always-on repeating AMY sequence tag (seq_core_engine.c) — zero added cost,
- * zero behaviour change from before this file existed.
+ * step_cond_type==NONE: it keeps sequencer_emit_step()'s always-on repeating
+ * AMY sequence tag (seq_core_engine.c) at zero added cost.
  *
  * Any other combination makes the step "decorated". sequencer_emit_step()
- * (seq_core_engine.c) leaves such a step's plain ON/OFF tag pair cleared, and
- * sequencer_core_service_tick() — called once per AMY sequencer tick from the
- * existing 500us sequencer poll hook (main.c) — takes over: it detects the
- * moment a layer's playhead crosses into a new step (O(1) integer compare per
- * layer per tick; the per-track decoration check only runs on that edge, so
- * the steady-state per-tick cost is a handful of layer-count comparisons, not
- * a scan of every step), evaluates the step's conditional trig and
- * probability roll, and — if it should sound — one-shot schedules
- * step_ratchet sub-hits on a dedicated tag range reserved solely for this
- * (SEQ_RATCHET_TAG_BASE.., see seq_core_config.h).
+ * leaves such a step's plain ON/OFF tag pair cleared and
+ * sequencer_core_service_tick() - called once per AMY sequencer tick from the
+ * sequencer hook in main.c - takes over: it detects a layer's playhead
+ * crossing into a new step (O(1) compare per layer per tick, with the per-track
+ * decoration check only on that edge, so steady state costs a few comparisons
+ * rather than a scan of every step), evaluates the conditional trig and
+ * probability roll, and one-shot schedules step_ratchet sub-hits on the
+ * dedicated tag range (SEQ_RATCHET_TAG_BASE.., seq_core_config.h).
  */
 
 /* ── State (per MAX_LAYERS[/xSEQ_TRACKS]) ────────────────────────────────
- * Runtime bookkeeping only — never persisted, never carries pattern data
- * (that lives in seq_layer_t and rides along with its own memmove/memset).
- * Deliberately reset wholesale (sequencer_core_trig_reset_all) on any layer
- * add/delete rather than shifted in lockstep with compaction — see the
- * call-site comments in seq_core_state.c for the rationale. */
+ * Runtime bookkeeping only - never persisted, never pattern data (that lives
+ * in seq_layer_t). Deliberately reset wholesale by
+ * sequencer_core_trig_reset_all() on any layer add/delete rather than shifted
+ * in lockstep with compaction; rationale at the call sites in
+ * seq_core_state.c. */
 uint32_t s_layer_loop_count[MAX_LAYERS];
 uint8_t  s_layer_last_step[MAX_LAYERS];
 bool     s_track_last_played[MAX_LAYERS][SEQ_TRACKS];
 
-/* Dedicated xorshift32 PRNG, independent of seq_core_editors.c's s_lfo_rng_state:
- * that one is mutated from synth_ui_task (Core 0, 20 Hz); this one is mutated
- * exclusively from sequencer_core_service_tick(), which itself only ever runs
- * on the esp_timer "sequencer" task callback (also Core 0, but a different
- * task) — sharing one PRNG across two independently-scheduled tasks would be
- * a real (if narrow) data race. */
+/* Dedicated xorshift32 PRNG, kept separate from seq_core_editors.c's
+ * s_lfo_rng_state: that one is mutated from synth_ui_task, this one only from
+ * sequencer_core_service_tick() on the AMY sequencer-hook task. Sharing one
+ * PRNG across two independently-scheduled tasks would be a real data race. */
 static uint32_t s_trig_rng_state = 0xA53C9E17u;
 
 static inline uint8_t trig_rand_pct(void)
@@ -52,17 +47,16 @@ static inline uint8_t trig_rand_pct(void)
 }
 
 /* Semitone span shared by every non-NONE transform mode: RANDOM offsets by
- * +/-SEQ_STEP_TRANSFORM_SPAN, RAMP walks 0..SEQ_STEP_TRANSFORM_SPAN across
- * successive layer loops then wraps. Fixed (no per-step param array) to keep
- * the OP-Z step-component subset minimal; one octave reads musically once the
- * result is re-snapped to the scale. */
+ * +/-SPAN, RAMP walks 0..SPAN across successive layer loops then wraps. Fixed
+ * rather than a per-step param, to keep the step-component subset minimal; one
+ * octave reads musically once the result is re-snapped to the scale. */
 #define SEQ_STEP_TRANSFORM_SPAN 12
 
-/* Per-step pitch transform (spec 20 §3.1), split into "which offset does this
- * fire get" so single notes and chord voicings share one PRNG/loop-counter
- * draw per fire. Returns true when a transform mode is active and writes the
- * semitone offset; false (offset 0) for SEQ_STEP_TRANSFORM_NONE. All integer
- * math: no float, no lock, safe on the Core-0 service-tick task. */
+/* Per-step pitch transform, factored as "which offset does this fire get" so
+ * single notes and chord voicings share one PRNG/loop-counter draw per fire.
+ * Returns true and writes the semitone offset when a transform is active, false
+ * (offset 0) for NONE. Integer math only: no float, no lock, safe on the
+ * service-tick task. */
 static bool trig_transform_offset(uint8_t layer_idx, const seq_layer_t *layer,
                                   uint8_t track, uint8_t step, int *offset)
 {
@@ -87,11 +81,10 @@ static bool trig_transform_offset(uint8_t layer_idx, const seq_layer_t *layer,
 }
 
 /* ── Ratchet tag formula ──────────────────────────────────────────────────
- * Statically assigned per (layer, track, ratchet-slot) — never pooled/shared
- * across tracks — so a slow ratchet group can never overwrite another
- * track's in-flight schedule. Only one step per track is ever "current" at
- * a time, so SEQ_MAX_RATCHET dedicated slots per track fully cover the worst
- * case (see seq_core_config.h for the tag-space layout comment). */
+ * Statically assigned per (layer, track, ratchet-slot), never pooled across
+ * tracks, so a slow ratchet group cannot overwrite another track's in-flight
+ * schedule. Only one step per track is ever current, so SEQ_MAX_RATCHET slots
+ * per track cover the worst case. Tag-space layout: seq_core_config.h. */
 static inline uint32_t ratchet_slot_index(uint8_t layer, uint8_t track, uint8_t slot)
 {
     return ((uint32_t)layer * SEQ_TRACKS + track) * SEQ_MAX_RATCHET + slot;
@@ -109,9 +102,8 @@ static inline uint32_t ratchet_off_tag(uint8_t layer, uint8_t track, uint8_t slo
 
 /* ── Chord-tone tag formula ───────────────────────────────────────────────
  * Extra chord tones (1..SEQ_CHORD_MAX_NOTES-1; tone 0 rides the ratchet tags
- * above) get their own statically assigned one-shot pair per (layer, track,
- * ratchet-slot, tone), mirroring the ratchet scheme — never pooled, so a slow
- * chord ratchet can't overwrite another track's in-flight schedule. Layout in
+ * above) get a statically assigned one-shot pair per (layer, track, slot,
+ * tone), same never-pooled discipline as the ratchets. Layout in
  * seq_core_config.h (SEQ_CHORD_TAG_BASE..MAX). */
 static inline uint32_t chord_on_tag(uint8_t layer, uint8_t track, uint8_t slot,
                                     uint8_t tone /* 1.. */)
@@ -130,12 +122,11 @@ static inline uint32_t chord_off_tag(uint8_t layer, uint8_t track, uint8_t slot,
 bool sequencer_core_step_is_decorated(const seq_layer_t *layer, uint8_t track, uint8_t step)
 {
     if (track >= SEQ_TRACKS || step >= SEQ_MAX_STEPS) return false;
-    /* A chord sentinel forces the decorated one-shot path too: the plain path
-     * emits ONE periodic tag pair with a fixed pitch, while a chord fires up
-     * to SEQ_CHORD_MAX_NOTES tones whose pitches (progression transpose) and
-     * count (live table edits) are resolved per fire. One-shots also
-     * self-consume, so chords add no resident periodic events to the delta
-     * pool and can never leave a stuck periodic tag ringing. */
+    /* A chord sentinel forces the decorated path too: the plain path emits ONE
+     * periodic tag pair at a fixed pitch, while a chord fires up to
+     * SEQ_CHORD_MAX_NOTES tones whose pitches (progression transpose) and count
+     * (live table edits) resolve per fire. One-shots self-consume, so chords
+     * add no resident periodic events and cannot leave a tag ringing. */
     return layer->step_prob[track][step]      != 100
         || layer->step_ratchet[track][step]   != 1
         || layer->step_cond_type[track][step] != (uint8_t)SEQ_STEP_COND_NONE
@@ -211,11 +202,10 @@ static bool trig_roll_probability(uint8_t prob_pct)
     return trig_rand_pct() < prob_pct;
 }
 
-/* One-shot schedule step_ratchet[track][step] sub-hits, evenly spaced across
- * the step's slot. n==1 reuses the exact plain-path gate math (including the
- * melodic off-beat shortening) from sequencer_emit_step() (seq_core_engine.c)
- * so a merely-probabilistic or conditional (ratchet==1) step still feels
- * identical to a plain one when it does fire; n>1 subdivides the slot. */
+/* One-shot schedule step_ratchet sub-hits, evenly spaced across the step's
+ * slot. n==1 reuses sequencer_emit_step()'s exact gate math (incl. the off-beat
+ * shortening) so a merely probabilistic or conditional step feels identical to
+ * a plain one when it fires; n>1 subdivides the slot. */
 static void trig_schedule_ratchets(uint8_t layer_idx, const seq_layer_t *layer,
                                    uint8_t track, uint8_t step, uint32_t now_ticks)
 {
@@ -234,18 +224,17 @@ static void trig_schedule_ratchets(uint8_t layer_idx, const seq_layer_t *layer,
     }
 
     float velocity = sequencer_step_velocity(layer, track, step) * layer->vp[track].amp_trim;
-    /* Per-step velocity offset (patch-06): signed percentage points, default 0.
-     * Applied here as well as the plain path so decorated steps match. */
+    /* Per-step velocity offset in signed percentage points, applied here as
+     * well as on the plain path so decorated steps match. */
     velocity += (float)layer->step_velocity_adj[track][step] * 0.01f;
     velocity = SEQ_CLAMP_F32(velocity, 0.0f, 1.0f);
 
-    /* Single per-fire pitch source for both ratchet sub-hits and the plain
-     * decorated (n==1) path. A chord sentinel expands to its tones here (with
-     * the progression transpose applied); any per-step note transform draws
-     * ONE offset per fire so every sub-hit — and every chord tone — shares it.
-     * Single notes keep the historical semantics (offset then re-snap unless
-     * bypassed); chord tones take the offset chromatically with a bounds
-     * clamp, never per-tone re-quantization (intervals are the feature). */
+    /* Single per-fire pitch source for both ratchet sub-hits and the n==1 path.
+     * A chord sentinel expands here with the progression transpose applied, and
+     * a per-step transform draws ONE offset per fire so every sub-hit and every
+     * chord tone shares it. Single notes offset then re-snap unless bypassed;
+     * chord tones take the offset chromatically with a bounds clamp, never
+     * per-tone re-quantization - the intervals are the feature. */
     uint8_t stored = layer->step_note[track][step];
     uint8_t tones[SEQ_CHORD_MAX_NOTES];
     uint8_t ntones = seq_track_fire_notes(layer, stored, tones);
@@ -266,10 +255,9 @@ static void trig_schedule_ratchets(uint8_t layer_idx, const seq_layer_t *layer,
     }
     uint8_t synth = layer->synth_id[track];
 
-    /* Ratchet velocity taper (patch-06): sub-hit k is scaled by (1 - taper*k%).
-     * Default 0 = flat (every sub-hit at full velocity — the historical
-     * behaviour). Positive taper decays toward the tail; negative ramps up.
-     * k==0 is always full velocity. */
+    /* Ratchet velocity taper: sub-hit k scales by (1 - taper*k%). 0 = flat,
+     * positive decays toward the tail, negative ramps up; k==0 is always
+     * full velocity. */
     int8_t taper = layer->step_ratchet_taper[track][step];
     for (uint8_t k = 0; k < n; k++) {
         float scale = 1.0f - (float)taper * 0.01f * (float)k;
@@ -290,22 +278,21 @@ static void trig_schedule_ratchets(uint8_t layer_idx, const seq_layer_t *layer,
     }
 }
 
-/* ── The one new per-tick entry point (called from main.c's AMY sequencer
- *    hook, ~2 kHz worst case, esp_timer task, Core 0) ───────────────────── */
+/* ── Per-tick entry point, called from main.c's AMY sequencer hook ──────── */
 void sequencer_core_service_tick(void)
 {
     if (!s_playing) return;
     /* A structural s_layers edit (delete_layer's compaction) is in flight on
-     * another task; skip this tick rather than read a half-shifted table. The
-     * engine tolerates skipped ticks (trig_reset_all runs after the edit), so a
-     * dropped tick here is inaudible. */
+     * another task: skip this tick rather than read a half-shifted table. The
+     * engine tolerates skipped ticks - trig_reset_all runs after the edit - so
+     * a dropped tick is inaudible. */
     if (s_layers_mutating) return;
     uint32_t now_ticks = sequencer_ticks();
 
     for (uint8_t li = 0; li < s_num_layers; li++) {
         seq_layer_t *layer = &s_layers[li];
-        /* bar_ticks stays local for the repeat-rate bar-window math below;
-         * the step derivation itself goes through the shared helper. */
+        /* bar_ticks is local to the repeat-rate window math below; the step
+         * derivation goes through the shared helper. */
         uint32_t bar_ticks = (uint32_t)layer->num_steps * SEQ_TICKS_PER_STEP;
         if (bar_ticks == 0) continue;
         uint8_t cur_step = seq_playhead_step(layer, now_ticks);
@@ -329,21 +316,17 @@ void sequencer_core_service_tick(void)
                 fire = trig_eval_condition(li, layer, tr, cur_step)
                     && trig_roll_probability(layer->step_prob[tr][cur_step]);
                 /* Per-track repeat_rate: the plain emit path repeats its
-                 * note-on tag every bar_ticks*rr (seq_core_engine.c:177-179),
-                 * so a plain step only sounds on the 0th bar of each rr-bar
-                 * window: (now_ticks/bar_ticks) % rr == 0. Gate the decorated
-                 * one-shot's output the same way so SEQ_REPEAT_N behaves
-                 * identically for decorated and plain steps. Like the mute/solo
-                 * gate below this only silences output — condition/probability
-                 * state keeps evaluating every bar so the track's rhythmic
-                 * position stays seamless. */
+                 * note-on every bar_ticks*rr, so a plain step only sounds on
+                 * the 0th bar of each rr-bar window. Gate the decorated
+                 * one-shot the same way so SEQ_REPEAT_N behaves identically for
+                 * both. Like mute/solo below, this silences output only -
+                 * condition/probability state keeps evaluating every bar. */
                 uint32_t rr = (layer->repeat_rate[tr] >= SEQ_REPEAT_2)
                               ? (uint32_t)layer->repeat_rate[tr] : 1u;
                 bool rr_bar = ((now_ticks / bar_ticks) % rr) == 0;
-                /* Mute/solo silences output only — condition/probability state
-                 * (fire, s_track_last_played below) keeps evaluating normally
-                 * so a track resumes its rhythmic position seamlessly when
-                 * unmuted rather than freezing while muted. */
+                /* Mute/solo silences output only: fire and s_track_last_played
+                 * keep evaluating, so a track resumes its rhythmic position
+                 * seamlessly on unmute instead of freezing. */
                 if (fire && rr_bar && sequencer_track_audible(layer, tr)) {
                     trig_schedule_ratchets(li, layer, tr, cur_step, now_ticks);
                 }
@@ -354,10 +337,9 @@ void sequencer_core_service_tick(void)
 }
 
 /* ── Public setters/getters ──────────────────────────────────────────────
- * Every setter re-emits the step so sequencer_emit_step() (seq_core_engine.c)
- * immediately re-resolves plain-vs-decorated scheduling; the trig service
- * itself always reads step_prob/step_ratchet/step_cond_* live, so no other
- * propagation is needed. */
+ * Every setter re-emits the step so sequencer_emit_step() re-resolves
+ * plain-vs-decorated. The trig service reads step_prob/step_ratchet/step_cond_*
+ * live, so no other propagation is needed. */
 void sequencer_core_set_step_prob(uint8_t layer_idx, uint8_t track, uint8_t step,
                                   uint8_t prob_pct)
 {
@@ -423,12 +405,11 @@ void sequencer_core_get_step_cond(uint8_t layer_idx, uint8_t track, uint8_t step
     if (param) *param = p;
 }
 
-/* ── Per-step note transform + quantize bypass (spec 20 §3.1/§3.2) ─────────
+/* ── Per-step note transform + quantize bypass ────────────────────────────
  * Both re-emit the step so sequencer_emit_step() re-resolves plain-vs-decorated
- * (a non-NONE transform forces the decorated one-shot path). The quantize
- * bypass is a rider on the transform: it only alters output while a transform
- * is active (with NONE, the base note is already snapped and uniform per
- * track, so there is nothing to un-snap). */
+ * (a non-NONE transform forces the decorated path). The quantize bypass rides
+ * on the transform and only alters output while one is active: under NONE the
+ * base note is already snapped and uniform per track. */
 void sequencer_core_set_step_transform(uint8_t layer_idx, uint8_t track, uint8_t step,
                                        seq_step_transform_t mode, bool quant_bypass)
 {

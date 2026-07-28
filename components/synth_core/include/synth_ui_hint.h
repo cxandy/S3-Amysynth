@@ -8,15 +8,12 @@ extern "C" {
 
 /* ── On-screen button hint bar ────────────────────────────────────────────
  * MY_BUTTON_1/2/3 are heavily overloaded across screens and overlays (see
- * main.c's main_button_event_cb priority chain). This module is a pure
- * lookup against that same state -- it never dispatches input itself, it
- * only re-queries the identical synth_ui_*_is_active() getters main.c
- * consults, in the same priority order, to describe what each button
- * currently does. */
+ * main.c's main_button_event_cb priority chain). This module NEVER dispatches
+ * input: it only re-queries the same synth_ui_*_is_active() getters main.c
+ * consults, in the same priority order, to describe each button. */
 
-/* Returns a static, single-line buffer (owned by this module, valid until
- * the next call) such as "1:Patch 2:Pitch 3:Menu". Safe to call every frame;
- * cheap (a handful of getter calls + one snprintf). */
+/* Static single-line buffer owned by this module, valid until the next call,
+ * e.g. "1:Patch 2:Pitch 3:Menu". Cheap enough to call every frame. */
 const char *synth_ui_hint_text(void);
 
 /* False for views whose bottom rows are load-bearing content (the drone

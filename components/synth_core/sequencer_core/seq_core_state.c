@@ -6,18 +6,15 @@
 seq_layer_t s_layers[MAX_LAYERS];
 uint8_t     s_num_layers   = 0;
 bool        s_playing      = true;
-/* Guards sequencer_core_delete_layer()'s ~4 KB s_layers compaction against the
- * Core-0 esp_timer sequencer tick, which reads s_layers[] live. Set true around
- * the structural edit; the tick early-returns while it is set. */
+/* Guards delete_layer()'s ~4 KB s_layers compaction against the sequencer tick,
+ * which reads s_layers[] live: the tick early-returns while this is set. */
 volatile bool s_layers_mutating = false;
 
-/* Single-applier enforcement for structural s_layers edits (add/delete): after
- * boot init registers the applier (synth_ui_task, which drains the deferred
- * add/delete requests), debug builds assert every structural edit runs on that
- * task. This is the durable form of the s_layers_mutating tick guard above —
- * the guard fences the one concurrent READER (the esp_timer tick); this pins
- * all WRITERS to one task by construction, the same discipline
- * s_prog_apply_pending uses for chord edits (seq_core_progression.c). */
+/* Single-applier enforcement for structural s_layers edits. Once boot init
+ * registers the applier (synth_ui_task, which drains the deferred add/delete
+ * requests), debug builds assert every structural edit runs there. Complements
+ * s_layers_mutating: that guard fences the one concurrent READER, this pins all
+ * WRITERS to one task, the same discipline s_prog_apply_pending uses. */
 static TaskHandle_t s_layers_applier = NULL;
 
 void sequencer_core_set_layers_applier(TaskHandle_t applier)
@@ -33,29 +30,28 @@ static inline void seq_assert_layers_applier(void)
                  xTaskGetCurrentTaskHandle() == s_layers_applier);
 #endif
 }
-/* Default seed + display fallback, NOT an authoritative global — dual-writer
- * contract documented at the declaration in seq_core_internal.h. */
+/* Default seed + display fallback, NOT an authoritative global; dual-writer
+ * contract at the declaration in seq_core_internal.h. */
 uint16_t    s_melodic_patch = SEQ_MEL_PATCH;
 /* Running allocator for per-row melodic synth slots. Each melodic layer claims
  * a contiguous block of SEQ_TRACKS slots starting here; reset in core_init. */
 uint8_t     s_next_melodic_synth = SEQ_MEL_SYNTH_BASE;
 
-/* Default per-track SYNTH patches by role: kick, snare/clap, hat, perc. Indices
- * into nothing — these are raw patch numbers chosen for a 4-on-floor kit. */
+/* Default per-track SYNTH patches by role: raw patch numbers chosen for a
+ * 4-on-floor kit. */
 static const uint16_t SEQ_DRUM_DEFAULT_PATCH[SEQ_TRACKS] = {
-    58,   /* track 0: kick  — Juno Drum Booms at a low pitch = thumpy body */
-    245,  /* track 1: snare — DX7 B.DRM-SNAR                              */
-    221,  /* track 2: hat   — DX7 BLOCK at high pitch = tight tick        */
-    220,  /* track 3: perc  — DX7 COW BELL accent                        */
+    58,   /* kick  - Juno Drum Booms, thumpy at low pitch */
+    245,  /* snare - DX7 B.DRM-SNAR                       */
+    221,  /* hat   - DX7 BLOCK, tight tick at high pitch  */
+    220,  /* perc  - DX7 COW BELL accent                  */
 };
 
-/* Role-based default pitches: pitch IS timbre for these tuned patches.
- * Low kick body, mid snare, high hat tick, mid-high perc. */
+/* Role-based default pitches: pitch IS timbre for these tuned patches. */
 static const uint8_t SEQ_DRUM_DEFAULT_NOTE[SEQ_TRACKS] = {
-    39,   /* track 0: kick  — Eb2 = 808-KIK root (natural punch)   */
-    45,   /* track 1: snare — A2  = 808-SNR root (natural crack)    */
-    53,   /* track 2: hat   — F3  = 808-C-HAT root (natural tick)   */
-    82,   /* track 3: clap  — Bb5 = 808-DRYCLP root-12 (full snap)  */
+    39,   /* kick  - Eb2, 808-KIK root      */
+    45,   /* snare - A2,  808-SNR root      */
+    53,   /* hat   - F3,  808-C-HAT root    */
+    82,   /* clap  - Bb5, 808-DRYCLP root-12 */
 };
 
 void sequencer_core_init(void)
@@ -93,16 +89,15 @@ uint8_t sequencer_core_add_layer(seq_layer_type_t type, uint8_t num_steps)
         ESP_LOGW(TAG, "sequencer_core_add_layer: max layers (%d) reached", MAX_LAYERS);
         return 0xFF;
     }
-    /* Claim the slot index but do NOT expose it via s_num_layers yet.
-     * The tick path iterates 0..s_num_layers-1; incrementing here would let
-     * the tick see a half-initialised layer.  s_num_layers++ is deferred to
-     * after sequencer_configure_synth() completes below. */
+    /* Claim the slot but do NOT expose it via s_num_layers yet: the tick
+     * iterates 0..s_num_layers-1 and would see a half-initialised layer.
+     * s_num_layers++ waits until sequencer_configure_synth() completes. */
     uint8_t idx = s_num_layers;
     seq_layer_t *layer = &s_layers[idx];
     memset(layer, 0, sizeof(seq_layer_t));
 
-    /* Per-row voice params: zeroed/unauthored with amp_trim at unity — the
-     * single defaults source, so no field here needs post-memset repair. */
+    /* Per-row voice params: unauthored with amp_trim at unity. The single
+     * defaults source, so no field here needs post-memset repair. */
     for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
         voice_params_init_defaults(&layer->vp[t]);
     }
@@ -111,28 +106,26 @@ uint8_t sequencer_core_add_layer(seq_layer_type_t type, uint8_t num_steps)
     layer->num_steps  = (num_steps == SEQ_MAX_STEPS) ? SEQ_MAX_STEPS : SEQ_STEPS;
     layer->num_tracks = SEQ_TRACKS;
     layer->step_page  = 0;
-    /* Melodic NoteFX defaults: gate reproduces the legacy fixed hold, glide off.
-     * memset above zeroed gate_pct — a 0% gate would silence every note. */
+    /* NoteFX defaults. Required after the memset: a 0% gate would silence
+     * every note and a 0% groove would flatten dynamics. */
     layer->gate_pct       = SEQ_MELODIC_GATE_DEFAULT_PCT;
     layer->portamento_ms  = 0;
-    layer->groove_pct     = 100;   /* full accent curve = legacy feel */
+    layer->groove_pct     = 100;   /* full accent curve */
 
     if (type == SEQ_LAYER_DRUM) {
-        /* Drums are now a per-track Juno-patch layer: each track gets its own
-         * fixed synth slot (block 6..9) and its own patch from the curated list,
-         * with note-offs honored (synth_flags = 0) so the patch's own release
-         * envelope shapes the tail. */
+        /* Per-track drum layer: each track gets a fixed synth slot from the
+         * reserved block and its own patch from the curated list, with
+         * note-offs honored (synth_flags = 0) so the patch's release shapes
+         * the tail. */
         for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
             layer->synth_id[t]   = (uint8_t)(SEQ_DRUM_SYNTH_BASE + t);
-            /* Role-based default patch per track (kick/snare/hat/perc). */
             layer->track_patch[t] = SEQ_DRUM_DEFAULT_PATCH[t];
         }
         layer->patch       = layer->track_patch[0];  /* display fallback */
         layer->synth_flags = 0;
         layer->num_voices  = SEQ_DRUM_VOICES;
-        /* Role-based pitches: pitch IS timbre for these tuned patches AND tunes
-         * the 808 samples in PCM mode (render_pcm shifts by midi_note). Low kick
-         * body, mid snare, high hat tick, mid-high perc; stays user-editable. */
+        /* Role-based pitches: pitch IS timbre for these tuned patches, and also
+         * tunes the samples in PCM mode (render_pcm shifts by midi_note). */
         for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
             s_track_source_note[idx][t] = SEQ_DRUM_DEFAULT_NOTE[t];
             s_track_prev_plain[idx][t]  = SEQ_DRUM_DEFAULT_NOTE[t];
@@ -142,11 +135,11 @@ uint8_t sequencer_core_add_layer(seq_layer_type_t type, uint8_t num_steps)
             }
         }
     } else {
-        /* Melodic: claim a contiguous block of SEQ_TRACKS synth slots from the
-         * running allocator, one synth per row, so identical pitches on
-         * different rows land in distinct instruments (no voice collapse).
-         * Guard against exceeding AMY's synth ceiling; if we would, reuse the
-         * last valid block (degrades to shared-synth rather than corruption). */
+        /* Melodic: claim a contiguous block of SEQ_TRACKS slots from the running
+         * allocator, one synth per row, so identical pitches on different rows
+         * land in distinct instruments instead of collapsing into one voice.
+         * Past AMY's synth ceiling, reuse the last valid block - shared synths
+         * degrade the sound but never corrupt state. */
         uint8_t base = s_next_melodic_synth;
         if (base + SEQ_TRACKS - 1 > SEQ_MAX_SYNTH) {
             base = (uint8_t)(SEQ_MAX_SYNTH - (SEQ_TRACKS - 1));
@@ -161,7 +154,7 @@ uint8_t sequencer_core_add_layer(seq_layer_type_t type, uint8_t num_steps)
         layer->patch       = s_melodic_patch;
         layer->synth_flags = 0;
         layer->num_voices  = SEQ_MEL_VOICES;
-        /* Default: Cmaj7 voicing — C4 E4 G4 B4 */
+        /* Default: Cmaj7 voicing - C4 E4 G4 B4 */
         static const uint8_t mel_notes[SEQ_TRACKS] = {60, 64, 67, 71};
         for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
             s_track_source_note[idx][t] = mel_notes[t];
@@ -175,12 +168,9 @@ uint8_t sequencer_core_add_layer(seq_layer_type_t type, uint8_t num_steps)
         }
     }
 
-    /* step_prob (0% would silence every step) and step_ratchet (0 sub-hits
-     * would fire nothing) need explicit non-zero defaults; step_cond_type/
-     * param and the per-step transform/quant-bypass arrays default correctly
-     * to their zeroed no-op (SEQ_STEP_COND_NONE / SEQ_STEP_TRANSFORM_NONE /
-     * no bypass) and need no explicit init. The per-row amp trim got its
-     * unity default in voice_params_init_defaults() above. */
+    /* step_prob (0% silences every step) and step_ratchet (0 sub-hits fire
+     * nothing) need explicit non-zero defaults. The cond and transform arrays
+     * are correct at their zeroed no-op. */
     for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
         for (uint8_t s = 0; s < SEQ_MAX_STEPS; s++) {
             layer->step_prob[t][s]    = 100;
@@ -191,17 +181,15 @@ uint8_t sequencer_core_add_layer(seq_layer_type_t type, uint8_t num_steps)
     CORE_HEAP_CHECK("add_layer: before configure_synth");
     sequencer_configure_synth(idx);
     CORE_HEAP_CHECK("add_layer: after configure_synth");
-    /* Layer is fully initialised: now expose it to the tick path. */
+    /* Fully initialised: now expose it to the tick path. */
     s_num_layers++;
-    /* Construction-time check of the permanent-drum-layer invariant: slot 0
-     * is the drum layer (created first at boot) and every later add lands
-     * above it. Verified once here rather than trusted throughout. */
+    /* Check the permanent-drum-layer invariant here once rather than trusting
+     * it throughout: slot 0 is the drum layer and every later add is above it. */
     assert(s_layers[SEQ_DRUM_LAYER_IDX].type == SEQ_LAYER_DRUM);
-    /* Runtime trig bookkeeping (loop counters / last-played / last-step-seen)
-     * is indexed by layer slot, not layer identity; a wholesale reset here
-     * (rather than trying to shift it in lockstep with the new layer) is
-     * cheap and harmless — it only affects FILL/PREV continuity, never the
-     * persisted per-step prob/ratchet/cond data carried in seq_layer_t itself. */
+    /* Runtime trig bookkeeping is indexed by layer SLOT, not identity, so a
+     * wholesale reset is simpler than shifting it in lockstep and costs only
+     * FILL/PREV continuity - never the persisted per-step data in
+     * seq_layer_t. */
     sequencer_core_trig_reset_all();
     ESP_LOGI(TAG, "add_layer[L%d]: type=%d synth0=%d patch=%d steps=%d",
              idx + 1, type, layer->synth_id[0], layer->patch, layer->num_steps);
@@ -216,10 +204,9 @@ bool sequencer_core_delete_layer(uint8_t layer_idx)
     if (layer_idx >= s_num_layers) return false;
     if (s_layers[layer_idx].type == SEQ_LAYER_DRUM) return false;
 
-    /* Clear ALL layers' tags before shifting — indices above layer_idx become
-     * stale after compaction and would fire as ghost notes. Ratchet one-shot
-     * tags live in a separate tag space (seq_core_trig.c) and need the same
-     * treatment. */
+    /* Clear ALL layers' tags before shifting: indices above layer_idx go stale
+     * on compaction and would fire as ghost notes. Ratchet one-shot tags live
+     * in a separate tag space and need the same treatment. */
     for (uint8_t i = 0; i < s_num_layers; i++) {
         sequencer_clear_layer_tags(i);
         sequencer_core_trig_clear_all(i);
@@ -234,9 +221,9 @@ bool sequencer_core_delete_layer(uint8_t layer_idx)
         amy_helpers_event_send(e);
     }
 
-    /* Raise the mutation guard so the Core-0 sequencer tick early-returns
-     * instead of reading s_layers[] mid-memmove. The tick tolerates skipped
-     * ticks (trig state is reset wholesale below), so this is inaudible. */
+    /* Raise the mutation guard so the sequencer tick early-returns instead of
+     * reading s_layers[] mid-memmove. Skipped ticks are inaudible - trig state
+     * is reset wholesale below. */
     s_layers_mutating = true;
     /* Compact all parallel arrays by shifting survivors down by one slot. */
     uint8_t tail = (uint8_t)(s_num_layers - layer_idx - 1);

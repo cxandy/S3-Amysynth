@@ -11,23 +11,20 @@ extern "C" {
 #endif
 
 /* ── Normal (free-running) drone ──────────────────────────────────────────
- * The stutter drone's sibling: the same chord voicing (one voice per chord
- * note on the main synth) and mono sub an interval below the root, but with
- * a plain sustained output — no stutter gate, no peak/duck amp coupling, no
- * pattern/blip/swing service and no tempo-locked filter sweep.
+ * The stutter drone's sibling: same chord voicing and mono sub, but plain
+ * sustained output - no stutter gate, no peak/duck amp coupling, no
+ * pattern/blip/swing service, no tempo-locked filter sweep.
  *
- * In their place it exposes the standard per-voice toolset the melodic
- * tracks and the arp already have:
- *   - a free filter (seq_filter_t: type/cutoff/resonance/enable) edited in
- *     the full filter graph editor and pushed via sequencer_core_push_filter;
- *   - a free AMY-native LFO (seq_lfo_t) applied with voice_apply_native_lfo
- *     (WAVE mode only — PATCH-mode instruments own their osc topology);
+ * In their place it exposes the standard per-voice toolset:
+ *   - a free filter (seq_filter_t) edited in the filter graph editor and
+ *     pushed via sequencer_core_push_filter;
+ *   - a free AMY-native LFO (seq_lfo_t) via voice_apply_native_lfo, WAVE mode
+ *     only - PATCH-mode instruments own their osc topology;
  *   - the shared ADSR/EG1 graph editor storage.
  *
- * It owns AMY synth slots 66/67 (above the stutter drone's 64/65) so both
- * drones can sound simultaneously; amy_cfg.max_synths must be >= 68.
- * All AMY interaction goes through amy_helpers deltas (never amy_queue_lock),
- * matching drone_core's concurrency model. */
+ * Owns AMY synth slots 66/67 (above the stutter drone's 64/65) so both drones
+ * can sound together; amy_cfg.max_synths must be >= 68. All AMY interaction
+ * goes through amy_helpers deltas, never amy_queue_lock. */
 
 /* ── Lifecycle ── */
 void drone_std_core_init(void);

@@ -1,11 +1,11 @@
 /* Bulk layer snapshot support for project save/load.
  *
- * The per-field setters in sequencer_core.h each re-emit their own scheduled
- * steps on every call, and three per-step arrays (step_nudge/step_velocity_adj/
- * step_ratchet_taper) have no public setters at all. A project loader needs to
- * overwrite an entire layer's persisted state and settle the AMY side effects
- * exactly once, so this file copies the layer struct wholesale and then re-runs
- * the same "configure synth + resync" sequence the layer-management calls use.
+ * The per-field setters in sequencer_core.h each re-emit their scheduled steps
+ * on every call, and three per-step arrays (step_nudge/step_velocity_adj/
+ * step_ratchet_taper) have no public setters at all. A project loader must
+ * overwrite a whole layer and settle the AMY side effects exactly once, so this
+ * copies the struct wholesale and re-runs the same "configure synth + resync"
+ * sequence the layer-management calls use.
  */
 
 #include "sequencer_core.h"
@@ -38,12 +38,11 @@ bool sequencer_core_import_layer(uint8_t layer_idx, const seq_layer_t *src)
     dst->step_page  = 0;
 
     /* Rebuild the per-track source notes from the loaded resolved notes.
-     * s_track_source_note is not persisted, and leaving the pre-load values
-     * in place meant the first re-resolve after load (note nudge, progression
-     * advance) snapped every track back to stale pitches — and would strip a
-     * loaded chord sentinel entirely. The resolved note re-resolves to itself
-     * (idempotent snap), so it is a faithful source reconstruction. Chord
-     * sentinels double as their own source; plain notes also seed the
+     * s_track_source_note is not persisted, and keeping the pre-load values
+     * makes the first re-resolve after load snap every track back to stale
+     * pitches - and strips a loaded chord sentinel entirely. The resolved note
+     * re-resolves to itself (idempotent snap), so it is a faithful source.
+     * Chord sentinels double as their own source; plain notes also seed the
      * chord-delete fallback. */
     for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
         uint8_t n = dst->track_base_note[t];
@@ -53,18 +52,15 @@ bool sequencer_core_import_layer(uint8_t layer_idx, const seq_layer_t *src)
         }
     }
 
-    /* Re-push the full sound config to the layer's synth slots. The public
-     * patch setters dedup against the layer's stored patch number - which the
-     * struct copy above has already overwritten - so they would silently
-     * no-op here. Call the configure path directly instead: it reads patch,
-     * num_voices, and synth_flags from the just-copied struct (looping every
-     * drum track's track_patch[] in drum-SYNTH mode) and pushes the authored
-     * env/env1/filter/LFO for melodic layers itself. */
+    /* Re-push the full sound config. The public patch setters dedup against the
+     * layer's stored patch number, which the struct copy above already
+     * overwrote, so they would silently no-op; the configure path instead reads
+     * patch/num_voices/synth_flags from the copied struct and pushes the
+     * authored env/env1/filter/LFO itself. */
     sequencer_configure_synth(layer_idx);
     if (dst->type == SEQ_LAYER_DRUM) {
-        /* Restore each track's PCM preset selection: live-reloads the osc when
-         * the PCM engine is active, otherwise stores the override for the next
-         * engine toggle. */
+        /* Restore each track's PCM preset: live-reloads the osc when PCM is
+         * active, otherwise stores it for the next engine toggle. */
         for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
             sequencer_core_set_drum_pcm_preset(layer_idx, t, dst->track_pcm_preset[t]);
         }

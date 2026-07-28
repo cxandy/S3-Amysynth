@@ -8,11 +8,10 @@
 extern "C" {
 #endif
 
-/* ── Drone screen renderer (simple scrollable param list) ─────────────────
- * Like the menu, the drone logic lives in the synth_core component
- * (drone_core). synth_ui formats each parameter into a label + value
- * string and hands the renderer a flat array; the renderer draws a scrollable
- * highlighted list with the selected row's value framed while editing. */
+/* ── Drone screen renderer (scrollable param list) ────────────────────────
+ * Drone logic lives in synth_core (drone_core); synth_ui formats each
+ * parameter into a label + value string and hands over a flat array. The
+ * renderer draws a scrollable list, framing the selected value while editing. */
 
 #define DRONE_VIEW_MAX_ROWS  16
 #define DRONE_LABEL_LEN      12

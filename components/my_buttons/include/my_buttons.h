@@ -17,10 +17,9 @@ extern "C" {
 /**
  * @brief Button identifiers
  *
- * Each name is a ROLE; the pin it lands on is decided by this list's order,
+ * Each name is a ROLE; the pin it lands on comes from this list's order,
  * because s_button_gpios[] (my_buttons.c) is positional. Reordering members
- * here reassigns roles to physical buttons without touching the wiring list —
- * which is how the shoulder and step-toggle roles come to be exchanged below.
+ * here reassigns roles to physical buttons without touching the wiring list.
  * Keep each comment's GPIO in step with the matching row of that array.
  */
 typedef enum {

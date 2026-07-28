@@ -1,27 +1,21 @@
-/* bass_presets.c — three two-oscillator bass presets for melodic layers.
+/* bass_presets.c - three two-oscillator bass presets for melodic layers.
  *
- * Patch IDs 264-266 (SEQ_PATCH_BASS_1/2/3).  Dispatched from
- * sequencer_configure_synth() in sequencer_core.c when is_bass_patch is true.
+ * Patch IDs 264-266 (SEQ_PATCH_BASS_1/2/3), dispatched from
+ * sequencer_configure_synth() when is_bass_patch is true.
  *
- * All AMY interaction goes through the queued event API (amy_helpers_event_*)
- * — never direct synth[] access.  These configure functions run from
- * synth_ui_task (Core 0), outside the render body; this is consistent with
- * the amy_render lock rules documented in AMY-EDITS.md.
+ * All AMY interaction goes through the queued event API - never direct synth[]
+ * access. These run from synth_ui_task (Core 0), outside the render body
+ * (amy_render lock rules: AMY-EDITS.md).
  *
- * filter_freq_coefs[] note: COEF_CONST is in Hz (converted to logfreq
- * internally by EVENT_TO_DELTA_FREQ_COEFS).  Non-CONST coefs (COEF_EG1 etc.)
- * are dimensionless logfreq-delta weights applied linearly by combine_controls.
- * COEF_EG1 = 4.06 → filter sweeps log2(2000/8.18) - log2(120/8.18) ≈ 4.06
- * octaves when EG1 peaks (120 Hz → ~2000 Hz).
+ * filter_freq_coefs[]: COEF_CONST is in Hz; non-CONST coefs are dimensionless
+ * logfreq-delta weights in octaves (COEF_EG1 = 4.06 sweeps 120 Hz -> ~2000 Hz
+ * at EG1 peak).
  *
- * BASS_1 and BASS_2 route the filter sweep through EG1, separate from the
- * amp envelope (EG0): a short plucky amp decay with a slower, lower-settling
- * filter tail underneath it (classic subtractive pattern). Both breakpoint
- * sets are pushed in the same event as the coef that reads them, so EG1 is
- * never left unconfigured — an unconfigured breakpoint set reads as a
- * permanent 1.0 gate in AMY (see envelope.c), which would otherwise pin the
- * filter sweep fully open. BASS_3 has no filter section to split and is
- * unchanged. */
+ * BASS_1/BASS_2 route the filter sweep through EG1, separate from the amp
+ * envelope (EG0): plucky amp decay over a slower-settling filter tail. Each
+ * EG1 breakpoint set is pushed in the SAME event as the coef reading it - an
+ * unconfigured breakpoint set reads as a permanent 1.0 gate in AMY and would
+ * pin the sweep fully open. BASS_3 has no filter section. */
 
 #include "custompatches/bass_presets.h"
 #include "sequencer_core.h"    /* SEQ_PATCH_BASS_* */
@@ -32,12 +26,11 @@
 void bass_preset_configure_track(uint8_t synth_id, uint16_t patch,
                                  uint16_t num_voices)
 {
-    /* Allocate: 2 audible oscillators per voice plus a reserved native-LFO
-     * carrier pair at osc2/osc3 (see sequencer_core_lfo_native_layout).
-     * The pair's index slots are free until an LFO is authored - nothing
-     * below touches them, so their synth structs stay unallocated (lazy
-     * materialization, voice_config.h). Registering the shape keeps the
-     * materialized-state proof rules identical to the wave build. */
+    /* 2 audible oscs per voice plus a reserved native-LFO carrier pair at
+     * osc2/osc3 (sequencer_core_lfo_native_layout). Nothing below touches the
+     * pair, so their synth structs stay unallocated until an LFO is authored
+     * (lazy materialization, voice_config.h); registering the shape keeps the
+     * materialized-state proof identical to the wave build. */
     voice_lfo_note_pool_shape(synth_id, (uint8_t)num_voices, 4);
     amy_event *e = amy_helpers_event_begin();
     e->synth          = synth_id;
@@ -47,10 +40,9 @@ void bass_preset_configure_track(uint8_t synth_id, uint16_t patch,
 
     if (patch == SEQ_PATCH_BASS_1) {
         /* ─── Preset 264: Classic Sub-Heavy Detune Bass ─────────────────
-         * PULSE carrier + detuned SAW_DOWN sub, LPF24 on carrier.
-         * Osc 1 detuned +1.005 ratio (~8.6 cents) for chorus thickness.
-         * Filter env-swept via its own EG1: 120 Hz → ~2000 Hz at peak, then
-         * settles slower than the (EG0) amp decay — plucky amp, longer tail. */
+         * PULSE carrier + SAW_DOWN sub detuned ~8.6 cents for thickness,
+         * LPF24 on the carrier swept by EG1 (120 Hz -> ~2000 Hz at peak),
+         * settling slower than the EG0 amp decay. */
 
         /* osc 0: PULSE carrier with envelope-swept low-pass filter */
         e = amy_helpers_event_begin();
@@ -94,13 +86,11 @@ void bass_preset_configure_track(uint8_t synth_id, uint16_t patch,
 
     } else if (patch == SEQ_PATCH_BASS_2) {
         /* ─── Preset 265: Acid Pluck Bass ───────────────────────────────
-         * SINE fundamental + SAW_DOWN, combined through a swept LPF24.
-         * osc1's filter runs on the accumulated osc0+osc1 buffer. Amp (EG0)
-         * and filter (EG1) are independent envelopes on osc1: cutoff is
-         * 80 Hz at rest, sweeps to ~1800 Hz at attack peak, and settles at a
-         * slower, lower resting cutoff than the amp's own decay would imply
-         * — resonance accentuates the sweep crossover for the "acid"
-         * character (classic TB-303 squelch). */
+         * SINE fundamental + SAW_DOWN through a swept LPF24 on osc1, which
+         * runs on the accumulated osc0+osc1 buffer. Amp (EG0) and filter (EG1)
+         * are independent: 80 Hz at rest, ~1800 Hz at attack peak, settling
+         * slower/lower than the amp decay; resonance accentuates the crossover
+         * for the TB-303 squelch. */
 
         /* osc 0: SINE fundamental */
         e = amy_helpers_event_begin();
@@ -118,9 +108,8 @@ void bass_preset_configure_track(uint8_t synth_id, uint16_t patch,
         e->eg0_times[2]  = 100;  e->eg0_values[2] = 0.0f;   /* rel 100ms */
         amy_helpers_event_send(e);
 
-        /* osc 1: SAW_DOWN with envelope-swept LPF24 (acid squelch).
-         * Filter on osc1 processes accumulated osc0+osc1 signal — both
-         * oscillators pass through this swept LPF. */
+        /* osc 1: SAW_DOWN with envelope-swept LPF24 (acid squelch); the filter
+         * sees the accumulated osc0+osc1 signal, so both oscs pass through. */
         e = amy_helpers_event_begin();
         e->synth                          = synth_id;
         e->osc                            = 1;
@@ -145,12 +134,11 @@ void bass_preset_configure_track(uint8_t synth_id, uint16_t patch,
 
     } else if (patch == SEQ_PATCH_BASS_3) {
         /* ─── Preset 266: Bright Synth Bass ─────────────────────────────
-         * PULSE carrier (odd-harmonic rich) + SAW_DOWN sub-octave layer.
-         * PULSE provides harmonic content that cuts through the mix;
-         * the SAW sub (ratio=0.5) reinforces the low-end body.
-         * Percussive envelope: fast attack, moderate decay to sustained body. */
+         * PULSE carrier cuts through the mix; SAW_DOWN sub-octave (ratio=0.5)
+         * reinforces the low end. Percussive envelope: fast attack, moderate
+         * decay to a sustained body. */
 
-        /* osc 0: PULSE carrier — harmonic-rich, strong perceptual loudness */
+        /* osc 0: PULSE carrier */
         e = amy_helpers_event_begin();
         e->synth                 = synth_id;
         e->osc                   = 0;
@@ -166,8 +154,8 @@ void bass_preset_configure_track(uint8_t synth_id, uint16_t patch,
         e->eg0_times[2]  = 150;  e->eg0_values[2] = 0.0f;   /* rel 150ms */
         amy_helpers_event_send(e);
 
-        /* osc 1: SAW_DOWN at ratio=0.5 (one octave sub) — low-end body.
-         * Faster decay than carrier so the sub fades to a click-free sustain. */
+        /* osc 1: SAW_DOWN one octave down. Faster decay than the carrier so
+         * the sub fades to a click-free sustain. */
         e = amy_helpers_event_begin();
         e->synth                 = synth_id;
         e->osc                   = 1;

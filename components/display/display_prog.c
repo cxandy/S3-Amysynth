@@ -2,8 +2,8 @@
 #include <stdio.h>
 
 /* Yellow header (rows 0..15) holds the title + ON/OFF toggle; entries fill the
- * blue region below the 16px seam. 3 roomy rows (25/37/49); the bottom status
- * line at y=63 is safe because PROG has no bottom hint strip. */
+ * blue region below the 16px seam (rows 25/37/49). The status line at y=63 is
+ * safe because PROG has no bottom hint strip. */
 #define PROG_TITLE_Y    8
 #define PROG_ROW_H      12
 #define PROG_FIRST_ROW  25
@@ -66,8 +66,8 @@ void display_prog_draw_frame(u8g2_t *u8g2, const prog_view_t *view)
         bool is_playing  = (ei == view->current_entry && view->enabled);
         bool is_selected = (view->cursor == (uint8_t)(ei + 1));
 
-        /* When this row is selected AND being edited, bracket the focused field
-         * (root / type / duration) so the user sees what the encoder will change. */
+        /* While editing, bracket the focused field (root/type/duration) so the
+         * user sees what the encoder will change. */
         bool editing_here = is_selected && view->editing;
         const char *r_l = (editing_here && view->edit_field == 0) ? "<" : " ";
         const char *r_r = (editing_here && view->edit_field == 0) ? ">" : " ";

@@ -16,9 +16,9 @@ extern "C" {
  * Slots store the RAW chromatic MIDI value. Special sentinels:
  *   -1 (empty)   : slot unused; not part of the playback cycle.
  *   ARP_REST (-2): deliberate silent step (SLOT mode only); occupies time but
- *                  plays nothing. Meaningless in UP/DOWN — store only -1 there.
- * The arp snaps to its own scale only at playback (and for display), so the
- * stored value never absorbs its own quantized output — no compounding drift. */
+ *                  plays nothing. Meaningless in UP/DOWN - store only -1 there.
+ * Snapping happens only at playback and for display, so the stored value never
+ * absorbs its own quantized output - no compounding drift. */
 
 #define ARP_MAX_SLOTS 8
 #define ARP_REST ((int16_t)-2)   /* deliberate silent step in ARP_SLOT mode */
@@ -30,13 +30,11 @@ typedef enum {
     ARP_DIR_COUNT
 } arp_dir_t;
 
-/* Sound source toggle — mirrors drone_source_t in drone_core.h.
- * ARP_SRC_PATCH: load a DX7/Juno patch (existing behaviour, default).
- * ARP_SRC_WAVE : configure a bare AMY oscillator with the user-chosen waveform;
- *                the arp sequence still drives pitch via normal note events. */
+/* Sound source toggle - mirrors drone_source_t in drone_core.h. In WAVE mode
+ * the arp sequence still drives pitch through normal note events. */
 typedef enum {
-    ARP_SRC_WAVE  = 0,   /* raw AMY waveform oscillator — no patch */
-    ARP_SRC_PATCH = 1,   /* DX7/Juno patch (existing behaviour)    */
+    ARP_SRC_WAVE  = 0,   /* raw AMY waveform oscillator, no patch */
+    ARP_SRC_PATCH = 1,   /* DX7/Juno patch (default)              */
 } arp_source_t;
 
 /* RATE table: musical subdivision -> ticks per arp note.
@@ -57,25 +55,23 @@ typedef enum {
 /* ── Lifecycle ── */
 void arp_core_init(void);
 
-/* Recompute and (re)emit the whole arp sequence immediately. Exposed so callers
- * can force a refresh (e.g. after tempo changes). Setters no longer call this
- * inline — they mark the arp dirty and arp_core_service() coalesces the re-emit. */
+/* Recompute and re-emit the whole arp sequence immediately, for callers that
+ * must force a refresh (e.g. tempo changes). Setters instead mark dirty and
+ * let arp_core_service() coalesce the re-emit. */
 void arp_core_refresh(void);
 
-/* Cancel all scheduled arp AMY events without re-emitting. Use on sequencer
- * pause to silence the arp without affecting the arp's enabled/configuration
- * state. Does NOT kill any voice currently mid-gate — follow with
- * sequencer_kill_synth_voices(SEQ_ARP_SYNTH) to silence any live note. */
+/* Cancel all scheduled arp AMY events without re-emitting (sequencer pause),
+ * leaving enabled/configuration state alone. Does NOT kill a voice mid-gate -
+ * follow with sequencer_kill_synth_voices(SEQ_ARP_SYNTH). */
 void arp_core_clear_all(void);
 
-/* Perform a pending (coalesced) re-emit if a setter marked the arp dirty since
- * the last call; cheap no-op otherwise. Call once per UI frame so a fast encoder
- * spin collapses into a single re-emit instead of one per detent. */
+/* Drain a pending coalesced re-emit; cheap no-op otherwise. Call once per UI
+ * frame so a fast encoder spin collapses into a single re-emit. */
 void arp_core_service(void);
 
-/* Request a coalesced re-emit (drained by arp_core_service()). Used by the
- * transport on resume: arp note emission is gated on the sequencer playing,
- * so the schedule cleared at pause must be explicitly rebuilt on play. */
+/* Request a coalesced re-emit. Used by the transport on resume: emission is
+ * gated on the sequencer playing, so the schedule cleared at pause must be
+ * rebuilt explicitly. */
 void arp_core_mark_dirty(void);
 
 /* ── Parameter setters (each re-emits the sequence) ── */
@@ -87,53 +83,46 @@ void arp_set_gate_pct(uint8_t gate_pct);      /* clamped 10..100        */
 void arp_set_scale(uint8_t scale_index);
 void arp_set_root_note(uint8_t root_note);
 /* Follow the global scale quantizer instead of the arp's own scale/root.
- * Precedence mirrors melodic layers: while the chord progression owns the
- * arp's root/scale the chord still wins; with follow ON and the global
- * quantizer disabled, notes play chromatic (no snapping). Default OFF. */
+ * Precedence mirrors melodic layers: a chord progression owning the arp's
+ * root/scale still wins, and follow ON with the global quantizer disabled
+ * plays chromatic. Default OFF. */
 void arp_set_follow_quant(bool follow);
 bool arp_get_follow_quant(void);
 void arp_set_chord(uint8_t root_midi, uint8_t scale_index);
 void arp_set_patch(uint16_t patch_number);
-/* Live FM voice edits (FM screen): re-push the shared custom voice
- * (s_fm_voice) to the arp synth when the arp is currently playing it
- * (source == ARP_SRC_PATCH && patch == SEQ_PATCH_FM_CUSTOM); no-op
- * otherwise. Called from sequencer_core_fm_voice_changed() alongside the
- * melodic-layer fanout. */
+/* Live FM voice edits: re-push s_fm_voice to the arp synth when the arp is
+ * playing it (PATCH source, SEQ_PATCH_FM_CUSTOM); no-op otherwise. Called from
+ * sequencer_core_fm_voice_changed() alongside the melodic-layer fanout. */
 void arp_core_fm_voice_changed(void);
-/* Live additive voice edits: same contract as arp_core_fm_voice_changed()
- * but for s_additive_voice / SEQ_PATCH_ADDITIVE_CUSTOM. Called from
- * sequencer_core_additive_voice_changed(). */
+/* Same contract for s_additive_voice / SEQ_PATCH_ADDITIVE_CUSTOM. */
 void arp_core_additive_voice_changed(void);
-/* Sound source: switch between a DX7/Juno patch and a raw AMY waveform.
- * On change, rebuilds the synth slot and re-applies any authored ADSR/filter.
- * In WAVE mode, arp_set_patch() stores the patch but does not reconfigure the
- * slot (takes effect on the next switch back to PATCH). */
+/* Switch between a DX7/Juno patch and a raw AMY waveform: rebuilds the synth
+ * slot and re-applies any authored ADSR/filter. In WAVE mode arp_set_patch()
+ * only stores the patch, taking effect on the next switch back to PATCH. */
 void arp_set_source(arp_source_t src);
-/* Select the AMY waveform used in WAVE mode (e.g. SAW_DOWN, SINE, PULSE …).
- * If WAVE mode is currently active the slot is reconfigured immediately. */
+/* AMY waveform used in WAVE mode; reconfigures the slot immediately if WAVE
+ * mode is active. */
 void arp_set_wave(uint16_t amy_wave);
 /* Set slot value to a chromatic MIDI note, -1 to clear, or ARP_REST for a
  * deliberate silent step (meaningful in ARP_SLOT mode only). */
 void arp_set_slot(uint8_t idx, int16_t chromatic_note);
 
 /* ── Runtime-editable ADSR envelope (shared graph editor) ──
- * The arp owns one envelope applied to its synth's voices. get always returns
- * the stored env; set stores + pushes it to the arp synth. Re-applied after a
- * patch change so the custom envelope survives patch reconfig. */
+ * One envelope applied to the arp synth's voices. set stores + pushes, and it
+ * is re-applied after a patch change so it survives patch reconfig. */
 void arp_get_envelope(seq_env_t *out);
 void arp_set_envelope(const seq_env_t *env);
 
 /* ── Second envelope (EG1, shared graph editor) ──
- * Independent breakpoint generator; audible only once something is wired to
- * COEF_EG1 — WAVE mode routes its filter_freq_coefs through it whenever the
- * arp's filter is authored+enabled, and a PATCH-mode instrument may already
- * route its own bp1 internally (many Juno/DX7 patches do). */
+ * Independent breakpoint generator, audible only once something is wired to
+ * COEF_EG1: WAVE mode routes filter_freq_coefs through it whenever the arp's
+ * filter is authored+enabled, and many Juno/DX7 patches route their own bp1. */
 void arp_get_envelope2(seq_env_t *out);
 void arp_set_envelope2(const seq_env_t *env);
 
 /* ── Runtime-editable filter (shared filter editor) ──
- * Parallel to the envelope: default enabled=false (bypass). set stores + pushes
- * to the arp synth. Re-applied after a patch change when filter_authored. */
+ * Parallel to the envelope; defaults to bypass. Re-applied after a patch
+ * change when filter_authored. */
 void arp_get_filter(seq_filter_t *out);
 void arp_set_filter(const seq_filter_t *f);
 
@@ -180,21 +169,16 @@ void  arp_set_amp_scale(float v);
 float arp_get_amp_scale(void);
 
 /* ── Portamento / glide (AMY-native, PORTAMENTO_MS delta) ──
- * Milliseconds of exponential glide between consecutive note pitches, applied
- * by AMY internally (portamento_alpha low-pass on logfreq) — no scheduling or
- * render-path change needed here. 0 = off (default, matches AMY's own reset
- * value). Unlike the scheduling setters above, this does not mark the arp
- * dirty: it is pushed straight to the synth and survives independently of
- * note re-emits, but IS wiped by a patch/synth reconfigure (AMY resets
- * portamento_alpha to 0 on osc reset), so arp_rebuild() re-pushes it after
- * every source/patch/wave change. */
+ * Milliseconds of exponential glide between note pitches, applied inside AMY
+ * (portamento_alpha low-pass on logfreq); 0 = off, matching AMY's reset value.
+ * Not a scheduling change, so it does not mark the arp dirty - but a
+ * patch/synth reconfigure DOES wipe it (AMY resets portamento_alpha on osc
+ * reset), so arp_rebuild() re-pushes it after every source/patch/wave change. */
 void     arp_set_portamento_ms(uint16_t ms);
 uint16_t arp_get_portamento_ms(void);
-#define ARP_PORTAMENTO_MAX_MS 100u    /* glide ceiling, ms (1 ms/detent). Matches
-                                       * the melodic NoteFX Glide range so both
-                                       * share the same fine-resolution feel;
-                                       * projects saved with a longer glide clamp
-                                       * to this on load. */
+#define ARP_PORTAMENTO_MAX_MS 100u    /* glide ceiling, ms (1 ms/detent).
+                                       * Matches the melodic NoteFX Glide range;
+                                       * longer saved glides clamp on load. */
 
 #define ARP_OCT_MAX 4
 

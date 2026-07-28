@@ -2,9 +2,8 @@
 #include <stdio.h>
 #include <string.h>
 
-/* Draw a small label+value field; frame it when it is the cursor.
- * When `editing` and selected, the frame is doubled (a 2px ring) to signal the
- * value is live-adjustable. */
+/* Small label+value field; framed when it is the cursor, double-framed when
+ * also `editing` (value is live-adjustable). */
 static void draw_field(u8g2_t *u8g2, uint8_t x, uint8_t y, const char *text,
                        bool selected, bool editing)
 {
@@ -33,10 +32,8 @@ void display_arp_draw_frame(u8g2_t *u8g2, const arp_view_t *view)
     u8g2_SetFont(u8g2, u8g2_font_5x7_tr);
 
     /* ── Macro row 1 (yellow header): ARP | MODE | OCT | RATE ──
-     * Compacted from the old 3-field row so it also carries RATE; that frees
-     * row 2 to show the whole sound cluster (gate + source/wave + glide) with
-     * nothing hidden. Cursor order 0..3 runs left-to-right along this row.
-     * RATE is right-aligned so the triplet names ("1/16T") can't run off-edge. */
+     * Cursor order 0..3 runs left-to-right. RATE is right-aligned so the
+     * triplet names ("1/16T") can't run off-edge. */
     snprintf(buf, sizeof(buf), "ARP:%s", view->enabled ? "ON" : "OFF");
     draw_field(u8g2, 2, 8, buf, view->cursor == ARP_CUR_ENABLE, view->editing);
 
@@ -54,17 +51,15 @@ void display_arp_draw_frame(u8g2_t *u8g2, const arp_view_t *view)
     }
 
     /* ── Macro row 2 (blue): GATE | SOURCE/WAVE-or-PATCH | GLIDE ──
-     * All three are always visible now (they used to share one multiplexed
-     * slot). Cursor order 4..7 runs left-to-right. Baseline 25 clears the 16px
-     * yellow/blue seam so text and cursor frames stay in the blue region. */
+     * Cursor order 4..7 left-to-right. Baseline 25 clears the 16px yellow/blue
+     * seam so text and cursor frames stay in the blue region. */
     snprintf(buf, sizeof(buf), "GATE:%u%%", (unsigned)view->gate_pct);
     draw_field(u8g2, 2, 25, buf, view->cursor == ARP_CUR_GATE, view->editing);
 
-    /* Sound source / waveform / patch indicator. The source state is implied by
-     * the prefix (W: = wave engine, P = patch program); on the SOURCE cursor the
-     * field instead reads SRC:W / SRC:P and toggling flips between them. The WAVE
-     * cursor (reachable in wave mode only) selects this same field to change the
-     * waveform, so both cursors land here but show distinct text. */
+    /* Sound source / waveform / patch indicator. Prefix implies the state
+     * (W: = wave engine, P = patch program); on the SOURCE cursor it reads
+     * SRC:W / SRC:P instead. The WAVE cursor (wave mode only) lands on this
+     * same field to change the waveform, showing distinct text. */
     {
         const uint8_t ix = 52;
         bool sel_src  = (view->cursor == ARP_CUR_SOURCE);
@@ -90,9 +85,8 @@ void display_arp_draw_frame(u8g2_t *u8g2, const arp_view_t *view)
         }
     }
 
-    /* GLIDE (portamento) — permanent readout, right-aligned. Shown in raw ms
-     * ("GL:200"), or "GL:off" at zero. Selected on the PORTA cursor. This is the
-     * field that used to be fully hidden unless selected. */
+    /* GLIDE (portamento), right-aligned: raw ms ("GL:200") or "GL:off" at
+     * zero. Selected on the PORTA cursor. */
     {
         char gbuf[12];
         uint16_t ms = view->portamento_ms;
@@ -136,10 +130,9 @@ void display_arp_draw_frame(u8g2_t *u8g2, const arp_view_t *view)
         u8g2_DrawStr(u8g2, tx, cy, txt);
     }
 
-    /* Patch-name banner: while the patch hold+turn gesture is active, draw the
-     * current patch's human name centred over the slot grid so the full-range
-     * browser is legible — same affordance as the sequencer view. patch_name is
-     * NULL when the name table is compiled out, so this costs nothing then. */
+    /* Patch-name banner over the slot grid during the hold+turn gesture, same
+     * affordance as the sequencer view. patch_name is NULL when the name table
+     * is compiled out, so this costs nothing then. */
     if (!view->wave_mode && view->patch_select && view->patch_name) {
         u8g2_SetFont(u8g2, u8g2_font_6x10_tf);
         uint8_t nw = (uint8_t)u8g2_GetStrWidth(u8g2, view->patch_name);

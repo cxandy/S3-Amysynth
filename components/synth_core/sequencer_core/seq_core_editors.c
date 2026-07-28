@@ -13,20 +13,19 @@ uint32_t s_lfo_rng_state = 0xDEADBEEFu;
 
 #if CONFIG_SEQ_MELODIC_AMY_NATIVE_LFO
 
-/* True when the given authored track should use AMY native LFO.
- * Caller is responsible for ensuring the layer uses a wave patch.
- * PAN rides pan_coefs[COEF_MOD] around a 0.5 center baseline and RANDOM maps
- * to a native NOISE S&H carrier, so every enabled wave-patch LFO is native;
- * the 20 Hz software poll now serves non-wave patches only. */
+/* True when an authored track should use the AMY native LFO. Caller must
+ * already know the layer's patch reserves a carrier pair. PAN rides
+ * pan_coefs[COEF_MOD] around a 0.5 baseline and RANDOM maps to a native NOISE
+ * S&H carrier, so every enabled LFO on such a patch is native; the 20 Hz
+ * software poll serves the rest. */
 static bool is_native_lfo_track(const seq_lfo_t *lfo)
 {
     return lfo->enabled;
 }
 
-/* Push native LFO config to one track's AMY synth (layers whose patch has a
- * reserved carrier pair - wave build or bass presets). Handles both
- * activation (carrier active) and deactivation (carrier dormant, COEF_MOD
- * cleared) so the caller always reaches a consistent AMY state. */
+/* Push native LFO config to one track's AMY synth (patches with a reserved
+ * carrier pair). Handles activation and deactivation (carrier dormant,
+ * COEF_MOD cleared) so the caller always reaches a consistent AMY state. */
 static void melodic_configure_native_lfo_track(const seq_layer_t *layer, uint8_t track)
 {
     const seq_lfo_t *lfo = &layer->vp[track].lfo;
@@ -40,10 +39,9 @@ static void melodic_configure_native_lfo_track(const seq_layer_t *layer, uint8_t
 
 #endif /* CONFIG_SEQ_MELODIC_AMY_NATIVE_LFO */
 
-/* Restore the resting (neutral) coefficient for every target the LFO was
- * driving — called when the LFO is switched off so nothing stays modulated.
- * FILTER restores the track's own authored cutoff; the rest push a neutral
- * constant. Iterates the full target set (multi-target LFOs). */
+/* Restore the resting coefficient for every target the LFO was driving, so
+ * nothing stays modulated after it is switched off. FILTER restores the
+ * track's authored cutoff; the rest push a neutral constant. */
 static void lfo_restore_target_neutrals(const seq_layer_t *layer, uint8_t track,
                                         const seq_lfo_t *lfo)
 {
@@ -65,8 +63,8 @@ void sequencer_configure_melodic_envelope_track(uint8_t layer_idx, uint8_t track
 #if CONFIG_SEQ_MELODIC_ENVELOPE_ENABLED
     const seq_layer_t *layer = &s_layers[layer_idx];
     /* No KS/NOISE special-casing: the row's envelope applies verbatim to every
-     * wave. The old forced onset floor + zeroed KS sustain made those patches
-     * decay to silence regardless of what the user authored ("dull in use"). */
+     * wave. A forced onset floor or zeroed KS sustain makes those patches decay
+     * to silence regardless of what the user authored. */
     seq_env_t env = *seq_layer_env(layer_idx, track);
     float sustain = (float)env.sustain_pct / 100.0f;
 
@@ -111,10 +109,9 @@ void sequencer_core_set_melodic_envelope(uint8_t layer_idx, uint8_t track,
                                      VOICE_ENV_RELEASE_MIN_MS, VOICE_ENV_TIME_MAX_MS);
     dst->eg_type     = env->eg_type;
 
-    /* Committing in the graph editor establishes this row's authority over the
-     * patch's own envelope. From now on patch changes re-impose this custom env
-     * (until the user re-authors). Each row owns its own synth, so the push
-     * affects only this row. */
+    /* Committing establishes this row's authority over the patch's own
+     * envelope: later patch changes re-impose it. Each row owns its own synth,
+     * so the push affects only this row. */
     layer->vp[track].env_authored = true;
     sequencer_configure_melodic_envelope_track(layer_idx, track);
     ESP_LOGI(TAG, "env L%u T%u -> A%u D%u S%u%% R%u (authored)",
@@ -133,9 +130,8 @@ void sequencer_core_set_melodic_envelope(uint8_t layer_idx, uint8_t track,
 
 /* ── Per-row second envelope (runtime-editable EG1) ──────────────────────── */
 
-/* Push the given row's stored EG1 to that row's OWN AMY synth (osc 0 — the
- * same voice oscillator EG0 targets). No KS/NOISE onset-floor special case:
- * EG1 has no built-in role for those waveforms today. */
+/* Push the row's stored EG1 to its own AMY synth, osc 0 - the same oscillator
+ * EG0 targets. No KS/NOISE special case: EG1 has no role for those waves. */
 void sequencer_configure_melodic_envelope1_track(uint8_t layer_idx, uint8_t track)
 {
     const seq_layer_t *layer = &s_layers[layer_idx];
@@ -176,20 +172,19 @@ void sequencer_core_set_melodic_envelope2(uint8_t layer_idx, uint8_t track,
 
 /* ── Per-row melodic filter (runtime-editable) ─────────────────────────── */
 
-/* LEGACY SNAPSHOT IMPORT ONLY. Older project files had no feedback field —
- * KS string decay was derived from the filter Q. This mapping ([0.51, 8.0] ->
- * [0, 1]) is kept solely so de_filter() can reconstruct the feedback those
- * files audibly had. Live apply paths use seq_filter_t.feedback directly. */
+/* LEGACY SNAPSHOT IMPORT ONLY. Older project files had no feedback field: KS
+ * string decay was derived from filter Q. This [0.51,8.0] -> [0,1] mapping
+ * exists so de_filter() can reconstruct what those files audibly had. Live
+ * apply paths use seq_filter_t.feedback directly. */
 float sequencer_core_ks_feedback_from_q(float q)
 {
     float n = (q - 0.51f) / (8.0f - 0.51f);
     return SEQ_CLAMP_F32(n, 0.0f, 1.0f);
 }
 
-/* Push one row's stored filter to its own AMY synth. */
 /* Apply one filter config to a row's AMY synth. Shared by the stored-state
- * configure below and the live-preview push: the caller decides whether `f`
- * is the row's committed filter or an editor's scratch copy. */
+ * configure below and the live-preview push: the caller decides whether `f` is
+ * the row's committed filter or an editor's scratch copy. */
 static void melodic_filter_apply(uint8_t layer_idx, uint8_t track,
                                  const seq_filter_t *f)
 {
@@ -200,30 +195,27 @@ static void melodic_filter_apply(uint8_t layer_idx, uint8_t track,
         e->filter_type = f->filter_type;
         e->filter_freq_coefs[COEF_CONST] = f->cutoff_hz;
         e->resonance = f->resonance;
-        /* EG1 -> cutoff depth (octaves). Only wired when the user has dialed a
-         * non-zero amount, so a plain melodic filter is byte-for-byte unchanged.
-         * COEF_EG1 is the second (aux) envelope generator; on melodic tracks
-         * nothing routes it to amplitude (no amp_coefs[COEF_EG1] anywhere), so
-         * there is no amp/filter double-use to arbitrate — the amount==0 gate is
-         * the only guard needed. Same convention as arp_core.c:253. */
+        /* EG1 -> cutoff depth in octaves, wired only for a non-zero amount so a
+         * plain melodic filter is unchanged. Nothing routes COEF_EG1 to
+         * amplitude on melodic tracks, so there is no double-use to arbitrate
+         * and the amount==0 gate is the only guard needed (as in arp_core.c). */
         if (f->filter_env_amount != 0.0f) {
             e->filter_freq_coefs[COEF_EG1] = f->filter_env_amount;
         }
     } else {
         e->filter_type = FILTER_NONE;
     }
-    /* KS string decay: the authored feedback value, pushed directly. 0 means
-     * never authored — leave AMY's build-time 0.9 default in place. */
+    /* KS string decay: the authored feedback, pushed directly. 0 = never
+     * authored, so leave AMY's build-time 0.9 default in place. */
     if (layer->patch == SEQ_PATCH_KS && f->feedback > 0.0f) {
         e->feedback = SEQ_CLAMP_F32(f->feedback, 0.0f, 1.0f);
     }
     amy_helpers_event_send(e);
 
-    /* Guarantee valid EG1 breakpoints on this synth whenever the filter env is
-     * live, so filter_freq_coefs[COEF_EG1] modulates a real ramp instead of a
-     * stuck unity gate (AMY treats a never-configured breakpoint set as a
-     * permanent 1.0 — see arp_core.c:247-253). Uses the row's stored EG1
-     * (authored shape, or the zeroed default). Skipped entirely when inert. */
+    /* Guarantee valid EG1 breakpoints whenever the filter env is live, so
+     * filter_freq_coefs[COEF_EG1] modulates a real ramp: AMY treats a
+     * never-configured breakpoint set as a permanent 1.0. Uses the row's stored
+     * EG1 (authored shape or the zeroed default). */
     if (f->enabled && f->filter_env_amount != 0.0f) {
         sequencer_core_push_envelope_eg1(layer->synth_id[track], 0,
                                          seq_layer_env1(layer_idx, track));
@@ -277,8 +269,8 @@ void sequencer_core_push_filter(uint8_t synth, const seq_filter_t *f, bool is_ks
     } else {
         e->filter_type = FILTER_NONE;
     }
-    /* KS string decay from the authored feedback field; 0 = never authored,
-     * keep AMY's build-time 0.9 default. */
+    /* KS string decay from the authored feedback; 0 = never authored, so keep
+     * AMY's build-time 0.9 default. */
     if (is_ks && f->feedback > 0.0f) {
         e->feedback = SEQ_CLAMP_F32(f->feedback, 0.0f, 1.0f);
     }
@@ -299,13 +291,12 @@ void sequencer_core_set_melodic_lfo(uint8_t layer_idx, uint8_t track,
     bool is_native = sequencer_core_lfo_native_layout(layer->patch, NULL, NULL);
     if (is_native) {
         melodic_configure_native_lfo_track(layer, track);
-        /* Restore static target value when disabled or on software-fallback path
-         * (PAN/RANDOM): native clears COEF_MOD but doesn't push the neutral coef. */
+        /* Restore the static target value when disabled: native clears COEF_MOD
+         * but does not push the neutral coef. */
         if (!lfo->enabled || !is_native_lfo_track(&layer->vp[track].lfo)) {
             lfo_restore_target_neutrals(layer, track, lfo);
         }
-        /* s_lfo_hz=0 for native tracks so the service loop skips them;
-         * non-zero for PAN/RANDOM fallback so the service loop picks them up. */
+        /* s_lfo_hz = 0 makes the software service loop skip native tracks. */
         s_lfo_hz[layer_idx][track] = (lfo->enabled && is_native_lfo_track(&layer->vp[track].lfo))
                                      ? 0.0f
                                      : (lfo->enabled ? seq_lfo_sw_hz(lfo->rate, s_bpm) : 0.0f);
@@ -319,7 +310,7 @@ void sequencer_core_set_melodic_lfo(uint8_t layer_idx, uint8_t track,
 
 
 
-    /* Software path: non-wave patches, or native LFO disabled at compile time */
+    /* Software path: patches without a carrier pair, or native LFO compiled out. */
     if (!lfo->enabled) {
         lfo_restore_target_neutrals(layer, track, lfo);
         s_lfo_hz[layer_idx][track] = 0.0f;
@@ -377,9 +368,9 @@ void __attribute__((optimize("O3", "unroll-loops", "fast-math"))) sequencer_core
 
             amy_event *e = amy_helpers_event_begin();
             e->synth = syn;
-            /* Multi-target: each checked target modulates its own independent
-             * COEF_CONST from the same LFO value. (SCAN has no software analog —
-             * it needs a wavetable voice, which always takes the native path.) */
+            /* Multi-target: each checked target modulates its own COEF_CONST
+             * from the same LFO value. SCAN has no software analog - it needs a
+             * wavetable voice, which always takes the native path. */
             if (LFO_HAS_TGT(lfo, LFO_TARGET_FILTER)) {
                 float base = (s_layers[li].vp[tr].filter.enabled &&
                               s_layers[li].vp[tr].filter.cutoff_hz > 0.0f)
@@ -399,13 +390,11 @@ void __attribute__((optimize("O3", "unroll-loops", "fast-math"))) sequencer_core
 }
 
 /* ── Native LFO rebuild helpers ─────────────────────────────────────────────
- * Called after a patch/synth rebuild (sequencer_configure_synth) and after
- * BPM changes so that native LFO carrier state stays consistent with the
- * current layer patch and tempo. */
+ * Called after a patch/synth rebuild and after BPM changes, so native LFO
+ * carrier state stays consistent with the layer's patch and tempo. */
 
-/* Re-apply the authored native LFO configuration for every track in a layer
- * whose patch reserves a carrier pair (wave build / bass presets). No-op
- * otherwise (software service loop handles those). */
+/* Re-apply the authored native LFO for every track in a layer whose patch
+ * reserves a carrier pair. No-op otherwise - the software loop handles those. */
 void sequencer_configure_melodic_lfo(uint8_t layer_idx)
 {
 #if CONFIG_SEQ_MELODIC_AMY_NATIVE_LFO
@@ -426,8 +415,8 @@ void sequencer_configure_melodic_lfo(uint8_t layer_idx)
 #endif
 }
 
-/* Update the LFO carrier frequency on all active native-LFO tracks after a
- * BPM change.  Mirrors arp_core_refresh_lfo_freq() for the melodic layer. */
+/* Update the carrier frequency on all active native-LFO tracks after a BPM
+ * change. Mirrors arp_core_refresh_lfo_freq(). */
 void melodic_lfo_refresh_native_freq(void)
 {
 #if CONFIG_SEQ_MELODIC_AMY_NATIVE_LFO
@@ -457,16 +446,12 @@ void melodic_lfo_refresh_native_freq(void)
 }
 
 /* ── Per-track amplitude trim (graph editor amp mode) ────────────────────────
- * amp_scale is a per-track multiplier applied to note velocity at emit time.
- * Default 1.0 (unity). Must be initialised to 1.0 in add_layer since
- * memset zeroes the struct.
+ * A per-track multiplier on note velocity at emit time. Default 1.0, which
+ * add_layer must set explicitly since memset zeroes the struct.
  *
- * The setter re-emits all steps for the affected track immediately after
- * storing the value (same pattern as sequencer_core_set_track_repeat_rate).
- * This is necessary because steps are scheduled ahead-of-time with a period;
- * the sequencer does not re-emit each step on every tick during steady
- * playback, so a store-only change would be silent until an unrelated
- * re-emit event (patch change, play-stop, etc.). */
+ * The setter re-emits the track's steps: steps are scheduled ahead of time with
+ * a period and are not re-emitted per tick, so a store-only change would stay
+ * silent until some unrelated re-emit. */
 
 float sequencer_core_get_melodic_amp_scale(uint8_t layer_idx, uint8_t track)
 {
@@ -487,11 +472,10 @@ void sequencer_core_set_melodic_amp_scale(uint8_t layer_idx, uint8_t track,
 }
 
 /* ── Live-preview pushes (AMY only; the store is untouched) ──────────────────
- * The editors audition scratch values against the running engine while the
- * committed store stays the single source of truth. Cancel restores by
- * re-pushing the stored state (or reloading the layer's patch when the row was
- * never authored); confirm goes through the normal setters. Authored flags are
- * never modified by a preview. */
+ * Editors audition scratch values while the committed store stays the source of
+ * truth. Cancel re-pushes the stored state (or reloads the layer's patch for a
+ * never-authored row); confirm goes through the normal setters. A preview never
+ * modifies the authored flags. */
 
 void sequencer_core_preview_melodic_envelope(uint8_t layer_idx, uint8_t track,
                                              const seq_env_t *env)
@@ -512,7 +496,7 @@ void sequencer_core_preview_melodic_filter(uint8_t layer_idx, uint8_t track,
                                            const seq_filter_t *f)
 {
     if (!f || layer_idx >= s_num_layers || track >= SEQ_TRACKS) return;
-    /* Same clamps the committing setter applies, so the audition matches what
+    /* Same clamps as the committing setter, so the audition matches what
      * confirm would store. */
     seq_filter_t tmp = *f;
     tmp.filter_type       = (f->filter_type < SEQ_FILTER_COUNT) ? f->filter_type : FILTER_NONE;

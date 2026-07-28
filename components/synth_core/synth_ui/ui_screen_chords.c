@@ -13,17 +13,14 @@
  * in ui_screen_menu.c (same split as the FX/NoteFX/Projects pages).
  *
  * Two levels inside one page: the slot list (CH1..CH8 + Back) and, after
- * clicking a slot, the edit view (4 note positions + Clear + Back). Every
- * edit commits immediately through seq_chords_set() — the engine sweep
- * (re-emit, voice reconfig, delete fallback) rides each commit, and closing
- * the menu mid-edit can never lose a voicing. The edit view keeps its own
- * working copy so the display order stays stable while editing; the stored
- * copy is normalized (sorted, zero-packed) on every commit.
+ * clicking a slot, the edit view (4 note positions + Clear + Back). Every edit
+ * commits immediately through seq_chords_set(), so the engine sweep (re-emit,
+ * voice reconfig, delete fallback) rides each commit and closing the menu
+ * mid-edit can never lose a voicing. The edit view keeps a raw working copy so
+ * display order stays stable; storage normalizes (sorted, zero-packed).
  *
- * Every change auditions through the selected melodic track's synth
- * (sequencer_core_audition_chord) — honest preview through the actual patch
- * that will play it; falls back to the first melodic track when a drum
- * layer is selected, silent when no melodic layer exists. */
+ * Changes audition through the selected melodic track's actual patch; falls
+ * back to the first melodic track on a drum layer, silent with none. */
 
 typedef enum { CHORDS_MODE_LIST = 0, CHORDS_MODE_EDIT } chords_mode_t;
 
@@ -180,8 +177,7 @@ void chords_menu_edit_value(uint8_t idx, int delta)
     }
     s_edit.notes[idx] = (uint8_t)n;
 
-    /* Commit immediately (normalized in storage; s_edit keeps the raw order
-     * so the cursor's position doesn't jump mid-edit) and audition. */
+    /* Commit + audition; s_edit keeps raw order so the cursor doesn't jump. */
     seq_chords_set(s_slot, &s_edit);
     chords_audition(&s_edit);
 }

@@ -12,33 +12,30 @@ extern "C" {
 /* ── Filter scope: live modulated-cutoff tap for the filter editor ────────
  *
  * Publishes what the filter is ACTUALLY doing so EG1 sweeps and filter LFO
- * motion are visible in the editor, instead of having to be inferred from the
- * authored numbers.
+ * motion are visible in the editor rather than inferred from authored numbers.
  *
- * This does not sample audio. AMY already computes the modulated cutoff as a
- * control-rate scalar once per block (msynth[osc]->filter_logfreq) for its own
- * use; this just reads it. The response curve stays exactly as approximate as
- * it is today - only the cutoff feeding that approximation becomes live.
+ * This does not sample audio: AMY already computes the modulated cutoff as a
+ * control-rate scalar once per block (msynth[osc]->filter_logfreq), and this
+ * just reads it. The response curve stays as approximate as it is today - only
+ * the cutoff feeding it becomes live.
  *
- * Concurrency. The render task (Core 1) holds amy_queue_lock across the entire
- * render body and msynth[] is not double-buffered, so the UI task must never
- * read it. Instead the render task taps the values after amy_update() returns,
- * where the lock is already released, and publishes into the cell below. The
- * split of ownership is what keeps this lock-free:
+ * Concurrency. The render task (Core 1) holds amy_queue_lock across the whole
+ * render body and msynth[] is not double-buffered, so the UI task must NEVER
+ * read it. The render task instead taps after amy_update() returns, with the
+ * lock released, and publishes into the cell. Ownership keeps it lock-free:
  *
  *   - the UI writes exactly one word, read_epoch, when it consumes a band;
- *   - the render tap owns the accumulator, and restarts it (rather than
- *     folding into it) whenever it observes a new epoch.
+ *   - the render tap owns the accumulator and restarts it, rather than folding
+ *     into it, whenever it observes a new epoch.
  *
- * Every word therefore has exactly one writer. A torn or one-frame-stale read
- * of the float pair stays possible and is visually irrelevant: the data is
- * display-only. */
+ * Every word has exactly one writer. A torn or one-frame-stale read of the
+ * float pair is possible and irrelevant: the data is display-only. */
 
 #if CONFIG_FILTER_SCOPE
 
-/* Hard cap on the armed oscillator list. The list lives inside the cell as a
- * fixed-size array that is never freed, so a torn read during a re-arm can only
- * ever yield a stale-but-in-range index, never a wild pointer. */
+/* Hard cap on the armed oscillator list. It is a fixed-size array inside the
+ * cell that is never freed, so a torn read during a re-arm can only yield a
+ * stale-but-in-range index, never a wild pointer. */
 #define FILTER_SCOPE_MAX_OSCS 16
 
 /* Arm the scope on an explicit oscillator list (the caller resolves target ->
@@ -57,12 +54,10 @@ void filter_scope_disarm(void);
  * predicted-not-taken branch while disarmed. */
 void filter_scope_render_tick(void);
 
-/* UI-side drain. Returns false when nothing has been published since the last
- * call (nothing armed, or no voice of the target is currently sounding).
- * Always bumps read_epoch, which is what makes the render tap restart its
- * accumulator - so consecutive calls report disjoint time windows.
- *
- * Values are AMY log-frequency, matching msynth[osc]->filter_logfreq. */
+/* UI-side drain. False when nothing was published since the last call (not
+ * armed, or no target voice sounding). Always bumps read_epoch, which makes
+ * the render tap restart its accumulator, so consecutive calls report disjoint
+ * time windows. Values are AMY log-frequency (msynth[osc]->filter_logfreq). */
 bool filter_scope_read(float *lo_logfreq, float *hi_logfreq);
 
 #endif /* CONFIG_FILTER_SCOPE */

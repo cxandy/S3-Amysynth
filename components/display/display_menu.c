@@ -1,10 +1,9 @@
 #include "display_menu.h"
 #include <string.h>
 
-/* Layout: a yellow header bar (rows 0..15 on the dual-colour panel) holding the
- * title, then up to 3 roomy rows in the blue region below. The first row starts
- * far enough down that neither its text nor its selection highlight ever crosses
- * the 16px yellow/blue seam. 128x64 OLED. */
+/* Layout: yellow header bar (rows 0..15 on the dual-colour panel) with the
+ * title, then up to 3 rows below. The first row starts far enough down that
+ * neither its text nor its highlight crosses the 16px yellow/blue seam. */
 #define MENU_TITLE_Y    8
 #define MENU_ROW_H      12
 #define MENU_FIRST_ROW  25
@@ -56,9 +55,8 @@ void display_menu_draw_frame_titled(u8g2_t *u8g2, const char *title,
         if (it->value[0] != '\0') {
             uint8_t vw = (uint8_t)u8g2_GetStrWidth(u8g2, it->value);
             uint8_t vx = (vw < 124) ? (uint8_t)(126 - vw) : 2;
-            /* When editing the selected item, frame the value to signal "live".
-             * Note: while the row is highlighted the draw color is 0 (black),
-             * so the frame reads as a cut-out box around the value. */
+            /* Frame the value to signal "live". The row highlight leaves the
+             * draw color at 0, so the frame reads as a cut-out box. */
             if (selected && view->editing) {
                 u8g2_DrawFrame(u8g2, (uint8_t)(vx - 2), (uint8_t)(y - 9),
                                (uint8_t)(vw + 4), MENU_ROW_H);
@@ -71,10 +69,8 @@ void display_menu_draw_frame_titled(u8g2_t *u8g2, const char *title,
         }
     }
 
-    /* Scroll-position arrows, drawn inside the yellow header (right side) so they
-     * never straddle the yellow/blue seam or collide with the bottom hint strip
-     * (the old down-arrow at y=60 was silently overwritten by it). ▲ = items
-     * above the window, ▼ = items below. */
+    /* Scroll arrows inside the yellow header so they never straddle the seam or
+     * collide with the bottom hint strip, which would silently erase them. */
     if (first > 0) {
         u8g2_DrawTriangle(u8g2, 112, 2, 108, 8, 116, 8);
     }

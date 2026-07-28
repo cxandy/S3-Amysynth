@@ -10,10 +10,9 @@ extern "C" {
  * transport (BLE MIDI in Phase 1), independent of the sequencer tracks.
  * Compiled only under CONFIG_SYNTH_WIRELESS.
  *
- * The note entry points match the midi_sink_t signatures (wireless/midi_core)
- * so main can wire them up without an adapter; they run on the transport's
- * task and emit untagged apply-now AMY events through amy_helpers (the drone
- * precedent - no sequencer tags, applied next render block). */
+ * The note entry points match midi_sink_t (wireless/midi_core) so main can
+ * wire them up without an adapter; they run on the transport task and emit
+ * untagged apply-now AMY events through amy_helpers, like the drone. */
 
 /* Lazy first configure of the live slot (patch load). Heavy: call from the
  * synth_ui task (radio session_start hook), not from input/transport tasks. */
@@ -27,9 +26,8 @@ void live_play_note_off(uint8_t channel, uint8_t note);
  * safety). Cross-task safe. */
 void live_play_all_notes_off(void);
 
-/* AMY synth slot owned by the live voice. Exposed so UI code that has to
- * address its actual voices (the live filter overlay reads their modulated
- * cutoff) does not hard-code the slot number a second time. */
+/* AMY synth slot owned by the live voice, so UI code addressing its voices
+ * (the filter overlay reads their modulated cutoff) never hard-codes it. */
 uint8_t  live_play_synth_slot(void);
 
 /* Patch selection (Wireless menu page; same catalog as melodic/arp). */
@@ -48,10 +46,9 @@ void live_play_set_wave_mode(bool wave);
 uint16_t live_play_get_glide_ms(void);
 void     live_play_set_glide_ms(uint16_t ms);
 
-/* True when the current patch is a raw wave / wavetable (the 3-osc build
- * with the reserved LFO carrier pair): live_play_set_lfo() applies natively.
- * Bass presets and patch strings own their osc layout and fall back to the
- * 20 Hz software stepper below - same split as the melodic tracks / arp. */
+/* True when the current patch has a reserved LFO carrier pair, so
+ * live_play_set_lfo() applies natively. Patch strings own their osc layout and
+ * fall back to the software stepper below - the melodic/arp split. */
 bool live_play_lfo_native_eligible(void);
 
 /* Retune the BPM-synced LFO carriers after a tempo change; called from
@@ -64,16 +61,15 @@ void live_play_refresh_lfo_freq(void);
 void live_play_lfo_service(void);
 
 /* ── Runtime-editable voice params (shared ADSR / filter / LFO editors) ──
- * Same contract as the arp's block, which is the structural template: one
- * voice, no layer/track scope, "patch owns it until the user commits, then
- * our copy wins" via the authored flags. Everything is re-applied after a
- * patch change so an edited voice survives reconfigure.
+ * Same contract as the arp's block: one voice, no layer/track scope, "patch
+ * owns it until the user commits, then our copy wins" via the authored flags,
+ * with everything re-applied after a patch change.
  *
- * Session-only: nothing here is written to a project, matching the live
- * slot's patch number.
+ * Session-only: nothing here is written to a project, like the live slot's
+ * patch number.
  *
- * Core 0 / synth_ui task only (the editors' task) - these push through
- * amy_helpers, never under amy_queue_lock. */
+ * Core 0 / synth_ui task only - these push through amy_helpers, never under
+ * amy_queue_lock. */
 void live_play_get_envelope(seq_env_t *out);
 void live_play_set_envelope(const seq_env_t *env);
 void live_play_get_envelope2(seq_env_t *out);

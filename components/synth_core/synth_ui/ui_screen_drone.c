@@ -10,11 +10,9 @@
 /* ════════════════════════════════════════════════════════════════════════
  *  DRONE SCREEN
  * ════════════════════════════════════════════════════════════════════════
- * Standalone stutter-drone synth (custompatches/drone_core). A simple
- * scrollable parameter list. Rows shown depend on the WAVE/PATCH source: the
- * WAVE/FREQ rows are WAVE-only, the PATCH row is PATCH-only. The cursor walks
- * the currently-visible rows; encoder-click toggles edit; turning edits the
- * focused row's value. */
+ * Standalone stutter-drone synth (custompatches/drone_core): a scrollable
+ * parameter list whose rows depend on the WAVE/PATCH source. The cursor walks
+ * the visible rows, encoder-click toggles edit, turning edits the value. */
 
 static uint8_t s_drone_cursor   = 0;
 static bool    s_drone_editing  = false;
@@ -185,9 +183,8 @@ static void drone_edit_row(drone_logical_row_t r, int delta)
                                  ? DRONE_SRC_PATCH : DRONE_SRC_WAVE);
             break;
         case DROW_WAVE: {
-            /* Cycle through SAW_DOWN, SAW_UP, PULSE, TRIANGLE, SINE.
-             * NOISE and KS excluded from drone: their excitation model
-             * misbehaves with the drone's one-shot trigger style. */
+            /* NOISE and KS are excluded: their excitation model misbehaves
+             * with the drone's one-shot trigger style. */
             static const uint16_t waves[] = { SAW_DOWN, SAW_UP, PULSE, TRIANGLE, SINE };
             const int wn = (int)(sizeof(waves) / sizeof(waves[0]));
             int idx = 0;
@@ -208,9 +205,9 @@ static void drone_edit_row(drone_logical_row_t r, int delta)
             break;
         }
         case DROW_RES: {
-            /* Geometric step: Q is perceptually multiplicative, and the range is
-             * now 0.1..8, so a fixed linear step would be too coarse low and too
-             * fine high. ~15% per detent feels even across the whole span. */
+            /* Geometric step: Q is perceptually multiplicative, so a linear
+             * step is too coarse low and too fine high. ~15% per detent feels
+             * even across the whole span. */
             float rv = drone_get_resonance();
             rv *= (dir > 0) ? 1.15f : (1.0f / 1.15f);
             drone_set_resonance(rv);
@@ -269,9 +266,8 @@ static void drone_edit_row(drone_logical_row_t r, int delta)
     }
 }
 
-/* Same view-resolved test as the normal drone screen: true only while this
- * screen (or its visualiser page) is what the display shows, so the filter/LFO
- * overlays keep their own buttons instead of being isolated away. */
+/* View-resolved: true only while this screen (or its visualiser page) is what
+ * the display shows, so the filter/LFO overlays keep their own buttons. */
 bool synth_ui_drone_is_active(void)
 {
     ui_view_id_t v = synth_ui_active_view();
@@ -318,8 +314,8 @@ void synth_ui_drone_handle_button(void)
     s_force_redraw = true;
 }
 
-/* Signature of the drone screen (everything the renderer reads). Builds the
- * view into *out so the caller can draw from it without a second build. */
+/* Signature of the drone screen. Builds the view into *out so the caller draws
+ * from it without a second build. */
 uint32_t drone_view_signature(drone_view_t *out)
 {
     uint32_t h = FNV1A_OFFSET;

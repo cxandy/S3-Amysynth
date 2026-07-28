@@ -1,9 +1,8 @@
 #include "display_badge.h"
 
-/* Badge geometry. The glyph is 5px wide; the plate adds a 1px surround, so the
- * badge owns BADGE_W columns of the top tile row. BADGE_GAP keeps a blank
- * column on each side so the badge never sits flush against a glyph and reads
- * as part of the header text. */
+/* Badge geometry. The 5px glyph plus a 1px plate surround owns BADGE_W columns
+ * of the top tile row; BADGE_GAP keeps a blank column each side so the badge
+ * never sits flush against header text. */
 #define BADGE_W    7
 #define BADGE_H    8
 #define BADGE_GAP  1
@@ -13,12 +12,10 @@ static const unsigned char s_bt_rune[] = {
     0x04, 0x0C, 0x15, 0x0E, 0x0E, 0x15, 0x0C, 0x04
 };
 
-/* True when the badge is composited into a full-screen buffer whose byte
- * layout we can read back directly: one byte per column of the top tile row,
- * bit n = pixel row n. Page-mode buffers hold only a slice of the screen and
- * rotations other than R0 permute the mapping, so in either case the occupancy
- * probe below would be reading the wrong pixels -- better to draw nothing than
- * to place the badge from a bad answer. */
+/* True when the buffer's byte layout is directly readable: one byte per column
+ * of the top tile row, bit n = pixel row n. Page-mode buffers hold only a slice
+ * and non-R0 rotations permute the mapping, so the occupancy probe below would
+ * read the wrong pixels - draw nothing rather than place from a bad answer. */
 static bool buffer_is_probeable(u8g2_t *u8g2)
 {
     return u8g2->cb == U8G2_R0 &&
@@ -55,9 +52,8 @@ static bool slot_is_clear(u8g2_t *u8g2, int x)
 }
 
 /* Nearest clear slot to the view's preferred x, or -1 when the top row is full.
- * Searching outward from the hint keeps the badge in its hand-tuned home
- * whenever that home is actually free, and moves it the shortest distance --
- * rather than to some fixed fallback corner -- when it is not. */
+ * Searching outward keeps the badge in its hand-tuned home when free, and moves
+ * it the shortest distance - not to a fixed fallback corner - when not. */
 static int find_slot(u8g2_t *u8g2, uint8_t preferred_x)
 {
     const int width = (int)u8g2_GetDisplayWidth(u8g2);

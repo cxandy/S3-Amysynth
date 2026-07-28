@@ -7,9 +7,9 @@
  *   3     : carrier A (chain-A output)
  *   4     : modulator (feeds index 5)
  *   5     : carrier B (chain-B output)
- * All four presets keep index 0 (op6, the only slot with FB_IN in this
- * algorithm) silenced, so `feedback` is not exercised by these fixed presets
- * — it remains available for exploration via the FM_CUSTOM voice. */
+ * All four presets silence index 0 (op6, the only FB_IN slot in this
+ * algorithm), so `feedback` goes unused here; it stays available via the
+ * FM_CUSTOM voice. */
 
 static void fm_preset_bass(fm_voice_t *v)
 {
@@ -29,7 +29,7 @@ static void fm_preset_epiano(fm_voice_t *v)
     v->algorithm = 0;
     v->feedback  = 0.0f;
     /* Chain A: index1 (bright, high inharmonic ratio) modulates index2, which
-     * modulates carrier index3 — classic "bell attack" FM E.Piano shape. */
+     * modulates carrier index3 - the classic FM E.Piano bell attack. */
     v->op_level[0] = 0.0f;
     v->op_ratio[1] = 14.0f; v->op_level[1] = 0.20f;
     v->op_ratio[2] = 1.0f;  v->op_level[2] = 0.40f;

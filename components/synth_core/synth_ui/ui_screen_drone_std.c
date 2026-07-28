@@ -9,11 +9,10 @@
 /* ════════════════════════════════════════════════════════════════════════
  *  NORMAL DRONE SCREEN
  * ════════════════════════════════════════════════════════════════════════
- * Free-running drone (custompatches/drone_std_core). Same scrollable list
- * model as the stutter screen (which stays reachable through the STUTTER
- * row at the top). Filter/LFO/ADSR have no rows here — they live in the
- * shared editors (SHIFT+1 opens the ADSR editor, MY_BUTTON_3 cycles
- * ADSR -> Filter -> LFO), which is the whole point of this mode. */
+ * Free-running drone (custompatches/drone_std_core). Scrollable list; the
+ * stutter screen stays reachable through the STUTTER row. Filter/LFO/ADSR
+ * have no rows here - they live in the shared editors (SHIFT+1 opens ADSR,
+ * MY_BUTTON_3 cycles ADSR -> Filter -> LFO). */
 
 static uint8_t s_dstd_cursor  = 0;
 static bool    s_dstd_editing = false;
@@ -179,11 +178,10 @@ static void drone_std_edit_row(drone_std_row_t r, int delta)
     }
 }
 
-/* True only when this screen itself owns the display — resolving through the
- * view precedence keeps the filter/LFO overlays out (they sit on top of the
- * drone screen without clearing ui_mode). The input isolation guard in main.c
- * keys off this, so a stale "screen is up" answer here would swallow the
- * editors' own MY_BUTTON_0 commit/cancel taps. */
+/* True only when this screen itself owns the display: resolving through view
+ * precedence excludes the filter/LFO overlays, which sit on top without
+ * clearing ui_mode. main.c's input isolation guard keys off this, so a stale
+ * "screen is up" would swallow the editors' own MY_BUTTON_0 taps. */
 bool synth_ui_drone_std_is_active(void)
 {
     return synth_ui_active_view() == UI_VIEW_DRONE_STD;

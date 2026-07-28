@@ -7,10 +7,9 @@
 /* ════════════════════════════════════════════════════════════════════════
  *  Step Trig editor — per-step probability / ratchet / conditional trig
  * ════════════════════════════════════════════════════════════════════════
- * Reuses the sequencer grid's existing cursor (active_layer_idx /
- * selected_track / selected_step) instead of inventing a parallel one — the
- * user navigates to a step exactly as they do to toggle it on/off, then
- * opens this popup (MY_BUTTON_2 long-press, main.c) to decorate it. */
+ * Reuses the sequencer grid's cursor (active_layer_idx / selected_track /
+ * selected_step) rather than a parallel one: the user navigates to a step as
+ * usual, then opens this popup (MY_BUTTON_2 long-press, main.c). */
 
 static bool    s_se_active = false;
 static uint8_t s_se_field  = SE_FIELD_PROB;
@@ -26,12 +25,11 @@ static uint8_t se_max_field(uint8_t li, uint8_t t, uint8_t s)
 
 bool synth_ui_stepedit_is_active(void)
 {
-    /* The overlay decorates the sequencer grid's own cursor, so it is only
-     * ever "active" while that grid is the live screen. Gating here (matching
-     * every sibling *_is_active()) means the draw cascade, encoder/button
-     * routers, and hint strip all stop treating a stray editor as active the
-     * instant the user leaves the sequencer or opens the menu — no separate
-     * teardown needed in each consumer. */
+    /* The overlay decorates the grid's own cursor, so it is active only while
+     * that grid is the live screen. Gating here (as every sibling
+     * *_is_active() does) means draw cascade, input routers and hint strip all
+     * drop it the instant the user leaves the sequencer or opens the menu - no
+     * per-consumer teardown. */
     return s_se_active
         && seq_state.ui_mode == UI_MODE_SEQUENCER
         && !seq_state.menu_open;
@@ -39,9 +37,9 @@ bool synth_ui_stepedit_is_active(void)
 
 void synth_ui_stepedit_open(void)
 {
-    /* Refuse to open from any non-sequencer screen (or with the menu up): a
-     * SHIFT+2 chord elsewhere would otherwise latch s_se_active onto a hidden
-     * grid cursor, editing an unseen step. Mirrors the is_active() gate. */
+    /* Mirrors the is_active() gate: opening elsewhere (or with the menu up)
+     * would latch s_se_active onto a hidden grid cursor, editing an unseen
+     * step. */
     if (seq_state.ui_mode != UI_MODE_SEQUENCER || seq_state.menu_open) {
         return;
     }
@@ -76,9 +74,8 @@ bool synth_ui_stepedit_handle_encoder(long delta)
     uint8_t s  = seq_state.selected_step;
     int d = (int)delta;
 
-    /* Cond type may have changed since the field cursor was last set (e.g.
-     * an earlier edit left PARAM selected, then the user cycled COND away
-     * from FILL) — clamp defensively before dispatching. */
+    /* Cond type may have changed since the field cursor was set (PARAM left
+     * selected, then COND cycled away from FILL) - clamp before dispatch. */
     uint8_t max_field = se_max_field(li, t, s);
     if (s_se_field > max_field) s_se_field = max_field;
 

@@ -18,36 +18,33 @@ amy_event *amy_helpers_event_begin(void);
 void amy_helpers_event_send(amy_event *event);
 void amy_helpers_event_cancel(amy_event *event);
 
-/* Focused one-liners over the begin/send primitive for the two event shapes
- * that recur across the synth modules. Everything else sets its own field mix
- * via begin()/send() directly.
- *
- * Two ingress routes exist and the entry-point names state them:
- * - NOTE-send: sequence[] set -> tick-scheduled whole event via
- *   sequencer_add_event under AMY's SEQ_LOCK.
+/* One-liners over begin/send for the two recurring event shapes; everything
+ * else sets its own field mix via begin()/send() directly. The names state
+ * the ingress route:
+ * - NOTE-send: sequence[] set -> tick-scheduled whole via sequencer_add_event
+ *   under AMY's SEQ_LOCK.
  * - CONFIG-send: no sequence[] -> applied now via add_delta_to_queue under
  *   amy_queue_lock. */
 
-/* Scheduled note-on/off (NOTE route). Carries the full AMY sequence[] tuple
- * (tag/tick/period) that drives the active-tag index; pass velocity 0.0f for a
- * note-off. This signature is the attach seam for per-step parameter locks. */
+/* Scheduled note-on/off (NOTE route). Carries the sequence[] tuple
+ * (tag/tick/period) driving the active-tag index; velocity 0.0f = note-off.
+ * This signature is the attach seam for per-step parameter locks. */
 void amy_helpers_note_send(uint8_t synth, float midi_note, float velocity,
                            uint32_t tag, uint32_t tick, uint32_t period);
 
-/* Send a begin()-obtained event on the CONFIG route: debug-asserts it carries
- * no sequence[] tuple (which would silently reroute it to the tick scheduler),
- * then sends. Use for apply-now synth/FX configuration events. */
+/* Send a begin()-obtained event on the CONFIG route, debug-asserting it
+ * carries no sequence[] tuple (which would silently reroute it to the tick
+ * scheduler). Use for apply-now synth/FX configuration events. */
 void amy_helpers_config_send(amy_event *event);
 
 /* Load a patch onto a synth, sizing its voice pool (CONFIG route).
- * synth_flags is passed through (callers may use layer-specific instrument
- * flags). */
+ * synth_flags passes through for layer-specific instrument flags. */
 void amy_send_patch(uint8_t synth, uint16_t patch_number, uint16_t num_voices,
                     uint32_t synth_flags);
 
-/* Global panic: release every sounding note across all synths via RESET_ALL_NOTES
- * delta. Safe to call from sequencer/UI core — runs on the render thread. Call on
- * pause to silence mid-gate notes whose scheduled note-offs were just cancelled. */
+/* Global panic: RESET_ALL_NOTES releases every sounding note. Safe from the
+ * sequencer/UI core. Call on pause to silence mid-gate notes whose scheduled
+ * note-offs were just cancelled. */
 void amy_send_all_notes_off(void);
 
 #ifdef __cplusplus

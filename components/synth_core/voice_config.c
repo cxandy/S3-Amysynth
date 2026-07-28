@@ -13,21 +13,18 @@ void voice_params_init_defaults(voice_params_t *vp)
 
 /* ── Lazy LFO-sibling materialization state ──────────────────────────────
  * Per synth: has anything ever sent an event to the LFO sibling oscs
- * (osc1/osc2) since the pool was last provably reset? AMY allocates an
- * osc's ~532 B synth struct the first time an event addresses it
- * (ensure_osc_allocd at event→delta conversion), so the disabled-path
- * "park" events below would themselves BE the allocation. Skipping them
- * is safe exactly when this bit is clear: the oscs are then either NULL
- * or AMY-reset (pool-shape change posts RESET_OSC per osc), and both
- * states are silent and carry no mod coupling.
+ * (osc1/osc2) since the pool was last provably reset? AMY allocates an osc's
+ * ~532 B struct the first time an event addresses it (ensure_osc_allocd), so
+ * the disabled-path "park" events below would themselves BE the allocation.
+ * Skipping them is safe exactly when this bit is clear: the oscs are then NULL
+ * or AMY-reset, both silent and free of mod coupling.
  *
- * The bit may only be CLEARED on provable freshness (a known pool-shape
- * change in voice_build_wave); everything ambiguous keeps it SET, because
- * a wrongly-set bit only costs the memory savings while a wrongly-clear
- * bit skips parking a live carrier (the stale-COEF_MOD DC-rail class).
- * The shape cache exists solely to make that freshness proof: 0 means
- * "unknown" (never built here, or a foreign patch configured the synth
- * since — see voice_lfo_mark_foreign), and unknown never clears the bit.
+ * Clear the bit ONLY on provable freshness (a known pool-shape change in
+ * voice_build_wave); anything ambiguous keeps it SET. A wrongly-set bit costs
+ * only memory; a wrongly-clear bit skips parking a live carrier (the
+ * stale-COEF_MOD DC-rail class). The shape cache exists solely for that proof:
+ * 0 = unknown (never built here, or foreign config since, see
+ * voice_lfo_mark_foreign), and unknown never clears the bit.
  *
  * Core-0 / UI-task only, like every entry point in this file. */
 #define VOICE_LFO_SYNTH_MAX 128u
@@ -65,9 +62,8 @@ void voice_lfo_note_pool_shape(uint8_t synth, uint8_t num_voices,
 {
     if (synth >= VOICE_LFO_SYNTH_MAX) return;
     /* A *known different* shape forces AMY to reallocate the voice oscs
-     * (patches.c only no-ops on an identical shape) and RESET_OSC each new
-     * one, so the LFO carrier pair is provably fresh: forget it. An unknown
-     * cache (first build, or foreign config since) proves nothing. */
+     * (patches.c no-ops only on an identical shape) and RESET_OSC each one, so
+     * the carrier pair is provably fresh. An unknown cache proves nothing. */
     uint16_t shape = (uint16_t)(((uint16_t)num_voices << 8) | oscs_per_voice);
     if (s_pool_shape[synth] != 0 && s_pool_shape[synth] != shape)
         lfo_set_materialized(synth, false);
@@ -120,8 +116,8 @@ void voice_build_wave(const voice_wave_cfg_t *cfg)
     e->wave  = cfg->wave;
     if (cfg->wt_preset >= 0) e->preset = cfg->wt_preset;
     if (cfg->wave == KS) {
-        /* Authored feedback drives KS string decay directly once dialed;
-         * otherwise (or on the 0 "never set" sentinel) the fixed default. */
+        /* Authored feedback drives KS string decay; the 0 "never set"
+         * sentinel falls back to the fixed default. */
         float fb = cfg->ks_feedback;
         if (fb > 1.0f) fb = 1.0f;   /* > 1 would make the KS buffer diverge */
         e->feedback = (cfg->ks_feedback_authored && fb > 0.0f) ? fb : 0.9f;
@@ -141,13 +137,12 @@ void voice_apply_native_lfo_topo(uint8_t synth, const seq_lfo_t *lfo,
     uint8_t wobble_osc = (uint8_t)(carrier_osc + 1u);
 
     if (lfo && lfo->enabled && lfo->targets) {
-        /* Coupled (audible) oscs: wire mod_source to the carrier (voice-local
-         * — AMY adds the base_osc offset, so it resolves within each voice)
-         * and set the COEF_MOD depth for every checked target, clearing every
-         * sibling rail first. One carrier feeds all targets on all coupled
-         * oscs; each gets the shared depth scaled by its own normalizing
-         * constant. (Bass couples both audible oscs so vibrato/tremolo hits
-         * the sub too; the wave build couples osc0 only.) */
+        /* Coupled (audible) oscs: wire mod_source to the carrier (voice-local -
+         * AMY adds the base_osc offset) and set the COEF_MOD depth for every
+         * checked target, clearing every sibling rail first. One carrier feeds
+         * all targets on all coupled oscs, each scaled by its own normalizing
+         * constant. Bass couples both audible oscs so vibrato/tremolo hits the
+         * sub; the wave build couples osc0 only. */
         float d = (float)lfo->depth / 100.0f;
         for (uint8_t o = 0; (uint8_t)(coupled_mask >> o) != 0u; o++) {
             if (!(coupled_mask & (uint8_t)(1u << o))) continue;
@@ -173,16 +168,14 @@ void voice_apply_native_lfo_topo(uint8_t synth, const seq_lfo_t *lfo,
             amy_helpers_event_send(e);
         }
 
-        /* Carrier: BPM-synced — no pitch tracking, no velocity, no envelope;
-         * amp CONST=1 so AMY computes a mod value every block. WOBBLE
-         * (second-order LFO): the next osc is chained as the carrier's own
-         * mod_source (AMY resolves the relative index within the voice),
-         * targeting BOTH the carrier's amplitude (= modulation depth
-         * breathing) and its log-frequency (= rate wobble), per the
-         * chained-modulator semantics (see AMY mod_osc_would_cause_loop /
+        /* Carrier: BPM-synced, no pitch tracking / velocity / envelope; amp
+         * CONST=1 so AMY computes a mod value every block. WOBBLE (second-order
+         * LFO) chains the next osc as the carrier's own mod_source, targeting
+         * both its amplitude (depth breathing) and log-frequency (rate wobble)
+         * per AMY's chained-modulator semantics (mod_osc_would_cause_loop /
          * compute_mod_scale). Both coefs are ALWAYS written so a stale wobble
-         * from a previous config can never keep modulating after it is
-         * turned off (same clear-siblings contract as the target coefs). */
+         * cannot keep modulating after it is turned off (the clear-siblings
+         * contract). */
         float w = (float)lfo->wob_depth / 100.0f;
         e = amy_helpers_event_begin();
         e->synth                  = synth;
@@ -197,14 +190,14 @@ void voice_apply_native_lfo_topo(uint8_t synth, const seq_lfo_t *lfo,
         e->mod_source             = wobble_osc;
         e->amp_coefs[COEF_MOD]    = w * VOICE_WOB_DEPTH_AMP;
         /* Reach toggle: depth-only leaves the carrier's rate steady. Written
-         * unconditionally (zero, not skipped) so switching to depth-only can
-         * never leave a previous rate coupling modulating. */
+         * unconditionally (zero, not skipped) so switching to depth-only
+         * cannot leave a previous rate coupling live. */
         e->freq_coefs[COEF_MOD]   = lfo->wob_depth_only
                                   ? 0.0f : w * VOICE_WOB_DEPTH_RATE;
         amy_helpers_event_send(e);
 
-        /* The wobble modulator itself — fixed TRIANGLE (smooth, no steps on
-         * the depth/rate rails), BPM-synced, dormant at 0 %. */
+        /* The wobble modulator itself: fixed TRIANGLE (smooth, no steps on the
+         * depth/rate rails), BPM-synced, dormant at 0 %. */
         e = amy_helpers_event_begin();
         e->synth                  = synth;
         e->osc                    = wobble_osc;
@@ -235,9 +228,9 @@ void voice_apply_native_lfo_topo(uint8_t synth, const seq_lfo_t *lfo,
             amy_helpers_event_send(e);
         }
 
-        /* A never-materialized carrier pair is NULL or AMY-reset — silent,
-         * no coupling, nothing to park. Sending the events anyway would
-         * allocate the oscs and forfeit the lazy reservation. */
+        /* A never-materialized carrier pair is NULL or AMY-reset: silent, no
+         * coupling, nothing to park. Sending the events would allocate the
+         * oscs and forfeit the lazy reservation. */
         if (!lfo_materialized(synth))
             return;
 
@@ -257,8 +250,8 @@ void voice_apply_native_lfo_topo(uint8_t synth, const seq_lfo_t *lfo,
     }
 }
 
-/* The wave-build layout (carrier = osc1, osc0 coupled) — the historical
- * signature every WAVE-mode engine calls. */
+/* The wave-build layout (carrier = osc1, osc0 coupled): the signature every
+ * WAVE-mode engine calls. */
 void voice_apply_native_lfo(uint8_t synth, const seq_lfo_t *lfo, uint16_t bpm)
 {
     voice_apply_native_lfo_topo(synth, lfo, bpm, 1, 0x01);

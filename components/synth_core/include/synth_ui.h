@@ -52,24 +52,24 @@ bool synth_ui_menu_is_active(void);
 bool synth_ui_menu_handle_encoder(long delta); /* true if consumed */
 bool synth_ui_menu_handle_button(void);        /* true if consumed */
 
-/* Projects-page rename editor: while a project name is being typed, MY_BUTTON_1
- * saves it and MY_BUTTON_2 discards it (so the user never has to walk the cursor
- * to the end of the field or dial the '#' sentinel). These belong to the menu
- * overlay, which composes the projects module's rename state with its own page
- * tracking - so _active() is authoritative (false unless the menu is open on the
- * projects page mid-rename) and the button dispatch can gate on it without any
- * cross-module stale-flag cleanup. _active() also drives the naming-aware hint
- * labels. All three are safe no-ops when CONFIG_SYNTH_PROJECT_STORE is off. */
+/* Projects-page rename editor: while a name is being typed, MY_BUTTON_1 saves
+ * and MY_BUTTON_2 discards, so the user need not walk to the end of the field
+ * or dial the '#' sentinel. These live on the menu overlay, which composes the
+ * projects module's rename state with its own page tracking, so _active() is
+ * authoritative (false unless the menu is open on the projects page mid-rename)
+ * and button dispatch can gate on it with no cross-module stale-flag cleanup.
+ * It also drives the naming-aware hint labels. No-ops when
+ * CONFIG_SYNTH_PROJECT_STORE is off. */
 bool synth_ui_menu_rename_active(void);
 void synth_ui_menu_rename_save(void);
 void synth_ui_menu_rename_discard(void);
 
 /* True while the menu overlay is open on its Wireless page. The ADSR/filter
- * editors bind to the BLE MIDI live-play voice on this rather than a ui_mode
- * (the page is an overlay, so the mode underneath is the screen the user came
- * from), and the SHIFT+1 open chord uses it to allow the editor from a page
- * rather than only from a mode screen. Stays true while an editor draws over
- * the overlay. Always false when CONFIG_SYNTH_WIRELESS is off. */
+ * editors bind to the BLE MIDI live-play voice on this rather than a ui_mode,
+ * since the page is an overlay and the mode underneath is whatever screen the
+ * user came from; the SHIFT+1 open chord uses it to allow the editor from a
+ * page at all. Stays true while an editor draws over the overlay. Always false
+ * when CONFIG_SYNTH_WIRELESS is off. */
 bool synth_ui_wireless_page_is_open(void);
 
 /* ── Arp screen ──────────────────────────────────────────────────────────
@@ -125,24 +125,17 @@ bool synth_ui_fm_is_active(void);
 bool synth_ui_fm_handle_encoder(int delta);
 bool synth_ui_fm_handle_button(void);
 
-/* Re-impose the cached global FX (EQ/echo/chorus/reverb) after a synth patch
- * load. Every AMY built-in Juno patch ends with global EQ/chorus commands, so
- * loading a preset onto any synth would otherwise re-skin the whole mix's FX.
- * The sequencer/arp/drone patch-load paths call this immediately after loading;
- * it is a no-op while the user has enabled the "Preset FX" menu toggle (i.e.
- * deliberately letting presets drive the global FX).
- * Declared in amy_fx.h (canonical) — include that header directly. */
+/* Global-FX reassert after a patch load (every Juno patch ends with global
+ * EQ/chorus commands) is declared in amy_fx.h - include that header. */
 
-/* Accessors for the (module-private) UI state. seq_state itself is static in
- * synth_ui.c — other modules read what they need through these getters rather
- * than reaching into the UI struct. */
+/* Accessors for the module-private UI state: seq_state is static in
+ * synth_ui.c, so other modules read through these rather than the struct. */
 uint16_t seq_get_bpm(void);
 uint8_t  seq_get_active_layer_idx(void);
 
 /* ── Graph pop-up integration (isolated, easily removable) ───────────────────
- * Demo hooks for the reusable graph_popup widget. main.c calls these; the
- * pop-up state and all U8g2 plumbing live inside synth_ui.c. Removing these
- * declarations and their callers fully reverts the integration. */
+ * Hooks for the reusable graph_popup widget, called from main.c; the pop-up
+ * state and U8g2 plumbing stay inside synth_ui.c. */
 
 /* True while the graph pop-up overlay is open. */
 bool synth_ui_graph_is_active(void);
@@ -156,32 +149,29 @@ void synth_ui_graph_open_envelope(void);
 bool synth_ui_graph_handle_encoder(long delta);
 bool synth_ui_graph_handle_button(bool is_long);
 
-/* Commit the current edits and close the editor (encoder long-press path,
- * symmetric with the long-press that opens it). Distinct from
- * synth_ui_graph_handle_button(true), which discards on cancel. */
+/* Commit the current edits and close the editor (encoder long-press, symmetric
+ * with the long-press that opens it). Distinct from
+ * synth_ui_graph_handle_button(true), which discards. */
 bool synth_ui_graph_close_commit(void);
 
 /* Toggle the graph time range SHORT(2s linear) <-> LONG(15s, log-squashed tail)
- * while the editor is open. Re-seeds the curve. Returns true if consumed.
- * NOTE: range is now auto-switched based on total envelope time; this function
- * is kept for completeness but MY_BUTTON_2 no longer calls it. */
+ * while the editor is open. Range is auto-switched from total envelope time, so
+ * this is kept only for completeness; no button calls it. */
 bool synth_ui_graph_toggle_range(void);
 
-/* Toggle amp-edit mode while the graph editor is open (MY_BUTTON_2). When
- * active the encoder adjusts the selected target's amplitude trim (0..1)
- * instead of moving ADSR points. Mode and scratch value are committed on
- * editor close (confirm) and reset on every editor open. */
+/* Toggle amp-edit mode while the graph editor is open (MY_BUTTON_2): the
+ * encoder adjusts the target's amplitude trim (0..1) instead of moving ADSR
+ * points. Committed on close (confirm), reset on every open. */
 void synth_ui_graph_toggle_amp_mode(void);
 
-/* Flip the sign of the melodic EG1->cutoff sweep depth — MY_BUTTON_SHOULDER
- * while the envelope editor's EG1 page is showing. No-op on the
- * EG0 page, for non-melodic targets, and at 0.0 depth. */
+/* Flip the sign of the EG1->cutoff sweep depth (MY_BUTTON_SHOULDER on the
+ * envelope editor's EG1 page). No-op on the EG0 page, for targets with no depth
+ * field, and at 0.0 depth. */
 void synth_ui_graph_flip_eg1_polarity(void);
 
 /* Cycle the shown EG's curve type Normal->Linear->DX7->TrueExp (AMY eg_type
- * 0..3) — MY_BUTTON_1 while the envelope editor is open. Applies to AMY
- * immediately, honoring the current apply scope; A/D/S/R times are untouched.
- * (The apply-scope toggle that used to be on MY_BUTTON_1 moved to SHIFT+1.) */
+ * 0..3), MY_BUTTON_1 while the envelope editor is open. Applies to AMY
+ * immediately, honoring the current apply scope. */
 void synth_ui_graph_cycle_eg_type(void);
 
 /* ── Filter editor (per-synth LPF/HPF/BPF/LPF24 curve editor) ───────────────
@@ -207,39 +197,36 @@ bool synth_ui_lfo_handle_encoder(long delta);
 bool synth_ui_lfo_handle_button(bool is_long);
 bool synth_ui_lfo_close_commit(void);
 
-/* Toggle whether effect-editor commits apply to only the selected track (false)
- * or all tracks in the active layer (true).  Consumed by MY_BUTTON_1 while the
- * ADSR graph or LFO editor is open.  Returns true when an editor was active. */
+/* Toggle whether effect-editor commits apply to the selected track (false) or
+ * all tracks in the active layer (true). MY_BUTTON_1 while the ADSR or LFO
+ * editor is open. Returns true when an editor was active. */
 bool synth_ui_toggle_editor_apply_scope(void);
 
-/* Cycle between ADSR, Filter, and LFO editors (MY_BUTTON_3 while any is open).
- * Commits the departing editor and opens the next one.  Replaces the old
- * synth_ui_toggle_adsr_filter() two-way swap. */
+/* Cycle between the ADSR, Filter and LFO editors (MY_BUTTON_3 while any is
+ * open). Commits the departing editor and opens the next. */
 void synth_ui_cycle_editor(void);
 
 /* ── Step Trig editor (per-step probability / ratchet / conditional trig) ──
- * Full-screen popup addressed by the sequencer grid's existing cursor
- * (active layer / selected track / selected step) — no separate cursor.
- * Opened/closed by MY_BUTTON_2 long-press while navigating the grid
- * (main.c); while open, encoder turns adjust the focused field and a short
- * encoder-button press cycles which field (Prob → Ratchet → Cond → Param)
- * is focused. */
+ * Full-screen popup addressed by the sequencer grid's own cursor (active layer
+ * / selected track / selected step) - no separate cursor. Opened/closed by
+ * MY_BUTTON_2 long-press while navigating the grid (main.c); while open the
+ * encoder adjusts the focused field and a short encoder press cycles focus
+ * (Prob -> Ratchet -> Cond -> Param). */
 bool synth_ui_stepedit_is_active(void);
 void synth_ui_stepedit_open(void);
 void synth_ui_stepedit_close(void);
 bool synth_ui_stepedit_handle_encoder(long delta);
 bool synth_ui_stepedit_handle_button(void);
 
-/* ─── Canonical view precedence — the single source of truth ─────────────
- * The "which screen/overlay is showing" decision used to be re-derived by a
- * hand-copied precedence cascade in four places (draw switch, hint strip,
- * and the two main.c input routers). ui_active_view() is now the ONLY place
- * that precedence lives; every consumer resolves once and dispatches on the
- * result, so input and draw can never disagree about the active view.
+/* ─── Canonical view precedence - the single source of truth ─────────────
+ * synth_ui_active_view() is the ONLY place the "which screen/overlay is
+ * showing" precedence lives. Every consumer (draw, hint strip, both main.c
+ * input routers) resolves once and dispatches on the result, so input and draw
+ * can never disagree.
  *
- * Order (high → low): FILTER > LFO > STEPEDIT > GRAPH > MENU > mode-tail.
+ * Order (high to low): FILTER > LFO > STEPEDIT > GRAPH > MENU > mode-tail.
  * The first five are the input-capturing overlays (UI_VIEW_IS_OVERLAY); the
- * mode-tail is resolved from seq_state.ui_mode when no overlay is up. */
+ * mode-tail comes from seq_state.ui_mode when no overlay is up. */
 typedef enum {
     UI_VIEW_FILTER = 0,
     UI_VIEW_LFO,

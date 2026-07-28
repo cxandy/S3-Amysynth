@@ -19,14 +19,13 @@ static const musical_scale_t s_scales[] = {
     { .name = "Whole Tone",       .intervals = {0, 2, 4, 6, 8, 10},                    .size = 6  }
 };
 
-/* Floored integer division (rounds toward negative infinity), unlike C's
- * built-in division which truncates toward zero. Needed so negative note/octave
- * offsets map to the correct octave (e.g. -1/12 should be -1, not 0). */
+/* Floored division (toward negative infinity) rather than C's truncation, so
+ * negative note offsets map to the correct octave (-1/12 = -1, not 0). */
 static int32_t quantizer_floor_div(int32_t numerator, int32_t denominator)
 {
     int32_t quotient = numerator / denominator;
     int32_t remainder = numerator % denominator;
-    /* If there's a remainder and the signs differ, C truncated up; correct it. */
+    /* Remainder with differing signs means C truncated up; correct it. */
     if (remainder != 0 && ((remainder < 0) != (denominator < 0))) {
         quotient -= 1;
     }
@@ -53,10 +52,9 @@ uint8_t quantizer_clamp_midi(int32_t midi_note)
     return SEQ_CLAMP_U8(midi_note, 0, 127);
 }
 
-/* Snap an arbitrary MIDI note to the nearest note in the given scale/key.
- * Strategy: generate every scale note across the octave the input falls in plus
- * the neighbours (to handle notes near an octave boundary), and keep the
- * closest one. Ties break toward the lower note for deterministic results. */
+/* Snap a MIDI note to the nearest note in the given scale/key: generate every
+ * scale note across the input's octave plus its neighbours (octave-boundary
+ * cases) and keep the closest. Ties break low, for determinism. */
 uint8_t quantizer_snap_midi_note(uint8_t midi_note, uint8_t root_note,
                                  const musical_scale_t *scale)
 {
@@ -66,12 +64,11 @@ uint8_t quantizer_snap_midi_note(uint8_t midi_note, uint8_t root_note,
 
     int32_t best_note = (int32_t)midi_note;
     int32_t best_distance = 9999;
-    /* Locate which octave (relative to root) the input note sits in. */
     int32_t relative_note = (int32_t)midi_note - (int32_t)root_note;
     int32_t base_octave = quantizer_floor_div(relative_note, 12);
 
-    /* Search the surrounding octaves so candidates just across an octave line
-     * are still considered as the nearest match. */
+    /* Neighbouring octaves too, so candidates just across an octave line are
+     * still considered. */
     for (int32_t octave = base_octave - 1; octave <= base_octave + 1; octave++) {
         for (uint8_t i = 0; i < scale->size; i++) {
             int32_t candidate = (int32_t)root_note + (octave * 12) + scale->intervals[i];
@@ -111,9 +108,8 @@ static const int8_t s_chord_intervals[CHORD_TYPE_COUNT][6] = {
     /* MAJ9 */ {  0,  4,  7, 11, 14, -1 },  // maj7 + 9th
 };
 
-/* Return the -1-terminated semitone interval row for a chord type (max 5 notes,
- * 6 slots including the terminator). Returns NULL for out-of-range types.
- * Shared so other modules (e.g. the drone) voice chords from one table. */
+/* The -1-terminated semitone interval row for a chord type; NULL if out of
+ * range. Shared so other modules (e.g. the drone) voice from one table. */
 const int8_t *quantizer_chord_intervals(chord_type_t chord_type)
 {
     if ((unsigned)chord_type >= CHORD_TYPE_COUNT) return NULL;

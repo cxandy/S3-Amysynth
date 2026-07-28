@@ -21,10 +21,9 @@ extern "C" {
  *   Chord Mode  : ON      (melodic layers only)
  *    Root       : A
  *    Type       : Min7
- * Cursor rows 2..7 are the content rows; rows 5..7 (chord/root/type) hidden
- * for drum layers. Only 4 content rows are visible at once — the list
- * scrolls (same windowing as the drone screen) to keep the cursor in view
- * on melodic layers, which have 6 content rows. */
+ * Cursor rows 2..7 are the content rows; 5..7 (chord/root/type) are hidden for
+ * drum layers. The list scrolls to keep the cursor visible on melodic layers,
+ * which have more content rows than fit. */
 
 typedef enum {
     TO_ROW_LAYER  = 0,   /* title-bar: Lx selector  */

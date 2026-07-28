@@ -1,17 +1,13 @@
 #pragma once
 
-/* Shared voice-config layer — extraction target for backlog item 14.
- * Phase 0 lands only the leaf utilities and canonical constants; the
- * builder/LFO topology (voice_build_wave / voice_apply_native_lfo /
- * voice_params_t) follows in HW-A/B-gated phases (see
- * specs/spec-14-shared-voice-config.md). */
+/* Shared voice-config layer: leaf utilities, canonical constants, the WAVE
+ * voice skeleton and the native-LFO topology appliers used by every engine. */
 
 #include "seq_model.h"     /* seq_env_t, lfo_wave_t */
 #include <stdbool.h>
 #include <stdint.h>
 
-/* Canonical LFO-target depth scalars. Single source of truth, was duplicated
- * across arp_core.c and seq_core_editors.c. */
+/* Canonical LFO-target depth scalars - single source of truth. */
 #define VOICE_LFO_DEPTH_FILTER 3.0f
 #define VOICE_LFO_DEPTH_AMP    0.5f
 #define VOICE_LFO_DEPTH_PITCH  1.0f
@@ -41,24 +37,20 @@ static inline float voice_lfo_filter_octaves(const seq_lfo_t *l)
 #define VOICE_WOB_DEPTH_RATE   1.0f
 
 /* ── WOBBLE authoring unit ───────────────────────────────────────────────
- * The stored wob_depth is a 0..100 percentage of VOICE_WOB_DEPTH_AMP, which
- * tells the user nothing: "50 %" is 50 % of an internal coefficient, not of
- * anything audible. Authoring and display therefore speak whole dB of carrier
- * swing, the quantity the ear actually tracks.
+ * Stored wob_depth is a 0..100 percentage of VOICE_WOB_DEPTH_AMP - meaningless
+ * to the user, so authoring and display speak whole dB of carrier swing.
  *
- * Because the AMP coefficient enters AMY's dB combine linearly
- * (amp = 10^(3 * coef * mod), amp_combine_controls in amy.c), the peak swing
- * is exactly 20*log10(10^(3*coef)) = 60 * coef dB, and coef = wob/100 * 0.15.
- * Full scale is therefore 60 * VOICE_WOB_DEPTH_AMP = 9 dB, in 1 dB steps.
+ * The AMP coefficient enters AMY's dB combine linearly (amp = 10^(3*coef*mod),
+ * amp_combine_controls), so peak swing = 60 * coef dB with coef = wob/100 *
+ * 0.15: full scale is 60 * VOICE_WOB_DEPTH_AMP = 9 dB in 1 dB steps.
  *
- * 0 dB is OFF rather than a distinct zero setting: at zero swing the modulator
- * is parked (voice_apply_native_lfo silences osc2), so there is nothing between
- * "off" and "1 dB". The stored byte keeps its 0..100 meaning, so existing
- * project snapshots load unchanged — only the authoring unit differs.
+ * 0 dB is OFF, not a distinct setting: at zero swing the modulator is parked
+ * (osc2 silenced), so nothing exists between "off" and "1 dB". The stored byte
+ * keeps its 0..100 meaning, so old snapshots load unchanged.
  *
- * The same control also swings the carrier's RATE by up to +/-1 octave
- * (VOICE_WOB_DEPTH_RATE); the dB readout names the amplitude half of that pair
- * because it is the half the user is listening for. */
+ * The same control also swings carrier RATE by up to +/-1 octave
+ * (VOICE_WOB_DEPTH_RATE); the readout names the amplitude half because that is
+ * what the user hears. */
 #define VOICE_WOB_DB_MAX  9u   /* = 60 * VOICE_WOB_DEPTH_AMP; keep in step */
 
 /* Stored 0..100 -> whole dB of swing, rounded (0 => OFF). */
@@ -69,32 +61,26 @@ uint8_t voice_wob_depth_to_db(uint8_t wob_depth);
 uint8_t voice_wob_db_to_depth(uint8_t db);
 
 /* ── Note-triggered envelope bounds ──────────────────────────────────────
- * The melodic sequencer, the arp and the graph editor all drive the same
- * seq_env_t into AMY breakpoint sets and need the same guard rails: an attack
- * floor so a note-on doesn't step the amplitude rail in one block, a release
- * floor so a note-off doesn't either, and a ceiling that rejects nonsense from
- * a restored snapshot. Clamp against these names rather than respelling the
- * numbers, so the UI, the store and the AMY push path cannot drift apart.
+ * The melodic sequencer, arp and graph editor all drive the same seq_env_t
+ * into AMY breakpoint sets and need the same guard rails. Clamp against these
+ * names, not respelled numbers, so UI/store/push path cannot drift apart.
  *
- * Scope: NOTE-TRIGGERED voices only. The drone engines deliberately keep their
- * own floors — their envelopes are free-running rather than gated per note and
- * open over hundreds of milliseconds, so a shared declick policy would encode a
- * constraint they do not have.
+ * Scope: NOTE-TRIGGERED voices only. The drone engines keep their own floors -
+ * their envelopes are free-running and open over hundreds of ms, so a shared
+ * declick policy would encode a constraint they do not have.
  *
  * The graph editor derives its minimum marker spacing from ATTACK_MIN_MS (via
- * graph_popup_set_min_x_gap(), converted to normalised X for whichever time
- * axis is active) so the plot cannot enforce a stricter floor than the engine.
+ * graph_popup_set_min_x_gap()) so the plot cannot enforce a stricter floor
+ * than the engine.
  */
 
 /* Below roughly one render block (5.33 ms at 48 kHz) an attack is
- * indistinguishable from an instant step, and stepping the amp rail on trigger
- * is audible as a click on percussive material. Two milliseconds keeps the ramp
- * inside a single block while still counting as a ramp. */
+ * indistinguishable from a step, which clicks on percussive material. 2 ms
+ * keeps the ramp inside a single block while still counting as a ramp. */
 #define VOICE_ENV_ATTACK_MIN_MS   2u
 
-/* Longer than the attack floor because a note-off lands on whatever amplitude
- * the sustain stage held, so the discontinuity is larger: the tail needs a few
- * blocks to reach zero without a tick. */
+/* Longer than the attack floor: a note-off lands on whatever the sustain stage
+ * held, so the tail needs a few blocks to reach zero without a tick. */
 #define VOICE_ENV_RELEASE_MIN_MS  5u
 
 /* Ceiling for any single envelope segment. Far past the graph editor's longest
@@ -104,10 +90,9 @@ uint8_t voice_wob_db_to_depth(uint8_t db);
 /* Sustain is stored as a percentage of peak. */
 #define VOICE_ENV_SUSTAIN_MAX_PCT 100u
 
-/* Reset a voice_params_t (defined in seq_model.h) to its defaults: everything
- * zeroed/unauthored, amp_trim at unity. The single place the trim gets its
- * non-zero default — kills the "must re-set to 1.0 after memset" footgun that
- * was re-documented per engine. */
+/* Reset a voice_params_t (seq_model.h) to defaults: zeroed/unauthored, with
+ * amp_trim at unity. The single place the trim gets its non-zero default -
+ * use it instead of re-setting 1.0 after a memset. */
 void voice_params_init_defaults(voice_params_t *vp);
 
 /* lfo_wave_t -> AMY wave constant. RANDOM maps to NOISE: compute_mod_noise
@@ -117,16 +102,14 @@ uint16_t voice_lfo_wave_to_amy(lfo_wave_t wave);
 
 /* ── Shared WAVE-voice skeleton ──────────────────────────────────────────
  * The canonical "N voices, osc0 = note-following carrier" build used by the
- * arp, the drone, and the melodic sequencer. voice_build_wave() sends two
- * events: the pool definition and the osc0 skeleton. It deliberately does
- * NOT touch osc1, envelopes, filters, or mod routing — each engine layers
- * its own specialization (native LFO carrier, PULSE stutter gate, sweep
- * filter) on top as follow-up deltas.
+ * arp, drone and melodic sequencer. Sends two events: pool definition and osc0
+ * skeleton. Deliberately does NOT touch osc1, envelopes, filters or mod
+ * routing - each engine layers its own specialization on top as deltas.
  *
- * AMY does not reset the osc pool when the same num_voices/oscs_per_voice
- * is re-sent, so rebuilding through this function never glitches held
- * voices; that same property is why per-target COEF_MOD state must be
- * cleared explicitly on reconfigure (see voice_apply_native_lfo). */
+ * AMY does not reset the osc pool when the same num_voices/oscs_per_voice is
+ * re-sent, so rebuilding never glitches held voices; that same property is why
+ * per-target COEF_MOD state must be cleared explicitly on reconfigure
+ * (voice_apply_native_lfo). */
 typedef struct {
     uint8_t  synth;
     uint8_t  num_voices;
@@ -144,19 +127,17 @@ typedef struct {
 void voice_build_wave(const voice_wave_cfg_t *cfg);
 
 /* ── Lazy LFO-sibling materialization ────────────────────────────────────
- * voice_build_wave() reserves the osc1 (LFO carrier) and osc2 (wobble)
- * INDEX slots in the pool shape, but AMY only allocates an osc's ~532 B
- * synth struct when an event first addresses it. voice_config tracks, per
- * synth, whether the siblings were ever materialized, so the disabled-path
- * park events — which would otherwise BE the allocation — are skipped
- * while the oscs are provably fresh (NULL, or AMY-reset by a pool-shape
- * change: both silent, no mod coupling).
+ * voice_build_wave() reserves the osc1 (LFO carrier) and osc2 (wobble) INDEX
+ * slots in the pool shape, but AMY allocates an osc's ~532 B struct only when
+ * an event first addresses it. voice_config tracks per synth whether the
+ * siblings were ever materialized, so the disabled-path park events - which
+ * would themselves BE the allocation - are skipped while the oscs are provably
+ * fresh (NULL or AMY-reset: silent, no mod coupling).
  *
- * The failure modes are asymmetric by design: a wrongly-SET state only
- * costs the savings (parking fresh oscs allocates them), while a
- * wrongly-CLEAR state skips parking a live carrier and resurrects the
- * stale-COEF_MOD DC rail. The state therefore clears ONLY on a provable
- * pool reset inside voice_build_wave, and every path that configures a
+ * Failure modes are asymmetric by design: a wrongly-SET state costs only the
+ * savings, while a wrongly-CLEAR state skips parking a live carrier and
+ * resurrects the stale-COEF_MOD DC rail. So the state clears ONLY on a
+ * provable pool reset inside voice_build_wave, and every path configuring a
  * wave-built synth with a foreign topology (patch string, bass/FM/additive
  * preset, PCM pool) must call voice_lfo_mark_foreign() first. */
 
@@ -171,10 +152,10 @@ bool voice_lfo_siblings_materialized(uint8_t synth);
 void voice_lfo_mark_foreign(uint8_t synth);
 
 /* Register a pool build that reserves a trailing LFO carrier pair but is
- * issued outside voice_build_wave (custom builders - the bass presets).
- * Same shape-proof rules as voice_build_wave: a known different shape
- * clears the materialized state, anything ambiguous keeps it. A builder
- * that calls this must NOT be routed through voice_lfo_mark_foreign. */
+ * issued outside voice_build_wave (custom builders - the bass presets). Same
+ * shape-proof rules: a known different shape clears the materialized state,
+ * anything ambiguous keeps it. Such a builder must NOT also be routed through
+ * voice_lfo_mark_foreign. */
 void voice_lfo_note_pool_shape(uint8_t synth, uint8_t num_voices,
                                uint8_t oscs_per_voice);
 
@@ -186,22 +167,17 @@ void voice_lfo_note_pool_shape(uint8_t synth, uint8_t num_voices,
  *
  * Idempotent and state-clean: every target's COEF_MOD is cleared before the
  * selected one is set, because re-sending the same voice count does not reset
- * the osc pool — a prior target's coef would otherwise persist and keep
- * modulating (the stale-AMP case rides AMY's convex dB combine path and ramps
- * the output to a DC rail).
+ * the osc pool - a prior target's coef would persist and keep modulating (the
+ * stale-AMP case rides AMY's convex dB combine and ramps to a DC rail).
  *
- * Core-0 / UI-task only; pushes through amy_helpers (never amy_queue_lock).
- * This is the function a future per-step p-lock caller uses from the tick
- * engine. */
+ * Core-0 / UI-task only; pushes through amy_helpers (never amy_queue_lock). */
 void voice_apply_native_lfo(uint8_t synth, const seq_lfo_t *lfo, uint16_t bpm);
 
-/* Topology-parameterized applier behind voice_apply_native_lfo (which is
- * the wave-build special case: carrier 1, mask 0x01). carrier_osc is the
- * voice-relative index of the reserved LFO carrier (wobble = carrier+1);
- * coupled_mask selects the audible oscs that receive the mod_source wiring
- * and COEF_MOD depths (bit n = osc n). Callers derive both from
- * sequencer_core_lfo_native_layout() so engine code never hardcodes a
- * family's osc indices. */
+/* Topology-parameterized applier behind voice_apply_native_lfo (the wave-build
+ * special case: carrier 1, mask 0x01). carrier_osc = voice-relative index of
+ * the reserved LFO carrier (wobble = carrier+1); coupled_mask selects the
+ * audible oscs receiving mod_source + COEF_MOD (bit n = osc n). Derive both
+ * from sequencer_core_lfo_native_layout(), never hardcode osc indices. */
 void voice_apply_native_lfo_topo(uint8_t synth, const seq_lfo_t *lfo,
                                  uint16_t bpm, uint8_t carrier_osc,
                                  uint8_t coupled_mask);

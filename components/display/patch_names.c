@@ -1,17 +1,13 @@
 /*
  * patch_names — human-readable names for the AMY built-in patch banks.
  *
- * Names transcribed from components/amy/src/patches.h (the patch_commands[]
- * table comments). The whole table is gated by CONFIG_SEQ_PATCH_SHOW_NAMES so
- * it costs ZERO flash when names are not wanted (preselected-only builds, or
- * full-range browsing under flash pressure).
+ * Names transcribed from components/amy/src/patches.h (patch_commands[] table
+ * comments). Gated by CONFIG_SEQ_PATCH_SHOW_NAMES so it costs zero flash when
+ * names are not wanted.
  *
  *   0..127  : Roland Juno-106 presets
  *   128..255: Yamaha DX7 presets
  *   256     : AMY built-in heterodyne piano
- *
- * Stored in flash (const, .rodata). Strings live in the program image; only a
- * 257-entry pointer table (≈1 KB on 32-bit) plus the characters are added.
  */
 
 #include "patch_names.h"
@@ -311,11 +307,9 @@ static const char *const s_patch_names[SEQ_PATCH_NAME_COUNT] = {
     /* 270 */ "Wavetable: Sine2Saw",
     /* 271 */ "Wavetable: Viral",
 #else
-    /* This table is positional, not designated-index: SEQ_PATCH_FM_BASE is
-     * fixed at 272 unconditionally (see sequencer_core.h) so FM patch numbers
-     * never shift under this build flag. These 5 placeholders reserve the
-     * 267-271 slots that CONFIG_AMY_WAVETABLE would otherwise fill, keeping
-     * every entry below at its correct positional index either way. */
+    /* Positional table, not designated-index: SEQ_PATCH_FM_BASE is fixed at 272
+     * (sequencer_core.h), so these placeholders must hold the 267-271 slots
+     * CONFIG_AMY_WAVETABLE would otherwise fill. */
     /* 267 */ "(reserved)",
     /* 268 */ "(reserved)",
     /* 269 */ "(reserved)",
@@ -330,8 +324,8 @@ static const char *const s_patch_names[SEQ_PATCH_NAME_COUNT] = {
     /* 275 */ "FM Lead",
     /* 276 */ "FM Custom (edit)",
 
-    /* ── Additive/partials voices (277-279) — like FM, named unconditionally
-     * so the table stays positional under the CONFIG_SYNTH_ADDITIVE gate. ── */
+    /* ── Additive/partials voices (277-279) - named unconditionally so the
+     * table stays positional under the CONFIG_SYNTH_ADDITIVE gate. ── */
     /* 277 */ "Add Organ",
     /* 278 */ "Add Bell",
     /* 279 */ "Add Custom",
@@ -348,8 +342,8 @@ const char *patch_name_for(uint16_t patch)
 /* ── PCM ROM drum presets ──
  * Positional table matching the compiled-in bank's pcm_map[] (names from the
  * generator comments in pcm_gamma808.h / pcm_tiny.h). Numbering is bank-
- * dependent, so the table follows CONFIG_AMY_PCM_GAMMA808. Wavetable map
- * entries above the drums are unnamed on purpose (not selectable as drums). */
+ * dependent, hence the CONFIG_AMY_PCM_GAMMA808 split. Wavetable map entries
+ * above the drums are unnamed on purpose (not selectable as drums). */
 #if CONFIG_AMY_PCM_GAMMA808
 #define SEQ_PCM_NAME_COUNT 19
 static const char *const s_pcm_preset_names[SEQ_PCM_NAME_COUNT] = {
@@ -392,9 +386,8 @@ static const char *const s_pcm_preset_names[SEQ_PCM_NAME_COUNT] = {
 
 #if CONFIG_AMY_PCM_GAMMA808
 /* Gamma9001 sample banks (presets 256..391), streamed from the 'drums' flash
- * partition. Order mirrors the vendored amy/src/pcm_gamma9001.h map exactly —
- * re-verify after any AMY re-vendor. Names shortened to fit the drum screen's
- * patch banner. */
+ * partition. Order mirrors the vendored amy/src/pcm_gamma9001.h map exactly -
+ * re-verify after any AMY re-vendor. Names shortened for the drum banner. */
 #define SEQ_GAMMA_NAME_FIRST 256
 static const char *const s_gamma_preset_names[] = {
     /* tr909 256-272 */

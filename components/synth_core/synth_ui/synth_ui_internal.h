@@ -39,21 +39,20 @@ extern uint8_t           s_to_track;       /* owner: ui_screen_trackopts.c; menu
 void     ui_note_name(uint8_t midi_note, char buf[4]);
 void     sync_layer_to_core(uint8_t li);
 
-/* Re-sync the UI mirror (seq_state) from the audio core after a bulk
- * out-of-band change to layer topology/content (project load): copies every
- * core layer's persistable state into seq_state.layers[], resets the
- * transport and cursor state to a safe idle default, and forces one redraw.
- * Does not touch the core itself. Applier-task only (synth_ui_task). */
+/* Re-sync the UI mirror (seq_state) from the core after a bulk out-of-band
+ * change to layer topology/content (project load): copies every core layer's
+ * persistable state into seq_state.layers[], resets transport and cursor to a
+ * safe idle default and forces one redraw. Never touches the core.
+ * Applier-task only (synth_ui_task). */
 void     synth_ui_reload_mirror_from_core(void);
 
 /* ─── View signatures (each defined in its screen/editor file) ──────────
- * Contract: signature functions are side-effect-free. The task's redraw gate
- * calls one per frame and compares the hash against the previous frame's to
- * decide whether to rebuild the screen; any state mutation belongs in the
- * live-service hooks that run before the gate, never in a signature.
- * The view-struct screens build the view once and return it through `out`
- * alongside the hash, so the task's draw switch reuses it instead of
- * running the whole snprintf build a second time in the same frame. */
+ * CONTRACT: signature functions are side-effect-free. The redraw gate calls one
+ * per frame and compares its hash against the previous frame's; any state
+ * mutation belongs in the live-service hooks that run before the gate.
+ * View-struct screens build the view once and return it through `out` alongside
+ * the hash, so the draw switch reuses it instead of repeating the snprintf
+ * build in the same frame. */
 uint32_t seq_view_signature(void);
 uint32_t graph_view_signature(void);
 uint32_t filter_view_signature(void);
@@ -68,10 +67,10 @@ uint32_t stepedit_view_signature(stepedit_view_t *out);
 uint32_t fm_view_signature(menu_view_t *out);
 
 /* ─── View descriptor table (draw + hint), defined in ui_view_resolve.c ──
- * One scratch union holds whichever view struct the active screen builds;
- * signature() fills it and returns the FNV hash, draw() reuses it. The table
- * is indexed by synth_ui_active_view() so the draw switch and the hint strip
- * share the single precedence resolver instead of re-deriving it. */
+ * One scratch union holds whichever view struct the active screen builds:
+ * signature() fills it and returns the FNV hash, draw() reuses it. Indexed by
+ * synth_ui_active_view(), so the draw switch and the hint strip share one
+ * precedence resolver instead of re-deriving it. */
 typedef union {
     menu_view_t      menu;       /* MENU and FM */
     arp_view_t       arp;
@@ -85,24 +84,22 @@ typedef struct {
     const char *name;
     uint32_t  (*signature)(ui_view_vw_t *vw);   /* builds vw, returns FNV hash */
     void      (*draw)(u8g2_t *g, ui_view_vw_t *vw);
-    /* Button-hint labels. A NULL static label means "compute dynamically",
-     * in which case the matching *_fn is called (only LFO/GRAPH b1 and
-     * LFO/GRAPH b2 depend on state the view id does not carry). b3 is always
-     * static. */
+    /* Button-hint labels. A NULL static label means "compute dynamically" via
+     * the matching *_fn; only the editors' b1/b2 depend on state the view id
+     * does not carry. b3 is always static. */
     const char *b1, *b2, *b3;
     const char *(*b1_fn)(void);
     const char *(*b2_fn)(void);
-    /* Preferred X of the BLE session badge plate (7 px wide, top row) for this
-     * view, chosen per screen to sit just right of its left header label - the
-     * top-right corner belongs to editor value readouts and CLIP/LOUD. Only a
-     * hint: display_badge_draw() keeps the badge off lit pixels regardless.
-     * 0 = no preference, let the placement probe choose. */
+    /* Preferred X of the BLE badge plate (7 px, top row), chosen per screen to
+     * sit right of its left header label - the top-right corner belongs to
+     * editor readouts and CLIP/LOUD. Only a hint: display_badge_draw() keeps
+     * the badge off lit pixels regardless. 0 = let the probe choose. */
     uint8_t badge_x;
 } ui_view_desc_t;
 
 extern const ui_view_desc_t ui_view_table[UI_VIEW_COUNT];
 
-/* GRAPH b2 hint (owner: ui_editors.c) — "Amp" on EG0, "Env" on melodic EG1. */
+/* GRAPH b2 hint (owner: ui_editors.c): "Amp" on EG0, "Env" on EG1. */
 const char *synth_ui_graph_hint_b2(void);
 
 /* ─── Build-view helpers called from synth_ui_task draw switch ────────── */
@@ -135,10 +132,10 @@ bool     notefx_menu_item_is_back(uint8_t idx);
 void     notefx_menu_edit_value(uint8_t idx, int delta);
 
 /* ─── Projects storage page (item model in ui_screen_projects.c; page state
- *     and input routing live in ui_screen_menu.c). Declared unconditionally
- *     (mirroring the FM screen's prototypes) — the implementation compiles
- *     to nothing and these go unused when CONFIG_SYNTH_PROJECT_STORE is off,
- *     since every call site is itself guarded by that symbol. ─────────── */
+ *     and input routing live in ui_screen_menu.c). Declared unconditionally:
+ *     the implementation compiles to nothing and these go unused when
+ *     CONFIG_SYNTH_PROJECT_STORE is off, since every call site is guarded by
+ *     that symbol. ──────────────────────────────────────────────────────── */
 const menu_item_view_t *projects_menu_build_items(void);
 uint8_t  projects_menu_item_count(void);
 bool     projects_menu_item_is_back(uint8_t idx);
@@ -164,14 +161,14 @@ bool     wireless_menu_item_is_value(uint8_t idx);
 bool     wireless_menu_handle_click(uint8_t idx);
 void     wireless_menu_edit_value(uint8_t idx, int delta);
 void     wireless_menu_reset(void);
-/* synth_ui_wireless_page_is_open() (public, synth_ui.h) is defined in
+/* synth_ui_wireless_page_is_open() (public, synth_ui.h) lives in
  * ui_screen_menu.c alongside the page state; the editors and main.c's shift
- * chord both bind the live-play voice on it instead of a ui_mode. */
+ * chord bind the live-play voice on it instead of a ui_mode. */
 
 /* ─── Chords page: chord-preset editor (item model in ui_screen_chords.c;
- *     page state and input routing live in ui_screen_menu.c). Slot list +
- *     per-slot edit view; every edit commits through seq_chords_set and
- *     auditions on the selected melodic track. ──────────────────────────── */
+ *     page state and input routing in ui_screen_menu.c). Slot list + per-slot
+ *     edit view; every edit commits through seq_chords_set and auditions on
+ *     the selected melodic track. ───────────────────────────────────────── */
 const menu_item_view_t *chords_menu_build_items(void);
 uint8_t  chords_menu_item_count(void);
 bool     chords_menu_item_is_back(uint8_t idx);
@@ -181,15 +178,14 @@ void     chords_menu_edit_value(uint8_t idx, int delta);
 void     chords_menu_reset(void);
 const char *chords_menu_title(void);
 
-/* Editor live-preview service: flushes any pending throttled apply (currently
- * only the graph editor's amp trim, whose melodic apply re-emits the track's
- * steps). Called from synth_ui_task's 50 ms loop; no-op when no editor is
- * open or nothing is pending. */
+/* Editor live-preview service: flushes any pending throttled apply (the graph
+ * editor's amp trim, whose melodic apply re-emits the track's steps). Called
+ * from synth_ui_task's 50 ms loop; no-op when nothing is pending. */
 void     synth_ui_editors_live_service(void);
 
 /* ─── Draw wrappers (encapsulate private s_fgraph/s_lfo_view/s_graph_popup) */
 void     synth_ui_graph_view_draw(u8g2_t *u8g2);
 void     synth_ui_filter_view_draw(u8g2_t *u8g2);
 void     synth_ui_lfo_view_draw(u8g2_t *u8g2);
-/* NOTE: graph_draw_topbar is static in ui_editors.c — only synth_ui_graph_view_draw
- *       calls it. Do NOT forward-declare it here. */
+/* NOTE: graph_draw_topbar is static in ui_editors.c, called only by
+ *       synth_ui_graph_view_draw. Do NOT forward-declare it here. */

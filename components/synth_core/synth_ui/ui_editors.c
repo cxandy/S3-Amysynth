@@ -26,25 +26,21 @@
 static const char *TAG = "synth_ui";
 
 /* ── Graph pop-up integration (isolated, easily removable) ───────────────────
- * Everything between this block and the matching "graph pop-up: end" marker is
- * the demo wiring for the reusable graph_popup widget. Deleting this block plus
- * the single gated branch in synth_ui_task() and the three public
- * synth_ui_graph_* entry points fully restores the original behaviour.
- *
- * The melodic envelope defaults come from seq_defaults.h, then map to/from the
- * widget via the AMY adapter. */
+ * Everything up to the "graph pop-up: end" marker wires the reusable
+ * graph_popup widget. Removing it also means removing the gated branch in
+ * synth_ui_task() and the public synth_ui_graph_* entry points.
+ * Melodic envelope defaults come from seq_defaults.h. */
 
 static gpopup_t s_graph_popup;
 static bool     s_graph_popup_inited = false;
 
-/* Which (layer,track) the open editor is bound to, captured at open time so the
- * write-back targets the same row even if the selection moves underneath. */
+/* (layer,track) captured at open time so write-back targets the same row even
+ * if the selection moves underneath. */
 uint8_t  s_graph_layer = 0;
 uint8_t  s_graph_track = 0;
 
-/* Which backend the open editor edits. Captured at open time so seed/commit
- * route to the right envelope store (melodic row, the drone, or the arp). The
- * same widget + range mapping + commit math serve all three. */
+/* Which backend the open editor edits, captured at open time so seed/commit
+ * route to the right envelope store. One widget + mapping serves all. */
 typedef enum {
     GRAPH_TGT_MELODIC   = 0,
     GRAPH_TGT_DRONE     = 1,
@@ -52,24 +48,21 @@ typedef enum {
     GRAPH_TGT_DRONE_STD = 3,
     /* BLE MIDI live-play voice (slot 10). Structurally the arp's twin - one
      * voice, no layer/track scope - so it follows the arp branch everywhere,
-     * including the LFO split: native carrier on wave patches, 20 Hz
-     * software stepper on patch strings (live_play_lfo_service). */
+     * incl. the LFO split (native carrier on wave patches, 20 Hz software
+     * stepper on patch strings via live_play_lfo_service). */
     GRAPH_TGT_LIVE      = 4,
 } graph_target_t;
 static graph_target_t s_graph_target = GRAPH_TGT_MELODIC;
 
-/* Which of the target's two independent AMY breakpoint generators the open
- * editor is showing/editing. 0 = EG0 (amp, the historical default), 1 = EG1
- * (typically the filter sweep — see sequencer_core_push_envelope_eg1()).
- * Reset to 0 on every editor open; the editor cycle (MY_BUTTON_3 click)
- * visits EG0 and EG1 as two consecutive screens before the filter editor. */
+/* Which of the target's two AMY breakpoint generators is shown. 0 = EG0 (amp),
+ * 1 = EG1 (typically the filter sweep, see sequencer_core_push_envelope_eg1()).
+ * Reset to 0 on every open; MY_BUTTON_3 visits EG0 then EG1 before the filter
+ * editor. */
 static uint8_t s_graph_eg_index = 0;
 
-/* Display cache of the currently-shown EG's curve type (AMY ENVELOPE_*: 0=Normal,
- * 1=Linear, 2=DX7, 3=True-exponential). Mirrors the bound target's stored eg_type;
- * refreshed on open, on EG toggle, and on each cycle. Cycled by MY_BUTTON_1 in the
- * envelope editor (synth_ui_graph_cycle_eg_type); folded into the view signature
- * so the top-bar readout redraws. */
+/* Scratch curve type of the shown EG (AMY ENVELOPE_*: 0=Normal, 1=Linear,
+ * 2=DX7, 3=TrueExp). Mirrors the target's stored eg_type; folded into the view
+ * signature so the top-bar readout redraws. */
 static uint8_t s_graph_eg_type_disp = 0;
 
 /* Short top-bar code for an AMY envelope curve type (eg_type 0..3). */
@@ -94,10 +87,10 @@ static const char *graph_eg_type_name(uint8_t eg_type)
     }
 }
 
-/* Type-cycle flash: after MY_BUTTON_1 changes the curve type, the top bar shows
- * the full type name for a short window (the right slot is otherwise owned by
- * the point readout). Expiry is tick-based; the derived active flag is folded
- * into the view signature so the bar redraws when the window closes. */
+/* Type-cycle flash: the top bar shows the full type name for a short window
+ * after a type change (the right slot is otherwise owned by the point readout).
+ * The derived active flag is folded into the view signature so the bar redraws
+ * when the window closes. */
 #define GRAPH_TYPE_FLASH_MS 1200u
 static TickType_t s_graph_type_flash_until = 0;
 
@@ -108,10 +101,9 @@ static bool graph_type_flash_active(void)
 
 /* ── Curve-type preview shaping ──────────────────────────────────────────────
  * Per-segment shape callback for the ADSR plot: a float mirror of AMY's
- * compute_breakpoint_scale() segment math (envelope.c), evaluated in the
- * widget's normalised 0..1 level space, so the drawn curve matches what the
- * selected eg_type will actually sound like. Runs only while the editor is
- * open, on the 50 ms UI tick — nowhere near the render path. */
+ * compute_breakpoint_scale() (envelope.c) in the widget's normalised 0..1 level
+ * space, so the drawn curve matches what eg_type will sound like. Keep in sync
+ * with envelope.c. UI tick only, never the render path. */
 #define GRAPH_ENV_EPS 0.0002f   /* BREAKPOINT_EPS: floor for the log-domain types */
 
 static float graph_env_shape(float v0, float v1, float t)
@@ -126,10 +118,9 @@ static float graph_env_shape(float v0, float v1, float t)
         float a = (v0 > GRAPH_ENV_EPS) ? v0 : GRAPH_ENV_EPS;
         float b = (v1 > GRAPH_ENV_EPS) ? v1 : GRAPH_ENV_EPS;
         if (eg_type == 2 && b > a) {
-            /* DX7 attack law. Levels map linear->DX7 (log2 + 12.375), then
-             * through the attack-range curve; segment time is normalised so
-             * only the ratio matters. Degenerate spans fall through to the
-             * true-exp branch below. */
+            /* DX7 attack law: levels map linear->DX7 (log2 + 12.375) then
+             * through the attack-range curve; time is normalised so only the
+             * ratio matters. Degenerate spans fall through to true-exp. */
             float l0 = log2f(a) + 12.375f;
             float l1 = log2f(b) + 12.375f;
             float m0 = 1.0f - ((l0 > 4.25f) ? (l0 - 4.25f) : 0.0f) / 9.375f;
@@ -157,12 +148,11 @@ static float graph_env_shape(float v0, float v1, float t)
 }
 
 /* ── Time-range mapping ──────────────────────────────────────────────────────
- * The graph X axis is normalised 0..1. We map it to absolute milliseconds with
- * a switchable full-width budget so the same 3-point editor serves both plucky
- * short notes and long pads.
- *   SHORT: 0..2000 ms, LINEAR  (fine control where short notes live)
- *   LONG : 0..15000 ms, LOG-SQUASHED (the long right-hand tail is compressed so
- *          the musically-interesting early portion keeps most of the pixels). */
+ * Normalised 0..1 X maps to ms with a switchable full-width budget, so one
+ * editor serves plucks and pads:
+ *   SHORT: 0..2000 ms, LINEAR (fine control where short notes live)
+ *   LONG : 0..15000 ms, LOG-SQUASHED (tail compressed so the early portion
+ *          keeps most of the pixels). */
 #define GRAPH_RANGE_SHORT_MS 2000u
 #define GRAPH_RANGE_LONG_MS  15000u
 /* Curvature of the long-view squash: larger = more compression of the tail. */
@@ -170,30 +160,26 @@ static float graph_env_shape(float v0, float v1, float t)
 
 static bool s_graph_long_range = false;   /* false = SHORT, true = LONG (auto-switched) */
 
-/* Graph editor amp-mode state (MY_BUTTON_2 while ADSR editor is open).
- * s_graph_amp_edit holds the scratch trim value during editing; it is committed
- * to the target on close. Shown in the topbar right slot (replaces "S/L" flag
- * which is now set automatically based on envelope duration). */
+/* Amp-mode state (MY_BUTTON_2 while the ADSR editor is open). The scratch trim
+ * is committed to the target on close and shown in the topbar right slot. */
 static bool  s_graph_amp_mode = false;
 static float s_graph_amp_edit = 1.0f;   /* scratch 0..1, seeds from target on open */
 static bool  s_graph_env_dirty = false; /* set only when user moves an ADSR point */
 
-/* EG1 filter-env depth (melodic only): scratch octaves for the EG1 page's trim
- * mode. Seeded from the row's seq_filter_t.filter_env_amount on editor open;
- * committed on confirm ONLY when edited (s_graph_fenv_dirty) so an untouched
+/* EG1 filter-env depth (melodic only): scratch octaves, seeded from the row's
+ * seq_filter_t.filter_env_amount. Committed ONLY when dirty, so an untouched
  * editor session never authors the row's filter. */
 static float s_graph_fenv_edit  = 0.0f;
 static bool  s_graph_fenv_dirty = false;
 
-/* Layer-apply scope: when true, effect-editor commits write to all SEQ_TRACKS
- * in the active layer instead of only the selected track.  Toggled by
- * MY_BUTTON_1 while the ADSR graph or LFO editor is open.  The filter editor
- * repurposes MY_BUTTON_1 for enable/disable, so scope is set there or in LFO. */
+/* Layer-apply scope: commits write to all SEQ_TRACKS in the active layer
+ * instead of only the selected track. Toggled by MY_BUTTON_1 from the ADSR or
+ * LFO editor only - the filter editor uses that button for enable/disable. */
 static bool s_editor_apply_all = false;
 
-/* Live-preview bookkeeping (see the "Live preview while editing" block below):
- * which parts of the open editor session have pushed scratch state to AMY, and
- * the amp value/throttle needed to restore or pace those pushes. */
+/* Live-preview bookkeeping (see "Live preview while editing" below): which
+ * parts of the session pushed scratch state to AMY, plus the amp value and
+ * throttle needed to restore or pace those pushes. */
 static bool       s_graph_live_env  = false; /* env points/type live-pushed   */
 static bool       s_graph_live_fenv = false; /* EG1 sweep depth live-pushed   */
 static bool       s_amp_live_applied = false;/* a live amp apply landed       */
@@ -201,9 +187,8 @@ static bool       s_amp_live_pending = false;
 static float      s_graph_amp_open  = 1.0f;  /* amp trim at open (cancel)     */
 static TickType_t s_amp_live_last_apply = 0;
 
-/* log(1 + GRAPH_LONG_SQUASH), the constant normaliser of the long-range
- * squash curve — hoisted so the mapping helpers below don't recompute it on
- * every call. */
+/* log(1 + GRAPH_LONG_SQUASH): normaliser of the long-range squash curve,
+ * cached so the mapping helpers don't recompute it per call. */
 static float graph_log1p_squash(void)
 {
     static float s_val = 0.0f;
@@ -241,25 +226,19 @@ static float graph_ms_to_x(uint32_t ms)
 
 /* Push the engine's attack floor into the widget as its minimum point spacing.
  * The widget works in normalised X and cannot know what a millisecond is worth,
- * so without this it would enforce a legibility-derived gap that is stricter
- * than VOICE_ENV_ATTACK_MIN_MS — and by a different amount per range, since the
- * long axis is log-compressed. Re-sync whenever the range changes. */
+ * so otherwise it enforces a legibility gap stricter than
+ * VOICE_ENV_ATTACK_MIN_MS, differently per range. Re-sync on every range change. */
 static void graph_sync_min_gap(void)
 {
     graph_popup_set_min_x_gap(&s_graph_popup, graph_ms_to_x(VOICE_ENV_ATTACK_MIN_MS));
 }
 
-/* Audio-taper encoder stride for the envelope points' X axis (installed as the
- * popup's xstep hook). Envelope time knobs are conventionally exponential:
- * each detent scales the SEGMENT duration (time since the previous point, i.e.
- * the A/D/R value itself — not the point's cumulative axis position) by ~8%,
- * with a minimum stride so the bottom of the range is reachable at fine
- * resolution. A fixed normalised step (2% of a linear 2 s axis = 40 ms) made
- * the smallest attack move 2→40 ms, which under the log-domain curve types
- * (DX7/EXP, back-loaded attacks) silences short notes outright.
- * Per-role feel: the attack is where a few ms decide pluck vs pad, so it gets
- * a finer ratio and stride than decay, and release coarser still — sweeping a
- * long tail shouldn't take a hundred detents. */
+/* Audio-taper encoder stride for the envelope X axis (the popup's xstep hook).
+ * Each detent scales the SEGMENT duration - time since the previous point, i.e.
+ * the A/D/R value itself, not the cumulative axis position - by ~8%, plus a
+ * minimum stride so the bottom of the range stays reachable. A fixed normalised
+ * step would make the smallest attack jump 2->40 ms, which silences short notes
+ * under the log-domain curve types. Per-role: attack finest, release coarsest. */
 static const float grx_ratio[4]  = { 1.08f, 1.04f, 1.08f, 1.10f }; /* -,A,D,R */
 static const float grx_stride[4] = { 1.0f,  1.0f,  1.0f,  2.0f  }; /* min ms  */
 
@@ -291,20 +270,16 @@ static float graph_xstep(uint8_t idx, float x, long delta)
     return graph_ms_to_x((uint32_t)(cum + 0.5f));
 }
 
-/* Yellow top-bar height on the dual-colour panel: rows 0..15 render yellow and
- * are used as the editor's context bar, the plot fills rows 16..63. */
+/* Dual-colour panel: rows 0..15 are yellow (context bar), plot fills 16..63. */
 #define GRAPH_TOPBAR_H 16
 
 /* ── Auto-decay rule (derived-decay mode only) ───────────────────────────────
- * When CONFIG_SEQ_ADSR_EXPLICIT_DECAY is OFF the decay TIME is derived, not
- * user-dragged: the sustain point's X is locked (Y-only) in the widget and
- * recomputed here from attack time + sustain level. Lower sustain -> longer,
- * more audible fall; decay also scales gently with attack.
- * When the Kconfig toggle is ON (default, industry norm) the sustain point's X
- * is user-owned and graph_recompute_decay() is a no-op, so these constants and
- * the whole rule are inert. */
+ * With CONFIG_SEQ_ADSR_EXPLICIT_DECAY OFF the decay TIME is derived: the
+ * sustain point is Y-only in the widget and its X is recomputed here from
+ * attack + sustain (lower sustain -> longer fall). With the Kconfig ON
+ * (default) the user owns that X and this whole rule is inert. */
 #if !CONFIG_SEQ_ADSR_EXPLICIT_DECAY
-#define DECAY_BASE_MS          120u //note 06-20 testing some params moving up from 40
+#define DECAY_BASE_MS          120u
 #define DECAY_ATTACK_K         0.5f
 #define DECAY_SUSTAIN_SPAN_MS  400.0f
 #define DECAY_MIN_MS           20u
@@ -329,32 +304,29 @@ static void graph_popup_ensure_init(void)
                      (uint8_t)(64 - GRAPH_TOPBAR_H));
     graph_popup_set_style(&s_graph_popup, GPOPUP_STYLE_ADSR);
     graph_sync_min_gap();
-    /* Draw the curve with the bound EG's real per-type shape (reads
-     * s_graph_eg_type_disp at draw time, so type cycles retint instantly). */
+    /* Shape reads s_graph_eg_type_disp at draw time, so type cycles retint
+     * instantly. */
     graph_popup_set_shape(&s_graph_popup, graph_env_shape);
-    /* Audio-taper time stride for A/D/R edits (see graph_xstep). */
     graph_popup_set_xstep(&s_graph_popup, graph_xstep);
 #if CONFIG_SEQ_ADSR_EXPLICIT_DECAY
-    /* Explicit decay (industry norm): the sustain point is draggable on both
-     * axes - X sets the decay time (ms), Y sets the sustain level. */
+    /* Explicit decay: sustain point draggable on both axes - X = decay ms,
+     * Y = sustain level. */
     graph_popup_set_adsr_lock_sx(&s_graph_popup, false);
 #else
-    /* Derived decay: sustain point is Y-only; its X (decay time) is auto-derived
-     * from attack + sustain via graph_recompute_decay(). */
+    /* Derived decay: sustain point is Y-only, X comes from
+     * graph_recompute_decay(). */
     graph_popup_set_adsr_lock_sx(&s_graph_popup, true);
 #endif
     s_graph_popup_inited = true;
 }
 
-/* Recompute the sustain point's X (decay time) from the current attack time and
- * sustain level, then write it back. Keeps all ms math host-side so the widget
- * stays AMY-agnostic. Expects the standard 4-point ADSR layout. */
+/* Recompute the sustain point's X (decay time) from attack + sustain level.
+ * Keeps all ms math host-side so the widget stays AMY-agnostic. Expects the
+ * standard 4-point ADSR layout. */
 static void graph_recompute_decay(void)
 {
 #if CONFIG_SEQ_ADSR_EXPLICIT_DECAY
-    /* Explicit decay: the user owns the sustain point's X (decay time), so never
-     * re-derive it. Keeps this a single guard covering every call site (seed +
-     * every encoder move). */
+    /* User owns the sustain X here; one guard covers every call site. */
     return;
 #else
     gpopup_point_t pts[GPOPUP_MAX_POINTS];
@@ -377,8 +349,8 @@ static void graph_recompute_decay(void)
 #endif /* !CONFIG_SEQ_ADSR_EXPLICIT_DECAY */
 }
 
-/* Push the bottom-margin time tick positions for the active range. Mapped
- * through graph_ms_to_x() so spacing reflects the (non-linear in LONG) axis. */
+/* Bottom-margin time ticks for the active range, mapped through graph_ms_to_x()
+ * so spacing reflects the (non-linear in LONG) axis. */
 static void graph_update_ticks(void)
 {
     float xs[6];
@@ -400,9 +372,9 @@ bool synth_ui_graph_is_active(void)
     return graph_popup_is_active(&s_graph_popup);
 }
 
-/* Seed the editor's 3 points from the stored envelope, applying the current
- * time-range mapping to the X (time) axis. Cumulative time is squashed segment
- * by segment so the curve shape matches what write-back will reconstruct. */
+/* Seed the editor's points from the stored envelope under the current time
+ * range. Cumulative time is squashed segment by segment so the shape matches
+ * what write-back reconstructs. */
 static void graph_seed_from_env(const seq_env_t *env)
 {
     uint32_t cum_a = env->attack_ms;
@@ -415,15 +387,13 @@ static void graph_seed_from_env(const seq_env_t *env)
     pts[2].x = graph_ms_to_x(cum_d); pts[2].y = (float)env->sustain_pct / 100.0f; /* sustain */
     pts[3].x = graph_ms_to_x(cum_r); pts[3].y = 0.0f;                       /* release end*/
     graph_popup_set_points(&s_graph_popup, pts, 4);
-    /* Derived-decay mode: snap the sustain point's X to the auto-decay rule so
-     * the opening curve already obeys it. Explicit-decay mode: no-op, so the
-     * stored decay_ms (already mapped into pts[2].x above) is shown as-is. */
+    /* Derived-decay mode: snap sustain X to the auto-decay rule. No-op in
+     * explicit-decay mode, where the stored decay_ms is shown as-is. */
     graph_recompute_decay();
 }
 
-/* Read the bound target's current envelope into `env`, for eg_index (0=EG0,
- * 1=EG1). Returns false only if the melodic target has no valid row (caller
- * then seeds compile-time defaults). */
+/* Read the bound target's envelope for eg_index (0=EG0, 1=EG1). Returns false
+ * only if the melodic target has no valid row (caller seeds defaults). */
 static bool graph_read_target_env_idx(seq_env_t *env, uint8_t eg_index)
 {
     if (eg_index == 1) {
@@ -534,14 +504,12 @@ static bool graph_read_target_env(seq_env_t *env)
     return graph_read_target_env_idx(env, s_graph_eg_index);
 }
 
-/* Open the editor seeded from the active screen's envelope. The target is chosen
- * by which top-level screen is showing: the drone screen edits the drone env,
- * the arp screen the arp env, otherwise the selected melodic row.
+/* Open the editor seeded from the active screen's envelope: drone/arp screens
+ * edit their own env, otherwise the selected melodic row.
  *
- * The Wireless page is the exception: it is a page of the menu overlay rather
- * than a ui_mode, so it cannot be read off seq_state.ui_mode - it is tested
- * first, before the mode ladder, since the mode underneath the overlay is
- * whatever screen the user came from. */
+ * The Wireless page is a menu overlay, not a ui_mode, so it must be tested
+ * BEFORE the mode ladder - the mode underneath an overlay is whatever screen
+ * the user came from. */
 void synth_ui_graph_open_envelope(void)
 {
     graph_popup_ensure_init();
@@ -564,7 +532,7 @@ void synth_ui_graph_open_envelope(void)
     /* Melodic write-back targets a specific row; capture it at open time. */
     s_graph_layer = seq_state.active_layer_idx;
     s_graph_track = seq_state.selected_track;
-    /* Always open on EG0 (amp); MY_BUTTON_3 click advances to the EG1 page. */
+    /* Always open on EG0 (amp); MY_BUTTON_3 advances to the EG1 page. */
     s_graph_eg_index = 0;
 
     seq_env_t env;
@@ -579,9 +547,8 @@ void synth_ui_graph_open_envelope(void)
     s_amp_live_applied = false;
     s_amp_live_pending = false;
 
-    /* Set initial range from total env time BEFORE seeding so graph_ms_to_x()
-     * uses the correct mapping when seed runs. No remap needed here since there
-     * are no popup points yet — just flip the flag directly. */
+    /* Set the range BEFORE seeding so graph_ms_to_x() uses the right mapping.
+     * No remap needed: there are no popup points yet. */
     uint32_t total_env_ms = env.attack_ms + env.decay_ms + env.release_ms;
     s_graph_long_range = (total_env_ms >= GRAPH_RANGE_SHORT_MS);
 
@@ -642,15 +609,9 @@ void synth_ui_graph_open_envelope(void)
              s_graph_long_range ? "LONG" : "SHORT", (double)s_graph_amp_edit);
 }
 
-/* Convert the popup's current points to a seq_env_t and write it to the given
- * eg_index's store on the bound target. Shared by graph_commit_to_env() (the
- * currently-shown eg_index) and graph_toggle_eg_index() (writes the
- * DEPARTING eg_index through before switching the view). */
-/* Convert the current popup points into `env`'s ADSR fields, plus the shown
- * curve type from s_graph_eg_type_disp (the editor's scratch — the type is
- * previewed live and persisted on commit, like the points). `env` should be
- * pre-seeded from the target so any non-ADSR fields carry through. Returns
- * false when the popup has no full ADSR point set. */
+/* Convert the current popup points into `env`'s ADSR fields plus the shown
+ * curve type. `env` must be pre-seeded from the target so non-ADSR fields carry
+ * through. Returns false when the popup has no full ADSR point set. */
 static bool graph_points_to_env(seq_env_t *env)
 {
     gpopup_point_t pts[GPOPUP_MAX_POINTS];
@@ -671,6 +632,8 @@ static bool graph_points_to_env(seq_env_t *env)
     return true;
 }
 
+/* Write the popup points to eg_index's store. graph_toggle_eg_index() uses this
+ * on the DEPARTING index before switching the view. */
 static void graph_write_points_to_env(uint8_t eg_index)
 {
     seq_env_t env;
@@ -680,15 +643,12 @@ static void graph_write_points_to_env(uint8_t eg_index)
 }
 
 /* ── Live preview while editing ──────────────────────────────────────────────
- * Every edit is auditioned immediately: scratch values are pushed to AMY only
- * (preview calls — the committed store never changes until confirm), so cancel
- * restores by re-pushing the store, or — for melodic rows that were never
- * authored, whose live state came from the patch string itself — by reloading
- * the layer's patch. Amp trim is the one exception: it lives in the step-emit
- * path, so its live apply goes through the real setter (throttled, since each
- * melodic apply re-emits the track's scheduled steps) and cancel restores the
- * value captured at editor open. State lives with the other editor statics
- * near the top of the file. */
+ * Edits are auditioned by pushing scratch values to AMY only; the store does
+ * not change until confirm. Cancel re-pushes the store - or reloads the layer's
+ * patch for a never-authored melodic row, whose live state came from the patch
+ * string itself. Amp trim is the exception: it lives in the step-emit path, so
+ * its live apply goes through the real setter (throttled, since each melodic
+ * apply re-emits the track's steps) and cancel restores the open-time value. */
 #define GRAPH_AMP_LIVE_MS 200u               /* min spacing of amp re-emits   */
 
 static void graph_live_push_env(void)
@@ -786,9 +746,9 @@ static void graph_amp_live_set(float v)
     }
 }
 
-/* Apply a pending amp edit if the throttle window has passed. Called on each
- * detent (leading edge) and from the UI task's tick (trailing flush), so the
- * final value always lands within ~GRAPH_AMP_LIVE_MS of the last detent. */
+/* Apply a pending amp edit once the throttle window passes. Called per detent
+ * (leading edge) and from the UI tick (trailing flush), so the final value
+ * always lands within ~GRAPH_AMP_LIVE_MS of the last detent. */
 static void graph_amp_live_flush(bool force)
 {
     if (!s_amp_live_pending) return;
@@ -806,9 +766,9 @@ static void graph_amp_live_flush(bool force)
     graph_amp_live_set(s_graph_amp_edit);
 }
 
-/* Undo every live push on cancel: amp back to its open value, and the
- * previewed envelope/depth back to the store — or a full layer reload when a
- * touched melodic row was never authored (only the patch knows its state). */
+/* Undo every live push on cancel: amp back to its open value, previewed
+ * envelope/depth back to the store - or a full layer reload when a touched
+ * melodic row was never authored (only the patch knows its state). */
 static void graph_live_cancel_restore(void)
 {
     s_amp_live_pending = false;
@@ -887,18 +847,16 @@ static void graph_live_cancel_restore(void)
     s_graph_live_fenv = false;
 }
 
-/* Read the edited points back, convert X->ms via the active range mapping, and
- * push the result to the bound row's envelope (which applies it to AMY). */
+/* Convert the edited points back to ms and push them to the bound target. */
 static void graph_commit_to_env(void)
 {
-    /* Only rewrite the envelope if the user actually moved a control point.
-     * A volume-only edit (amp mode only) must not overwrite the stored envelope. */
+    /* A volume-only edit must not overwrite the stored envelope. */
     if (s_graph_env_dirty) {
         graph_write_points_to_env(s_graph_eg_index);
     }
 
-    /* Commit per-target amplitude trim (s_graph_amp_edit seeded at open; setters
-     * are no-ops when the value is unchanged so this is always safe to call). */
+    /* Commit the amp trim: setters no-op when unchanged, so this is safe
+     * unconditionally. */
     switch (s_graph_target) {
         case GRAPH_TGT_DRONE:
             drone_set_amp_trim(s_graph_amp_edit);
@@ -927,10 +885,9 @@ static void graph_commit_to_env(void)
     }
     s_graph_amp_mode = false;   /* clear mode so topbar reverts on next open */
 
-    /* Commit the EG1 filter-env depth (melodic only, only if edited). Read-
-     * modify-write through the public filter API so the COEF_EG1 push, the
-     * guaranteed EG1 breakpoints, the 0..8 clamp, and filter_authored all
-     * stay in the engine. Honors the layer/track scope. */
+    /* Commit the EG1 depth only if edited. Read-modify-write through the public
+     * filter API so the COEF_EG1 push, the EG1 breakpoints, the 0..8 clamp and
+     * filter_authored all stay in the engine. Honors the layer/track scope. */
     if (s_graph_fenv_dirty && s_graph_target == GRAPH_TGT_ARP) {
         seq_filter_t f;
         arp_get_filter(&f);
@@ -960,16 +917,15 @@ static void graph_commit_to_env(void)
     }
 }
 
-/* Set the time-range mode (long_range=true → LONG 15s, false → SHORT 2s) and
- * remap current on-screen points so in-progress edits survive the switch.
- * No-op when already in the target range. This is the single place that flips
- * s_graph_long_range — all callers (manual toggle, auto-range) go through here. */
+/* Set the time-range mode and remap on-screen points so in-progress edits
+ * survive the switch. The single place that flips s_graph_long_range - all
+ * callers must go through here. */
 static void graph_set_range(bool long_range)
 {
     if (s_graph_long_range == long_range) return;
 
-    /* Snapshot each point's time in ms under the OLD range, then flip the range
-     * and remap ms → x under the NEW range.  Y is range-independent. */
+    /* Snapshot ms under the OLD range, flip, remap under the NEW one.
+     * Y is range-independent. */
     gpopup_point_t pts[GPOPUP_MAX_POINTS];
     uint8_t n = graph_popup_get_points(&s_graph_popup, pts, GPOPUP_MAX_POINTS);
     uint32_t ms[GPOPUP_MAX_POINTS];
@@ -991,12 +947,9 @@ static void graph_set_range(bool long_range)
     ESP_LOGI(TAG, "graph range -> %s", long_range ? "LONG(15s)" : "SHORT(2s)");
 }
 
-/* Auto-switch the range based on the total envelope time (pts[3].x = cum_r).
- * Metric: rightmost point because that is the literal x-extent of the curve —
- * a long attack also overflows the SHORT axis, and cum_r = A+D+R captures all.
- * Hysteresis: SHORT→LONG at ≥2000ms, LONG→SHORT only at ≤1700ms so the range
- * does not flicker at the boundary. Called after every encoder edit and once at
- * editor open. No-op when the popup is not active. */
+/* Auto-switch the range on total envelope time. Metric is the rightmost point
+ * (cum_r = A+D+R), the literal x-extent of the curve. Hysteresis: grow at
+ * >=2000 ms, shrink only at <=1700 ms, so the range cannot flicker. */
 static void graph_auto_range_check(void)
 {
     if (!graph_popup_is_active(&s_graph_popup)) return;
@@ -1011,8 +964,7 @@ static void graph_auto_range_check(void)
     }
 }
 
-/* Toggle SHORT<->LONG time range manually (kept for any external callers).
- * Now delegates to graph_set_range() to keep the remap logic in one place. */
+/* Manual SHORT<->LONG toggle, kept for external callers. */
 bool synth_ui_graph_toggle_range(void)
 {
     if (!graph_popup_is_active(&s_graph_popup)) return false;
@@ -1020,9 +972,8 @@ bool synth_ui_graph_toggle_range(void)
     return true;
 }
 
-/* Toggle amp-edit mode: when active the encoder adjusts the selected target's
- * amplitude trim instead of moving ADSR points. MY_BUTTON_2 activates this while
- * the graph editor is open. The mode is reset on editor open/close. */
+/* Toggle amp-edit mode (MY_BUTTON_2): the encoder adjusts the target's
+ * amplitude trim instead of moving ADSR points. Reset on editor open/close. */
 void synth_ui_graph_toggle_amp_mode(void)
 {
     if (!graph_popup_is_active(&s_graph_popup)) return;
@@ -1031,28 +982,19 @@ void synth_ui_graph_toggle_amp_mode(void)
     ESP_LOGI(TAG, "graph amp mode %s", s_graph_amp_mode ? "ON" : "OFF");
 }
 
-/* Switch the editor between the target's EG0 (amp) and EG1 (typically filter)
- * breakpoint sets. Any in-progress, uncommitted edit on the departing
- * eg_index is written through first (mirrors the "deferred authority" model:
- * a commit here only reaches AMY if that row/target was already authored, or
- * becomes authored now) so flipping tabs never silently discards work. The
- * curve is then fully reseeded (and range re-derived) from the other
- * eg_index's own stored envelope — the two can have very different shapes. */
 /* Does the bound target expose an EG1 page? The free-running drone never sees
- * another note-on after its enable gate, so EG1 would fire once and park at its
- * sustain level forever — a static offset masquerading as an envelope. Hide the
- * whole EG1 page for it (the stutter drone keeps it: its stutter gates are real
- * note-ons). The editor cycle consults this too, so the hidden page is skipped
- * rather than dead-ending the cycle on EG0. */
+ * another note-on after its enable gate, so its EG1 would fire once and park at
+ * sustain forever - a static offset, not an envelope. Hide the page for it (the
+ * stutter drone keeps it: its stutter gates are real note-ons). The editor
+ * cycle consults this so a hidden page is skipped, not dead-ended on EG0. */
 static bool graph_target_has_eg1(void)
 {
     return s_graph_target != GRAPH_TGT_DRONE_STD;
 }
 
 /* Targets carrying an EG1->cutoff sweep DEPTH field (seq_filter_t's
- * filter_env_amount): the melodic rows, the arp and the live voice. The drones
- * have no such field - their EG1 page edits the envelope only. Gates the depth
- * readout, the encoder's depth adjust and the polarity flip. */
+ * filter_env_amount). The drones have none - their EG1 page edits the envelope
+ * only. Gates the depth readout, the depth adjust and the polarity flip. */
 static bool graph_target_has_eg1_depth(void)
 {
 #if CONFIG_SYNTH_WIRELESS
@@ -1061,6 +1003,10 @@ static bool graph_target_has_eg1_depth(void)
     return s_graph_target == GRAPH_TGT_MELODIC || s_graph_target == GRAPH_TGT_ARP;
 }
 
+/* Switch between the target's EG0 and EG1 breakpoint sets. An uncommitted edit
+ * on the departing index is written through first so flipping tabs never
+ * discards work, then the curve and range are reseeded from the other index -
+ * the two envelopes can have very different shapes. */
 static void graph_toggle_eg_index(void)
 {
     if (!graph_popup_is_active(&s_graph_popup)) return;
@@ -1090,14 +1036,10 @@ static void graph_toggle_eg_index(void)
 
 /* ── Perceived-duration equivalence across curve types ───────────────────────
  * Fraction of a segment's nominal time at which each type has covered its
- * first/last 40 dB — where a falling segment becomes effectively silent, or a
- * rising one becomes audible. Derived from envelope.c: EXP/DX7 move linearly
- * in dB down to the -74 dB BREAKPOINT_EPS floor, so -40 dB lands at ~40/74 of
- * T; NORMAL's RC shape crosses it at ~0.94 T; LINEAR at 0.99 T; the DX7
- * attack law is RC-like by design. Cycling types rescales each segment by
- * g_old/g_new so the AUDIBLE length is preserved even though the stored ms
- * (and the drawn point positions) change — without this, LIN→EXP at fixed ms
- * turns a long ringing release into a fast pluck. */
+ * first/last 40 dB - where a falling segment goes effectively silent, or a
+ * rising one becomes audible. Derived from envelope.c's segment laws. Cycling
+ * types rescales each segment by g_old/g_new so the AUDIBLE length survives;
+ * without it LIN->EXP at fixed ms turns a long release into a pluck. */
 static const float graph_g_fall[4] = { 0.94f, 0.99f, 0.54f, 0.54f }; /* NRM LIN DX7 EXP */
 static const float graph_g_rise[4] = { 0.94f, 0.99f, 0.94f, 0.54f };
 
@@ -1120,9 +1062,8 @@ static void graph_rescale_points_for_type(uint8_t old_type, uint8_t new_type)
     r *= kf;
     if (a < (float)VOICE_ENV_ATTACK_MIN_MS) a = (float)VOICE_ENV_ATTACK_MIN_MS;
 
-    /* Grow into the LONG range up front so a lengthening rescale isn't clipped
-     * by the SHORT axis; the auto-range check below shrinks back when a
-     * shortening rescale allows it. */
+    /* Grow into LONG up front so a lengthening rescale isn't clipped by the
+     * SHORT axis; the auto-range check below shrinks back if allowed. */
     if (!s_graph_long_range && (a + d + r) >= (float)GRAPH_RANGE_SHORT_MS) {
         graph_set_range(true);
     }
@@ -1148,13 +1089,10 @@ static void graph_rescale_points_for_type(uint8_t old_type, uint8_t new_type)
     graph_auto_range_check();
 }
 
-/* Cycle the shown EG's curve type Normal->Linear->DX7->TrueExp->Normal (0..3).
- * Bound to MY_BUTTON_1 in the envelope editor (the slot vacated by the apply-
- * scope toggle, which moved to SHIFT+3). The new type is auditioned as a live
- * preview (AMY only) like every other edit — the store keeps the old type
- * until commit, and cancel restores it. Segment times are rescaled to keep the
- * perceived envelope length (see graph_rescale_points_for_type above). No-op
- * unless the envelope editor is open. */
+/* Cycle the shown EG's curve type Normal->Linear->DX7->TrueExp (MY_BUTTON_1 in
+ * the envelope editor). Live-previewed like every other edit: the store keeps
+ * the old type until commit and cancel restores it. Segment times are rescaled
+ * to keep the perceived length (graph_rescale_points_for_type). */
 void synth_ui_graph_cycle_eg_type(void)
 {
     if (!graph_popup_is_active(&s_graph_popup)) return;
@@ -1172,13 +1110,12 @@ void synth_ui_graph_cycle_eg_type(void)
              (unsigned)s_graph_eg_type_disp);
 }
 
-/* Hint-strip b2 label for the envelope editor: MY_BUTTON_2's trim mode edits
- * amplitude on the EG0 page but the EG1->cutoff sweep depth on the melodic
- * EG1 page. */
+/* Hint-strip b2 label: MY_BUTTON_2's trim mode edits amplitude on the EG0 page
+ * but the EG1->cutoff sweep depth on the melodic EG1 page. */
 const char *synth_ui_graph_hint_b2(void)
 {
     /* Deliberately narrower than graph_target_has_eg1_depth(): the arp keeps
-     * its historical "Amp" label here, unchanged by the live-voice port. */
+     * its "Amp" label here. */
     bool env_slot = (s_graph_target == GRAPH_TGT_MELODIC);
 #if CONFIG_SYNTH_WIRELESS
     env_slot = env_slot || (s_graph_target == GRAPH_TGT_LIVE);
@@ -1186,10 +1123,8 @@ const char *synth_ui_graph_hint_b2(void)
     return (s_graph_eg_index == 1 && env_slot) ? "Env" : "Amp";
 }
 
-/* Flip the sign of the EG1->cutoff sweep (melodic rows + arp — the drones
- * have no EG1 depth field). Bound to MY_BUTTON_SHOULDER while the EG1 page is
- * showing. No-op at 0.0 depth: there is
- * nothing to invert and it keeps -0.0 out of the readout. */
+/* Flip the sign of the EG1->cutoff sweep (MY_BUTTON_SHOULDER on the EG1 page).
+ * No-op at 0.0 depth: nothing to invert, and it keeps -0.0 out of the readout. */
 void synth_ui_graph_flip_eg1_polarity(void)
 {
     if (!graph_popup_is_active(&s_graph_popup)) return;
@@ -1210,9 +1145,8 @@ bool synth_ui_graph_handle_encoder(long delta)
 
     if (s_graph_amp_mode) {
         if (s_graph_eg_index == 1 && graph_target_has_eg1_depth()) {
-            /* EG1 page: encoder adjusts EG1->cutoff depth, 0.25 oct/detent.
-             * Bipolar -8..+8; negative = inverted/downward sweep (same range
-             * as the filter editor's EG cursor — one shared field). */
+            /* EG1->cutoff depth, 0.25 oct/detent. Bipolar -8..+8; negative =
+             * downward sweep. Same field as the filter editor's EG cursor. */
             float v = s_graph_fenv_edit + (float)delta * 0.25f;
             v = SEQ_CLAMP_F32(v, -8.0f, 8.0f);
             s_graph_fenv_edit  = v;
@@ -1221,8 +1155,8 @@ bool synth_ui_graph_handle_encoder(long delta)
             s_force_redraw = true;
             return true;
         }
-        /* Amp mode: encoder adjusts per-target amplitude trim in 5% steps.
-         * Applied live but throttled (melodic applies re-emit the track). */
+        /* Amp trim in 5% steps, applied live but throttled (melodic applies
+         * re-emit the track). */
         float v = s_graph_amp_edit + (float)delta * 0.05f;
         v = SEQ_CLAMP_F32(v, 0.0f, 1.0f);
         s_graph_amp_edit = v;
@@ -1235,10 +1169,8 @@ bool synth_ui_graph_handle_encoder(long delta)
     s_graph_env_dirty = true;   /* user moved an ADSR control point */
     bool adjusting = s_graph_popup.editing_value;
     graph_popup_handle_encoder(&s_graph_popup, delta);
-    /* Derived-decay mode: moving A (time) or the S level changes the derived
-     * decay, so re-snap S.x. No-op in explicit-decay mode (user owns S.x). */
+    /* Derived-decay mode: A or S moved, so re-snap S.x. */
     graph_recompute_decay();
-    /* Auto-switch range if total envelope time crosses the threshold. */
     graph_auto_range_check();
     /* Point actually moved (not just cursor selection): audition it. */
     if (adjusting) graph_live_push_env();
@@ -1268,9 +1200,8 @@ bool synth_ui_graph_handle_button(bool is_long)
     return true;
 }
 
-/* Commit the current edits and close the editor. Bound to a MY_BUTTON_0 short
- * tap: closing keeps your work. The separate discard path is
- * synth_ui_graph_handle_button(true) (cancel), on a MY_BUTTON_0 long press. */
+/* Commit and close (MY_BUTTON_0 short tap). The discard path is
+ * synth_ui_graph_handle_button(true), on a long press. */
 bool synth_ui_graph_close_commit(void)
 {
     if (!graph_popup_is_active(&s_graph_popup)) return false;
@@ -1325,37 +1256,23 @@ static float filter_norm_to_q(float n)
            (FGRAPH_RES_MAX - FGRAPH_RES_MIN);
 }
 
-/* True when the filter editor's target plays a feedback wave (KS): the editor
- * then exposes the extra FB cursor (slot 2) editing KS string feedback 0..1.
- * Q stays fully editable — AMY runs the biquad on KS oscs like any other wave.
- * Covers the melodic KS patch and both arp routes to KS (WAVE-mode wave and
- * PATCH-mode virtual patch 263); the drones exclude KS from their cycles. */
-/* Which backend the FILTER editor is bound to. The graph editor captures its
- * target in s_graph_target at open time, but the filter editor derives it on
- * every call - historically straight off seq_state.ui_mode. That breaks for the
- * live voice: the Wireless page is an overlay, so the mode underneath is
- * whichever screen the user opened the menu from, and a live filter opened over
- * the drone screen would otherwise take the drone's fixed-LPF24 cursor map and
- * push to the drone's sweep. These predicates put LIVE first so it can never
- * inherit another target's behaviour.
+/* Which backend the FILTER editor is bound to. Unlike the graph editor (which
+ * captures s_graph_target at open time) these are derived on every call off
+ * seq_state.ui_mode. LIVE must be tested FIRST: the Wireless page is an
+ * overlay, so the mode underneath is whichever screen the menu was opened from,
+ * and a live filter opened over the drone screen would otherwise take the
+ * drone's fixed-LPF24 cursor map and push to the drone's sweep.
  *
- * REFACTOR TARGET: these bools are the seam, not the destination. Deriving the
- * edit target from sequencer UI state couples every editor to which SCREEN is
- * showing, when what they actually need is which VOICE they were opened on -
- * two things that only coincide for targets that happen to own a top-level
- * screen. The live voice is the first that does not, and adding a second such
- * target (a second live slot, a per-drum-track editor, MIDI-learn on an
- * arbitrary slot) means another predicate here and another ladder arm at every
- * call site.
- *
- * The decoupled shape already exists one function up: capture the target once
- * at open time, the way s_graph_target does, and give it a backend vtable
- * (get/set/preview env, env1, filter, amp, plus flags for "has EG1 depth",
- * "has an LFO page", "has track scope"). Then the editors read one struct and
- * seq_state is only consulted when BINDING a target, not while editing one -
- * which also retires the s_graph_layer/s_graph_track statics for every target
- * that has no track scope. Worth doing when the third non-screen target lands;
- * not worth churning the drone/arp/melodic paths for on its own. */
+ * REFACTOR TARGET: deriving the edit target from UI state couples every editor
+ * to which SCREEN is showing, when what they need is which VOICE they were
+ * opened on - the same thing only for targets owning a top-level screen. Each
+ * further non-screen target (second live slot, per-drum-track editor,
+ * MIDI-learn) costs another predicate here plus a ladder arm at every call
+ * site. The decoupled shape is s_graph_target's: bind once at open into a
+ * backend vtable (get/set/preview env, env1, filter, amp, plus "has EG1 depth"
+ * / "has LFO page" / "has track scope" flags), so seq_state is consulted only
+ * when BINDING. That also retires s_graph_layer/s_graph_track for scopeless
+ * targets. Worth doing when the third non-screen target lands. */
 static bool filter_tgt_is_live(void)
 {
     return synth_ui_wireless_page_is_open();
@@ -1373,6 +1290,10 @@ static bool filter_tgt_is_arp(void)
     return !filter_tgt_is_live() && seq_state.ui_mode == UI_MODE_ARP;
 }
 
+/* True when the target plays a feedback wave (KS): the editor then exposes the
+ * extra FB cursor (slot 2) for string feedback 0..1. Q stays editable - AMY
+ * runs the biquad on KS oscs like any other wave. Covers the melodic KS patch
+ * and both arp routes to KS; the drones exclude KS from their cycles. */
 static bool filter_target_is_feedback(void)
 {
     /* Live voice is always a patch; KS feedback is not one of its cursors. */
@@ -1388,31 +1309,22 @@ static bool filter_target_is_feedback(void)
 }
 
 #if CONFIG_FILTER_SCOPE
-/* Bind the live overlay to the oscillators of whatever target the popup is
- * editing. Called on open and on any event that can rebuild the target's
- * voices, because a cached oscillator index survives a patch change while the
- * slot behind it may not - and the consumer of that index is the render task.
- *
- * The drone targets are deliberately not armed: the stutter drone's editor
- * shows a sweep MIDPOINT rather than a cutoff (see filter_load_from_target),
- * so a live band would not correspond to the curve being drawn. */
-/* Last list handed to filter_scope_arm(), so the per-frame rebind below is a
- * comparison rather than a re-arm. 0xFF means "cache invalid, force a rebind". */
+/* Last list handed to filter_scope_arm(), so the per-frame rebind is a
+ * comparison rather than a re-arm. 0xFF = cache invalid, force a rebind. */
 static uint16_t s_scope_oscs[FILTER_SCOPE_MAX_OSCS];
 static uint8_t  s_scope_n = 0xFF;
 
-/* Last live cutoff shown, held across short silences. The engine only
- * evaluates a filter while a voice is audible, so between sequenced notes
- * there is nothing to read - and snapping to the authored cutoff there made
- * slow LFO sweeps read as jumps (the sweep advances mostly BETWEEN notes).
- * Holding the last value lets the cursor step along the sweep instead. */
+/* Last live cutoff, held across short silences. The engine only evaluates a
+ * filter while a voice is audible, so there is nothing to read between notes -
+ * and snapping to the authored cutoff made slow LFO sweeps read as jumps, since
+ * the sweep advances mostly BETWEEN notes. */
 #define FILTER_SCOPE_HOLD_FRAMES 40   /* ~2 s at the 20 Hz UI rate */
 static float    s_scope_hold_norm;
 static uint16_t s_scope_hold_age = UINT16_MAX;   /* MAX = no held value */
 
-/* Disarm and invalidate the cache together. Keeping these paired matters: a
- * bare disarm would leave the cache describing a list that is no longer armed,
- * and the next rebind would compare equal and decline to re-arm it. */
+/* Disarm and invalidate the cache together - always pair them. A bare disarm
+ * leaves the cache describing an unarmed list, and the next rebind would
+ * compare equal and decline to re-arm. */
 static void filter_scope_drop(void)
 {
     filter_scope_disarm();
@@ -1420,6 +1332,13 @@ static void filter_scope_drop(void)
     s_scope_hold_age = UINT16_MAX;
 }
 
+/* Bind the live overlay to the oscillators of the target being edited. Called
+ * on open and on anything that can rebuild the target's voices: a cached
+ * oscillator index survives a patch change while the slot behind it may not,
+ * and the consumer of that index is the render task.
+ *
+ * The drones are deliberately not armed - the stutter drone's editor shows a
+ * sweep MIDPOINT, not a cutoff, so a live band would not match the curve. */
 static void filter_scope_bind_target(void)
 {
     uint8_t slot = 0;
@@ -1451,8 +1370,8 @@ static void filter_scope_bind_target(void)
     }
 
     /* Oscillator 0 of each voice is the audible carrier that owns the filter;
-     * the voice's other oscillators are mod/algo sources. A voice's base osc IS
-     * its oscillator 0, since event osc numbers are relative to the base. */
+     * the rest are mod/algo sources. A voice's base osc IS its oscillator 0,
+     * since event osc numbers are relative to the base. */
     uint16_t oscs[FILTER_SCOPE_MAX_OSCS];
     uint8_t  n = 0;
     for (int i = 0; i < nv && n < FILTER_SCOPE_MAX_OSCS; i++) {
@@ -1462,9 +1381,9 @@ static void filter_scope_bind_target(void)
         }
     }
 
-    /* Re-arm only on an actual change. This runs every UI frame so that a voice
+    /* Re-arm only on an actual change. Running every UI frame keeps a voice
      * rebuild under the open popup (project load, chord-preset reallocation)
-     * cannot leave the render tap reading another target's oscillators - but
+     * from leaving the render tap on another target's oscillators, but
      * re-arming unconditionally would clear the armed flag every frame and cost
      * the tap a block each time. */
     if (n == s_scope_n && memcmp(oscs, s_scope_oscs, n * sizeof(oscs[0])) == 0) {
@@ -1475,15 +1394,13 @@ static void filter_scope_bind_target(void)
     filter_scope_arm(oscs, n);
 }
 
-/* Drive the graph's cutoff from the live modulated value, so the curve and
- * full-height cursor move exactly as if someone were turning the cutoff by
- * hand while EG1/LFO act on it. Frozen only while a value is actually being
- * input on the Hz/Q fields (select pressed + cursor there); on any other
- * cursor, or when nothing is sounding, the authored value shows.
+/* Drive the graph's cutoff from the live modulated value, so curve and cursor
+ * move as EG1/LFO act on it. Frozen only while a value is being input on the
+ * Hz/Q fields; elsewhere, or with nothing sounding, the authored value shows.
  *
- * Column quantisation is not cosmetic: filter_view_signature() hashes the
- * whole struct, so an unrounded float would hash differently every frame and
- * redraw continuously while nothing visibly moved. */
+ * Column quantisation is not cosmetic: filter_view_signature() hashes the whole
+ * struct, so an unrounded float would hash differently every frame and redraw
+ * continuously while nothing visibly moved. */
 static void filter_sync_live_band(void)
 {
     float norm = filter_hz_to_norm(s_filter_edit.cutoff_hz);   /* authored */
@@ -1494,28 +1411,27 @@ static void filter_sync_live_band(void)
     float lo_lf, hi_lf;
     bool  live = false;
     if (!frozen && filter_scope_read(&lo_lf, &hi_lf)) {
-        /* Midpoint of the min/max window since the last frame: tracks EG1
-         * sweeps and slow LFOs faithfully; fast LFOs read as a wobble around
-         * their center instead of aliased strobing. */
+        /* Midpoint of the min/max window since the last frame: tracks EG1 and
+         * slow LFOs faithfully, and fast LFOs wobble around their centre
+         * instead of aliasing into a strobe. */
         norm = filter_hz_to_norm(freq_of_logfreq(0.5f * (lo_lf + hi_lf)));
         live = true;
         s_scope_hold_norm = norm;
         s_scope_hold_age  = 0;
     } else if (frozen) {
-        /* Keep draining while frozen so the accumulator window stays fresh
-         * for the frame after the edit ends. Drop the hold: after an edit the
-         * authored value is the reference until the next live read. */
+        /* Keep draining so the accumulator window is fresh the frame after the
+         * edit ends. Drop the hold: the authored value is now the reference. */
         (void)filter_scope_read(NULL, NULL);
         s_scope_hold_age = UINT16_MAX;
     } else if (s_scope_hold_age < FILTER_SCOPE_HOLD_FRAMES) {
-        /* Silence gap: no audible voice, so the engine computed no cutoff
-         * this frame. Show the last live one instead of snapping back. */
+        /* Silence gap: nothing audible, so no cutoff was computed this frame.
+         * Show the last live one instead of snapping back. */
         norm = s_scope_hold_norm;
         s_scope_hold_age++;
     }
 
-    /* EG1 can push the live cutoff beyond the graph's authored Hz range;
-     * clamp so the cursor pegs at the plot edge instead of wrapping. */
+    /* EG1 can push the live cutoff past the graph's Hz range; clamp so the
+     * cursor pegs at the plot edge instead of wrapping. */
     norm = SEQ_CLAMP_F32(norm, 0.0f, 1.0f);
     const float cols = 127.0f;
     s_fgraph.cutoff_norm = (float)(int)(norm * cols + 0.5f) / cols;
@@ -1548,9 +1464,8 @@ static void filter_load_from_target(void)
     seq_filter_t f = {0};
 #if CONFIG_SYNTH_WIRELESS
     if (synth_ui_wireless_page_is_open()) {
-        /* Live voice: same never-authored sentinel as the arp/melodic rows.
-         * Tested before the ui_mode ladder because the Wireless page is an
-         * overlay - the mode underneath is whatever screen the user came from. */
+        /* Same never-authored sentinel as the arp/melodic rows. Tested before
+         * the ui_mode ladder: the Wireless page is an overlay. */
         live_play_get_filter(&f);
         if (f.cutoff_hz <= 0.0f) {
             f.filter_type = SEQ_FILTER_LPF;
@@ -1573,8 +1488,8 @@ static void filter_load_from_target(void)
         snprintf(s_fgraph.label, sizeof(s_fgraph.label), "STUTR");
     } else if (filter_tgt_is_drone_std()) {
         drone_std_get_filter(&f);
-        /* Same never-authored sentinel handling as the arp: seed sensible
-         * starting values but honestly read "OFF" until the user enables. */
+        /* Never-authored: seed sensible starting values but read "OFF" until
+         * the user enables. */
         if (f.cutoff_hz <= 0.0f) {
             f.filter_type = SEQ_FILTER_LPF;
             f.cutoff_hz   = 1200.0f;
@@ -1584,12 +1499,9 @@ static void filter_load_from_target(void)
         snprintf(s_fgraph.label, sizeof(s_fgraph.label), "DRONE");
     } else if (filter_tgt_is_arp()) {
         arp_get_filter(&f);
-        /* Only apply display defaults when the filter was never authored
-         * (cutoff_hz == 0 from zero-init); preserve authored values even
-         * when disabled so enabled=false round-trips correctly. Default to
-         * disabled (enabled=false) so the graph honestly reads "OFF" for a
-         * never-authored track — the type/cutoff/resonance below are only a
-         * sensible starting point for when the user toggles the filter on. */
+        /* cutoff_hz == 0 (zero-init) means never authored; only then apply
+         * display defaults, so an authored-but-disabled filter round-trips.
+         * Defaults open disabled - they are just a starting point. */
         if (f.cutoff_hz <= 0.0f) {
             f.filter_type = SEQ_FILTER_LPF;
             f.cutoff_hz   = 800.0f;
@@ -1601,10 +1513,7 @@ static void filter_load_from_target(void)
         uint8_t li = seq_state.active_layer_idx;
         uint8_t tr = seq_state.selected_track;
         sequencer_core_get_melodic_filter(li, tr, &f);
-        /* Same sentinel: zero cutoff means never-authored; disabled-but-authored
-         * keeps its authored values for correct round-trip display. Default to
-         * disabled so the graph reads "OFF" when the track has no filter — the
-         * type/cutoff/resonance are just the starting point for enabling one. */
+        /* Same sentinel: zero cutoff = never authored. */
         if (f.cutoff_hz <= 0.0f) {
             f.filter_type = SEQ_FILTER_LPF;
             f.cutoff_hz   = 800.0f;
@@ -1615,12 +1524,11 @@ static void filter_load_from_target(void)
                  (unsigned)(li + 1), (unsigned)(tr + 1),
                  s_editor_apply_all ? ">L" : ">T");
     }
-    /* Drone filter is a fixed LPF24 that is always on (cursor tops out at 1), so
-     * it hides the type/enable header controls; melodic + arp expose both. */
+    /* The stutter drone's filter is a fixed always-on LPF24, so it hides the
+     * type/enable header controls; melodic + arp expose both. */
     s_fgraph.show_toggles = (!filter_tgt_is_drone());
-    /* Feedback waves (KS): a zero feedback means "never authored" — seed the
-     * editor at the engine's build-time default so the FB readout opens honest
-     * (0.9) instead of at a silent-string 0%. */
+    /* KS: zero feedback means never authored - seed the engine's build-time
+     * default so the FB readout does not open at a silent-string 0%. */
     if (filter_target_is_feedback() && f.feedback <= 0.0f) {
         f.feedback = 0.9f;
     }
@@ -1628,11 +1536,10 @@ static void filter_load_from_target(void)
 }
 
 /* ── Filter live preview ─────────────────────────────────────────────────────
- * Same model as the envelope editor: each edit pushes the scratch filter to
- * AMY only; cancel re-pushes the store (or reloads the layer when a touched
- * melodic row was never authored). The drone has no preview path — its sweep
- * window/resonance are live drone state — so its values are snapshotted at
- * open and re-set on cancel. */
+ * Same model as the envelope editor: edits push the scratch filter to AMY only;
+ * cancel re-pushes the store (or reloads the layer when a touched melodic row
+ * was never authored). The stutter drone has no preview path - its sweep
+ * window/resonance ARE live state - so they are snapshotted at open. */
 static bool  s_filter_live = false;      /* any live push this session       */
 static float s_fdrone_open_lo, s_fdrone_open_hi, s_fdrone_open_res;
 
@@ -1687,8 +1594,8 @@ static void filter_live_cancel_restore(void)
         return;
     }
     if (filter_tgt_is_arp()) {
-        /* Best effort: re-push the stored filter. A never-authored PATCH-mode
-         * arp keeps the previewed bypass until its next patch reload. */
+        /* Best effort: a never-authored PATCH-mode arp keeps the previewed
+         * bypass until its next patch reload. */
         seq_filter_t f;
         arp_get_filter(&f);
         arp_preview_filter(&f);
@@ -1696,9 +1603,8 @@ static void filter_live_cancel_restore(void)
     }
 #if CONFIG_SYNTH_WIRELESS
     if (filter_tgt_is_live()) {
-        /* Same best-effort as the arp: the live voice is always a patch, so a
-         * never-authored filter keeps the previewed bypass until the next
-         * patch load rebuilds the slot. */
+        /* Same best-effort as the arp: always a patch, so a never-authored
+         * filter keeps the previewed bypass until the next patch load. */
         seq_filter_t f;
         live_play_get_filter(&f);
         live_play_preview_filter(&f);
@@ -1734,7 +1640,7 @@ void synth_ui_filter_open(void)
     filter_load_from_target();
     s_fgraph.cursor  = 0;
     s_fgraph.editing = false;
-    /* Drone filter is always LPF24 (type fixed) — skip the type cursor. */
+    /* Drone filter is always LPF24 (type fixed) - skip the type cursor. */
     s_fgraph.enabled = s_filter_edit.enabled;
     filter_sync_fgraph();
     s_filter_live = false;
@@ -1759,20 +1665,16 @@ bool synth_ui_filter_handle_encoder(long delta)
     if (!s_filter_active) return false;
     bool drone = (filter_tgt_is_drone());
 
-    /* Arp currently takes the same cursor map and the same edit branches as
-     * melodic (see case 2/3 below), so it needs no separate predicate; the
-     * arp-specific EG1 sweep depth is the fixed ARP_FILTER_EG1_DEPTH_OCT rather
-     * than an editable field. Kept commented as the hook to restore if arp ever
-     * regains its own filter-edit behaviour. */
+    /* Arp takes the same cursor map and edit branches as melodic, so it needs
+     * no predicate: its EG1 sweep depth is the fixed ARP_FILTER_EG1_DEPTH_OCT,
+     * not an editable field. Kept as the hook if that ever changes. */
     /* bool arp = (filter_tgt_is_arp()); */
 
     if (!s_fgraph.editing) {
-        /* Not editing: scroll cursor position.
-         * Drone: 0=cutoff 1=resonance (type fixed, no EN cursor).
+        /* Cursor map. Drone: 0=cutoff 1=resonance (type fixed, no EN).
          * Arp/melodic: 0=cutoff 1=resonance 2=feedback 3=type 4=enable, where
-         * slot 2 only exists on KS targets and is skipped otherwise. The
-         * melodic EG1 sweep depth/polarity live on the envelope editor's EG1
-         * page (arp uses the fixed ARP_FILTER_EG1_DEPTH_OCT). */
+         * slot 2 exists on KS targets only. EG1 depth/polarity live on the
+         * envelope editor's EG1 page. */
         uint8_t max_cursor = drone ? 1 : 4;
         int dir = (delta > 0) ? 1 : ((delta < 0) ? -1 : 0);
         if (dir != 0) {
@@ -1809,7 +1711,7 @@ bool synth_ui_filter_handle_encoder(long delta)
         case 3: {   /* type (melodic/arp only) */
             if (!drone) {
                 int t = (int)s_filter_edit.filter_type + (int)delta;
-                /* Wrap within 1..COUNT-1 (NONE is toggled via MY_BUTTON_1, not the type cursor). */
+                /* Wrap 1..COUNT-1; NONE is toggled via MY_BUTTON_1. */
                 if (t < 1) t = SEQ_FILTER_COUNT - 1;
                 if (t >= SEQ_FILTER_COUNT) t = 1;
                 s_filter_edit.filter_type = (uint8_t)t;
@@ -1870,9 +1772,8 @@ bool synth_ui_filter_close_commit(void)
     if (!s_filter_active) return false;
 
 #if CONFIG_FILTER_SCOPE
-    /* Stop the render-side tap before anything else: from here the target's
-     * voices may be rebuilt by the commit below, which would leave the armed
-     * oscillator list pointing at slots that no longer belong to this target. */
+    /* Stop the render-side tap first: the commit below may rebuild the target's
+     * voices, leaving the armed oscillator list pointing at foreign slots. */
     filter_scope_drop();
 #endif
 
@@ -1927,10 +1828,10 @@ void synth_ui_editors_live_service(void)
 
 #if CONFIG_FILTER_SCOPE
     /* Drain the live band once per UI frame, before the view signature is
-     * taken. It cannot live inside filter_view_signature(): signature
-     * functions are side-effect-free by contract (synth_ui_internal.h), and
-     * an epoch bump hidden in one would couple the scope's read cadence to
-     * how often the redraw gate happens to hash this view. */
+     * taken. It cannot live inside filter_view_signature(): signature functions
+     * are side-effect-free by contract (synth_ui_internal.h), and hiding a
+     * state bump there would tie the scope's read cadence to how often the
+     * redraw gate hashes this view. */
     if (s_filter_active) {
         filter_scope_bind_target();   /* cheap no-op unless the voices changed */
         filter_sync_live_band();
@@ -1959,10 +1860,9 @@ bool synth_ui_lfo_is_active(void) { return s_lfo_active; }
 void synth_ui_lfo_open(void)
 {
 #if CONFIG_SYNTH_WIRELESS
-    /* Wireless page first, before the mode ladder - it is a menu overlay, so
-     * the ui_mode underneath is whatever screen the user came from. The live
-     * voice always takes the editor: wave patches drive the native carrier,
-     * patch strings the 20 Hz software stepper (live_play_lfo_service). */
+    /* Wireless page first, before the mode ladder - it is a menu overlay. The
+     * live voice always takes the editor: wave patches drive the native
+     * carrier, patch strings the 20 Hz stepper (live_play_lfo_service). */
     s_lfo_live_target = synth_ui_wireless_page_is_open();
     if (!s_lfo_live_target)
 #endif
@@ -2019,8 +1919,8 @@ bool synth_ui_lfo_handle_encoder(long delta)
         s_force_redraw = true;
         return true;
     }
-    /* Only the multi-value fields (WAVE/RATE/DEPTH) use adjust mode; checkbox
-     * and EN fields toggle on press and never set `editing`. */
+    /* Only multi-value fields use adjust mode; checkbox and EN fields toggle on
+     * press and never set `editing`. */
     seq_lfo_t *l = &s_lfo_view.lfo;
     int d = (delta > 0) ? 1 : -1;
     switch (s_lfo_view.cursor) {
@@ -2035,9 +1935,9 @@ bool synth_ui_lfo_handle_encoder(long delta)
             else       l->depth = (l->depth >  5) ? l->depth - 5 : 0;
             break;
         case LFO_FLD_FLT_OCT: {
-            /* Quarter-octave steps. A legacy (sentinel) value materializes at
-             * its current effective swing first, so the initial click nudges
-             * the sound instead of jumping it. */
+            /* Quarter-octave steps. A legacy (sentinel) value materialises at
+             * its current effective swing first, so the first click nudges the
+             * sound instead of jumping it. */
             int q = l->flt_oct_q ? (int)l->flt_oct_q
                                  : (int)(((unsigned)l->depth * 12u + 50u) / 100u);
             q = SEQ_CLAMP_INT(q + d, 1, (int)VOICE_LFO_FLT_OCT_Q_MAX);
@@ -2092,8 +1992,7 @@ bool synth_ui_lfo_close_commit(void)
 {
     if (!s_lfo_active) return false;
 #if CONFIG_SYNTH_WIRELESS
-    /* Checked before the mode ladder: the Wireless page is an overlay, so the
-     * ui_mode underneath is whatever screen the user came from. */
+    /* Before the mode ladder: the Wireless page is an overlay. */
     if (s_lfo_live_target) {
         live_play_set_lfo(&s_lfo_view.lfo);
         s_lfo_active   = false;
@@ -2121,16 +2020,14 @@ bool synth_ui_lfo_close_commit(void)
     return true;
 }
 
-/* Toggle layer-wide vs single-track commit scope for the effects editors.
- * Returns true if an appropriate editor was active and the event was consumed.
- * Called from MY_BUTTON_1 while ADSR graph or LFO editor is open.
- * ARP and DRONE modes have no "apply to all tracks" concept — no-op there. */
+/* Toggle layer-wide vs single-track commit scope for the effects editors
+ * (MY_BUTTON_1 while the ADSR or LFO editor is open). Returns true if consumed.
+ * ARP/DRONE have no "apply to all tracks" concept - no-op there. */
 bool synth_ui_toggle_editor_apply_scope(void)
 {
-    /* The live voice has no track scope either, and it must be tested before
-     * the ui_mode ladder: its editor runs over the menu overlay, so the mode
-     * underneath would otherwise let the chord flip the MELODIC scope while a
-     * LIVE editor is showing. */
+    /* The live voice has no track scope either, and must be tested before the
+     * ui_mode ladder: its editor runs over the menu overlay, so the mode
+     * underneath would otherwise flip the MELODIC scope instead. */
     if (synth_ui_wireless_page_is_open()) return false;
     if (seq_state.ui_mode == UI_MODE_ARP || seq_state.ui_mode == UI_MODE_DRONE ||
         seq_state.ui_mode == UI_MODE_DRONE_STD)
@@ -2140,7 +2037,7 @@ bool synth_ui_toggle_editor_apply_scope(void)
 
     s_editor_apply_all = !s_editor_apply_all;
 
-    /* Keep the LFO view in sync so lfo_view_draw() shows the correct indicator. */
+    /* Keep the LFO view in sync so its indicator matches. */
     if (s_lfo_active) {
         s_lfo_view.apply_all = s_editor_apply_all;
     }
@@ -2155,8 +2052,7 @@ void synth_ui_cycle_editor(void)
 {
     if (graph_popup_is_active(&s_graph_popup)) {
         if (s_graph_eg_index == 0 && graph_target_has_eg1()) {
-            /* EG0 -> EG1: same widget, next page (writes the departing
-             * envelope through if it was edited). Targets without an EG1 page
+            /* EG0 -> EG1: same widget, next page. Targets without an EG1 page
              * fall straight through to the filter tab. */
             graph_toggle_eg_index();
             return;
@@ -2167,9 +2063,8 @@ void synth_ui_cycle_editor(void)
         synth_ui_filter_close_commit();
         bool no_lfo_tab = (seq_state.ui_mode == UI_MODE_DRONE);
 #if CONFIG_SYNTH_WIRELESS
-        /* Live voice: the wireless overlay overrides the mode underneath and
-         * always has an LFO tab (native for wave patches, software stepper
-         * for patch strings - see synth_ui_lfo_open). */
+        /* The wireless overlay overrides the mode underneath and always has an
+         * LFO tab (see synth_ui_lfo_open). */
         if (synth_ui_wireless_page_is_open())
             no_lfo_tab = false;
 #endif
@@ -2208,8 +2103,8 @@ uint32_t graph_view_signature(void)
     h = fnv1a_bytes(h, &s_graph_fenv_edit, sizeof(s_graph_fenv_edit));
     h = fnv1a_bytes(h, &s_graph_eg_index, sizeof(s_graph_eg_index));
     h = fnv1a_bytes(h, &s_graph_eg_type_disp, sizeof(s_graph_eg_type_disp));
-    /* Tick-derived: flips once when the type-cycle flash window closes, so the
-     * top bar reverts without any other state change (polled at the UI rate). */
+    /* Tick-derived: flips when the type-flash window closes, so the top bar
+     * reverts without any other state change. */
     uint8_t type_flash = graph_type_flash_active() ? 1u : 0u;
     h = fnv1a_bytes(h, &type_flash, sizeof(type_flash));
     h = fnv1a_bytes(h, s_graph_popup.points,
@@ -2224,8 +2119,7 @@ static void graph_draw_topbar(u8g2_t *u8g2)
 {
     char buf[24];
 
-    /* Left: which target is being edited (ARP/DRONE get named labels), plus
-     * which of the two independent breakpoint generators (EG0/EG1) is shown. */
+    /* Left: target label plus which breakpoint generator (EG0/EG1) is shown. */
     u8g2_SetFont(u8g2, u8g2_font_6x10_tf);
     const char *eg_tag = (s_graph_eg_index == 1) ? "EG1" : "EG0";
     if (s_graph_target == GRAPH_TGT_ARP) {
@@ -2246,26 +2140,22 @@ static void graph_draw_topbar(u8g2_t *u8g2)
     u8g2_DrawStr(u8g2, 2, 8, buf);
 
     /* The middle point readout and the right-side trim readout share the
-     * 60..126 px band, so only one may draw per frame (both at once overlap
-     * into unreadable doubled text). Point selection is resolved first; the
-     * right readout yields to it and returns when the cursor leaves A/D/R. */
+     * 60..126 px band, so only one may draw per frame or they overlap into
+     * doubled text. Point selection is resolved first. */
     gpopup_point_t pts[GPOPUP_MAX_POINTS];
     uint8_t n = graph_popup_get_points(&s_graph_popup, pts, GPOPUP_MAX_POINTS);
     uint8_t c = s_graph_popup.cursor;
-    /* Right after a type cycle the full type name takes the shared band; the
-     * point readout yields for the flash window so the change is unmissable. */
+    /* During the flash window the full type name takes the shared band. */
     bool type_flash = graph_type_flash_active();
     bool mid_shown = (!type_flash && !s_graph_amp_mode && n >= 4 && c >= 1 && c <= 3);
 
-    /* Right: amp indicator when in amp mode (replaces the old "S/L" range flag
-     * which is now set automatically and no longer meaningful to the user).
-     * The melodic EG1 page shows the signed sweep depth instead whenever the
-     * middle readout is idle, so the shoulder-button polarity flip has a
-     * visible readout. */
+    /* Right: amp indicator in amp mode. The melodic EG1 page shows the signed
+     * sweep depth instead whenever the middle readout is idle, so the
+     * shoulder-button polarity flip has a visible readout. */
     uint8_t rw = 0;
     bool eg1_fenv = (s_graph_eg_index == 1 && graph_target_has_eg1_depth());
     if (type_flash) {
-        /* Inverted pad so the transient name reads as an event, not a label. */
+        /* Inverted pad so it reads as an event, not a label. */
         const char *tname = graph_eg_type_name(s_graph_eg_type_disp);
         u8g2_SetFont(u8g2, u8g2_font_6x10_tf);
         rw = (uint8_t)u8g2_GetStrWidth(u8g2, tname);
@@ -2285,9 +2175,9 @@ static void graph_draw_topbar(u8g2_t *u8g2)
         rw = (uint8_t)u8g2_GetStrWidth(u8g2, amp_buf);
         u8g2_DrawStr(u8g2, (uint8_t)(128 - rw - 2), 8, amp_buf);
     }
-    /* No idle-slot fallback: the persistent curve-type code lives in the plot
-     * corner (see synth_ui_graph_view_draw), since the point readout occupies
-     * this band whenever the ADSR cursor sits on a point — i.e. always. */
+    /* No idle-slot fallback: the point readout owns this band whenever the
+     * cursor sits on a point (i.e. always), so the persistent curve-type code
+     * lives in the plot corner instead - see synth_ui_graph_view_draw. */
 
     /* Middle: live readout of the selected point's real value (ms / %). */
     if (mid_shown) {
@@ -2306,7 +2196,7 @@ static void graph_draw_topbar(u8g2_t *u8g2)
         }
         u8g2_SetFont(u8g2, u8g2_font_5x7_tr);
         uint8_t tw = (uint8_t)u8g2_GetStrWidth(u8g2, buf);
-        /* Centre-ish, between the left label (~x=56) and the right indicator. */
+        /* Between the left label (~x=56) and the right indicator. */
         int mx = 60 + (int)((128 - 60 - (int)rw - 4 - (int)tw) / 2);
         if (mx < 60) mx = 60;
         u8g2_DrawStr(u8g2, (uint8_t)mx, 8, buf);
@@ -2323,10 +2213,10 @@ void synth_ui_graph_view_draw(u8g2_t *u8g2)
     graph_draw_topbar(u8g2);
     graph_popup_draw(u8g2, &s_graph_popup);
 
-    /* Persistent curve-type code, top-right of the plot area. The top bar's
-     * right slot is owned by the point readout, so this corner is the one spot
-     * where the type stays visible while editing. A cleared pad keeps it
-     * legible on the rare frames the curve passes underneath. */
+    /* Persistent curve-type code, top-right of the plot: the top bar's right
+     * slot is owned by the point readout, so this is the one spot where the
+     * type stays visible while editing. The cleared pad keeps it legible when
+     * the curve passes underneath. */
     const char *tcode = graph_eg_type_code(s_graph_eg_type_disp);
     u8g2_SetFont(u8g2, u8g2_font_4x6_tr);
     uint8_t tw = (uint8_t)u8g2_GetStrWidth(u8g2, tcode);

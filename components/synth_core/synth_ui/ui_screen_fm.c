@@ -9,17 +9,13 @@
  *  FM/ALGO voice editor — algorithm + per-operator ratio/level
  * ════════════════════════════════════════════════════════════════════════
  * Edits the single live SEQ_PATCH_FM_CUSTOM voice (s_fm_voice, owned by
- * custompatches/fm_voice.c). Reuses the generic scrollable label/value list
- * renderer from display_menu.c (display_menu_draw_frame_titled) rather than
- * a bespoke layout — this screen's shape (a scrollable list of rows, each
- * either navigated or entered for editing) is identical to the menu overlay.
+ * custompatches/fm_voice.c). Rendered by display_menu.c's generic
+ * label/value list (display_menu_draw_frame_titled).
  *
  * Rows: ALGO, FEEDBACK, then (RATIO, LEVEL) for each of the 6 operators.
- * Operators are labelled by their array index (OP 0..5), which is also the
- * AMY algo_source[] slot index — see fm_voice.h for how that maps onto a
- * real DX7 algorithm chart's OP1..OP6 numbering (reversed order). Full
- * per-algorithm operator-role labelling (carrier vs modulator) is deferred —
- * see docs/handoff/a2-fm-dx7.md. */
+ * Operators are labelled by array index (OP 0..5) = the AMY algo_source[]
+ * slot index; see fm_voice.h for the mapping onto a DX7 chart's OP1..OP6
+ * (reversed). Per-algorithm carrier/modulator role labelling is deferred. */
 
 typedef enum {
     FM_ROW_ALGO = 0,
@@ -35,9 +31,8 @@ typedef enum {
 
 #define FM_ALGO_COUNT 33   /* AMY algorithms[33] */
 
-/* Curated ratio steps: common DX7-style integer/harmonic ratios plus a few
- * inharmonic values, kept small enough to step through quickly with an
- * encoder. Editing lands on the nearest step, then walks the table. */
+/* Curated DX7-style harmonic ratios plus a few inharmonic ones, kept short
+ * enough to encoder through. Editing snaps to the nearest step, then walks. */
 static const float s_fm_ratio_steps[] = {
     0.5f, 1.0f, 1.5f, 2.0f, 2.5f, 3.0f, 3.5f, 4.0f, 5.0f,
     6.0f, 7.0f, 8.0f, 9.0f, 10.0f, 11.0f, 12.0f, 14.0f, 16.0f,

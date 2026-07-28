@@ -56,20 +56,17 @@ static inline uint8_t seq_playhead_step(const seq_layer_t *layer, uint32_t ticks
     return (uint8_t)((ticks % bar_ticks) / SEQ_TICKS_PER_STEP);
 }
 
-/* Note-hold in ticks for the plain (non-subdivided) trig of `step`: drums are
- * short/percussive, melodic longer, with off-beat 8ths shortened a touch so
- * accented downbeats feel legato while in-between notes detach. Only ever
- * shortens (never past SEQ_GATE_MELODIC) so the note-off always lands before the
- * next step's note-on. Shared by sequencer_emit_step() and the ratchet n==1
- * path so the two can never drift. */
+/* Note-hold in ticks for the plain (non-subdivided) trig of `step`. Off-beat
+ * 8ths are shortened a touch so accented downbeats feel legato while
+ * in-between notes detach. Only ever shortens, so the note-off always lands
+ * before the next step's note-on. Shared by sequencer_emit_step() and the
+ * ratchet n==1 path so the two cannot drift. */
 static inline uint16_t seq_step_gate(const seq_layer_t *layer, uint8_t step)
 {
     if (layer->type == SEQ_LAYER_DRUM) return SEQ_GATE_DRUM;
 
-    /* Melodic note-hold is now a per-layer % of the step (the NoteFX GATE
-     * control). Round pct->ticks so the default (SEQ_MELODIC_GATE_DEFAULT_PCT)
-     * reproduces the legacy fixed gate exactly; 100% yields a full-step
-     * (legato) hold. Off-beat 8ths are still shortened a touch for groove. */
+    /* Melodic note-hold is a per-layer % of the step (the NoteFX GATE control),
+     * rounded pct->ticks; 100% is a full-step legato hold. */
     uint16_t gate = (uint16_t)(((uint32_t)SEQ_TICKS_PER_STEP * layer->gate_pct
                                 + 50u) / 100u);
     if ((step % 2) == 1 && gate > 2) {
@@ -94,15 +91,15 @@ typedef struct {
     uint8_t            current;
     uint32_t           entry_start_bar; /* bars_elapsed when current entry began */
     bool               enabled;
-    /* The progression drives the arp's root/scale while enabled; the user's own
-     * values are captured on the first apply and restored on disable so a
-     * session with the progression never permanently clobbers arp settings.
-     * Runtime-only (not persisted): zero-init means "nothing saved". */
+    /* The progression drives the arp's root/scale while enabled; the user's
+     * values are captured on the first apply and restored on disable, so it
+     * never permanently clobbers arp settings. Runtime-only: zero-init means
+     * "nothing saved". */
     uint8_t            saved_arp_root;
     uint8_t            saved_arp_scale;
     bool               arp_saved;       /* true while the progression owns the arp */
     /* Launch quantization: hold deferred chord applies until the next bar line
-     * while playing (false = apply immediately, the historical behavior). */
+     * while playing (false = apply immediately). */
     bool               apply_at_bar;
 } chord_progression_t;
 
@@ -113,13 +110,12 @@ extern seq_layer_t    s_layers[];
 extern uint8_t        s_num_layers;
 extern bool           s_playing;
 extern uint8_t        s_next_melodic_synth;
-/* Global melodic patch DEFAULT — not an authoritative global. Two writers with
- * different scopes: sequencer_core_set_melodic_patch() writes it as the global
- * selection and fans it out to every melodic layer, and
- * sequencer_core_set_layer_patch() writes it as a consistency side-effect of
- * setting ONE layer's patch (so the display fallback tracks the last-touched
- * layer). Readers must treat s_layers[i].patch as the per-layer source of
- * truth; this is only the seed for new layers plus the display fallback. */
+/* Global melodic patch DEFAULT, NOT an authoritative global. Two writers:
+ * set_melodic_patch() writes it as the global selection and fans it out to
+ * every melodic layer; set_layer_patch() writes it as a side-effect so the
+ * display fallback tracks the last-touched layer. Readers must treat
+ * s_layers[i].patch as the per-layer truth - this is only the seed for new
+ * layers plus the display fallback. */
 extern uint16_t       s_melodic_patch;
 extern volatile bool  s_layers_mutating;   /* guards delete_layer's compaction vs. the tick */
 
@@ -127,15 +123,15 @@ extern volatile bool  s_layers_mutating;   /* guards delete_layer's compaction v
 extern uint8_t        s_cached_step[];
 extern uint8_t        s_track_source_note[][SEQ_TRACKS];
 extern uint32_t       s_bar_baseline;
-/* Last PLAIN (non-sentinel) source note per track — the fallback a track
- * returns to when the chord slot it references is deleted/emptied. Runtime
- * only (never persisted); 0 = unset, fallback then defaults to C4. */
+/* Last PLAIN (non-sentinel) source note per track: the fallback when the chord
+ * slot a track references is deleted. Runtime only; 0 = unset, in which case
+ * the fallback is C4. */
 extern uint8_t        s_track_prev_plain[][SEQ_TRACKS];
 
 /* Owned by seq_core_synth.c */
 extern seq_drum_engine_t s_drum_engine;
-/* Per-track voice count last pushed to each melodic row's synth (chord-aware
- * budget bookkeeping) — shifted by delete_layer alongside s_track_source_note. */
+/* Per-track voice count last pushed to each melodic row's synth; shifted by
+ * delete_layer alongside s_track_source_note. */
 extern uint8_t        s_voices_applied[][SEQ_TRACKS];
 
 /* Owned by seq_core_tempo.c */
@@ -168,13 +164,12 @@ void     sequencer_clear_layer_tags(uint8_t layer_idx);
 void     sequencer_refresh_melodic_layers(bool preview);
 uint32_t sequencer_bars_elapsed(void);
 
-/* From seq_core_engine.c — chord expansion shared with seq_core_trig.c.
+/* From seq_core_engine.c - chord expansion shared with seq_core_trig.c.
  * seq_track_fire_notes resolves what a stored (possibly sentinel) note fires:
- * 1 plain note or n chord tones (transpose applied, each tone range-clamped).
- * Returns the tone count; 0 = undefined chord slot, fire nothing.
- * sequencer_chord_transpose is the progression offset for chord presets:
- * layer chord root relative to progression entry 0's root while the
- * progression is enabled, else 0 (chords play exactly as entered). */
+ * 1 plain note, or n transposed and clamped chord tones. Returns the tone
+ * count; 0 = undefined chord slot, fire nothing. sequencer_chord_transpose is
+ * the progression offset: the layer chord root relative to entry 0's root while
+ * the progression is enabled, else 0. */
 uint8_t seq_track_fire_notes(const seq_layer_t *layer, uint8_t stored_note,
                              uint8_t out[SEQ_CHORD_MAX_NOTES]);
 int     sequencer_chord_transpose(const seq_layer_t *layer);
@@ -183,18 +178,17 @@ int     sequencer_chord_transpose(const seq_layer_t *layer);
 void      sequencer_configure_synth(uint8_t layer_idx);
 void      sequencer_kill_synth_voices(uint8_t synth_id);
 /* Chord-aware per-track voice count: layer->num_voices, widened to the chord
- * tone count while the track's base note is a chord sentinel — voices are
- * spent only where chords actually play. Consulted by every melodic
- * patch-apply site so the widened count survives patch reloads. */
+ * tone count while the track's base note is a chord sentinel. Every melodic
+ * patch-apply site must consult it so the widened count survives reloads. */
 uint8_t   seq_track_num_voices(const seq_layer_t *layer, uint8_t track);
 /* True when any melodic track's needed voice count differs from what its
  * synth was last configured with (chord assigned/removed or slot resized). */
 bool      sequencer_layer_voices_stale(uint8_t layer_idx);
-/* Clear schedule -> configure synth -> resync; the proven patch-cycling path,
- * reused for chord voice-count changes (same ringing discipline). */
+/* Clear schedule -> configure synth -> resync: the patch-cycling path, reused
+ * for chord voice-count changes under the same ringing discipline. */
 void      sequencer_reconfigure_layer_paused(uint8_t layer_idx);
-/* Push the layer's melodic glide (portamento_ms) to every row synth. AMY clears
- * portamento_alpha on osc reset, so this is reasserted on every voice rebuild. */
+/* Push the layer's glide (portamento_ms) to every row synth. AMY clears
+ * portamento_alpha on osc reset, so reassert on every voice rebuild. */
 void      sequencer_core_push_melodic_portamento(uint8_t layer_idx);
 seq_env_t *seq_layer_env(uint8_t layer_idx, uint8_t track);
 seq_env_t *seq_layer_env1(uint8_t layer_idx, uint8_t track);
@@ -211,9 +205,9 @@ uint16_t sequencer_clamp_bpm(uint16_t b);
 void     sequencer_push_tempo(uint16_t b);
 /* lfo_rate_to_hz is already declared in the public sequencer_core.h */
 
-/* LFO Hz for the 20 Hz software fallback stepper: lfo_rate_to_hz additionally
- * capped to the stepper's usable band (SEQ_LFO_SW_MAX_HZ) — the fast end of
- * the widened rate range needs >= 4 stepper samples per LFO cycle. */
+/* LFO Hz for the 20 Hz software fallback stepper: lfo_rate_to_hz capped to
+ * SEQ_LFO_SW_MAX_HZ, since the fast end of the rate range needs >= 4 stepper
+ * samples per LFO cycle. */
 static inline float seq_lfo_sw_hz(lfo_rate_t rate, uint16_t bpm)
 {
     float hz = lfo_rate_to_hz(rate, bpm);
@@ -225,32 +219,30 @@ void     lfo_push_target_neutral(uint8_t synth_id, lfo_target_t target);
 /* From seq_core_progression.c */
 void chord_progression_apply_current(void);
 
-/* From seq_core_engine.c — shared with seq_core_trig.c so ratchet sub-hits use
- * the exact same accent/jitter velocity curve as the plain periodic path. */
+/* From seq_core_engine.c - shared with seq_core_trig.c so ratchet sub-hits use
+ * the same accent/jitter velocity curve as the plain periodic path. */
 float sequencer_step_velocity(const seq_layer_t *layer, uint8_t track, uint8_t step);
 
-/* From seq_core_engine.c — shared with seq_core_trig.c so the decorated-step
- * ratchet path respects mute/solo the same way the plain periodic path does. */
+/* From seq_core_engine.c - shared with seq_core_trig.c so the decorated-step
+ * ratchet path respects mute/solo exactly as the plain path does. */
 bool sequencer_track_audible(const seq_layer_t *layer, uint8_t track);
 
-/* From seq_core_engine.c — shared with seq_core_trig.c so the per-step
- * note-transform can re-clamp to the layer's note bounds and re-snap a
- * transformed pitch through the exact same chord/scale quantizer the plain
- * per-track resolve uses (spec 20 §3.1/§3.2). resolve applies the scale/chord
- * snap; clamp only bounds the note (used when step_quant_bypass is set). */
+/* From seq_core_engine.c - shared with seq_core_trig.c so a per-step transform
+ * re-snaps through the same chord/scale quantizer the plain per-track resolve
+ * uses. resolve applies the snap; clamp only bounds the note (used when
+ * step_quant_bypass is set). */
 uint8_t sequencer_clamp_layer_note(const seq_layer_t *layer, uint8_t note);
 uint8_t sequencer_resolve_track_note(const seq_layer_t *layer, uint8_t source_note);
 
-/* From seq_core_trig.c — per-step probability/ratchet/conditional-trig engine.
- * sequencer_core_step_is_decorated() is consulted by sequencer_emit_step()
- * (seq_core_engine.c) to decide whether a step still uses the plain
- * always-on periodic AMY tag, or is left cleared for the trig engine to
- * one-shot schedule instead. */
+/* From seq_core_trig.c - per-step probability/ratchet/conditional-trig engine.
+ * sequencer_emit_step() consults sequencer_core_step_is_decorated() to decide
+ * whether a step keeps the plain always-on periodic AMY tag or is left cleared
+ * for the trig engine to one-shot schedule. */
 bool sequencer_core_step_is_decorated(const seq_layer_t *layer, uint8_t track, uint8_t step);
 void sequencer_core_trig_reset(uint8_t layer_idx);   /* called on play-start, one layer   */
 void sequencer_core_trig_clear_all(uint8_t layer_idx); /* called on pause, one layer       */
 void sequencer_core_trig_reset_all(void);            /* called on layer add/delete        */
-/* Clear one track's pending chord-tone one-shot tags (tones 1..3). Called by
- * the engine when a track's resolved note moves away from a chord so no
- * scheduled extra tone survives the transition. */
+/* Clear one track's pending chord-tone one-shot tags. Called when a track's
+ * resolved note moves away from a chord, so no scheduled extra tone survives
+ * the transition. */
 void sequencer_core_trig_clear_track_chord(uint8_t layer_idx, uint8_t track);

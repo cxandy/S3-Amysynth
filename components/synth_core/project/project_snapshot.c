@@ -1,16 +1,13 @@
 /* Project snapshot serializer + loader orchestration.
  *
- * Field order is the format: every ser_ writer and its de_ or parse_ reader
- * counterpart below must walk fields in exactly the same sequence, or every
- * saved project silently corrupts on load. The shared env/filter/lfo
- * sub-block helpers exist so the LAYR per-track voice_params_t blocks and the
- * ARP/DRON sections (which embed the same env/filter/lfo shapes) cannot
- * drift from each other.
+ * Field order IS the format: every ser_ writer and its de_/parse_ reader must
+ * walk fields in the same sequence or saved projects corrupt on load. The
+ * shared env/filter/lfo helpers keep LAYR's voice_params_t and the ARP/DRON
+ * sections from drifting apart.
  *
- * Two-phase load: parse_* validates and stages everything into heap-allocated
- * scratch (never touching live state); only once every section has parsed
- * clean does the apply phase run. Any parse/validation failure frees the
- * scratch and returns false with zero live-state changes.
+ * Two-phase load: parse_* stages into heap scratch, never touching live state;
+ * apply runs only after every section parses clean. Any failure frees scratch
+ * and returns false with zero live-state changes.
  */
 
 #include "project/project_snapshot.h"
@@ -49,7 +46,7 @@ _Static_assert(SEQ_TRACKS == 4 && SEQ_MAX_STEPS == 32,
 
 /* ── Shared env/filter/lfo sub-block codecs ──────────────────────────────
  * Used by voice_params_t (LAYR, per track) and directly by ARP/DRON, so the
- * three engines' persisted shapes can never drift from each other. */
+ * three engines' persisted shapes cannot drift apart. */
 
 static void ser_env(tlv_writer_t *w, const seq_env_t *e)
 {
@@ -81,13 +78,12 @@ static void ser_filter(tlv_writer_t *w, const seq_filter_t *f)
     tlv_put_f32(w, f->feedback);   /* LAYR v7+ / ARP v5+: KS string decay */
 }
 
-/* Reads all fields unconditionally (keeps the reader position correct),
- * then resets the whole sub-block to a safe bypass default if filter_type is
- * out of range instead of trusting a bogus enum downstream.
- * `has_feedback`: whether this file version carries the KS feedback field
- * (LAYR v7+, ARP v5+ — resolved by the caller, like de_lfo's flags). Older
- * files derived KS feedback from the Q value at apply time, so reconstruct it
- * through the same legacy mapping to preserve what those files sounded like. */
+/* Reads every field first (keeps the reader position correct), then bypasses
+ * the whole sub-block if filter_type is out of range rather than passing a
+ * bogus enum downstream.
+ * `has_feedback`: does this file carry the KS feedback field (LAYR v7+,
+ * ARP v5+)? Caller resolves it, like de_lfo's flags. Older files derive it
+ * from Q via the legacy mapping so they still sound the same. */
 static bool de_filter(tlv_reader_t *r, seq_filter_t *f, bool has_feedback)
 {
     uint8_t ft, en;
@@ -132,17 +128,14 @@ static void ser_lfo(tlv_writer_t *w, const seq_lfo_t *l)
                                    * quarter-octaves; 0 = legacy depth-derived */
 }
 
-/* Same "read everything, then validate" shape as de_filter: an out-of-range
- * enum resets the whole LFO sub-block rather than propagating a bad value.
- * The 6th byte changed meaning: section v1 stored a single target index, v2+
- * stores a target-set bitmask. Migrate index -> bit when reading an old file. */
-/* `wobble`: whether this file version carries the two WOBBLE bytes — the
- * threshold differs per containing section (LAYR v5+, ARP v3+), so the caller
- * resolves it rather than this shared codec guessing from `ver`.
- * `wob_mode`: likewise for the later depth-only reach byte (LAYR v6+, ARP v4+).
- * Its absence means "depth + rate", which is what those files sounded like.
- * `flt_oct`: likewise for the FILTER octave-swing byte (LAYR v8+, ARP v7+).
- * Its absence leaves the 0 sentinel = the old depth-derived filter law. */
+/* Same "read everything, then validate" shape as de_filter. The 6th byte
+ * changed meaning: v1 = single target index, v2+ = target-set bitmask;
+ * migrate index -> bit when reading an old file.
+ * Presence flags are caller-resolved because the version threshold differs
+ * per containing section: `wobble` = two WOBBLE bytes (LAYR v5+, ARP v3+),
+ * `wob_mode` = depth-only reach byte (LAYR v6+, ARP v4+; absent = depth+rate),
+ * `flt_oct` = FILTER octave-swing byte (LAYR v8+, ARP v7+; absent leaves the
+ * 0 sentinel = old depth-derived filter law). */
 static bool de_lfo(tlv_reader_t *r, seq_lfo_t *l, uint8_t ver, bool wobble,
                    bool wob_mode, bool flt_oct)
 {
@@ -179,9 +172,9 @@ static bool de_lfo(tlv_reader_t *r, seq_lfo_t *l, uint8_t ver, bool wobble,
         ? ((tgt < LFO_TARGET_COUNT) ? LFO_TGT_BIT(tgt) : 0u)  /* v1 index */
         : (uint8_t)(tgt & LFO_TGT_ALL);                       /* v2 bitmask */
     l->wob_rate  = (wrate < LFO_RATE_COUNT) ? wrate : 0;
-    /* Snap to a whole-dB authoring step (voice_config.h): files written before
-     * the dB scale carry 5 %-grid values, and a stored 5 % would otherwise read
-     * as OFF while the modulator still ran. */
+    /* Snap to a whole-dB authoring step (voice_config.h): pre-dB files carry
+     * 5 %-grid values, where a stored 5 % reads as OFF while the modulator
+     * still runs. */
     l->wob_depth = voice_wob_db_to_depth(voice_wob_depth_to_db(wdepth));
     l->wob_depth_only = (wdeponly != 0);
     l->flt_oct_q = (foct > VOICE_LFO_FLT_OCT_Q_MAX)
@@ -226,10 +219,10 @@ static bool de_vp(tlv_reader_t *r, voice_params_t *vp, uint8_t ver)
 }
 
 /* ── GLOB section ─────────────────────────────────────────────────────────
- * Backward-compat: an older/shorter GLOB body simply runs out of bytes
- * partway through; every field beyond that point keeps the live-state value
- * it was seeded with (tlv_reader_t.err sticks on the first short read, so a
- * failed tlv_get_* here is "no more data", not corruption). */
+ * Backward-compat: a shorter GLOB body just runs out of bytes; fields past
+ * that keep their seeded live-state value. tlv_reader_t.err sticks on the
+ * first short read, so a failed tlv_get_* here means "no more data", not
+ * corruption. */
 
 typedef struct {
     uint16_t bpm;
@@ -323,11 +316,11 @@ static void apply_glob(const staged_glob_t *g)
 }
 
 /* ── LAYR section ─────────────────────────────────────────────────────────
- * Strict: any truncated read rejects the whole file (unlike GLOB, a partial
- * LAYR body cannot be safely defaulted field-by-field once step arrays are
- * involved). Per-value clamps normalize out-of-range data instead of
- * rejecting, except for the layer-count/type/first-layer-is-drum invariants
- * enforced by the caller after every LAYR section has parsed. */
+ * Strict: any truncated read rejects the whole file - unlike GLOB, a partial
+ * LAYR body cannot be defaulted field-by-field once step arrays are involved.
+ * Out-of-range values clamp rather than reject, except the layer-count/type/
+ * first-layer-is-drum invariants the caller enforces after all LAYR sections
+ * have parsed. */
 
 static void ser_layer(tlv_writer_t *w, const seq_layer_t *L)
 {
@@ -367,11 +360,11 @@ static void ser_layer(tlv_writer_t *w, const seq_layer_t *L)
     tlv_put_bytes(w, L->step_nudge,         sizeof L->step_nudge);
     tlv_put_bytes(w, L->step_velocity_adj,  sizeof L->step_velocity_adj);
     tlv_put_bytes(w, L->step_ratchet_taper, sizeof L->step_ratchet_taper);
-    /* v3: per-layer melodic NoteFX (gate length + glide). Appended at the tail so
-     * v2 readers stop cleanly before them and v2 files parse under the ver<3 path.*/
+    /* v3: melodic NoteFX (gate length + glide). Tail-appended so v2 readers
+     * stop cleanly before them. */
     tlv_put_u8(w, L->gate_pct);
     tlv_put_u16(w, L->portamento_ms);
-    /* v4: NoteFX GROOVE (accent-curve amount), same tail-append pattern. */
+    /* v4: NoteFX GROOVE (accent-curve amount), same tail-append. */
     tlv_put_u8(w, L->groove_pct);
     tlv_end_section(w, h);
 }
@@ -408,9 +401,9 @@ static bool parse_layer(tlv_reader_t *b, seq_layer_t *L, uint8_t ver)
     { uint8_t v; if (!tlv_get_u8(b, &v)) return false;
       L->chord_type = (v >= CHORD_TYPE_COUNT) ? CHORD_MAJ : (chord_type_t)v; }
     if (!tlv_get_u8(b, &L->swing_pct)) return false;
-    /* Bulk import bypasses sequencer_core_set_layer_swing(), so the engine
-     * ceiling must be enforced here: the swing-offset math requires the
-     * delay to stay short of one full step. */
+    /* Bulk import bypasses sequencer_core_set_layer_swing(), so enforce the
+     * engine ceiling here: swing-offset math requires the delay to stay
+     * short of one full step. */
     if (L->swing_pct > SEQ_SWING_MAX) L->swing_pct = SEQ_SWING_MAX;
 
     for (int t = 0; t < SEQ_TRACKS; t++) {
@@ -448,10 +441,10 @@ static bool parse_layer(tlv_reader_t *b, seq_layer_t *L, uint8_t ver)
         }
     }
 
-    /* Note fields hold either a playable pitch or (melodic only) a chord
-     * preset sentinel (seq_chords.h). Anything else — a corrupt value or a
-     * sentinel family this build doesn't know — clamps into the playable
-     * range so it can never leak into pitch math downstream. */
+    /* Note fields hold a playable pitch or (melodic only) a chord preset
+     * sentinel (seq_chords.h). Anything else - corrupt, or a sentinel family
+     * this build doesn't know - clamps into the playable range so it cannot
+     * leak into pitch math. */
     for (int t = 0; t < SEQ_TRACKS; t++) {
         bool mel = L->type == SEQ_LAYER_MELODIC;
         if (!(mel && SEQ_NOTE_IS_CHORD(L->track_base_note[t]))) {
@@ -466,8 +459,8 @@ static bool parse_layer(tlv_reader_t *b, seq_layer_t *L, uint8_t ver)
         }
     }
 
-    /* v3: per-layer melodic NoteFX. Pre-v3 files predate the fields — default to
-     * the legacy gate (glide off). Clamp to the live control ranges either way. */
+    /* v3: melodic NoteFX. Pre-v3 files get the legacy gate, glide off.
+     * Clamp to the live control ranges either way. */
     if (ver >= 3) {
         if (!tlv_get_u8(b, &L->gate_pct)) return false;
         if (!tlv_get_u16(b, &L->portamento_ms)) return false;
@@ -479,8 +472,8 @@ static bool parse_layer(tlv_reader_t *b, seq_layer_t *L, uint8_t ver)
     if (L->portamento_ms > SEQ_MELODIC_PORTAMENTO_MAX_MS)
         L->portamento_ms = SEQ_MELODIC_PORTAMENTO_MAX_MS;
 
-    /* v4: NoteFX GROOVE. Pre-v4 files predate the control — default to the full
-     * legacy accent curve so old projects keep their feel. */
+    /* v4: NoteFX GROOVE. Pre-v4 files get the full legacy accent curve so
+     * they keep their feel. */
     if (ver >= 4) {
         if (!tlv_get_u8(b, &L->groove_pct)) return false;
     } else {
@@ -575,8 +568,8 @@ static bool parse_arp(tlv_reader_t *b, staged_arp_t *a, uint8_t ver)
     if (!de_env(b, &a->env2))      return false;
     if (!de_filter(b, &a->filter, ver >= 5)) return false;   /* ARP: feedback v5+ */
     if (!de_lfo(b, &a->lfo, ver, ver >= 3, ver >= 4, ver >= 7))  return false;   /* ARP: wobble v3+, reach v4+, flt_oct v7+ */
-    /* v6: follow the global scale quantizer. Pre-v6 files predate the option —
-     * default OFF (the arp's own scale), the only behavior that existed. */
+    /* v6: follow the global scale quantizer. Pre-v6 files default OFF
+     * (the arp's own scale). */
     if (ver >= 6) {
         if (!tlv_get_u8(b, &v)) return false;
         a->follow_quant = v != 0;
@@ -732,10 +725,9 @@ static void apply_drone(const staged_drone_t *d)
 
 /* ── PROG section ─────────────────────────────────────────────────────────── */
 
-/* Generous static cap for the staged array; the real ceiling is whatever
- * sequencer_core_progression_get_max() reports at runtime. Entries beyond
- * either bound are still consumed from the stream (to keep the reader
- * position correct) but not stored. */
+/* Static cap for the staged array; the real ceiling is
+ * sequencer_core_progression_get_max() at runtime. Entries beyond either
+ * bound are still consumed from the stream (reader position) but not stored. */
 #define PROJECT_PROG_MAX_ENTRIES 16
 
 typedef struct {
@@ -789,9 +781,9 @@ static bool parse_prog(tlv_reader_t *b, staged_prog_t *p)
 
 static void apply_prog(const staged_prog_t *p)
 {
-    /* The arp values applied moments ago from this snapshot are the new user
-     * baseline; drop any capture the pre-load session's progression held so
-     * set_enabled(false) below cannot restore stale values over them. */
+    /* The arp values applied just above are the new baseline; drop the
+     * pre-load session's capture so set_enabled(false) below cannot restore
+     * stale values over them. */
     sequencer_core_progression_reset_arp_capture();
     sequencer_core_progression_set_count(p->count);
     for (uint8_t i = 0; i < p->count; i++) {
@@ -803,9 +795,8 @@ static void apply_prog(const staged_prog_t *p)
 /* ── CHRD section (chord presets, seq_chords.h) ──────────────────────────
  * v1: u8 slot count, then per slot u8 tone count + SEQ_CHORD_MAX_NOTES note
  * bytes (fixed width; a wider voicing bumps the version). Old firmware skips
- * the unknown section cleanly — chords simply vanish there, and any chord
- * sentinel in that file's LAYR notes gets range-clamped by its loader (plays
- * a top-of-range note; nothing crashes). */
+ * the unknown section: chords vanish there and any chord sentinel in that
+ * file's LAYR notes range-clamps to a top-of-range note, no crash. */
 
 static void ser_chrd(tlv_writer_t *w)
 {
@@ -917,15 +908,14 @@ bool project_snapshot_load(uint8_t slot)
             got_glob = ok;
             break;
         case TAG_LAYR:
-            /* Ceiling must track ser_layer()'s version or the firmware rejects
-             * its own files: it was left at 3 while the writer moved to 5. */
+            /* Ceiling must track ser_layer()'s version or the firmware
+             * rejects its own files. */
             if (ver < 1 || ver > 8 || staged_layer_count >= MAX_LAYERS) { ok = false; break; }
             ok = parse_layer(&body, &staged_layers[staged_layer_count], ver);
             if (ok) staged_layer_count++;
             break;
         case TAG_ARP:
-            /* Ceiling must track ser_arp()'s version or the firmware rejects
-             * its own saves (the LAYR stale-ceiling bug class). */
+            /* Ceiling must track ser_arp()'s version (see TAG_LAYR). */
             if (got_arp || ver < 1 || ver > 7) { ok = false; break; }
             ok = parse_arp(&body, &staged_arp, ver);
             got_arp = ok;
@@ -973,11 +963,11 @@ bool project_snapshot_load(uint8_t slot)
     sequencer_core_set_playing(false);
     arp_core_clear_all();
 
-    /* Chord table BEFORE the layer imports: import's synth configure sizes
-     * each row's voice count from the chord a loaded sentinel references
-     * (seq_track_num_voices), so the table must already hold the file's
-     * voicings. A file without a CHRD section clears the table — the project
-     * is the whole persisted state, chords included. */
+    /* Chord table BEFORE the layer imports: import sizes each row's voice
+     * count from the chord a loaded sentinel references (seq_track_num_voices),
+     * so the table must already hold the file's voicings. A file without a
+     * CHRD section clears the table - the project is the whole persisted
+     * state, chords included. */
     seq_chords_import(got_chrd ? staged_chords : NULL);
 
     while (sequencer_core_get_num_layers() > 1) {

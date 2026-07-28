@@ -41,10 +41,9 @@ void filter_scope_arm(const uint16_t *oscs, uint8_t n)
     }
 
     /* 2. Rewrite the list and its length. A tap that sampled the flag at block
-     *    start may still be iterating here; that is why the list is a
-     *    fixed-size array that is never freed and why the tap bounds-checks
-     *    every index. The worst case is one frame reporting a stale but
-     *    in-range oscillator, never a wild dereference. */
+     *    start may still be iterating, which is why the list is a fixed-size
+     *    array that is never freed and the tap bounds-checks every index.
+     *    Worst case: one frame reporting a stale but in-range oscillator. */
     for (uint8_t i = 0; i < n; i++) {
         s_cell.oscs[i] = oscs[i];
     }
@@ -71,10 +70,9 @@ void filter_scope_render_tick(void)
         return;
     }
 
-    /* A bumped epoch means the UI consumed the previous window, so this block
-     * starts a fresh one instead of folding into extremes the UI has already
-     * drawn. This is what keeps the band a rolling "since you last looked"
-     * rather than a monotonically widening envelope. */
+    /* A bumped epoch means the UI consumed the previous window, so start a
+     * fresh one instead of folding into already-drawn extremes: that keeps the
+     * band "since you last looked" rather than monotonically widening. */
     uint32_t epoch = atomic_load_explicit(&s_cell.read_epoch, memory_order_relaxed);
     bool  have;
     float lo, hi;
@@ -108,10 +106,9 @@ void filter_scope_render_tick(void)
         if (s == NULL || m == NULL) {
             continue;
         }
-        /* Only voices actually making sound. This also excludes the voice-local
-         * native-LFO carrier, which is SYNTH_IS_MOD_SOURCE and carries no
-         * filter of its own, and stops decayed voices from holding the band
-         * open at their last cutoff. */
+        /* Audible voices only: excludes the voice-local native-LFO carrier
+         * (SYNTH_IS_MOD_SOURCE, no filter of its own) and stops decayed voices
+         * from holding the band open at their last cutoff. */
         if (s->status != SYNTH_AUDIBLE || s->filter_type == FILTER_NONE) {
             continue;
         }
@@ -136,11 +133,10 @@ void filter_scope_render_tick(void)
 bool filter_scope_read(float *lo_logfreq, float *hi_logfreq)
 {
     /* A disarmed scope must never serve data. disarm() cannot clear `valid`
-     * (the tap owns that word, and an in-flight block could re-set it), so
-     * without this gate a popup on a never-armed target - the drone editors -
-     * would read the LAST armed target's final band forever, pinning its
-     * cursor at some fossil cutoff. arm/disarm/read all run on the synth_ui
-     * task, so this load is coherent with the caller's own arm state. */
+     * (the tap owns that word and an in-flight block could re-set it), so
+     * without this gate a popup on a never-armed target would read the LAST
+     * armed target's final band forever. arm/disarm/read all run on the
+     * synth_ui task, so this load is coherent with the caller's arm state. */
     if (!atomic_load_explicit(&s_cell.armed, memory_order_relaxed)) {
         return false;
     }

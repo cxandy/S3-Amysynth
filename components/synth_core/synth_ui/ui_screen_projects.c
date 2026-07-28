@@ -15,23 +15,19 @@
 /* ════════════════════════════════════════════════════════════════════════
  *  PROJECTS PAGE (persistent project storage)
  * ════════════════════════════════════════════════════════════════════════
- * Item model for the Projects page of the menu overlay (page state and
- * input routing live in ui_screen_menu.c, mirroring the global-FX page).
+ * Item model for the Projects page of the menu overlay (page state and input
+ * routing live in ui_screen_menu.c, mirroring the global-FX page).
  *
- * Layout: item 0 = Back, item 1 = a read-only storage-usage line, items
- * 2..2+N-1 = one row per slot. Clicking a slot enters a per-slot ACTION
- * sub-state (Load/Save/Ren/Del/Exit, cycled with the encoder); clicking
- * again executes the selected action. Save on a used slot arms on the
- * first click and executes on the second ("Save!"); Rename swaps the value
- * field for a compact character editor (encoder cycles the alphabet,
- * click advances position, the '#' sentinel commits early).
+ * Layout: item 0 = Back, item 1 = a read-only storage-usage line, items 2..N+1
+ * = one row per slot. Clicking a slot enters a per-slot ACTION sub-state
+ * (Load/Save/Ren/Del/Exit, cycled with the encoder); clicking again executes
+ * it. Save on a used slot arms on the first click and executes on the second
+ * ("Save!"); Rename swaps the value field for a compact character editor
+ * (encoder cycles the alphabet, click advances, '#' commits early).
  *
- * There is no toast/transient-message overlay anywhere in this UI (verified
- * against synth_ui_hint.c and ui_view_resolve.c: the "hint" strip is a
- * static per-view button-hint label, not a message queue). Action results
- * ("SAVED", "LOAD FAIL", ...) are therefore shown inline in the acted-on
- * row's own value field until the cursor moves off it — no new draw path,
- * still fill-only, still generic menu_item_view_t rendering. */
+ * This UI has no toast/transient-message overlay - the hint strip is a static
+ * per-view button label, not a message queue - so action results are shown
+ * inline in the acted-on row's value field until the cursor moves off it. */
 
 typedef enum { PA_LOAD = 0, PA_SAVE, PA_REN, PA_DEL, PA_EXIT, PA_COUNT } proj_action_t;
 
@@ -61,9 +57,8 @@ static char    s_status_msg[MENU_VALUE_LEN];
 /* Deferred Load/Save request, executed by projects_menu_service() on the
  * synth_ui task. Clicks run on the button task, but project_snapshot_load()
  * rebuilds layer topology through sequencer_core_add/delete_layer, which only
- * the registered single-applier task (seq_ui) may call - so the click only
- * queues the request here. Save is deferred the same way, keeping all project
- * flash I/O on the UI task and off the input path. */
+ * the registered single-applier task may call, so a click just queues here.
+ * Save defers the same way, keeping project flash I/O off the input path. */
 typedef enum { PREQ_NONE = 0, PREQ_LOAD, PREQ_SAVE } proj_req_t;
 static volatile proj_req_t s_req = PREQ_NONE;   /* set last: publishes the fields below */
 static uint8_t             s_req_slot     = 0;
@@ -128,10 +123,9 @@ static const char *action_name(proj_action_t a, bool armed)
     }
 }
 
-/* Compact rename-editor value: the char under the cursor, bracketed, plus a
- * 1-based position/length pair. A full 15-char window doesn't fit
- * MENU_VALUE_LEN (14 incl. NUL); this stays legible and simple to reason
- * about instead of a scrolling text window. */
+/* Compact rename-editor value: the bracketed char under the cursor plus a
+ * 1-based position/length pair. A full name window does not fit
+ * MENU_VALUE_LEN, and this beats a scrolling text window for legibility. */
 static void fmt_rename_value(char *out, size_t outsz)
 {
     char c = s_name_buf[s_name_pos];
@@ -167,12 +161,11 @@ static void commit_rename(uint8_t idx, uint8_t slot)
     s_dirty    = true;
 }
 
-/* Explicit Save/Discard for the rename editor, wired to MY_BUTTON_1 /
- * MY_BUTTON_2 in the main input dispatch. Unlike the click path (whose return
- * value the menu router feeds back into seq_state.menu_editing), these are
- * reached directly from the button handler, so they must end the editing
- * sub-state themselves. Both derive the acted-on row from the menu cursor,
- * which stays parked on the slot being renamed for the whole edit. */
+/* Explicit Save/Discard for the rename editor (MY_BUTTON_1 / MY_BUTTON_2).
+ * Unlike the click path, whose return value the menu router feeds back into
+ * seq_state.menu_editing, these are reached straight from the button handler
+ * and so must end the editing sub-state themselves. Both derive the acted-on
+ * row from the menu cursor, which stays parked on the slot being renamed. */
 bool projects_menu_is_renaming(void)
 {
     return s_renaming;
@@ -231,9 +224,8 @@ const menu_item_view_t *projects_menu_build_items(void)
         s_dirty = false;
     }
 
-    /* A status message only ever belongs to the row the action ran on;
-     * moving off that row (the only way to reach a different item once
-     * editing has ended) clears it so it can't linger on the wrong slot. */
+    /* A status message belongs to the row its action ran on, so moving off
+     * that row clears it and it can never linger on the wrong slot. */
     if (s_status_active && seq_state.menu_cursor != s_status_idx) {
         s_status_active = false;
     }
@@ -245,8 +237,8 @@ const menu_item_view_t *projects_menu_build_items(void)
     {
         size_t total = 0, used = 0;
         if (project_fs_ok() && project_fs_stats(&total, &used)) {
-            /* 6 chars each so "u/t" (13 + NUL) provably fits the value
-             * field - keeps -Werror=format-truncation satisfied. */
+            /* 6 chars each so "u/t" provably fits the value field, which is
+             * what keeps -Werror=format-truncation satisfied. */
             char u[7], t[7];
             fmt_bytes(u, sizeof(u), used);
             fmt_bytes(t, sizeof(t), total);
@@ -298,14 +290,14 @@ void projects_menu_edit_value(uint8_t idx, int delta)
     s_armed  = false;   /* action changed: any pending confirm is void */
 }
 
-/* Click on item idx. Returns the desired seq_state.menu_editing value —
- * true keeps the row's action/rename sub-state open (needs another click),
- * false executes/aborts and returns to browsing the slot list. */
+/* Click on item idx. Returns the desired seq_state.menu_editing value: true
+ * keeps the row's action/rename sub-state open, false executes or aborts and
+ * returns to browsing the slot list. */
 bool projects_menu_handle_click(uint8_t idx)
 {
     if (!projects_menu_item_is_value(idx)) return false;
-    /* A queued load/save is still in flight (one UI frame): ignore clicks so
-     * a second request can't clobber the pending one's fields. */
+    /* A queued load/save is still in flight: ignore clicks so a second request
+     * cannot clobber the pending one's fields. */
     if (s_req != PREQ_NONE) return seq_state.menu_editing;
     uint8_t slot = (uint8_t)(idx - 2);
     const project_slot_info_t *info = &s_info[slot];

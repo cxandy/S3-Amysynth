@@ -15,11 +15,9 @@
 
 static const char *TAG = "my_buttons";
 
-// Button GPIO assignments (active low with internal pull-up). This list is the
-// WIRING and does not change when roles move around: entry N is simply the pin
-// of the Nth member of my_button_id_t, so reordering that enum is what
-// reassigns roles to physical buttons. The names below are therefore whichever
-// role currently occupies each slot — keep them in step with the enum.
+// Button GPIO assignments (active low, internal pull-up). This list is the
+// WIRING: entry N is the pin of the Nth member of my_button_id_t, so reordering
+// that enum is what reassigns roles. Keep the names below in step with it.
 static const int32_t s_button_gpios[MY_BUTTON_MAX] = {
     15,  // MY_BUTTON_SHOULDER → per-view bindings (step toggle on the grid)
     18,  // MY_BUTTON_1        → patch-select hold

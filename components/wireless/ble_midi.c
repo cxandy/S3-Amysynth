@@ -17,9 +17,8 @@ static const char *TAG = "ble_midi";
 
 #define BLE_MIDI_DEVICE_NAME "Amysynth"
 
-/* NVS-backed bond store wiring (NimBLE store/config module; declared in the
- * module's own translation unit only, so declare it here like the IDF
- * examples do). */
+/* NVS-backed bond store (NimBLE store/config module). Not declared in any
+ * public header, so declare it here as the IDF examples do. */
 void ble_store_config_init(void);
 
 /* BLE-MIDI service/characteristic UUIDs (MIDI over BLE spec), little-endian
@@ -37,9 +36,8 @@ static volatile bool s_connected = false;
 static void (*s_disconnect_cb)(void) = 0;
 static uint8_t s_own_addr_type = 0;
 
-/* Flatten target for incoming writes; sized for the largest ATT payload we
- * negotiate (default preferred MTU). Static because it is only ever touched
- * by the NimBLE host task. */
+/* Flatten target for incoming writes, sized for the largest ATT payload we
+ * negotiate. Static: only ever touched by the NimBLE host task. */
 static uint8_t s_rx_buf[512];
 
 static void ble_midi_advertise(void);
@@ -94,9 +92,9 @@ static int midi_chr_access(uint16_t conn_handle, uint16_t attr_handle,
     }
 }
 
-/* One service, one characteristic. NOTIFY is declared (the CCCD must exist
- * for hosts that probe it) though Phase 1 never notifies; the _ENC flags
- * make the stack require pairing/encryption per the BLE-MIDI spec. */
+/* One service, one characteristic. NOTIFY is declared so the CCCD exists for
+ * hosts that probe it, though nothing notifies yet; the _ENC flags make the
+ * stack require pairing/encryption per the BLE-MIDI spec. */
 static const struct ble_gatt_svc_def midi_gatt_svcs[] = {
     {
         .type = BLE_GATT_SVC_TYPE_PRIMARY,
@@ -145,9 +143,8 @@ static int ble_midi_gap_event(struct ble_gap_event *event, void *arg)
             return 0;
 
         case BLE_GAP_EVENT_REPEAT_PAIRING: {
-            /* Peer lost its bond: delete ours and let it pair again
-             * (standard bleprph pattern; without this, re-pairing after the
-             * host "forgets" the device fails until our bond is cleared). */
+            /* Peer lost its bond: delete ours so it can pair again. Without
+             * this, re-pairing after the host "forgets" us fails. */
             struct ble_gap_conn_desc desc;
             if (ble_gap_conn_find(event->repeat_pairing.conn_handle, &desc) == 0) {
                 ble_store_util_delete_peer(&desc.peer_id_addr);

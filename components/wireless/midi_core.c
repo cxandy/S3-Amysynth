@@ -1,10 +1,9 @@
 #include "midi_core.h"
 
 /* Standard MIDI 1.0 stream parser with running status. Only note-on/note-off
- * reach the sink; every other message is consumed so the byte stream stays
- * framed (a dropped-but-unparsed message would desync running status).
- * No allocation, no locks, no logging: this runs on the transport's task
- * (NimBLE host) inside the note path. */
+ * reach the sink; every other message is still consumed, since a
+ * dropped-but-unparsed message would desync running status. No allocation,
+ * locks or logging: runs on the transport's task inside the note path. */
 
 static const midi_sink_t *s_sink = 0;
 

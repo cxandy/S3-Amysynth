@@ -11,10 +11,9 @@ extern "C" {
  * the BLE stack's heap allocations.
  *
  * Threading contract: request_start/request_stop only set a flag (callable
- * from the button task); all state transitions - including the blocking
- * NimBLE init/teardown - execute inside radio_manager_service(), which the
- * synth_ui task calls once per frame (same deferred-applier pattern as
- * projects_menu_service). */
+ * from the button task); every state transition - including the blocking
+ * NimBLE init/teardown - runs inside radio_manager_service(), called once per
+ * frame by synth_ui (same deferred-applier pattern as projects_menu_service). */
 
 typedef enum {
     RADIO_OFF = 0,

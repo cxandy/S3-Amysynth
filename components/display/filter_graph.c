@@ -56,9 +56,8 @@ static float notch2_mag(float r, float Q)
     return fabsf(num) / sqrtf(num * num + d2 * d2 + 1e-12f);
 }
 
-/* Compute display magnitude (0..1) for a given frequency f (Hz),
- * cutoff fc (Hz), Q, and filter type.
- * Passband = FG_PASSBAND_NORM; resonance spike may push above that, capped at 1. */
+/* Display magnitude (0..1) at frequency f for cutoff fc, Q and filter type.
+ * Passband = FG_PASSBAND_NORM; a resonance spike may exceed it, capped at 1. */
 static float filter_display_mag(uint8_t type, float f, float fc, float Q)
 {
     if (fc < 1.0f) fc = 1.0f;
@@ -112,12 +111,11 @@ static float norm_to_q(float norm)
     return FGRAPH_RES_MIN + norm * (FGRAPH_RES_MAX - FGRAPH_RES_MIN);
 }
 
-/* KS string-feedback readout: a small box hanging just under the Q readout,
- * below the header divider. Drawn only on feedback waves (has_feedback), so
- * the header layout itself never changes for other targets. Blanks the plot
- * behind it so the value stays legible over the response curve — call after
- * the curve (or the OFF line) is down. Feedback is decay of the KS string,
- * independent of the biquad, hence also drawn while the filter is OFF. */
+/* KS string-feedback readout, hanging under the Q readout below the header
+ * divider. Only on feedback waves, so the header layout is unchanged for other
+ * targets. Blanks the plot behind it, so call AFTER the curve (or OFF line).
+ * Feedback is KS string decay, independent of the biquad, so it is drawn even
+ * while the filter is OFF. */
 static void draw_feedback_box(u8g2_t *u8g2, const filter_graph_t *fg)
 {
     if (!fg->has_feedback) return;
@@ -178,10 +176,8 @@ void filter_graph_draw(u8g2_t *u8g2, const filter_graph_t *fg)
         u8g2_SetFont(u8g2, u8g2_font_5x7_tr);
         uint8_t vw = (uint8_t)u8g2_GetStrWidth(u8g2, val_buf);
         uint8_t vx = (uint8_t)(126 - vw);
-        /* Selection feedback matches the type/EN fields: an outline frame when
-         * the cutoff (0) or resonance (1) cursor is selected, inverted fill
-         * while it is being adjusted. Previously the readout only framed when
-         * editing, so selecting frequency/Q gave no visual cue. */
+        /* Matches the type/EN fields: outline frame when the cutoff (0) or
+         * resonance (1) cursor is selected, inverted fill while adjusting. */
         if (fg->cursor == 0 || fg->cursor == 1) {
             if (fg->editing) {
                 u8g2_DrawBox(u8g2, (uint8_t)(vx - 2), 0, (uint8_t)(vw + 4), 11);
@@ -197,11 +193,9 @@ void filter_graph_draw(u8g2_t *u8g2, const filter_graph_t *fg)
         }
     }
 
-    /* Centre: filter type name plus a compact enable checkbox, drawn as one
-     * horizontally-centred group so BOTH stay visible regardless of the cursor
-     * (they used to share this slot, so type and EN were mutually exclusive).
-     * The checkbox is only drawn for toggle-capable targets (melodic/arp); the
-     * drone shows a plain, fixed LPF24 with no checkbox. */
+    /* Centre: filter type name plus enable checkbox as one centred group, so
+     * both stay visible regardless of the cursor. The checkbox is only for
+     * toggle-capable targets (melodic/arp); the drone is a fixed LPF24. */
     {
         u8g2_SetFont(u8g2, u8g2_font_5x7_tr);
         uint8_t tw = (uint8_t)u8g2_GetStrWidth(u8g2, type_name);
@@ -211,7 +205,7 @@ void filter_graph_draw(u8g2_t *u8g2, const filter_graph_t *fg)
         uint8_t group_w = fg->show_toggles ? (uint8_t)(tw + CB_GAP + CB_W) : tw;
         uint8_t tx = (uint8_t)((128 - group_w) / 2);
 
-        /* Type name — cursor 3 highlight only where the type is selectable. */
+        /* Type name - cursor 3 highlight only where the type is selectable. */
         if (fg->show_toggles && fg->cursor == 3) {
             if (fg->editing) {
                 /* Inverted box = value is live. */
@@ -227,9 +221,8 @@ void filter_graph_draw(u8g2_t *u8g2, const filter_graph_t *fg)
             u8g2_DrawStr(u8g2, tx, 8, type_name);
         }
 
-        /* Enable checkbox — always shows the on/off state (filled = on); cursor
-         * 4 selects it (outline highlight, inverted while toggling). Its state
-         * mirrors the plot's OFF/curve, so enable is legible without scrolling. */
+        /* Enable checkbox - filled = on; cursor 4 selects it (outline
+         * highlight, inverted while toggling). */
         if (fg->show_toggles) {
             uint8_t bx = (uint8_t)(tx + tw + CB_GAP);
             const uint8_t by = 2, bh = 7;   /* checkbox rows 2..8, aligned to text */
@@ -268,10 +261,8 @@ void filter_graph_draw(u8g2_t *u8g2, const filter_graph_t *fg)
     float Q  = norm_to_q(fg->resonance_norm);
     const uint8_t baseline_y = (uint8_t)(FG_PLOT_Y0 + FG_PLOT_H - 1);
 
-    /* py[i]: Y pixel for each log-spaced frequency sample. The sample
-     * frequencies depend only on the compile-time Hz range, so they are
-     * computed once and reused across redraws (this runs continuously while
-     * the cutoff encoder is being turned). */
+    /* Sample frequencies depend only on the compile-time Hz range, so compute
+     * once and reuse: this redraws continuously while the encoder turns. */
     static float s_curve_hz[FG_NPTS];
     static bool  s_curve_hz_init = false;
     if (!s_curve_hz_init) {

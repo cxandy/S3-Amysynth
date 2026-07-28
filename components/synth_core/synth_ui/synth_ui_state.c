@@ -36,12 +36,10 @@ void sync_layer_to_core(uint8_t li)
     }
 }
 
-/* Re-sync the UI mirror from the core after a project load has rewritten
- * layer topology/content out from under the UI (sequencer_core_add_layer/
- * delete_layer/import_layer). Folds in the transport-stop mirror update too
- * (seq_state.playing = false) since project_snapshot_load() already stopped
- * the core transport immediately before this runs — one less thing for the
- * loader to track. */
+/* Re-sync the UI mirror from the core after a project load has rewritten layer
+ * topology/content out from under the UI. Also folds in the transport-stop
+ * mirror update, since project_snapshot_load() already stopped the core
+ * transport just before this runs. */
 void synth_ui_reload_mirror_from_core(void)
 {
     seq_state.num_layers = sequencer_core_get_num_layers();
@@ -52,9 +50,8 @@ void synth_ui_reload_mirror_from_core(void)
     seq_state.selected_track   = 0;
     seq_state.selected_step    = 0;
     seq_state.playing          = false;
-    /* Match the boot default (seq_state initializer): edit_mode gates what a
-     * bare encoder turn/push does on the sequencer screen, and post-load must
-     * behave exactly like post-boot. */
+    /* Match the boot default: edit_mode gates what a bare encoder turn/push
+     * does, and post-load must behave exactly like post-boot. */
     seq_state.edit_mode        = true;
     s_force_redraw = true;
     ESP_LOGI(TAG, "UI mirror reloaded from core: %u layer(s)", seq_state.num_layers);
@@ -91,9 +88,8 @@ uint32_t seq_view_signature(void)
     h = fnv1a_bytes(h, &seq_state.drum_select_mode, sizeof(seq_state.drum_select_mode));
     h = fnv1a_bytes(h, &seq_state.patch_select_mode, sizeof(seq_state.patch_select_mode));
     /* Drum engine + PCM presets live in the core (sample_rec can change them
-     * without going through the UI), so snapshot them into the mirror here —
-     * this runs every frame, like the bpm snapshot above — and hash the
-     * mirror so a change redraws. */
+     * without going through the UI), so snapshot them into the mirror each
+     * frame, like the bpm snapshot above, and hash the mirror. */
     seq_state.drum_pcm = (sequencer_core_get_drum_engine() == SEQ_DRUM_PCM);
     h = fnv1a_bytes(h, &seq_state.drum_pcm, sizeof(seq_state.drum_pcm));
     if (seq_state.num_layers > 0) {

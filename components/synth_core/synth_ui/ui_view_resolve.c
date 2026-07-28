@@ -6,19 +6,16 @@
 /* ════════════════════════════════════════════════════════════════════════
  *  Single source of view precedence + the descriptor table over it
  * ════════════════════════════════════════════════════════════════════════
- * synth_ui_active_view() is the ONE place the screen/overlay precedence lives
- * (it used to be hand-copied into the draw switch, the hint strip, and both
- * main.c input routers). Every consumer calls it, indexes ui_view_table[], and
- * dispatches — so input and draw always resolve the same view. This mirrors the
- * former draw cascade (synth_ui_task.c) branch-for-branch, and depends on the
- * Phase-1 gate inside synth_ui_stepedit_is_active(): the STEPEDIT branch is only
- * correct because that accessor now self-gates to the sequencer screen. */
+ * synth_ui_active_view() is the ONE place the screen/overlay precedence lives.
+ * Every consumer calls it, indexes ui_view_table[] and dispatches, so input and
+ * draw always resolve the same view. The STEPEDIT branch is only correct
+ * because synth_ui_stepedit_is_active() self-gates to the sequencer screen. */
 
 ui_view_id_t synth_ui_active_view(void)
 {
     if (s_filter_active)                return UI_VIEW_FILTER;
     if (s_lfo_active)                   return UI_VIEW_LFO;
-    if (synth_ui_stepedit_is_active())  return UI_VIEW_STEPEDIT; /* gated, Phase 1 */
+    if (synth_ui_stepedit_is_active())  return UI_VIEW_STEPEDIT; /* self-gated */
     if (synth_ui_graph_is_active())     return UI_VIEW_GRAPH;
     if (seq_state.menu_open)            return UI_VIEW_MENU;
     switch (seq_state.ui_mode) {
@@ -61,8 +58,8 @@ static void draw_trackopts(u8g2_t *g, ui_view_vw_t *vw) { display_trackopts_draw
 static void draw_seq(u8g2_t *g, ui_view_vw_t *vw)       { (void)vw; display_seq_draw_frame(g, &seq_state, seq_get_bpm()); }
 
 /* DRONE_VIS composites the sweep/amp visualiser from the live drone getters
- * rather than a prebuilt view struct (the signature still uses drone_view for
- * render-gating). Lifted verbatim from the former draw switch. */
+ * rather than a prebuilt view struct; the signature still uses drone_view for
+ * render-gating. */
 static void draw_drone_vis(u8g2_t *g, ui_view_vw_t *vw)
 {
     (void)vw;
@@ -99,11 +96,8 @@ static void     draw_fm(u8g2_t *g, ui_view_vw_t *vw) { display_menu_draw_frame_t
 #endif
 
 /* ─── Dynamic hint labels (state the view id does not carry) ─────────────
- * Reproduces the former synth_ui_hint.c ladder for exactly the cells that
- * varied on ui_mode: the LFO editor's b2 (which fell through to the underlying
- * screen). The envelope editor's b1 now cycles EG type (static "Type"); the
- * apply-to-layer scope toggle moved to SHIFT+3 (chords aren't shown on the
- * 3-button strip, matching the other SHIFT gestures). */
+ * Only the cells that vary on ui_mode: the LFO editor's b2 falls through to the
+ * underlying screen. SHIFT gestures are not shown on the 3-button strip. */
 static const char *hint_lfo_b2(void)
 {
     switch (seq_state.ui_mode) {
@@ -116,9 +110,8 @@ static const char *hint_lfo_b2(void)
     }
 }
 /* MENU b1/b2: swap the browsing labels for Save/Discard while a project name is
- * being edited on the Projects page (the only menu sub-state that repurposes
- * buttons 1/2). synth_ui_menu_rename_active() resolves to false when the project
- * store is compiled out. */
+ * being edited, the only menu sub-state that repurposes buttons 1/2.
+ * synth_ui_menu_rename_active() is false when the project store is off. */
 static const char *hint_menu_b1(void)
 {
     return synth_ui_menu_rename_active() ? "Save" : "Patch";
@@ -129,19 +122,17 @@ static const char *hint_menu_b2(void)
 }
 
 /* ─── The table: one row per view, indexed by ui_view_id_t ─────────────── */
-/* badge_x is the BLE badge's *preferred* left edge, not a promise:
- * display_badge_draw() probes the finished frame buffer and only lands the
- * badge on blank pixels, sliding to the nearest free slot (or dropping the
- * badge entirely) when a header has grown into this spot. So these values are
- * a taste choice about where the badge looks best, and a stale one can no
- * longer overdraw header text. 0 means "no preference, put it where it fits".
+/* badge_x is the BLE badge's PREFERRED left edge, not a promise:
+ * display_badge_draw() probes the finished frame buffer, lands the badge only
+ * on blank pixels and slides (or drops it) when a header has grown into the
+ * spot. These are a taste choice; a stale one cannot overdraw header text.
+ * 0 = no preference, put it where it fits.
  *
- * Rationale for the current picks (left header extents, 6x10 font ~6 px/char):
- * SEQ 44 = the gap between "BPM 123" (ends 43) and "L1 MEL" (starts 52);
- * MENU/FM 52 clears the longest page titles ("WIRELESS"/"PROJECTS" end 50);
- * LFO 68 clears "LFO L1 T2>L" (ends 67); DRONE_VIS 58 clears "DRONE VIS";
- * PROG 30 sits after "PROG" (chips are right-aligned); TRACKOPTS/STEPEDIT
- * have long titles and no obvious slot, so they let the probe choose. */
+ * Current picks, from left-header extents at ~6 px/char: SEQ 44 is the gap
+ * between "BPM 123" and "L1 MEL"; MENU/FM 52 clears the longest page titles;
+ * LFO 68 clears "LFO L1 T2>L"; DRONE_VIS 58 clears "DRONE VIS"; PROG 30 sits
+ * after "PROG". TRACKOPTS/STEPEDIT have no obvious slot, so they let the probe
+ * choose. */
 const ui_view_desc_t ui_view_table[UI_VIEW_COUNT] = {
     [UI_VIEW_FILTER]    = { "FILTER", sig_filter,    draw_filter,    "On/Off", "-",     "Next",  NULL,               NULL,                   52 },
     [UI_VIEW_LFO]       = { "LFO",    sig_lfo,       draw_lfo,       "-",      NULL,    "Next",  NULL,               hint_lfo_b2,            68 },

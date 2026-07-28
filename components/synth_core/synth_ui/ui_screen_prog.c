@@ -105,7 +105,6 @@ bool synth_ui_prog_handle_encoder(int delta)
         }
         sequencer_core_progression_set_entry(ei, root, ct, dur);
     } else {
-        /* Navigate cursor (0=toggle, 1..count=rows, count+1=apply mode). */
         int nc = (int)s_prog_cursor + delta;
         if (nc < 0) nc = (int)max_cursor;
         if (nc > (int)max_cursor) nc = 0;

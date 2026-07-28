@@ -30,31 +30,27 @@ typedef struct {
     float   cutoff_norm;     /* 0..1 log-mapped over [FGRAPH_CUTOFF_HZ_MIN, MAX] */
     float   resonance_norm;  /* 0..1 mapped from [FGRAPH_RES_MIN, FGRAPH_RES_MAX] */
     bool    has_feedback;    /* feedback wave (KS): the FB cursor exists and a
-                              * small "FB:xx%" readout hangs just under the Q
-                              * readout. Q stays fully editable — AMY applies
-                              * the biquad to KS oscs like any other wave. */
+                              * "FB:xx%" readout hangs under the Q readout. Q
+                              * stays editable - AMY applies the biquad to KS
+                              * oscs like any other wave. */
     float   feedback_norm;   /* KS string feedback 0..1; only drawn/edited when
                               * has_feedback */
     uint8_t cursor;          /* 0=cutoff, 1=resonance, 2=feedback (KS targets
                               * only — skipped otherwise), 3=type, 4=enable */
     bool    editing;         /* cursor is currently being adjusted */
     bool    enabled;         /* false → draw flat line + "OFF" */
-    bool    show_toggles;    /* target exposes the type(2)/enable(3) cursors —
-                              * true for melodic/arp, false for the drone (fixed
-                              * LPF24, always on): drives the header type name +
-                              * compact enable checkbox. */
+    bool    show_toggles;    /* target exposes the type/enable cursors: true for
+                              * melodic/arp, false for the drone (fixed LPF24,
+                              * always on) */
     char    label[16];       /* left side of top bar, e.g. "L1 T2" or "ARP" */
 
-    /* Note on liveness (CONFIG_FILTER_SCOPE): when the filter scope is armed,
-     * the caller drives cutoff_norm from the live modulated cutoff, so the
-     * curve and cursor move as if the cutoff were being turned by hand. This
-     * struct stays a pure value snapshot - the renderer neither knows nor
-     * cares whether the value is authored or live. The caller must quantise
-     * cutoff_norm to pixel columns, or the view signature hashes differently
-     * every frame and the screen redraws continuously. Bottom rows 57-63 are
-     * overwritten by the hint strip after this draws - never put content
-     * there (the first version of the scope drew a baseline band exactly
-     * there and it was invisibly erased every frame). */
+    /* Liveness (CONFIG_FILTER_SCOPE): when the scope is armed the caller drives
+     * cutoff_norm from the live modulated cutoff; this struct stays a pure
+     * value snapshot, the renderer cannot tell authored from live. The caller
+     * MUST quantise cutoff_norm to pixel columns, or the view signature hashes
+     * differently every frame and the screen redraws continuously. Bottom rows
+     * 57-63 are overwritten by the hint strip after this draws - never put
+     * content there. */
 } filter_graph_t;
 
 /* Draw the full-screen filter editor (clears + sends the buffer).

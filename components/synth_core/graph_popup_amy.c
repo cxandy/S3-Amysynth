@@ -1,25 +1,21 @@
 /*
  * graph_popup_amy — AMY <-> graph_popup adapter.
  *
- * Converts between AMY envelope breakpoint arrays (times in milliseconds,
- * values 0..1) and the normalised point model used by the graph_popup widget.
- * This lives in synth_core (which already REQUIRES amy) so the display
- * component (priv_i2c_u8g2) stays free of any AMY dependency.
+ * Converts between AMY envelope breakpoint arrays (times in ms, values 0..1)
+ * and graph_popup's normalised point model. Lives in synth_core so the display
+ * component stays free of any AMY dependency.
  *
- * Normalisation:
- *   x = cumulative time / total time   (so the curve spans the full width)
- *   y = breakpoint value               (already 0..1)
- * An implicit origin point (0,0) is prepended so the curve starts at the
- * bottom-left of the plot, matching how an envelope rises from silence.
+ * Normalisation: x = cumulative time / total time, y = breakpoint value. An
+ * implicit origin (0,0) is prepended so the curve starts at the bottom-left,
+ * as an envelope rises from silence.
  */
 
 #include "graph_popup.h"
 #include "seq_clamp.h"
 #include <stdint.h>
 
-/* Normalised-coordinate clamp. Delegates to seq_clamp_f32 so a NaN degrades to
- * 0.0f instead of propagating into the point and time conversions below, and so
- * this shares one clamping semantic with the display-side graph code. */
+/* Normalised-coordinate clamp via seq_clamp_f32: a NaN degrades to 0.0f rather
+ * than propagating, and the semantic matches the display-side graph code. */
 static inline float clampf01(float v) { return SEQ_CLAMP_F32(v, 0.0f, 1.0f); }
 
 uint8_t gpopup_points_from_envelope(gpopup_point_t *out, uint8_t max_out,

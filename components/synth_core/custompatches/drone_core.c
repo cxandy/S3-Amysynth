@@ -1,15 +1,12 @@
-/* drone_core.c — standalone "stutter house drone" synth.
+/* drone_core.c - standalone "stutter house drone" synth.
+ * Design notes: drone_core.h.
  *
- * Translated from the AMYboard sketch. See drone_core.h for the design notes.
+ * Race safety: every AMY interaction goes through the queued event API
+ * (amy_add_event), never direct synth[] access - the render path walks synth[]
+ * under the queue lock, so all config/notes must be deltas (AMY-EDITS.md).
  *
- * IMPORTANT (heap/race safety): every AMY interaction goes through the queued
- * event API (amy_add_event), never direct synth[] access. This is consistent
- * with the amy_render lock fix documented in AMY-EDITS.md — the render path
- * walks synth[] under the queue lock, so all our config/notes must be deltas.
- *
- * amy_event is ~800 bytes; we share one module-level scratch event guarded by a
- * mutex (the established project pattern; never place amy_event on a task
- * stack). All callers here are FreeRTOS tasks, never ISRs. */
+ * amy_event is ~800 bytes: use the shared mutex-guarded module scratch event,
+ * never a task stack. All callers here are FreeRTOS tasks, never ISRs. */
 
 #include "custompatches/drone_core.h"
 #include "synth_ui.h"      /* seq_get_bpm() (live global BPM) */
@@ -51,20 +48,19 @@ static const char *TAG = "drone_core";
 
 /* Limits */
 #define DRONE_RES_MIN      0.1f
-#define DRONE_RES_MAX      3.0f    /* AMY itself imposes no upper Q cap (floor 0.51);
-                                    * 8 gives a strong acid peak with headroom before
-                                    * self-oscillation transients spike the clip LUT. */
+#define DRONE_RES_MAX      3.0f    /* AMY imposes no upper Q cap (floor 0.51); our
+                                    * ceiling keeps headroom before self-oscillation
+                                    * transients spike the clip LUT. */
 #define DRONE_SWEEP_MIN    100.0f
 #define DRONE_SWEEP_MAX    8000.0f
 #define DRONE_BARS_MIN     1
 #define DRONE_BARS_MAX     16
 #define DRONE_PATCH_MIN    0
-/* Drone PATCH-mode ceiling: wave patches 257-261 (SINE..TRIANGLE) are supported,
- * plus the wavetable bank patches (267-271, AMY_WAVETABLE only). NOISE (262),
- * KS (263), and the bass presets (264-266) are intentionally excluded from the
- * drone — their excitation/multi-osc model misbehaves with the drone's
- * one-shot trigger style; drone_set_patch() snaps values in that gap back down
- * to TRIANGLE rather than clamping the whole range there. */
+/* Drone PATCH-mode ceiling: wave patches 257-261 (SINE..TRIANGLE), plus the
+ * wavetable banks 267-271 (AMY_WAVETABLE only). NOISE (262), KS (263) and the
+ * bass presets (264-266) are excluded - their excitation/multi-osc model
+ * misbehaves with the drone's one-shot trigger style; drone_set_patch() snaps
+ * values in that gap down to TRIANGLE. */
 #if CONFIG_AMY_WAVETABLE
 #define DRONE_PATCH_MAX    SEQ_PATCH_WAVETABLE_MAX
 #else
@@ -77,15 +73,13 @@ static const char *TAG = "drone_core";
 #define DRONE_PAT_STEPS    8       /* steps per bar in a pattern mask                  */
 
 /* Chord intervals come from the shared quantizer_chord_intervals(chord_type_t)
- * table (components/synth_core/include/quantizer.h).  The private
- * s_chord_formulas / s_chord_names tables and the drone_chord_t enum have
- * been removed in favour of the shared chord_type_t system. */
+ * table (quantizer.h). */
 
-/* Stutter rate -> multiplier on the beat rate (beats/sec * mult = LFO Hz).
- * 1/4 = 1x beat, 1/8 = 2x, 1/16 = 4x, 1/32 = 8x, 1/1 = 0.25x; triplets are
- * 1.5x their straight division. All map to integer subs-per-bar (4x mult) so
- * the stutter grid stays tick-exact. Deliberately NOT frequency-capped like
- * the LFO rates: audio-adjacent stutter gating is a playable effect here. */
+/* Stutter rate -> multiplier on the beat rate (beats/sec * mult = LFO Hz);
+ * triplets are 1.5x their straight division. All map to integer subs-per-bar
+ * (4x mult) so the stutter grid stays tick-exact. Deliberately NOT
+ * frequency-capped like the LFO rates: audio-adjacent stutter gating is a
+ * playable effect here. */
 static const float s_rate_mult[DRONE_RATE_COUNT] = {
     [DRONE_RATE_1_4]   = 1.0f,
     [DRONE_RATE_1_8]   = 2.0f,
@@ -153,54 +147,39 @@ typedef struct {
     float          last_blip_cutoff; /* to avoid redundant cutoff re-sends    */
     /* sweep phase, advanced each service tick (0..2pi) */
     float          last_lfo_hz; /* to avoid redundant LFO re-sends   */
-    voice_params_t vp;          /* shared voice params. The drone uses env (graph
-                                   editor ADSR), env1 (EG1 timing storage), their
-                                   authored flags, and amp_trim (multiplied into
-                                   amp_peak in s_amp_peak_lin() for the effective
-                                   on-beat level; graph editor amp mode,
-                                   MY_BUTTON_2). vp.filter/vp.lfo are unused: the
-                                   drone's sweep filter and stutter gate are its
-                                   own concepts. Defaults via
-                                   voice_params_init_defaults in drone_core_init. */
+    voice_params_t vp;          /* shared voice params. Drone uses env, env1
+                                   (EG1 timing storage), their authored flags,
+                                   and amp_trim (folded into amp_peak by
+                                   s_amp_peak_lin()). vp.filter/vp.lfo unused:
+                                   the sweep filter and stutter gate are the
+                                   drone's own concepts. */
 } drone_state_t;
 
 static drone_state_t s_d;
 
-/* Schedule-affecting setters mark the drone dirty instead of rebuilding
- * inline; drone_core_service() (once per UI frame) does a single rebuild when
- * dirty, so an encoder spin through waves/params collapses to one rebuild +
- * one burst of AMY event-mutex traffic per frame instead of one per detent.
- * Mirrors the arp's s_arp_dirty discipline. Setters run on Core-0 input tasks
- * and the drain runs on the Core-0 synth_ui_task — single-core, one-way flag,
- * so the volatile is for compiler ordering, not cross-core synchronization.
- * Enable, chord, and root-note changes stay synchronous: enabling must sound
- * NOW, and chord/root must note-off the OLD voicing before state changes or
- * voices stick. */
+/* Schedule-affecting setters mark dirty; drone_core_service() rebuilds once per
+ * UI frame, so an encoder spin collapses to one rebuild instead of one per
+ * detent (mirrors the arp's s_arp_dirty discipline). Setters run on Core-0
+ * input tasks, the drain on the Core-0 synth_ui_task - single-core, one-way
+ * flag, so volatile is for compiler ordering only.
+ * Enable/chord/root stay synchronous: enable must sound NOW, and chord/root
+ * must note-off the OLD voicing before state changes or voices stick. */
 static volatile bool s_d_dirty = false;
 static inline void drone_mark_dirty(void) { s_d_dirty = true; }
 
 /* ── Peak/Duck dB amp helpers ──────────────────────────────────────────────
- * These are the SINGLE source of truth for the engine math.  Both
- * drone_configure_wave_synth() and drone_get_amp_levels_norm() call these
- * helpers — never inline the formula elsewhere.
+ * SINGLE source of truth for the engine math: drone_configure_wave_synth() and
+ * drone_get_amp_levels_norm() both call these - never inline the formula.
  *
- * Knob→dB/linear mapping:
- *   peak_lin = amp_peak           (linear 0..1, identity mapping)
- *   duck_db  = amp_duck * 40.0f  (0 dB at knob=0, -40 dB floor at knob=1)
- *
- * AMY engine coefs (from the two-equation solve):
- *   m          = duck_db / 120
- *   const_sent = peak_lin * 10^(-duck_db / 40)
- *
- * Result:
- *   ON-beat  (LFO=+1): const_sent * 10^(3*m) = peak_lin
- *   OFF-beat (LFO=-1): const_sent * 10^(-3*m) = peak_lin * 10^(-duck_db/20)
+ * Knobs:  peak_lin = amp_peak; duck_db = amp_duck * 40 (0..-40 dB floor).
+ * Coefs:  m = duck_db/120; const_sent = peak_lin * 10^(-duck_db/40), solved so
+ *         AMY's amp = const_sent * 10^(3*m*LFO) gives peak_lin on-beat (LFO=+1)
+ *         and peak_lin * 10^(-duck_db/20) off-beat (LFO=-1).
  */
 static inline float s_amp_peak_lin(void)
 {
-    /* amp_trim is a per-target volume trim (0..1, default 1.0) set by the graph
-     * editor amp mode. Fold it into amp_peak here so all callers automatically
-     * pick up the trimmed level (single source of truth rule applies). */
+    /* Fold the graph editor's per-target trim (0..1) into amp_peak here so
+     * every caller picks up the trimmed level. */
     float v = s_d.amp_peak * s_d.vp.amp_trim;
     v = SEQ_CLAMP_F32(v, 0.0f, 1.0f);
     return v;
@@ -221,8 +200,6 @@ static inline float s_amp_const_sent(void)
     return s_amp_peak_lin() * powf(10.0f, -s_amp_duck_db() / 40.0f);
 }
 
-/* AMY events are emitted through the shared amy_helpers scratch buffer. */
-
 /* ── Tempo helpers ── */
 
 /* Beats per second from the live global BPM. */
@@ -239,8 +216,7 @@ static inline float drone_lfo_hz(void)
     return drone_bps() * s_rate_mult[s_d.rate];
 }
 
-/* Count the notes in a chord formula (up to the first -1 sentinel, max DRONE_CHORD_MAX_NOTES).
- * Uses the shared quantizer_chord_intervals() table; returns 0 if chord is out of range. */
+/* Notes in a chord formula (up to the first -1 sentinel); 0 if out of range. */
 static uint8_t drone_chord_note_count(chord_type_t chord)
 {
     const int8_t *row = quantizer_chord_intervals(chord);
@@ -254,30 +230,25 @@ static uint8_t drone_chord_note_count(chord_type_t chord)
 }
 
 /* ── Synth configuration (WAVE mode) ──
- * Build a `voices`-voice synth, each voice = osc0 carrier (NOTE-following, so
- * its pitch comes from the voice's note-on) amplitude-gated by osc1 PULSE LFO.
- * A multi-voice main synth therefore sounds a chord when fed multiple notes. */
-/* `wave` is the AMY waveform to use for the carrier (osc0).  Callers pass
- * s_d.wave for WAVE-mode, or the patch-derived wave for PATCH-mode wave patches.
- * `wt_preset` selects which built-in wavetable bank to play when wave==WAVETABLE
- * (index into pcm_wavetable_base..+pcm_wavetable_samples-1); pass -1 for any
- * non-wavetable wave, where it is a no-op. */
+ * Build a `voices`-voice synth, each voice = osc0 carrier (NOTE-following)
+ * amplitude-gated by an osc1 PULSE LFO, so a multi-voice main synth sounds a
+ * chord when fed multiple notes.
+ * `wave`: carrier waveform (s_d.wave, or patch-derived in PATCH mode).
+ * `wt_preset`: wavetable bank index (pcm_wavetable_base..+samples-1) when
+ * wave==WAVETABLE; -1 elsewhere (no-op). */
 static void drone_configure_wave_synth(uint8_t synth, uint8_t voices, uint16_t wave,
                                        int16_t wt_preset)
 {
     float lfo_hz    = drone_lfo_hz();
     /* AMY 1.2.12 (#720) dB/exp amp model: amp = const_sent * 10^(3*m*LFO).
-     * Peak/Duck mapping (see s_amp_* helpers for full derivation):
-     *   ON-beat (LFO=+1) = peak_lin = amp_peak
-     *   OFF-beat(LFO=-1) = peak_lin * 10^(-duck_db/20), duck_db = amp_duck*40. */
+     * Peak/Duck mapping: see the s_amp_* helpers. */
     float m          = s_amp_m();
     float const_sent = s_amp_const_sent();
 
-    /* Shared skeleton: pool (build-your-own synth: N voices, 2 oscs/voice, no
-     * patch) + osc0 NOTE-following carrier (COEF_NOTE=1) so each voice plays
-     * its own chord note. Velocity does not scale amp (osc0_amp_vel=0); EG0
-     * multiplies the whole amp, so the ADSR envelope shapes the drone
-     * swell/fade *around* the LFO stutter. */
+    /* Shared skeleton: N voices, 2 oscs each, no patch; osc0 NOTE-following so
+     * each voice plays its own chord note. Velocity does not scale amp
+     * (osc0_amp_vel=0); EG0 multiplies the whole amp, so the ADSR shapes the
+     * drone swell/fade *around* the LFO stutter. */
     voice_wave_cfg_t cfg = {
         .synth                = synth,
         .num_voices           = voices,
@@ -291,9 +262,8 @@ static void drone_configure_wave_synth(uint8_t synth, uint8_t voices, uint16_t w
     };
     voice_build_wave(&cfg);
 
-    /* osc1 = PULSE LFO. Absolute Hz (note-follow off), full const amp.
-     * The PULSE duty IS the gate length: 0.5 = 50/50 square (legacy), lower =
-     * a shorter "on" fraction per subdivision = a tighter percussive chop. */
+    /* osc1 = PULSE LFO, absolute Hz, full const amp. The PULSE duty IS the
+     * gate length: 0.5 = square, lower = tighter percussive chop. */
     amy_event *e = amy_helpers_event_begin();
     e->synth                 = synth;
     e->osc                   = 1;
@@ -306,9 +276,8 @@ static void drone_configure_wave_synth(uint8_t synth, uint8_t voices, uint16_t w
     e->amp_coefs[COEF_EG0]   = 0.0f;
     amy_helpers_event_send(e);
 
-    /* osc0 drone specializations: amp = const + mod(=osc1) stutter gate, and
-     * the LPF24 sweep filter. Sent after osc1 so mod_source always points at
-     * a configured gate oscillator. */
+    /* osc0: amp = const + mod(=osc1) stutter gate, plus the LPF24 sweep filter.
+     * Sent after osc1 so mod_source always points at a configured oscillator. */
     e = amy_helpers_event_begin();
     e->synth                  = synth;
     e->osc                    = 0;
@@ -356,12 +325,9 @@ static void drone_rebuild(void)
             drone_configure_wave_synth(DRONE_SYNTH_SUB, DRONE_SUB_VOICES, s_d.wave, -1);
         }
     } else if (s_d.source == DRONE_SRC_PATCH && s_d.patch >= SEQ_PATCH_WAVE_BASE) {
-        /* PATCH-mode wave virtual patches (257-261, and — AMY_WAVETABLE —
-         * 267-271): configure as a wave synth using the full drone
-         * stutter/filter/mod setup, waveform derived from the patch number.
-         * Sends these ranges as AMY patch numbers would be silent (they are
-         * not real AMY patches), so we intercept here like the melodic
-         * sequencer does in sequencer_configure_synth(). */
+        /* Virtual wave patches (257-261, plus 267-271 with AMY_WAVETABLE) are
+         * not real AMY patches - sending them as patch numbers is silent. Map
+         * to a wave synth here, as sequencer_configure_synth() does. */
         static const uint16_t s_wave_for_patch[] = {
             SINE, SAW_DOWN, SAW_UP, PULSE, TRIANGLE,
         };
@@ -387,19 +353,16 @@ static void drone_rebuild(void)
             drone_configure_patch_synth(DRONE_SYNTH_SUB, DRONE_SUB_VOICES);
         }
     }
-    /* Re-impose the user's custom ADSR if authored (rebuild/patch resets the
-     * synth oscs). Deferred authority, matching the melodic + arp behaviour. */
+    /* Re-impose the authored ADSR: rebuild/patch resets the synth oscs.
+     * Deferred authority, matching melodic + arp. */
     if (s_d.vp.env_authored) {
-        /* Authored envelope applies verbatim (KS/NOISE are excluded from the
-         * drone wave cycle; no special-case floor exists anymore anywhere). */
         sequencer_core_push_envelope(DRONE_SYNTH_MAIN, &s_d.vp.env);
         if (s_d.sub_enabled) {
             sequencer_core_push_envelope(DRONE_SYNTH_SUB, &s_d.vp.env);
         }
     }
-    /* Second envelope (EG1): only pushed when authored — nothing in the
-     * drone's own WAVE/PATCH setup above routes a coef to COEF_EG1, so this
-     * is a no-op unless the loaded PATCH-mode instrument already does. */
+    /* EG1: nothing in the drone's own setup routes a coef to COEF_EG1, so this
+     * is a no-op unless a loaded PATCH-mode instrument already does. */
     if (s_d.vp.env1_authored) {
         sequencer_core_push_envelope_eg1(DRONE_SYNTH_MAIN, 0, &s_d.vp.env1);
         if (s_d.sub_enabled) {
@@ -419,10 +382,9 @@ static void drone_note(uint8_t synth, bool on, float midi_note)
     amy_helpers_event_send(e);
 }
 
-/* Start/stop the sustained drone voices. The main synth gets a note-on per
- * chord note (one voice each); the sub gets a single note at the chord ROOT
- * shifted by sub_interval. On disable we release the same notes so the ADSR
- * release fades them out. */
+/* Start/stop the sustained drone voices: one note-on per chord note on main,
+ * one at root+sub_interval on the sub. Disable releases the same notes so the
+ * ADSR release fades them out. */
 static void drone_apply_enabled(void)
 {
     const int8_t *formula = quantizer_chord_intervals(s_d.chord);
@@ -482,20 +444,18 @@ void drone_core_init(void)
     s_d.blip_depth   = 0.0f;     /* filter-zap off by default            */
     s_d.pattern      = DRONE_PAT_FULL;
     s_d.last_blip_cutoff = -1.0f;
-    /* Default ADSR: slow swell suited to a drone. Not authored until the user
-     * commits in the graph editor (the raw wave plays at full sustain otherwise,
-     * since an unauthored env is not pushed and EG0 holds at 1.0 on a held note). */
+    /* Default ADSR: slow drone swell. Stays unauthored until the user commits
+     * in the graph editor - an unauthored env is never pushed, so EG0 holds at
+     * 1.0 and the raw wave plays at full sustain. */
     s_d.vp.env.attack_ms   = 200;
     s_d.vp.env.decay_ms    = 300;
     s_d.vp.env.sustain_pct = 100;
     s_d.vp.env.release_ms  = 600;
     s_d.vp.env.eg_type     = 0;   /* ENVELOPE_NORMAL */
-    /* Second envelope (EG1): not routed to anything by the drone's own WAVE
-     * patches (its filter movement already comes from the independent
-     * sweep_lo/sweep_hi + BPM-synced service tick below, layering a second
-     * envelope-driven cutoff shift on top would double-modulate the same
-     * parameter). Kept purely as timing storage for a PATCH-mode drone whose
-     * loaded AMY patch already routes its own bp1. */
+    /* EG1 is unrouted by the drone's own WAVE patches - filter movement comes
+     * from the sweep + BPM-synced service tick, and a second envelope-driven
+     * cutoff shift would double-modulate it. Kept as timing storage for a
+     * PATCH-mode drone whose AMY patch routes its own bp1. */
     s_d.vp.env1.attack_ms   = 15;
     s_d.vp.env1.decay_ms    = 400;
     s_d.vp.env1.sustain_pct = 25;
@@ -510,10 +470,9 @@ void drone_core_init(void)
 void drone_core_service(void)
 {
     /* Drain the coalesced rebuild BEFORE the enabled gate: a param changed
-     * while the drone is off must still rebuild (cheap synth reconfig only;
-     * drone_apply_enabled() is what actually sounds notes) so the change is
-     * live on the next enable. Drained before the LFO-hz tracking below so a
-     * rebuild and the tempo push land in the right order within the frame. */
+     * while the drone is off must still rebuild so it is live on the next
+     * enable (rebuild only reconfigures; drone_apply_enabled() sounds notes).
+     * Before the LFO-hz tracking so rebuild and tempo push order correctly. */
     if (s_d_dirty) {
         s_d_dirty = false;
         drone_rebuild();
@@ -543,16 +502,12 @@ void drone_core_service(void)
         s_d.last_lfo_hz = lfo_hz;
     }
 
-    /* Everything below is a pure function of the global musical clock, NOT of how
-     * often this service runs. At 48 PPQ one bar (4 beats) = 192 ticks. This keeps
-     * the sweep, the stutter subdivision grid, swing, the step pattern and the
-     * per-step filter blip all frame-rate-independent and beat-locked: they
-     * advance with tempo automatically and stay coherent with the sequencer/arp
-     * bar grid across BPM changes. */
+    /* Everything below is a pure function of the global musical clock, NOT of
+     * how often this service runs - sweep, stutter grid, swing, pattern and
+     * blip stay frame-rate-independent and beat-locked across BPM changes. */
     const uint32_t bar_ticks = (uint32_t)(AMY_SEQUENCER_PPQ * 4);   /* 192 */
-    /* AMY's monotonic tick counter (48 PPQ, AMY_SEQUENCER_PPQ), advanced by the
-     * audio-rate sequencer: the same musical-time clock the sequencer and arp
-     * ride. Declared in amy/src/sequencer.h, reached here via amy.h. */
+    /* AMY's monotonic 48 PPQ tick counter, advanced by the audio-rate
+     * sequencer: the same clock the sequencer and arp ride. */
     uint32_t now = sequencer_ticks();
 
     /* (a) Slow bar-length sweep = the BASE cutoff. */
@@ -564,15 +519,14 @@ void drone_core_service(void)
     float half = 0.5f * (s_d.sweep_hi - s_d.sweep_lo);
     float base = mid + half * sinf(phase);
 
-    /* (b) Stutter subdivision grid. ticks_per_sub = 192 / (4 * rate_mult), e.g.
-     * 1/16 -> rate_mult 4 -> 12 ticks/sub. Guard against 0. The pattern mask is
-     * an 8-step per-bar grid, so the step index wraps mod DRONE_PAT_STEPS. */
+    /* (b) Stutter subdivision grid; the pattern mask is an 8-step per-bar grid,
+     * so the step index wraps mod DRONE_PAT_STEPS. */
     float subs_per_bar = 4.0f * s_rate_mult[s_d.rate];
     uint32_t ticks_per_sub = (uint32_t)((float)bar_ticks / subs_per_bar + 0.5f);
     if (ticks_per_sub < 1) ticks_per_sub = 1;
 
-    /* (c) Swing: push ODD subdivisions later by swing_pct% of one subdivision.
-     * Applied by offsetting the clock used for the sub-phase calc. */
+    /* (c) Swing: push ODD subdivisions later by swing_pct% of one subdivision,
+     * by offsetting the clock used for the sub-phase calc. */
     uint32_t pos_in_bar = now % bar_ticks;
     uint32_t sub_index_raw = pos_in_bar / ticks_per_sub;
     uint32_t swing_off = 0;
@@ -588,9 +542,8 @@ void drone_core_service(void)
     bool step_on = (s_pattern_mask[s_d.pattern] >> sub_index) & 1u;
 
     /* (e) Per-step filter blip: a downward zap at the start of each open step,
-     * decaying as we move through the subdivision. cutoff = base * (1 - depth *
-     * env), env = exp(-k * frac). AMY's logfreq downward slew-limit smooths the
-     * attack edge into something musical. */
+     * decaying across the subdivision. AMY's logfreq downward slew-limit
+     * smooths the attack edge into something musical. */
     float cutoff;
     if (!step_on) {
         cutoff = DRONE_SWEEP_MIN;            /* closed: skip this subdivision */
@@ -602,8 +555,8 @@ void drone_core_service(void)
         cutoff = base;                       /* blip off = plain sweep (legacy) */
     }
 
-    /* Skip redundant pushes (cutoff barely changed) to keep the event queue light
-     * when the drone is idling on a sustained step. */
+    /* Skip near-identical pushes to keep the event queue light while idling on
+     * a sustained step. */
     if (fabsf(cutoff - s_d.last_blip_cutoff) > 1.0f) {
         drone_push_cutoff(DRONE_SYNTH_MAIN, cutoff);
         if (s_d.sub_enabled) {
@@ -618,9 +571,9 @@ void drone_set_enabled(bool on)
     if (s_d.enabled == on) return;
     s_d.enabled = on;
     if (on) {
-        /* Rebuild so a fresh enable always reflects the current params. The
-         * sweep phase is derived from the global tick clock (not reset here), so
-         * the drone sweep stays phase-locked to the transport bar grid. */
+        /* Rebuild so a fresh enable reflects the current params. Sweep phase
+         * comes from the global tick clock (never reset here), keeping the
+         * sweep phase-locked to the transport bar grid. */
         drone_rebuild();
     }
     drone_apply_enabled();
@@ -637,8 +590,8 @@ void drone_set_source(drone_source_t src)
 
 void drone_set_wave(uint16_t amy_wave)
 {
-    /* NOISE and KS removed from the drone wave cycle (excitation model misbehaves
-     * with drone's one-shot trigger style).  Coerce any persisted/stale value. */
+    /* NOISE and KS are excluded (excitation model misbehaves with the drone's
+     * one-shot trigger style); coerce any persisted/stale value. */
     if (amy_wave == NOISE || amy_wave == KS) amy_wave = SAW_DOWN;
     if (s_d.wave == amy_wave) return;
     s_d.wave = amy_wave;
@@ -649,8 +602,8 @@ void drone_set_chord(chord_type_t chord)
 {
     if (chord >= CHORD_TYPE_COUNT) return;
     if (s_d.chord == chord) return;
-    /* Releasing the old chord's held notes before the rebuild avoids leaving
-     * voices stuck on when the new chord has fewer notes. */
+    /* Release the old chord's held notes before the rebuild, or voices stick
+     * on when the new chord has fewer notes. */
     bool was_enabled = s_d.enabled;
     if (was_enabled) {
         s_d.enabled = false;
@@ -711,7 +664,7 @@ void drone_set_amp_peak(float c)
 
 void drone_set_amp_duck(float m)
 {
-    /* Full range 0..1: duck_knob=1 -> -40 dB floor (not silence), no 0.95 cap needed. */
+    /* Full range: duck_knob=1 -> -40 dB floor, not silence, so no cap needed. */
     m = SEQ_CLAMP_F32(m, 0.0f, 1.0f);
     if (fabsf(s_d.amp_duck - m) < 0.001f) return;
     s_d.amp_duck = m;
@@ -729,13 +682,13 @@ void drone_set_rate(drone_rate_t rate)
 
 bool drone_patch_excluded(uint16_t patch)
 {
-    /* Compile-awareness is shared with every other consumer: a range gated
-     * off by Kconfig is excluded here too, on top of the drone's own rules. */
+    /* Kconfig-gated ranges are excluded here too, on top of the drone's own
+     * rules. */
     if (sequencer_core_patch_compiled_out(patch)) return true;
     if (patch > DRONE_PATCH_MAX) return true;   /* incl. bass/FM/additive w/o wavetable */
 #if CONFIG_AMY_WAVETABLE
-    /* NOISE/KS/bass (262-266) sit below the wavetable range that IS
-     * supported, so they need excluding individually. */
+    /* NOISE/KS/bass (262-266) sit below the supported wavetable range, so
+     * they need excluding individually. */
     if (patch > SEQ_PATCH_TRIANGLE && patch < SEQ_PATCH_WAVETABLE_BASE) {
         return true;
     }
@@ -745,8 +698,8 @@ bool drone_patch_excluded(uint16_t patch)
 
 void drone_set_patch(uint16_t patch)
 {
-    /* Cycling never offers an excluded patch (the drone domain's predicate
-     * skips them); this snap only defends direct/programmatic callers. */
+    /* Cycling never offers an excluded patch; this snap defends direct
+     * programmatic callers. */
     if (drone_patch_excluded(patch)) patch = SEQ_PATCH_TRIANGLE;
     if (s_d.patch == patch) return;
     s_d.patch = patch;
@@ -760,8 +713,8 @@ void drone_set_sub_enabled(bool on)
     if (on) {
         drone_mark_dirty();
     } else {
-        /* Note-off stays synchronous: the sounding sub voice must release now,
-         * not a frame later (same rule as the chord/root note-offs). */
+        /* Synchronous: the sounding sub voice must release now, not a frame
+         * later (same rule as the chord/root note-offs). */
         int sub_midi = SEQ_CLAMP_INT((int)s_d.root_note + (int)s_d.sub_interval, 12, 108);
         drone_note(DRONE_SYNTH_SUB, false, (float)sub_midi);
     }
@@ -849,8 +802,6 @@ void drone_set_envelope(const seq_env_t *env)
     if (s_d.vp.env.attack_ms < 2) s_d.vp.env.attack_ms = 2;  /* 2 ms floor */
     if (s_d.vp.env.release_ms < 5) s_d.vp.env.release_ms = 5;  /* 5 ms declick floor */
     s_d.vp.env_authored = true;
-    /* Applied verbatim — no KS/NOISE special-case floor exists anymore (the
-     * local 2/5 ms declick floors above still apply to every wave equally). */
     sequencer_core_push_envelope(DRONE_SYNTH_MAIN, &s_d.vp.env);
     if (s_d.sub_enabled) {
         sequencer_core_push_envelope(DRONE_SYNTH_SUB, &s_d.vp.env);
@@ -949,8 +900,8 @@ const char *drone_chord_name(chord_type_t chord)
 
 void drone_get_amp_levels_norm(float *floor_norm, float *ceil_norm)
 {
-    /* Compute ON-beat and OFF-beat linear amplitudes from the SAME dB math
-     * as drone_configure_wave_synth() — single source of truth via s_amp_*. */
+    /* ON/OFF-beat linear amplitudes from the SAME s_amp_* math as
+     * drone_configure_wave_synth(). */
     float peak    = s_amp_peak_lin();
     float duck_db = s_amp_duck_db();
     if (ceil_norm)  *ceil_norm  = peak;
@@ -970,8 +921,8 @@ void drone_set_amp_trim(float v)
     v = SEQ_CLAMP_F32(v, 0.0f, 1.0f);
     if (fabsf(s_d.vp.amp_trim - v) < 0.001f) return;
     s_d.vp.amp_trim = v;
-    /* s_amp_peak_lin() is called by drone_configure_wave_synth() via drone_rebuild(),
-     * so the coalesced rebuild picks up the new effective peak. */
+    /* The coalesced rebuild re-reads s_amp_peak_lin(), picking up the new
+     * effective peak. */
     if (s_d.source == DRONE_SRC_WAVE) drone_mark_dirty();
 }
 

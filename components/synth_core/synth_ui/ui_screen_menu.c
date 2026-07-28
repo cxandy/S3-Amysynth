@@ -24,15 +24,14 @@ static const char *TAG = "synth_ui";
 /* ════════════════════════════════════════════════════════════════════════
  *  MENU OVERLAY
  * ════════════════════════════════════════════════════════════════════════
- * A small modal list. Items are either ACTIONS (run on click, no value) or
- * VALUE items (click to enter editing, encoder changes the value, click to
- * exit). The model is a static table; values are read/written live from the
- * sequencer_core quantizer + arp_core + global FX cache.
+ * A small modal list. Items are either ACTIONS (run on click) or VALUE items
+ * (click to enter editing, encoder changes the value, click to exit). The model
+ * is a static table; values are read/written live from sequencer_core, arp_core
+ * and the global FX cache.
  *
- * The overlay has two pages: the main list below, and the global-FX page
- * (item model in ui_screen_fxmenu.c) reached through MI_FX_MENU. This file
- * owns the page state and routes encoder/button input to the active page;
- * both pages share seq_state.menu_cursor/menu_editing. */
+ * This file owns the page state (main list plus the sub-pages dived into from
+ * it) and routes encoder/button input to the active page; every page shares
+ * seq_state.menu_cursor/menu_editing. */
 
 typedef enum {
     MI_SCREEN_SEQ = 0,
@@ -92,9 +91,9 @@ static bool    s_wireless_page = false;
 const char *menu_page_title(void)
 {
     if (s_notefx_page) {
-        /* NoteFX is bound to the ACTIVE layer, so the title names it — always,
-         * even with a single layer ("L1/1"), so it's discoverable that every
-         * layer added gets its own Gate/Glide values on this page. */
+        /* NoteFX is bound to the ACTIVE layer, so the title names it - always,
+         * even at "L1/1", so it stays discoverable that each layer has its own
+         * Gate/Glide values. */
         static char s_nfx_title[20];
         snprintf(s_nfx_title, sizeof(s_nfx_title), "NOTE FX  L%u/%u",
                  (unsigned)(seq_state.active_layer_idx + 1u),
@@ -112,12 +111,11 @@ const char *menu_page_title(void)
     return "MENU";
 }
 
-/* True while the Wireless page of the overlay is the one showing. The editors
- * use this to bind to the live-play voice: the page is not a ui_mode, so it
- * cannot be read off seq_state. Stays true while an editor draws over the
- * overlay (the menu is still open underneath), which is what lets the filter
- * tab and the editor cycle route to the same target as the ADSR tab.
- * Defined unconditionally so callers need no build-time guard. */
+/* True while the overlay is showing its Wireless page. The editors bind to the
+ * live-play voice on this, since the page is not a ui_mode. It stays true while
+ * an editor draws over the overlay (the menu is still open underneath), which
+ * is what makes the filter tab and the editor cycle route to the same target as
+ * the ADSR tab. Defined unconditionally so callers need no build-time guard. */
 bool synth_ui_wireless_page_is_open(void)
 {
 #if CONFIG_SYNTH_WIRELESS
@@ -200,8 +198,8 @@ void menu_build_view(menu_view_t *out)
     }
 
     snprintf(s_menu_items[MI_QUANT_ROOT].label, MENU_LABEL_LEN, "Root");
-    /* Pitch class only — the snapper searches all octaves relative to the root,
-     * so showing an octave ("C4") would imply a choice that does nothing. */
+    /* Pitch class only: the snapper searches all octaves relative to the root,
+     * so showing "C4" would imply a choice that does nothing. */
     snprintf(s_menu_items[MI_QUANT_ROOT].value, MENU_VALUE_LEN, "%s",
              chord_root_name(sequencer_core_get_quantizer_root_note() % 12));
 
@@ -265,14 +263,14 @@ void menu_build_view(menu_view_t *out)
              radio_manager_state() == RADIO_ACTIVE ? "ON" : ">");
 #endif
 
-    /* Master output volume (0..200%, unity=100%). Written to amy_global.volume[]. */
+    /* Master output volume (0..200%, unity 100%), written to amy_global.volume[]. */
     snprintf(s_menu_items[MI_VOLUME].label, MENU_LABEL_LEN, "Volume");
     snprintf(s_menu_items[MI_VOLUME].value, MENU_VALUE_LEN, "%.0f%%",
              (double)(amy_fx_get_master_volume() * 100.0f));
 
     /* Runtime PCM sampler (custompatches/sample_rec): the label previews what
-     * ARM will target (the currently selected track), since that selection is
-     * only snapshotted at the moment the user actually arms. */
+     * ARM will target, since the track selection is snapshotted only at the
+     * moment the user arms. */
     snprintf(s_menu_items[MI_SAMPLE].label, MENU_LABEL_LEN, "Sample");
     switch (sample_rec_get_state()) {
         case SAMPLE_REC_ARMED:
@@ -299,8 +297,8 @@ void menu_build_view(menu_view_t *out)
     out->editing = seq_state.menu_editing;
 }
 
-/* Signature of the menu overlay. Builds the view into *out so the caller
- * can draw from it without a second full snprintf pass. */
+/* Signature of the menu overlay. Builds the view into *out so the caller draws
+ * from it without a second full snprintf pass. */
 uint32_t menu_view_signature(menu_view_t *out)
 {
     uint32_t h = FNV1A_OFFSET;
@@ -355,9 +353,9 @@ static void menu_edit_value(menu_item_id_t id, int delta)
             break;
         }
         case MI_QUANT_ROOT: {
-            /* Cycle the 12 pitch classes; only the pitch class matters to the
-             * snapper. Stored as a MIDI note in octave 4 (60..71) so persisted
-             * snapshots and the Kconfig default (60) keep their meaning. */
+            /* Cycle the 12 pitch classes - only the class matters to the
+             * snapper - but store as a MIDI note in octave 4 (60..71) so
+             * snapshots and the Kconfig default keep their meaning. */
             int pc = ((int)sequencer_core_get_quantizer_root_note() % 12 + delta) % 12;
             if (pc < 0) pc += 12;
             sequencer_core_set_quantizer_root_note((uint8_t)(60 + pc));
@@ -380,7 +378,7 @@ static void menu_edit_value(menu_item_id_t id, int delta)
                 int n = (int)sequencer_core_drum_source_count();
                 int ni = ((int)sequencer_core_get_drum_source() + dir + n) % n;
                 sequencer_core_set_drum_source((uint8_t)ni);
-                /* A bank seed rewrote the core's per-track presets; refresh
+                /* The bank seed rewrote the core's per-track presets; refresh
                  * the UI mirror so the drum screen's labels follow. */
                 for (uint8_t i = 0; i < seq_state.num_layers; i++) {
                     if (seq_state.layers[i].type != SEQ_LAYER_DRUM) continue;
@@ -392,8 +390,7 @@ static void menu_edit_value(menu_item_id_t id, int delta)
             }
             break;
         case MI_VOLUME: {
-            /* 5% steps, range 0..200% (0.0..2.0 linear). Clamping and the
-             * write to amy_global.volume[] are handled by the setter. */
+            /* 5% steps; the setter clamps and writes amy_global.volume[]. */
             amy_fx_set_master_volume(amy_fx_get_master_volume() + (float)dir * 0.05f);
             break;
         }
@@ -430,12 +427,11 @@ bool synth_ui_menu_is_active(void)
     return seq_state.menu_open;
 }
 
-/* Projects-page rename hooks (see synth_ui.h). The menu overlay owns the page
- * state, so it gates the projects module's rename flag with menu_open +
- * s_projects_page here - both authoritative and reset on menu-open, so a rename
- * left un-committed by a menu-close can never leak onto another screen. The
- * button dispatch and hint bar therefore poll a single, always-coherent
- * predicate. Bodies compile to false/no-op when the project store is off. */
+/* Projects-page rename hooks (see synth_ui.h). The overlay owns the page state,
+ * so it gates the projects module's rename flag with menu_open +
+ * s_projects_page - both reset on menu-open, so an uncommitted rename cannot
+ * leak onto another screen and callers poll one always-coherent predicate.
+ * Compiles to false/no-op when the project store is off. */
 bool synth_ui_menu_rename_active(void)
 {
 #if CONFIG_SYNTH_PROJECT_STORE
@@ -680,7 +676,7 @@ bool synth_ui_menu_handle_button(void)
                         break;
                     case SAMPLE_REC_RECORDING:
                     default:
-                        break;   /* capture runs in the background regardless of the menu */
+                        break;   /* capture runs regardless of the menu */
                 }
                 seq_state.menu_open = false;
                 break;

@@ -44,15 +44,14 @@ volatile bool s_force_redraw = true;
 static volatile bool    s_layer_delete_pending = false;
 static volatile uint8_t s_layer_delete_idx     = 0;
 
-/* Deferred layer-add request, consumed by synth_ui_task each frame.
- * The add path (memset + patch-string parse via amy_send_patch) is too heavy
- * for the esp_timer task's 3584-byte stack — defer it here exactly as delete. */
+/* Deferred layer-add request, consumed by synth_ui_task each frame. The add
+ * path (memset + patch-string parse via amy_send_patch) is too heavy for the
+ * esp_timer task's 3584-byte stack, so it defers here like delete. */
 static volatile bool    s_layer_add_pending    = false;
 
-/* DEBUG: bisect heap corruption inside the init chain. Gated by
- * CONFIG_AMYSYNTH_HEAP_CHECK (menuconfig: Heap Diagnostics); off by default, in
- * which case every checkpoint compiles to nothing. When on, the first
- * "HEAP CORRUPT" line names the exact sub-step that smashed the heap. */
+/* Bisect heap corruption in the init chain. Gated by CONFIG_AMYSYNTH_HEAP_CHECK
+ * (menuconfig: Heap Diagnostics), off by default and compiling to nothing. When
+ * on, the first "HEAP CORRUPT" line names the sub-step that smashed the heap. */
 #if CONFIG_AMYSYNTH_HEAP_CHECK
 #define SEQ_HEAP_CHECK(where) do { \
     if (!heap_caps_check_integrity_all(true)) { \
@@ -74,27 +73,25 @@ static void synth_ui_task(void *pvParameters)
     /* Which top-level view was rendered last frame; a change forces a redraw. */
     ui_view_id_t last_view = UI_VIEW_SEQ;
     for (;;) {
-        /* Coalesced arp re-emit: setters mark the arp dirty; we perform at most
-         * one full re-emit per frame here, collapsing fast encoder edits. */
+        /* Coalesced arp re-emit: setters mark the arp dirty, at most one full
+         * re-emit per frame lands here, collapsing fast encoder edits. */
         arp_core_service();
-        /* Drone: advance the tempo-locked filter sweep + keep the LFO in sync.
-         * Cheap no-op while the drone is disabled. */
+        /* Drone: advance the tempo-locked filter sweep and keep the LFO in
+         * sync. Cheap no-op while the drone is disabled. */
         drone_core_service();
         /* Normal drone: drain its coalesced rebuild (no tick machinery). */
         drone_std_core_service();
         sequencer_core_lfo_service();
         sequencer_core_progression_service();
 #if CONFIG_SYNTH_WIRELESS
-        /* Live voice: 20 Hz software LFO for non-native (patch-string)
+        /* Live voice: 20 Hz software LFO for patch-string (non-native)
          * patches; cheap no-op otherwise. */
         live_play_lfo_service();
 #endif
 
-        /* Drain deferred layer-delete request (must run in synth_ui_task so that
-         * the array compaction is serialized against all other seq_state readers
-         * on Core 0). */
-        /* Ordering: DELETE is drained before ADD so we never add into a slot
-         * that a concurrent delete has not yet freed and compacted. */
+        /* Deferred layer-delete: must run here so the array compaction is
+         * serialized against the other seq_state readers on Core 0. Drained
+         * BEFORE add, so no add lands in a slot delete has not yet freed. */
         if (s_layer_delete_pending) {
             s_layer_delete_pending = false;
             uint8_t del_idx = s_layer_delete_idx;
@@ -115,46 +112,43 @@ static void synth_ui_task(void *pvParameters)
                 if (s_to_layer >= seq_state.num_layers)
                     s_to_layer = (uint8_t)(seq_state.num_layers - 1);
                 /* Drop the Step Trig overlay: after compaction its cached
-                 * (layer,track,step) may point at a different layer's steps. */
+                 * (layer,track,step) may name a different layer's steps. */
                 synth_ui_stepedit_close();
                 ESP_LOGI(TAG_TASK, "UI delete layer L%u (%u layers remain)",
                          del_idx + 1u, seq_state.num_layers);
             }
         }
 
-        /* Drain deferred layer-add request (runs in synth_ui_task, 8192-byte
-         * stack — sized for the patch-string parse's ~3.4 KB inline frame,
-         * which would overflow the esp_timer task's 3584-byte stack and
-         * overflowed this task's former 4096 too). */
+        /* Deferred layer-add: needs this task's 8192-byte stack for the patch
+         * parse's ~3.4 KB inline frame. */
         if (s_layer_add_pending) {
             s_layer_add_pending = false;
-            /* Re-check cap; num_layers may have changed since flag was set. */
+            /* Re-check the cap; num_layers may have moved since the request. */
             if (seq_state.num_layers < MAX_LAYERS) {
                 synth_ui_add_layer(SEQ_LAYER_MELODIC, SEQ_STEPS);
             }
         }
 
 #if CONFIG_SYNTH_PROJECT_STORE
-        /* Execute any project load/save queued by the Projects menu (clicks
-         * run on the button task). Must run here: a load rebuilds layer
-         * topology via core add/delete, which only this task - the single
-         * s_layers applier - may call. After the add/delete drains above so
-         * pending structural edits resolve before a load replaces them. */
+        /* Project load/save queued by the Projects menu (clicks run on the
+         * button task). Must run here: a load rebuilds layer topology via core
+         * add/delete, which only this task - the single s_layers applier - may
+         * call. After the drains above, so pending structural edits resolve
+         * before a load replaces them. */
         projects_menu_service();
 #endif
 
 #if CONFIG_SYNTH_WIRELESS
-        /* Radio session start/stop queued by the Wireless page (clicks run
-         * on the button task). Must run here: NimBLE init/teardown blocks
-         * for a moment and needs this task's 8192-byte stack, and the
-         * session_start hook loads the live slot's patch - both far too
+        /* Radio session start/stop queued by the Wireless page. Must run here:
+         * NimBLE init/teardown blocks briefly and needs this task's 8192-byte
+         * stack, and session_start loads the live slot's patch - both far too
          * heavy for the input path. */
         radio_manager_service();
 #endif
 
         /* Output-level watchdog: peeks the USB ring on this core/task (see
-         * usb_audio_watchdog.h). Compiles to nothing when the Kconfig gate is
-         * off, as do the badge draw and signature mix below. */
+         * usb_audio_watchdog.h). Compiles out with its Kconfig gate, as do the
+         * badge draw and signature mix below. */
         output_wd_poll();
 
         /* Trailing flush for throttled editor live-previews (amp trim), so the
@@ -164,11 +158,11 @@ static void synth_ui_task(void *pvParameters)
         seq_state.current_step =
             sequencer_core_get_current_step(seq_state.active_layer_idx);
         if (s_u8g2) {
-            /* The whole screen/overlay precedence now lives in one place,
-             * synth_ui_active_view(); this task renders whatever it resolves.
-             * signature() builds the active view into vw and returns the FNV
-             * render-gate hash, and the draw below reuses vw — never built
-             * twice. Adding a view is a one-row change in ui_view_table[]. */
+            /* Screen/overlay precedence lives entirely in
+             * synth_ui_active_view(). signature() builds the active view into
+             * vw and returns the FNV render-gate hash; the draw below reuses
+             * vw, never rebuilding it. Adding a view is one row in
+             * ui_view_table[]. */
             ui_view_id_t view = synth_ui_active_view();
             const ui_view_desc_t *desc = &ui_view_table[view];
             ui_view_vw_t vw;
@@ -186,13 +180,12 @@ static void synth_ui_task(void *pvParameters)
 
             if (force || sig != last_sig) {
                 desc->draw(s_u8g2, &vw);
-                /* Persistent button-hint strip: composited into the buffer on
-                 * top of whatever the view above just drew, so no per-screen
-                 * renderer needs to know about it. Every screen's draw_frame
-                 * now only fills the buffer -- it no longer sends -- so this
-                 * is the single physical transfer per redraw. Sending twice
-                 * (once without the hint, once with) used to make the hint
-                 * strip visibly flicker on every redraw, in every UI state. */
+                /* Persistent button-hint strip, composited over whatever the
+                 * view drew, so no per-screen renderer needs to know about it.
+                 * INVARIANT: every screen's draw_frame only FILLS the buffer;
+                 * the single SendBuffer below is the one physical transfer per
+                 * redraw. Sending twice (without the hint, then with) makes the
+                 * strip visibly flicker on every redraw. */
                 if (synth_ui_hint_visible()) {
                     display_hint_draw(s_u8g2, synth_ui_hint_text());
                 }
@@ -210,14 +203,12 @@ static void synth_ui_task(void *pvParameters)
                     u8g2_SetDrawColor(s_u8g2, 1);
                 }
 #if CONFIG_SYNTH_WIRELESS
-                /* BLE session badge: a 5x8 Bluetooth rune - inverted plate
-                 * while a central is connected, bare rune while merely
-                 * advertising. Composited last, so display_badge_draw() can
-                 * read the finished buffer back and place the rune in blank
-                 * top-row pixels only: ui_view_table's badge_x is now just the
-                 * preferred slot, and header text that grows into it pushes
-                 * the badge aside (or off screen) instead of being overdrawn.
-                 * Same fill-only / single-send discipline. */
+                /* BLE session badge: a 5x8 Bluetooth rune, inverted plate while
+                 * a central is connected, bare while merely advertising.
+                 * Composited last so display_badge_draw() can read the finished
+                 * buffer back and place the rune in blank top-row pixels only -
+                 * badge_x is the preferred slot, and header text growing into
+                 * it pushes the badge aside rather than being overdrawn. */
                 if (radio_manager_state() == RADIO_ACTIVE) {
                     display_badge_draw(s_u8g2, ui_view_table[view].badge_x,
                                        radio_manager_connected());
@@ -267,13 +258,13 @@ void synth_ui_init(u8g2_t *u8g2)
     synth_ui_add_layer(SEQ_LAYER_DRUM, SEQ_STEPS);
     SEQ_HEAP_CHECK("ui_init: after add_layer(drum)");
 
-    /* Default pattern: full 4-on-the-floor house groove across all 4 tracks so
-     * the boot loop is immediately musical (was kick+snare only, leaving the hat
-     * and perc tracks silent). Velocity accent/jitter engine adds the groove.
-     *   track 0 kick : every quarter (the "floor")
-     *   track 1 snare: backbeat (beats 2 & 4)
-     *   track 2 hat  : off-beat 8ths ("tss" between the kicks)
-     *   track 3 perc : light syncopation for movement */
+    /* Default pattern: 4-on-the-floor house groove across all 4 tracks so the
+     * boot loop is immediately musical; the velocity accent/jitter engine adds
+     * the feel.
+     *   track 0 kick : every quarter
+     *   track 1 snare: backbeat (2 & 4)
+     *   track 2 hat  : off-beat 8ths
+     *   track 3 perc : light syncopation */
     seq_layer_t *drum = &seq_state.layers[0];
     drum->grid[0][0]  = drum->grid[0][4]  =
     drum->grid[0][8]  = drum->grid[0][12] = true;   /* kick  */
@@ -287,40 +278,34 @@ void synth_ui_init(u8g2_t *u8g2)
     sequencer_core_set_playing(true);
     SEQ_HEAP_CHECK("ui_init: after set_playing");
 
-    /* First melodic layer (default patch, 16 steps). Added HERE, before the
-     * UI task exists: running single-threaded on the main task's stack, before
-     * the applier task is registered, satisfies the single-applier contract
-     * with no cross-task handoff. (Deferring this add into the seq_ui drain
-     * once wedged boot when the patch-string parse overflowed the task's
-     * former 4096-byte stack while holding s_event_mutex + amy_queue_lock;
-     * the stack is 8192 now, but boot-time work has no reason to defer.) */
+    /* First melodic layer. Added HERE, before the UI task exists: running
+     * single-threaded on the main stack, before the applier is registered,
+     * satisfies the single-applier contract with no cross-task handoff. Keep it
+     * here - deferring boot work into the seq_ui drain buys nothing and once
+     * wedged boot on a stack overflow under s_event_mutex + amy_queue_lock. */
     synth_ui_add_layer(SEQ_LAYER_MELODIC, SEQ_STEPS);
     SEQ_HEAP_CHECK("ui_init: after add_layer(melodic)");
 
 #if CONFIG_SYNTH_PROJECT_SELFTEST
-    /* Snapshot round-trip against the boot-default state just built. Must
-     * run HERE - after the boot layers exist, before seq_ui is registered as
-     * the single s_layers applier - because the load phase rebuilds layer
-     * topology and would trip the applier assert from any other task. The
-     * load leaves the transport stopped; restore the boot default. */
+    /* Snapshot round-trip against the boot-default state. Must run HERE -
+     * after the boot layers exist, before seq_ui is registered as the applier -
+     * because the load phase rebuilds layer topology and would trip the applier
+     * assert from any other task. The load leaves the transport stopped. */
     project_snapshot_selftest();
     sequencer_core_set_playing(true);
     seq_state.playing = true;
 #endif
 
     /* Pin to Core 0: the OLED refresh does blocking I2C and is not latency
-     * critical, so keep it off Core 1 where the AMY DSP now runs.
-     * 8192 stack: the deferred Add-Layer drain runs a patch-string load whose
-     * amy_parse_message frame is ~3.4 KB inline on this stack; 4096 could not
-     * absorb it (same intermittent overflow class as encoder/button tasks,
-     * which were restored to 8192 for the same reason). DRAM-preserving
-     * alternative remains the amy_ingest pump task. */
+     * critical, so keep it off Core 1 where the AMY DSP runs. 8192 stack: the
+     * deferred Add-Layer drain runs a patch-string load whose amy_parse_message
+     * frame is ~3.4 KB inline here, which 4096 could not absorb. Re-trim once
+     * the amy_ingest pump moves the parse to its own task. */
     TaskHandle_t ui_task = NULL;
     xTaskCreatePinnedToCore(synth_ui_task, "seq_ui", 8192, NULL, 5, &ui_task, 0);
-    /* From here on this task is the single applier for structural s_layers
-     * edits (it drains s_layer_add_pending/s_layer_delete_pending); debug
-     * builds assert any add/delete_layer from another task. Other contexts
-     * use synth_ui_request_add_layer()/synth_ui_request_delete_to_layer(). */
+    /* From here this task is the single applier for structural s_layers edits;
+     * debug builds assert any add/delete_layer from another task. Other
+     * contexts use synth_ui_request_add_layer()/_delete_to_layer(). */
     sequencer_core_set_layers_applier(ui_task);
     ESP_LOGI(TAG_TASK, "Sequencer UI + Core initialized");
 }
@@ -348,10 +333,9 @@ uint8_t synth_ui_add_layer(seq_layer_type_t type, uint8_t num_steps)
             }
         }
     } else {
-        /* Drums are per-track patches with role-based default pitches. Pull the
-         * actual per-track patch + source note from the core (single source of
-         * truth) so labels and pitch display stay correct as those defaults
-         * evolve — no hardcoded mirror to drift out of sync. */
+        /* Drums are per-track patches with role-based default pitches. Read
+         * both from the core (the single source of truth) rather than mirroring
+         * them here, so labels and pitch display cannot drift. */
         for (int t = 0; t < SEQ_TRACKS; t++) {
             uint8_t note = sequencer_core_get_track_source_note(li, t);
             layer->track_base_note[t] = note;
@@ -369,19 +353,18 @@ uint8_t synth_ui_add_layer(seq_layer_type_t type, uint8_t num_steps)
     return li;
 }
 
-/* Request a melodic layer add. Sets a pending flag consumed by synth_ui_task
- * on its next frame, so the heavy work (memset + patch-string parse) runs on
- * that task's 8192-byte stack rather than the 3584-byte esp_timer task stack.
- * Safe to call from any Core-0 context (esp_timer cb, button handler, etc.). */
+/* Request a melodic layer add. synth_ui_task drains the flag next frame so the
+ * heavy work (memset + patch-string parse) runs on its 8192-byte stack, not the
+ * 3584-byte esp_timer stack. Safe from any Core-0 context. */
 void synth_ui_request_add_layer(void)
 {
     if (seq_state.num_layers >= MAX_LAYERS) return;
     s_layer_add_pending = true;
 }
 
-/* Schedule a delete of the layer currently targeted by the Track Options
- * screen (s_to_layer). Uses a pending flag so array compaction is serialized
- * on Core 0 against all other seq_state readers. */
+/* Schedule a delete of the layer targeted by the Track Options screen
+ * (s_to_layer). The pending flag serializes array compaction on Core 0 against
+ * the other seq_state readers. */
 void synth_ui_request_delete_to_layer(void)
 {
     uint8_t layer_idx = s_to_layer;
@@ -396,8 +379,8 @@ void synth_ui_request_delete_to_layer(void)
 void synth_ui_cycle_active_layer(void)
 {
     if (seq_state.num_layers <= 1) return;
-    /* Close the Step Trig overlay before the cursor moves: it edits the
-     * (layer,track,step) under the old cursor, which is about to change. */
+    /* Close the Step Trig overlay first: it edits the (layer,track,step) under
+     * the cursor that is about to move. */
     synth_ui_stepedit_close();
     seq_state.active_layer_idx =
         (uint8_t)((seq_state.active_layer_idx + 1) % seq_state.num_layers);
@@ -410,11 +393,9 @@ void synth_ui_cycle_active_layer(void)
              ? "drum" : "melodic");
 }
 
-/* Moves the step cursor by `delta` while in edit mode; outside edit mode a
- * bare turn is deliberately a no-op (BPM lives in the main menu only).
- * The cursor walks the current track's steps; running off either end wraps to
- * the adjacent track (and wraps track index too), so a long turn scans the
- * whole grid track-by-track. */
+/* Move the step cursor by `delta` in edit mode; outside it a bare turn is
+ * deliberately a no-op (BPM lives in the main menu only). Running off either
+ * end wraps to the adjacent track, so a long turn scans the whole grid. */
 void synth_ui_handle_encoder(long delta)
 {
     if (delta == 0) return;
@@ -425,30 +406,29 @@ void synth_ui_handle_encoder(long delta)
         int new_step      = (int)seq_state.selected_step + (int)delta;
 
         if (new_step < 0) {
-            /* Walked off the start: jump to the last step of the previous track. */
+            /* Off the start: last step of the previous track. */
             new_step = (int)num_steps - 1;
             seq_state.selected_track =
                 (uint8_t)((seq_state.selected_track + SEQ_TRACKS - 1) % SEQ_TRACKS);
         } else if (new_step >= (int)num_steps) {
-            /* Walked off the end: jump to the first step of the next track. */
+            /* Off the end: first step of the next track. */
             new_step = 0;
             seq_state.selected_track =
                 (uint8_t)((seq_state.selected_track + 1) % SEQ_TRACKS);
         }
         seq_state.selected_step = (uint8_t)new_step;
 
-        /* 32-step layers display 16 steps per page; keep the cursor visible by
-         * selecting the page (0 or 1) that contains the new step. */
+        /* 32-step layers show 16 steps per page: select the page holding the
+         * new step so the cursor stays visible. */
         if (num_steps == SEQ_MAX_STEPS) {
             seq_state.layers[li].step_page = (uint8_t)(new_step / 16);
         }
     }
 }
 
-/* Toggle the grid step under the cursor on/off (and mirror it to the core).
- * Gated on edit_mode like the encoder push, but with no play/pause fallback,
- * so it is safe to bind to a dedicated toggle button: a press outside edit
- * mode does nothing. Returns whether a step was toggled. */
+/* Toggle the grid step under the cursor and mirror it to the core. Gated on
+ * edit_mode like the encoder push but with no play/pause fallback, so it is
+ * safe on a dedicated button. Returns whether a step was toggled. */
 bool synth_ui_toggle_step_at_cursor(void)
 {
     if (!seq_state.edit_mode) return false;
@@ -482,13 +462,11 @@ void synth_ui_set_bpm(uint16_t bpm)
     sequencer_core_set_bpm(bpm);
 }
 
-/* Transposes the selected track's note by `delta` semitones. We read/write the
- * *source* note (the user's raw choice) so repeated nudges accumulate cleanly;
- * the core may quantize it, so we read back the resolved note for display.
- * Melodic tracks scroll a virtual list that wraps at both ends: C1..C7, then
- * the defined chord presets (CH1..CHn) past the top (seq_chords_selector_step)
- * — with no chords defined that is just today's range minus the saturation.
- * Drum tracks keep the plain clamped nudge. */
+/* Transpose the selected track by `delta` semitones. Reads/writes the SOURCE
+ * note (the user's raw choice) so repeated nudges accumulate cleanly, then
+ * reads back the resolved note for display since the core may quantize.
+ * Melodic tracks scroll a wrapping virtual list: C1..C7 then the defined chord
+ * presets (seq_chords_selector_step). Drum tracks take a plain clamped nudge. */
 void synth_ui_adjust_track_note(int delta)
 {
     uint8_t li    = seq_state.active_layer_idx;
@@ -506,8 +484,8 @@ void synth_ui_adjust_track_note(int delta)
         uint8_t new_note = SEQ_CLAMP_U8(note + delta, 0, 127);
         sequencer_core_set_track_midi_note(li, track, new_note);
     }
-    /* Keep display in sync with resolved note after core clamp/quantize
-     * (a chord assignment reads back as its CHn sentinel). */
+    /* Sync display to the resolved note after core clamp/quantize (a chord
+     * assignment reads back as its CHn sentinel). */
     seq_state.layers[li].track_base_note[track] =
         sequencer_core_get_track_midi_note(li, track);
 }

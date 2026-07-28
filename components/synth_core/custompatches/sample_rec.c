@@ -7,9 +7,8 @@
 
 static const char *TAG = "sample_rec";
 
-/* Single runtime PCM slot. Preset number is well clear of the ROM range
- * (pcm_samples = 16 baked-in 808/wavetable entries; pcm.c's memory-preset
- * lookup keys on preset_number directly, so any unused number is safe). */
+/* Single runtime PCM slot. pcm.c's memory-preset lookup keys on preset_number
+ * directly, so any number clear of the baked-in ROM range is safe. */
 #define SAMPLE_REC_PRESET_NUMBER  100u
 #define SAMPLE_REC_SECONDS        1.5f
 #define SAMPLE_REC_LENGTH         ((uint32_t)(SAMPLE_REC_SECONDS * (float)AMY_SAMPLE_RATE))
@@ -41,10 +40,9 @@ bool sample_rec_arm(uint8_t layer_idx, uint8_t track)
         return false;
     }
 
-    /* pcm_load() mutates pcm.c's unlocked memory-preset linked list, which
-     * render_pcm() walks from inside the render body. Take the same lock
-     * add_delta_to_queue() uses so the insert can't race a concurrent
-     * render block (see amy.h's LOCAL EDIT note on amy_grab_lock). */
+    /* pcm_load() mutates pcm.c's unlocked memory-preset list, which
+     * render_pcm() walks inside the render body. Take the same lock
+     * add_delta_to_queue() uses (amy.h LOCAL EDIT note on amy_grab_lock). */
     amy_grab_lock();
     int16_t *buf = pcm_load(SAMPLE_REC_PRESET_NUMBER, SAMPLE_REC_LENGTH,
                             AMY_SAMPLE_RATE, 1, SAMPLE_REC_MIDINOTE, 0, 0);
@@ -87,9 +85,8 @@ bool sample_rec_assign(void)
     if (atomic_load_explicit(&s_state, memory_order_acquire) != SAMPLE_REC_READY) {
         return false;
     }
-    /* Store the override before switching engines: if the layer is currently
-     * in SYNTH mode, sequencer_core_set_drum_engine() below reconfigures every
-     * drum track from scratch and reads this override while doing so. */
+    /* Store the override BEFORE switching engines: set_drum_engine() below
+     * reconfigures every drum track from scratch and reads it while doing so. */
     sequencer_core_set_drum_pcm_preset(s_target_layer, s_target_track,
                                        SAMPLE_REC_PRESET_NUMBER);
     sequencer_core_set_drum_engine(SEQ_DRUM_PCM);
@@ -103,12 +100,10 @@ void sample_rec_cancel(void)
     if (atomic_load_explicit(&s_state, memory_order_acquire) == SAMPLE_REC_IDLE) {
         return;
     }
-    /* Deferred: the actual pcm_unload_preset() + state reset happens on the
-     * render task's own thread (sample_rec_render_tick), never here. Freeing
-     * the buffer from this task while the render task might be mid-write
-     * (RECORDING) would be a cross-core use-after-free; letting the render
-     * task tear down its own capture at a block boundary makes it single-
-     * writer instead. */
+    /* Deferred: pcm_unload_preset() + state reset run on the render task
+     * (sample_rec_render_tick), never here. Freeing the buffer while the
+     * render task may be mid-write would be a cross-core use-after-free;
+     * tearing down at a block boundary keeps it single-writer. */
     atomic_store_explicit(&s_cancel_requested, true, memory_order_release);
 }
 

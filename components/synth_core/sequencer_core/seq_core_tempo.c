@@ -49,8 +49,8 @@ float lfo_rate_to_hz(lfo_rate_t rate, uint16_t bpm)
         case LFO_RATE_1_32T: hz = b / 5.0f;   break;
         default:             hz = b / 240.0f; break;
     }
-    /* Sub-audible ceiling: at high BPM the fastest divisions would cross into
-     * audio-rate AM; cap the frequency rather than hiding rates from pickers. */
+    /* Sub-audible ceiling: at high BPM the fastest divisions cross into
+     * audio-rate AM. Cap rather than hide rates from the pickers. */
     if (hz > SEQ_LFO_NATIVE_MAX_HZ) hz = SEQ_LFO_NATIVE_MAX_HZ;
     return hz;
 }
@@ -85,11 +85,9 @@ void sequencer_core_set_bpm(uint16_t new_bpm)
     sequencer_push_tempo(s_bpm);
     for (int li = 0; li < s_num_layers; li++) {
 #if CONFIG_SEQ_MELODIC_AMY_NATIVE_LFO
-        /* Native-LFO tracks (wave build / bass presets) keep s_lfo_hz == 0:
-         * their AMY carrier is retuned by melodic_lfo_refresh_native_freq()
-         * below, and a nonzero value here would set the 20 Hz software
-         * stepper double-modulating on top of the native carrier (mirrors
-         * sequencer_core_set_melodic_lfo). */
+        /* Native-LFO tracks must keep s_lfo_hz == 0: their carrier is retuned
+         * by melodic_lfo_refresh_native_freq() below, and a nonzero value would
+         * start the software stepper double-modulating on top of it. */
         if (sequencer_core_lfo_native_layout(s_layers[li].patch, NULL, NULL)) continue;
 #endif
         for (int tr = 0; tr < SEQ_TRACKS; tr++) {
@@ -97,14 +95,12 @@ void sequencer_core_set_bpm(uint16_t new_bpm)
                 s_lfo_hz[li][tr] = seq_lfo_sw_hz(s_layers[li].vp[tr].lfo.rate, s_bpm);
         }
     }
-    /* Sync the arp WAVE-mode LFO carrier to the new BPM (no-op when not active). */
+    /* Sync every native LFO carrier to the new BPM (each a no-op when the
+     * owner has none active). */
     arp_core_refresh_lfo_freq();
-    /* Same for the normal drone's native LFO carrier. */
     drone_std_core_refresh_lfo_freq();
-    /* Sync native LFO carriers on all melodic wave-patch tracks. */
     melodic_lfo_refresh_native_freq();
 #if CONFIG_SYNTH_WIRELESS
-    /* And the BLE live voice's carrier (no-op unless authored + wave patch). */
     live_play_refresh_lfo_freq();
 #endif
 }
@@ -114,8 +110,8 @@ uint16_t sequencer_core_get_bpm(void) { return s_bpm; }
 /* ── Public API — quantizer ──────────────────────────────────────────── */
 
 /* An arp in follow-global mode snaps against s_quantizer at emit time, so any
- * change here must re-emit its schedule (coalesced dirty-mark, same path the
- * arp's own setters use). No-op when the arp uses its own scale. */
+ * change here must re-emit its schedule via the same coalesced dirty-mark the
+ * arp's own setters use. No-op when the arp uses its own scale. */
 static void quantizer_changed_refresh_arp(void)
 {
     if (arp_get_follow_quant()) arp_core_mark_dirty();

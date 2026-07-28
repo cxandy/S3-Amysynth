@@ -9,15 +9,15 @@ extern "C" {
 /* Transport-agnostic MIDI byte-stream parser + router.
  *
  * Transports (ble_midi today, usb_midi later) strip their framing and feed
- * plain MIDI bytes here; complete note messages are dispatched to the sink
- * registered by the application. Everything except note-on/note-off is
- * parsed (so running status stays coherent) and dropped.
+ * plain MIDI bytes here; complete note messages go to the application's sink.
+ * Everything except note-on/note-off is parsed (keeping running status
+ * coherent) and dropped.
  *
- * Threading: single producer. Phase 1's only producer is the NimBLE host
- * task; a second transport must either share that task or add its own
- * serialization before calling midi_core_feed(). The sink runs in the
- * producer's context, so it must be cheap and cross-task safe (the live_play
- * sink goes through the bounded amy_helpers event mutex). */
+ * Threading: SINGLE PRODUCER, currently the NimBLE host task. A second
+ * transport must share that task or add its own serialization before calling
+ * midi_core_feed(). The sink runs in the producer's context, so it must be
+ * cheap and cross-task safe (the live_play sink goes through the bounded
+ * amy_helpers event mutex). */
 
 typedef struct {
     void (*note_on)(uint8_t channel, uint8_t note, uint8_t velocity);

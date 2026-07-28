@@ -14,13 +14,10 @@
  * Item model for the Wireless page of the menu overlay (page state and input
  * routing live in ui_screen_menu.c, mirroring the Projects/Chords pages).
  *
- * The BLE MIDI row toggles the radio session. Clicks run on the button task,
- * but NimBLE init/teardown is heavy and must not run there - the click only
- * queues a request via radio_manager_request_start/stop; the actual work
- * happens in radio_manager_service() on the synth_ui task (the same deferred
- * pattern as the Projects page load/save). Status rows re-render every frame
- * through the menu signature, so connect/disconnect updates appear without
- * any extra draw path. */
+ * Clicks run on the button task, where NimBLE init/teardown is too heavy to
+ * run inline: the BLE MIDI row only queues radio_manager_request_start/stop,
+ * and radio_manager_service() does the work on the synth_ui task (same
+ * deferred pattern as the Projects page load/save). */
 
 enum {
     WI_BACK = 0,

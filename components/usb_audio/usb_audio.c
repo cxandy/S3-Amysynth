@@ -22,26 +22,19 @@ static const char *TAG = "usb_audio";
 
 // ~170 ms buffer @ 48 kHz stereo 16-bit → very safe for drum prototyping
 #define RING_BUFFER_SIZE  (32768)   // must be power-of-2 for fast modulo
-// Allocated from PSRAM in usb_audio_init() (64 KB). It used to be a static
-// int16_t[RING_BUFFER_SIZE] in internal DRAM, which alone consumed 64 KB of the
-// scarce internal SRAM (~54 KB free at the time). The buffer is touched at
-// USB-frame / render-block granularity, not in the per-sample DSP inner loop, so
-// PSRAM latency is irrelevant here while the internal-RAM relief is significant.
+// 64 KB, allocated from PSRAM in usb_audio_init(): touched at USB-frame /
+// render-block granularity, never in the per-sample DSP loop, so PSRAM latency
+// is irrelevant while the internal-RAM relief is significant.
 //
-// LOCK-FREE SPSC: there is exactly ONE producer (the AMY render task, Core 1,
-// via usb_audio_write_stereo) and exactly ONE consumer (usb_mic_task, Core 0,
-// via uac_input_cb). The old design guarded the indices with a mutex taken at
-// portMAX_DELAY, which let the lower-priority consumer block the high-priority
-// render task across PSRAM copies (priority inversion on a strict-1:1 5333 us
-// budget). With single-producer/single-consumer we drop the mutex entirely:
-//   - s_write_idx is WRITER-owned: only the producer stores it; the consumer
-//     only loads it.
-//   - s_read_idx is READER-owned: only the consumer stores it; the producer
-//     only loads it.
-// Each side publishes its own index with release ordering AFTER its data copy
-// and loads the other side's index with acquire ordering BEFORE its copy, so a
-// reader never observes an advanced s_write_idx before the samples it points to
-// are committed to PSRAM (and vice-versa for free-slot accounting).
+// LOCK-FREE SPSC, no mutex (a mutex here let the lower-priority consumer block
+// the render task across PSRAM copies on a strict-1:1 5333 us budget). Exactly
+// ONE producer (AMY render task, Core 1, usb_audio_write_stereo) and ONE
+// consumer (usb_mic_task, Core 0, uac_input_cb):
+//   - s_write_idx is WRITER-owned: only the producer stores it.
+//   - s_read_idx is READER-owned: only the consumer stores it.
+// Each side publishes its own index release-ordered AFTER its data copy and
+// acquire-loads the other's BEFORE its copy, so an advanced index is never
+// observed before the samples it points to are committed.
 static int16_t *s_ring_buffer = NULL;
 static _Atomic size_t s_write_idx = 0;   // writer-owned (producer)
 static _Atomic size_t s_read_idx  = 0;   // reader-owned (consumer)
@@ -72,12 +65,11 @@ static uint32_t s_underrun_events = 0;
 #endif
 
 #if CONFIG_OUTPUT_WATCHDOG
-// Third-party PEEK reader (output-level watchdog, UI task on Core 0). Does not
-// participate in the SPSC index protocol: it never stores either index, only
-// acquire-loads s_write_idx so every sample behind it is committed. The region
-// [w - n, w) is the most recently produced audio; the producer cannot rewrite
-// it until the write index wraps the entire ring (~170 ms), so a short scan at
-// UI cadence cannot observe torn data.
+// Third-party PEEK reader (output-level watchdog, UI task on Core 0). Outside
+// the SPSC protocol: never stores an index, only acquire-loads s_write_idx so
+// everything behind it is committed. The producer cannot rewrite [w - n, w)
+// until the index wraps the whole ring (~170 ms), so a short scan at UI cadence
+// cannot see torn data.
 bool usb_audio_peek_levels(size_t n_samples, int32_t *peak_abs,
                            int32_t *mean_abs, size_t *write_idx)
 {
@@ -124,9 +116,9 @@ static esp_err_t uac_input_cb(uint8_t *buf, size_t len, size_t *bytes_read, void
         return ESP_OK;
     }
 
-    // Consumer liveness + flush-on-resume. The consumer owns s_read_idx, so it
-    // may legally advance it to s_write_idx to discard stale buffered audio when
-    // the host resumes after a gap (so playback starts fresh, not 200 ms late).
+    // Flush-on-resume: the consumer owns s_read_idx, so it may advance it to
+    // s_write_idx to discard audio buffered during a host gap - playback starts
+    // fresh instead of 200 ms late.
     uint32_t now = xTaskGetTickCount();
     uint32_t last = atomic_load_explicit(&s_last_consumed_tick, memory_order_relaxed);
     if (last != 0 && (now - last) > pdMS_TO_TICKS(USB_AUDIO_CONSUMER_TIMEOUT_MS)) {
@@ -135,8 +127,8 @@ static esp_err_t uac_input_cb(uint8_t *buf, size_t len, size_t *bytes_read, void
     }
     atomic_store_explicit(&s_last_consumed_tick, now, memory_order_relaxed);
 
-    // CONSUMER side (single reader). s_read_idx is ours to advance; we acquire
-    // s_write_idx so every sample below [read, write) is guaranteed committed.
+    // CONSUMER side. s_read_idx is ours to advance; acquire s_write_idx so all
+    // of [read, write) is guaranteed committed.
     size_t read_idx = atomic_load_explicit(&s_read_idx, memory_order_relaxed);
     size_t write_idx = atomic_load_explicit(&s_write_idx, memory_order_acquire);
 
@@ -160,8 +152,7 @@ static esp_err_t uac_input_cb(uint8_t *buf, size_t len, size_t *bytes_read, void
                (samples_to_copy - first) * sizeof(int16_t));
     }
 
-    // Publish the advanced read index with release ordering so the producer
-    // only sees the slots freed after the copy above has completed.
+    // Release-store: the producer sees the slots freed only after the copy.
     atomic_store_explicit(&s_read_idx,
                           (read_idx + samples_to_copy) % RING_BUFFER_SIZE,
                           memory_order_release);
@@ -190,7 +181,6 @@ esp_err_t usb_audio_init(void)
 {
     if (s_initialized) return ESP_OK;
 
-    // 64 KB ring buffer in PSRAM (was a static array in internal DRAM).
     s_ring_buffer = heap_caps_malloc(RING_BUFFER_SIZE * sizeof(int16_t),
                                      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (s_ring_buffer == NULL) {
@@ -198,8 +188,8 @@ esp_err_t usb_audio_init(void)
                  (unsigned)(RING_BUFFER_SIZE * sizeof(int16_t)));
         return ESP_ERR_NO_MEM;
     }
-    // Zero the ring so neither a level peek nor the host's first read can ever
-    // observe uninitialized PSRAM as (loud) audio.
+    // Zero the ring: a level peek or the host's first read must never see
+    // uninitialized PSRAM as (loud) audio.
     memset(s_ring_buffer, 0, RING_BUFFER_SIZE * sizeof(int16_t));
 
     atomic_store_explicit(&s_write_idx, 0, memory_order_relaxed);
@@ -244,18 +234,16 @@ esp_err_t usb_audio_write_stereo(const int16_t *data, size_t num_frames)
     s_write_calls++;   // producer-owned counter
 #endif
 
-    // PRODUCER side (single writer). s_write_idx is ours to advance; we acquire
-    // s_read_idx so the free-slot count reflects everything the consumer has
-    // already drained.
+    // PRODUCER side. s_write_idx is ours to advance; acquire s_read_idx so the
+    // free-slot count reflects everything the consumer already drained.
     size_t write_idx = atomic_load_explicit(&s_write_idx, memory_order_relaxed);
     size_t read_idx  = atomic_load_explicit(&s_read_idx, memory_order_acquire);
 
     size_t free_slots = (read_idx - write_idx - 1 + RING_BUFFER_SIZE) % RING_BUFFER_SIZE;
 
-    // ALL-OR-NOTHING: if the whole block does not fit we write nothing and
-    // report the drop. A partial write would splice a half-block against the
-    // next full block and mangle the waveform; a clean whole-block gap is
-    // absorbed by the ~170 ms buffer / host resync instead.
+    // ALL-OR-NOTHING: a partial write would splice a half-block against the
+    // next full block and mangle the waveform. A whole-block gap is absorbed
+    // by the ~170 ms buffer / host resync instead.
     if (unlikely(samples > free_slots)) {
 #if CONFIG_USB_AUDIO_DIAGNOSTICS
         s_write_drop_events++;
@@ -267,9 +255,8 @@ esp_err_t usb_audio_write_stereo(const int16_t *data, size_t num_frames)
     int16_t local_peak = 0;
 #endif
 
-    // Copy the block into the ring with wrap-around (two memcpys, no per-sample
-    // index churn). The producer is the sole writer of these slots, so this is
-    // safe before publishing the new write index.
+    // Copy with wrap-around. The producer is the sole writer of these slots, so
+    // this is safe before publishing the new write index.
     size_t first = RING_BUFFER_SIZE - write_idx;
     if (first > samples) first = samples;
     memcpy(&s_ring_buffer[write_idx], data, first * sizeof(int16_t));
@@ -290,8 +277,8 @@ esp_err_t usb_audio_write_stereo(const int16_t *data, size_t num_frames)
     }
 #endif
 
-    // Publish the advanced write index with release ordering so the consumer
-    // only observes it after all sample stores above are committed to PSRAM.
+    // Release-store: the consumer observes it only after the sample stores are
+    // committed to PSRAM.
     atomic_store_explicit(&s_write_idx,
                           (write_idx + samples) % RING_BUFFER_SIZE,
                           memory_order_release);
@@ -310,9 +297,8 @@ esp_err_t usb_audio_write_mono(const int16_t *data, size_t num_samples)
 {
     if (!s_initialized || !data || num_samples == 0) return ESP_ERR_INVALID_STATE;
 
-    // Expand to interleaved stereo on the stack and hand off in one all-or-
-    // nothing, lock-free write (the old version called write_stereo once PER
-    // sample). Chunked so the stack frame stays small for arbitrary lengths.
+    // Expand to interleaved stereo on the stack, chunked so the frame stays
+    // small for arbitrary lengths.
     int16_t frames[128 * 2];
     const size_t chunk = 128;
     for (size_t off = 0; off < num_samples; off += chunk) {
@@ -340,9 +326,8 @@ void usb_audio_diag_get_snapshot(usb_audio_diag_snapshot_t *snapshot)
         return;
     }
 
-    // Lock-free, advisory read. fill_samples is a momentary estimate; the diag
-    // counters are each written by a single owner task so plain reads here are
-    // race-tolerant (we only ever lose/gain one update, never corrupt state).
+    // Advisory only. Each diag counter has a single owner task, so a plain read
+    // can lose/gain one update but never corrupt state.
     snapshot->fill_samples = usb_audio_fill_samples_relaxed();
 #if CONFIG_USB_AUDIO_DIAGNOSTICS
     snapshot->peak_fill_samples = s_peak_fill_samples;
@@ -360,8 +345,7 @@ void usb_audio_diag_reset(void)
         return;
     }
 
-    // Best-effort reset; producer/consumer may race a single increment, which
-    // is harmless for advisory diagnostics.
+    // Best-effort; racing a single increment is harmless for advisory diags.
     s_write_calls = 0;
     s_write_drop_events = 0;
     s_underrun_events = 0;

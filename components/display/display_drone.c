@@ -2,9 +2,8 @@
 #include "seq_clamp.h"
 #include <stdio.h>
 
-/* Layout mirrors the menu overlay: a yellow header bar (rows 0..15) with the
- * title, then up to 3 roomy rows in the blue region below the 16px seam.
- * 128x64 OLED. */
+/* Layout mirrors the menu overlay: yellow header bar (rows 0..15) with the
+ * title, then up to 3 rows in the blue region below the 16px seam. */
 #define DRONE_TITLE_Y    8
 #define DRONE_ROW_H      12
 #define DRONE_FIRST_ROW  25
@@ -62,8 +61,7 @@ void display_drone_draw_frame_titled(u8g2_t *u8g2, const char *title,
         }
     }
 
-    /* Scroll-position arrows in the yellow header (right side) — kept clear of
-     * the yellow/blue seam and the bottom hint strip. ▲ above, ▼ below. */
+    /* Scroll arrows in the yellow header, clear of the seam and hint strip. */
     if (first > 0) {
         u8g2_DrawTriangle(u8g2, 112, 2, 108, 8, 116, 8);
     }
@@ -79,9 +77,9 @@ void display_drone_draw_frame(u8g2_t *u8g2, const drone_view_t *view)
 
 /* ── Drone visualiser overlay ───────────────────────────────────────────────
  *
- * 128×64 layout (dual-colour panel: rows 0..15 yellow, 16..63 blue). The
- * drone-vis screen has no bottom hint strip, so the blue region runs to row 63.
- * Every section sits below the 16px seam; the Q needle rises at most to row 16.
+ * 128x64 dual-colour panel (rows 0..15 yellow, 16..63 blue). No bottom hint
+ * strip here, so the blue region runs to row 63. Every section sits below the
+ * 16px seam; the Q needle rises at most to row 16.
  *
  *  Y  0- 8  Title "DRONE VIS"   +   rate + sweep speed right-aligned  (yellow)
  *  Y 15     Divider line on the yellow/blue seam
@@ -92,9 +90,8 @@ void display_drone_draw_frame(u8g2_t *u8g2, const drone_view_t *view)
  *  Y 45-60  PAT    8 step squares; gate fill height per active step
  */
 
-/* Clamp a float to [0,1]. Delegates to seq_clamp_f32 so a NaN degrades to 0.0f
- * instead of propagating into the pixel arithmetic, and so the display shares
- * one clamping semantic with the rest of the tree. */
+/* Clamp to [0,1] via seq_clamp_f32 so a NaN degrades to 0.0f instead of
+ * propagating into the pixel arithmetic. */
 static inline float vis_clamp01(float v)
 {
     return SEQ_CLAMP_F32(v, 0.0f, 1.0f);

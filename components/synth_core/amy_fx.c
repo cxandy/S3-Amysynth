@@ -1,9 +1,7 @@
-/* amy_fx.c — Global FX cache and master volume for the AMY synthesizer.
- *
- * Holds the cached state for AMY's global effect bus (EQ, echo, chorus,
- * reverb) and the master output volume.  Extracted from synth_ui.c so that
+/* amy_fx.c - cached state for AMY's global effect bus (EQ, echo, chorus,
+ * reverb) plus the master output volume. Kept out of synth_ui.c so the
  * sequencer/arp/drone cores can call synth_ui_fx_reassert_global() without
- * taking a dependency on the UI headers (u8g2, display_*). */
+ * depending on the UI headers (u8g2, display_*). */
 
 #include "amy_fx.h"
 #include "amy.h"
@@ -30,9 +28,9 @@ fx_state_t s_fx = {
     .echo_level          = CONFIG_SEQ_FX_DEFAULT_ECHO,
     .chorus_level        = CONFIG_SEQ_FX_DEFAULT_CHORUS,
     .reverb_level        = CONFIG_SEQ_FX_DEFAULT_REVERB,
-    /* Extended params start UNSET so AMY keeps its factory character until the
-     * user edits them. This is load-bearing: designated-init would otherwise
-     * zero these, and 0 liveness/damping would silently mangle the reverb. */
+    /* Extended params start UNSET so AMY keeps its factory character until
+     * edited. Load-bearing: designated-init would zero these, and 0
+     * liveness/damping silently mangles the reverb. */
     .echo_delay_ms   = FX_PARAM_UNSET,
     .echo_feedback   = FX_PARAM_UNSET,
     .echo_tone       = FX_PARAM_UNSET,
@@ -45,8 +43,8 @@ fx_state_t s_fx = {
 };
 
 /* ── Master volume ──────────────────────────────────────────────────────── */
-/* Range 0..2.0, unity=1.0.  Default matches AMY's own init (amy_start sets
- * amy_global.volume[bus]=1.0f), so no explicit push is needed at boot. */
+/* Range 0..2.0, unity=1.0. Matches AMY's own init (amy_start sets
+ * amy_global.volume[bus]=1.0f), so no push is needed at boot. */
 static float s_master_volume = 1.0f;
 
 /* ── FX push helpers ────────────────────────────────────────────────────── */
@@ -63,8 +61,8 @@ void fx_push_echo(void)
 {
     amy_event *e = amy_helpers_event_begin();
     e->echo_level = (float)s_fx.echo_level / 100.0f;
-    /* Only touch sub-params the user has set; unset ones stay AMY_UNSET in the
-     * event so config_echo keeps the bus's current value. */
+    /* Only send sub-params the user has set; unset ones stay AMY_UNSET so
+     * config_echo keeps the bus's current value. */
     if (s_fx.echo_delay_ms != FX_PARAM_UNSET)
         e->echo_delay_ms   = (float)s_fx.echo_delay_ms;
     if (s_fx.echo_feedback != FX_PARAM_UNSET)
@@ -100,16 +98,13 @@ void fx_push_reverb(void)
 
 /* ── Public API ─────────────────────────────────────────────────────────── */
 
-/* Re-impose the cached global FX after a patch load so a synth's preset
- * cannot hijack the shared EQ/chorus/echo/reverb.  No-op when the user has
- * opted into letting presets drive global FX.  Safe to call from the
- * sequencer/arp/drone task contexts: each fx_push_* serialises through the
- * shared amy_helpers mutex.
+/* Re-impose the cached global FX after a patch load so a preset cannot hijack
+ * the shared EQ/chorus/echo/reverb. No-op when the user opted into letting
+ * presets drive global FX. Safe from the sequencer/arp/drone task contexts:
+ * each fx_push_* serialises through the shared amy_helpers mutex.
  *
- * Cost is four queued events per patch change (a rare, user-driven action)
- * and zero in the render loop.  The reassert events are queued AFTER the
- * patch's own FX deltas, so they win; both drain in the same render quantum
- * on Core 1, so there is no audible blip. */
+ * These events are queued AFTER the patch's own FX deltas, so they win, and
+ * both drain in the same render quantum - no audible blip. */
 void synth_ui_fx_reassert_global(void)
 {
     if (s_fx.presets_alter_global) return;
@@ -123,10 +118,8 @@ void amy_fx_set_master_volume(float v)
 {
     v = SEQ_CLAMP_F32(v, 0.0f, 2.0f);
     s_master_volume = v;
-    /* Write directly to amy_global.volume[] — an aligned float store,
-     * atomic on Xtensa.  Called from synth_ui_task (not the render body),
-     * so the AMY locking rule (no add_delta_to_queue inside the locked
-     * render loop) is satisfied. */
+    /* Direct write to amy_global.volume[]: an aligned float store, atomic on
+     * Xtensa. Called from synth_ui_task, never the render body. */
     for (int b = 0; b < AMY_NUM_BUSES; b++) {
         amy_global.volume[b] = v;
     }

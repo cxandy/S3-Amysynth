@@ -11,17 +11,15 @@ chord_progression_t s_prog = {
     .enabled = false,
 };
 
-/* Set by input-task entry points (encoder_task / button callback) that change
- * chord state; consumed once per tick by sequencer_core_progression_service()
- * which runs in synth_ui_task. This makes synth_ui_task the SINGLE task that
- * calls chord_progression_apply_current() -> sequencer_refresh_melodic_layers()
- * -> AMY emit, so progression/manual-chord edits never race the periodic
- * advance or each other across tasks. */
+/* Set by input-task entry points that change chord state, consumed once per
+ * tick by sequencer_core_progression_service() on synth_ui_task. That makes
+ * synth_ui_task the SINGLE task calling chord_progression_apply_current(), so
+ * chord edits never race the periodic advance or each other. */
 volatile bool s_prog_apply_pending = false;
 
-/* Companion to s_prog_apply_pending: set alongside it when the apply is a
- * correction (play-start re-sync) rather than a musical edit, so it bypasses
- * the BAR launch-quantize hold and lands on the next service tick. */
+/* Set alongside s_prog_apply_pending when the apply is a correction (play-start
+ * re-sync) rather than a musical edit, so it bypasses the BAR
+ * launch-quantize hold and lands on the next service tick. */
 volatile bool s_prog_apply_immediate = false;
 
 /* BAR launch mode: bar index at which a held pending apply was armed;
@@ -43,13 +41,13 @@ static uint8_t chord_type_to_scale_index(chord_type_t ct)
         case CHORD_MAJ7: return 1;
         case CHORD_MIN7: return 3;  /* Dorian has the natural 6 common in min7 contexts */
         case CHORD_DOM7: return 6;  /* Mixolydian */
-        case CHORD_SUS2: return 8;  /* Major Pentatonic — open, no 3rd */
+        case CHORD_SUS2: return 8;  /* Major Pentatonic - open, no 3rd */
         case CHORD_SUS4: return 8;
-        case CHORD_DIM:  return 10; /* Locrian — its b5 IS the chord tone; Phrygian's
-                                       natural 5 clashed a semitone against it */
-        case CHORD_AUG:  return 11; /* Whole Tone — contains the #5; Lydian's
-                                       natural 5 clashed the same way */
-        case CHORD_MIN9: return 3;  /* Dorian — same family as min7 */
+        case CHORD_DIM:  return 10; /* Locrian - its b5 IS the chord tone; a
+                                       natural 5 clashes a semitone against it */
+        case CHORD_AUG:  return 11; /* Whole Tone - contains the #5, same
+                                       natural-5 clash otherwise */
+        case CHORD_MIN9: return 3;  /* Dorian - same family as min7 */
         case CHORD_MAJ9: return 1;  /* Major */
         default:         return 1;
     }
@@ -70,9 +68,8 @@ void chord_progression_apply_current(void)
     }
     sequencer_refresh_melodic_layers(false);
 
-    /* Drive arp root + scale to match the new chord, capturing the user's own
-     * values the first time the progression takes over. Restored when the
-     * progression is disabled so a session never permanently clobbers them. */
+    /* Drive arp root + scale to the new chord, capturing the user's own values
+     * the first time the progression takes over; disable restores them. */
     if (!s_prog.arp_saved) {
         s_prog.saved_arp_root  = arp_get_root_note();
         s_prog.saved_arp_scale = arp_get_scale();
@@ -82,19 +79,16 @@ void chord_progression_apply_current(void)
     arp_set_scale(chord_type_to_scale_index(e->chord_type));
 }
 
-/* Called from synth_ui_task at 20 Hz. This is the SINGLE task that emits chord
- * changes to AMY: it both (a) drains s_prog_apply_pending, which input-task entry
- * points (encoder_task / button callback) set after mutating chord state, and
- * (b) advances the progression when the current entry expires. Funnelling every
- * chord_progression_apply_current() / sequencer_refresh_melodic_layers() emit
- * through this one task means edits never race the periodic advance or each other
- * across tasks — no lock needed because there is only one writer of the emit. */
+/* Called from synth_ui_task at 20 Hz - the SINGLE task that emits chord changes
+ * to AMY. It drains s_prog_apply_pending (set by input tasks after mutating
+ * chord state) and advances the progression when the current entry expires.
+ * Funnelling every emit through one task removes the need for a lock: there is
+ * only one writer. */
 void sequencer_core_progression_service(void)
 {
-    /* Drain deferred chord applies first, regardless of playing/enabled state.
-     * In BAR launch mode a musical edit is held until the next bar line while
-     * playing; corrections (s_prog_apply_immediate) and drains while stopped
-     * bypass the hold. */
+    /* Drain deferred applies first, regardless of playing/enabled state. In BAR
+     * launch mode a musical edit holds until the next bar line while playing;
+     * corrections and drains while stopped bypass the hold. */
     if (s_prog_apply_pending) {
         bool drain_now = true;
         if (s_prog.apply_at_bar && s_playing && !s_prog_apply_immediate) {
@@ -109,10 +103,9 @@ void sequencer_core_progression_service(void)
             if (s_prog.enabled && s_prog.count > 0) {
                 chord_progression_apply_current();
             } else {
-                /* Disabled (or empty): layers already had chord_mode cleared by
-                 * the caller, or a manual per-layer chord was set/cleared;
-                 * re-resolve all melodic layers against their own current
-                 * chord/scale state. */
+                /* Disabled or empty: the caller already cleared chord_mode, or
+                 * a manual per-layer chord changed. Re-resolve every melodic
+                 * layer against its own chord/scale state. */
                 sequencer_refresh_melodic_layers(false);
             }
         }
@@ -123,15 +116,15 @@ void sequencer_core_progression_service(void)
     if (!s_prog.enabled || s_prog.count == 0 || !s_playing) return;
 
     uint32_t bars = sequencer_bars_elapsed();
-    /* Mid-session anchors point at the NEXT bar line (entry_start_bar = bars+1);
-     * the unsigned subtraction below would wrap huge until that line passes. */
+    /* Mid-session anchors point at the NEXT bar line (entry_start_bar = bars+1),
+     * and the unsigned subtraction below would wrap until it passes. */
     if (bars < s_prog.entry_start_bar) return;
     const chord_prog_entry_t *e = &s_prog.entries[s_prog.current];
 
     if (bars - s_prog.entry_start_bar >= e->duration_bars) {
         uint8_t next = (uint8_t)((s_prog.current + 1) % s_prog.count);
         s_prog.current = next;
-        /* Advance by the expiring entry's duration (never "= bars"): a service
+        /* Advance by the expiring entry's duration, never "= bars": a service
          * stall longer than a bar then catches up over successive ticks instead
          * of permanently shifting the form. */
         s_prog.entry_start_bar += e->duration_bars;
@@ -149,21 +142,22 @@ void sequencer_core_progression_set_enabled(bool en)
     if (en && s_prog.count > 0) {
         /* The chord applies now (or at the next bar line in BAR mode), but its
          * duration window counts from the NEXT bar line, so a mid-bar enable
-         * still gives the first entry its full duration (the partial bar is a
-         * free lead-in). The service guards bars < entry_start_bar. */
+         * still gives the first entry its full duration - the partial bar is a
+         * free lead-in, which the service's bars < entry_start_bar guard
+         * covers. */
         s_prog.current = 0;
         s_prog.entry_start_bar = sequencer_bars_elapsed() + 1;
         /* Defer the AMY emit to the service tick (single-applier). */
         s_prog_apply_pending = true;
     } else if (!en) {
-        /* Disable chord mode on all melodic layers so they return to scale
-         * quantizer; defer the re-resolve emit to the service tick. */
+        /* Drop chord mode everywhere so layers return to the scale quantizer;
+         * the re-resolve emit is deferred to the service tick. */
         for (uint8_t li = 0; li < s_num_layers; li++) {
             s_layers[li].chord_mode = false;
         }
-        /* Return the arp to the user's pre-progression root/scale. State-only
-         * setters (the arp marks itself dirty; the re-emit happens in
-         * arp_core_service on the UI task), so single-applier holds. */
+        /* Return the arp to the user's pre-progression root/scale. These are
+         * state-only setters - the arp marks itself dirty and arp_core_service
+         * re-emits on the UI task - so the single-applier rule holds. */
         if (s_prog.arp_saved) {
             arp_set_root_note(s_prog.saved_arp_root);
             arp_set_scale(s_prog.saved_arp_scale);
@@ -175,9 +169,9 @@ void sequencer_core_progression_set_enabled(bool en)
 
 bool sequencer_core_progression_get_enabled(void) { return s_prog.enabled; }
 
-/* arp_saved is set on the first chord apply (when the user's own root/scale
- * are captured) and cleared when disable restores them — exactly the window
- * in which the arp's root/scale hold progression chords, not user values. */
+/* arp_saved spans exactly the window in which the arp's root/scale hold
+ * progression chords rather than user values: set on the first chord apply,
+ * cleared when disable restores them. */
 bool sequencer_core_progression_arp_owned(void) { return s_prog.arp_saved; }
 
 /* Launch quantization: false = chord applies land on the next service tick
@@ -194,8 +188,8 @@ bool sequencer_core_progression_get_apply_at_bar(void)
 
 /* Drop the captured pre-progression arp root/scale WITHOUT restoring it.
  * Project load calls this before applying the loaded progression state: the
- * arp values just loaded from the snapshot are the new user baseline, and a
- * stale capture from the pre-load session must not be restored over them. */
+ * snapshot's arp values are the new baseline, so a capture from the pre-load
+ * session must not be restored over them. */
 void sequencer_core_progression_reset_arp_capture(void)
 {
     s_prog.arp_saved = false;
@@ -206,17 +200,16 @@ void sequencer_core_progression_set_entry(uint8_t idx, uint8_t root,
                                           uint8_t duration_bars)
 {
     if (idx >= CHORD_PROG_MAX_ENTRIES) return;
-    /* Refuse holes: idx == count appends, anything past that would legalize the
-     * zero-filled entries in between (duration_bars 0 -> the service would
-     * advance through them every tick, a 20 Hz chord strobe). */
+    /* Refuse holes: idx == count appends, anything past that legalizes the
+     * zero-filled entries in between, whose duration_bars 0 would make the
+     * service advance every tick - a 20 Hz chord strobe. */
     if (idx > s_prog.count) return;
     s_prog.entries[idx].root          = root % 12;
     s_prog.entries[idx].chord_type    = (chord_type < CHORD_TYPE_COUNT)
                                         ? chord_type : CHORD_MAJ;
     s_prog.entries[idx].duration_bars = (duration_bars > 0) ? duration_bars : 4;
     if (idx >= s_prog.count) s_prog.count = (uint8_t)(idx + 1);
-    /* If we edited the live (currently playing) entry, defer a re-apply so the
-     * audible chord tracks the edit. */
+    /* Editing the live entry defers a re-apply so the audible chord follows. */
     if (s_prog.enabled && idx == s_prog.current) s_prog_apply_pending = true;
 }
 
@@ -224,8 +217,8 @@ void sequencer_core_progression_get_entry(uint8_t idx, uint8_t *root,
                                           chord_type_t *chord_type,
                                           uint8_t *duration_bars)
 {
-    /* Safe defaults first: an out-of-range idx must not leave the caller's
-     * (possibly uninitialized) locals unwritten. */
+    /* Defaults first: an out-of-range idx must not leave the caller's
+     * (possibly uninitialised) locals unwritten. */
     if (root)          *root          = 0;
     if (chord_type)    *chord_type    = CHORD_MAJ;
     if (duration_bars) *duration_bars = 1;
@@ -239,9 +232,8 @@ void sequencer_core_progression_set_count(uint8_t count)
 {
     if (count > CHORD_PROG_MAX_ENTRIES) count = CHORD_PROG_MAX_ENTRIES;
     s_prog.count = count;
-    /* If the active entry fell out of range, wrap to 0, restart its bar window
-     * (counting from the next bar line, matching the enable anchor), and
-     * re-apply so the audible chord follows the new active entry. */
+    /* An active entry that fell out of range wraps to 0, restarts its bar
+     * window from the next bar line (same anchor as enable) and re-applies. */
     if (s_prog.current >= s_prog.count && s_prog.count > 0) {
         s_prog.current = 0;
         s_prog.entry_start_bar = sequencer_bars_elapsed() + 1;
@@ -253,11 +245,11 @@ uint8_t sequencer_core_progression_get_count(void) { return s_prog.count; }
 uint8_t sequencer_core_progression_get_current(void) { return s_prog.current; }
 uint8_t sequencer_core_progression_get_max(void) { return CHORD_PROG_MAX_ENTRIES; }
 
-/* Bars elapsed within the currently-playing entry (0-based), for the UI status bar. */
+/* Bars elapsed within the current entry (0-based), for the UI status bar. */
 uint8_t sequencer_core_progression_bars_in_current(void)
 {
-    /* Ticks are monotonic through stop, so without this gate the counter keeps
-     * climbing (and uint8-wraps) while the sequencer is paused. */
+    /* Ticks are monotonic through stop, so without this gate the counter would
+     * keep climbing (and uint8-wrap) while paused. */
     if (!s_playing) return 0;
     if (!s_prog.enabled || s_prog.count == 0) return 0;
     uint32_t bars = sequencer_bars_elapsed();
@@ -265,11 +257,10 @@ uint8_t sequencer_core_progression_bars_in_current(void)
     return (uint8_t)(bars - s_prog.entry_start_bar);
 }
 
-/* Append a default entry (Cmaj) if room remains. Returns true on success.
- * Convenience: the Nth chord defaults to an N-bar duration (1st=1b, 2nd=2b, …),
- * so a fresh progression staircases 1/2/3/4 bars without manual editing. Beyond
- * the 4th entry the duration clamps to 4 bars — 5/6/7 aren't in the selectable
- * duration set {1,2,3,4,8,16}, and the user still edits any of these by hand. */
+/* Append a default entry (Cmaj) if room remains. The Nth chord defaults to an
+ * N-bar duration so a fresh progression staircases 1/2/3/4 bars; past the 4th
+ * it clamps to 4, since 5/6/7 are not in the selectable duration set
+ * {1,2,3,4,8,16}. */
 bool sequencer_core_progression_add_entry(void)
 {
     if (s_prog.count >= CHORD_PROG_MAX_ENTRIES) return false;
@@ -290,13 +281,13 @@ void sequencer_core_progression_delete_entry(uint8_t idx)
         s_prog.entries[i] = s_prog.entries[i + 1];
     }
     s_prog.count--;
-    /* Fix up the active index/window if it was at or past the deletion point. */
+    /* Fix the active index/window if it was at or past the deletion point. */
     bool active_changed = false;
     if (s_prog.current == idx) {
         if (s_prog.current >= s_prog.count) s_prog.current = 0;
         active_changed = true;
     } else if (s_prog.current > idx) {
-        s_prog.current--;   /* same entry, new slot — no audible change */
+        s_prog.current--;   /* same entry, new slot - no audible change */
     }
     if (active_changed) {
         s_prog.entry_start_bar = sequencer_bars_elapsed() + 1;

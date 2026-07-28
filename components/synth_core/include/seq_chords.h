@@ -1,19 +1,18 @@
 #pragma once
 
 /* ── Chord presets ─────────────────────────────────────────────────────────
- * A small global table of user-authored chords (absolute MIDI pitches) that
- * melodic tracks can play instead of a single note. Assignment rides the
- * existing per-track source-note path: values SEQ_CHORD_BASE..+SLOTS-1 in
- * s_track_source_note / track_base_note / step_note[] are sentinels meaning
- * "play chord slot N", passing through sequencer_resolve_track_note()
- * untouched. Expansion to real pitches happens at emit time (the decorated
- * one-shot path in seq_core_trig.c), where the global chord progression's
- * transpose offset is applied per fire — intervals are preserved, chord tones
- * are never individually re-quantized.
+ * A global table of user-authored chords (absolute MIDI pitches) that melodic
+ * tracks can play instead of a single note. Assignment rides the per-track
+ * source-note path: SEQ_CHORD_BASE..+SLOTS-1 in track_base_note / step_note[]
+ * are sentinels meaning "play chord slot N", passing through
+ * sequencer_resolve_track_note() untouched. Expansion to real pitches happens
+ * at emit time (the decorated one-shot path in seq_core_trig.c), where the
+ * progression's transpose offset is applied per fire - intervals preserved,
+ * chord tones never individually re-quantized.
  *
  * The sentinel range starts at 200 so 97..199 stays free for future sentinel
- * families and chord values read distinctly in dumps. step_note is uint8_t;
- * the playable range tops out at SEQ_MEL_NOTE_MAX (96). */
+ * families; step_note is uint8_t and the playable range tops out at
+ * SEQ_MEL_NOTE_MAX (96). */
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -36,11 +35,10 @@ typedef struct {
     uint8_t count;                       /* 0 = preset undefined */
 } seq_chord_t;
 
-/* Table accessors. set() normalizes (drops zero/empty positions, sorts
- * ascending, clamps to the melodic range) and then notifies the engine via
- * sequencer_core_chord_slot_changed() so tracks referencing the slot re-emit
- * and, when the tone count grew past the layer's voice budget, reconfigure
- * their synth's voice count — callers never do that bookkeeping themselves. */
+/* Table accessors. set() normalizes (drops empty positions, sorts ascending,
+ * clamps to the melodic range) then calls sequencer_core_chord_slot_changed()
+ * so referencing tracks re-emit and, if the tone count outgrew the layer's
+ * voice budget, reconfigure - callers never do that bookkeeping. */
 bool    seq_chords_get(uint8_t idx, seq_chord_t *out);
 void    seq_chords_set(uint8_t idx, const seq_chord_t *chord);
 void    seq_chords_clear(uint8_t idx);
@@ -49,10 +47,9 @@ bool    seq_chords_is_defined(uint8_t idx);
 uint8_t seq_chords_defined_count(void);
 void    seq_chords_reset_all(void);
 
-/* Bulk table replace for the project loader: normalizes and copies all
- * SEQ_CHORD_SLOTS entries (NULL = clear the table) WITHOUT the per-slot
- * engine sweep — the loader re-imports every layer right afterwards, which
- * rebuilds voices/emits from scratch anyway. */
+/* Bulk table replace for the project loader: normalizes and copies all slots
+ * (NULL = clear) WITHOUT the per-slot engine sweep - the loader re-imports
+ * every layer right afterwards, rebuilding voices/emits from scratch. */
 void    seq_chords_import(const seq_chord_t table[SEQ_CHORD_SLOTS]);
 
 /* Expand slot `idx` into absolute pitches with `transpose` semitones added,

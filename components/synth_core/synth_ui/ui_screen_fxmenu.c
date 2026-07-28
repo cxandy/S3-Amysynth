@@ -6,16 +6,14 @@
 /* ════════════════════════════════════════════════════════════════════════
  *  GLOBAL FX SUBMENU PAGE
  * ════════════════════════════════════════════════════════════════════════
- * Item model for the FX page of the menu overlay (page state and input
- * routing live in ui_screen_menu.c; this file only builds the rows and
- * applies encoder edits). Covers the three-band EQ, the echo/chorus/reverb
- * levels, and the extended per-effect params behind them (fx_state_t).
+ * Item model for the FX page of the menu overlay; page state and input
+ * routing live in ui_screen_menu.c. Covers the three-band EQ, echo/chorus/
+ * reverb levels and their extended params (fx_state_t).
  *
  * Extended params use the FX_PARAM_UNSET sentinel: while unset, fx_push_*
  * never writes the matching amy_event field, so AMY keeps its factory value.
- * The rows therefore DISPLAY the AMY default while unset, and the first
- * encoder step seeds the field from that same default before stepping — the
- * shown value and the audible value never disagree. */
+ * Rows therefore display the AMY default while unset, and the first encoder
+ * step seeds the field from that default - shown and audible never disagree. */
 
 typedef enum {
     FXI_EQ_LOW = 0,
@@ -40,8 +38,8 @@ typedef enum {
 
 static menu_item_view_t s_fx_items[FXI_COUNT];
 
-/* Effective value of a sentinel-gated param: the AMY factory default while
- * unset (that is what the bus is running), the stored value once set. */
+/* Effective value of a sentinel-gated param: while unset, the AMY factory
+ * default (what the bus is actually running); the stored value once set. */
 static int fx_eff(int16_t v, int def)
 {
     return (v == FX_PARAM_UNSET) ? def : (int)v;
@@ -112,8 +110,8 @@ const menu_item_view_t *fx_menu_build_items(void)
     snprintf(s_fx_items[FXI_PRESET_GLOBAL_FX].value, MENU_VALUE_LEN, "%s",
              s_fx.presets_alter_global ? "ON" : "OFF");
 
-    /* Per-layer note controls (gate/glide) live on their own page to keep this
-     * global list uncluttered (ui_screen_notefx.c). */
+    /* Per-layer note controls (gate/glide) live on their own page:
+     * ui_screen_notefx.c. */
     snprintf(s_fx_items[FXI_NOTEFX].label, MENU_LABEL_LEN, "NoteFX");
     snprintf(s_fx_items[FXI_NOTEFX].value, MENU_VALUE_LEN, ">");
 
@@ -138,8 +136,8 @@ bool fx_menu_item_is_notefx(uint8_t idx)
     return idx == FXI_NOTEFX;
 }
 
-/* Step a sentinel-gated param: the first edit lifts the field from the AMY
- * default it was displaying, then steps and pushes like any other value. */
+/* Step a sentinel-gated param: the first edit seeds the field from the AMY
+ * default it was displaying, then steps and pushes normally. */
 static void fx_step(int16_t *field, int def, int step, int lo, int hi,
                     int dir, void (*push)(void))
 {
@@ -179,7 +177,7 @@ void fx_menu_edit_value(uint8_t idx, int delta)
             break;
         case FXI_ECHO_TIME:
             /* 743 ms = AMY's default-allocated echo delay line; longer values
-             * would be clamped inside config_echo anyway. */
+             * get clamped inside config_echo anyway. */
             fx_step(&s_fx.echo_delay_ms, 500, 10, 0, 743, dir, fx_push_echo);
             break;
         case FXI_ECHO_TONE:
@@ -213,8 +211,8 @@ void fx_menu_edit_value(uint8_t idx, int delta)
             break;
         case FXI_PRESET_GLOBAL_FX:
             s_fx.presets_alter_global = !s_fx.presets_alter_global;
-            /* Turning the guard back ON re-imposes the user's cached FX
-             * immediately, undoing whatever the last preset left behind. */
+            /* Re-arming the guard re-imposes the cached FX at once, undoing
+             * whatever the last preset left behind. */
             if (!s_fx.presets_alter_global) synth_ui_fx_reassert_global();
             break;
         default:

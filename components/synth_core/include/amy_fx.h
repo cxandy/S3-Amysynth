@@ -13,10 +13,9 @@ extern "C" {
  * All pushes go through the shared amy_helpers mutex (amy_event is ~800 B;
  * never allocate it on a task stack). */
 
-/* Sentinel for the extended FX params below. While a field holds this value
- * its fx_push_* leaves the matching amy_event field at AMY_UNSET, so AMY keeps
- * its own factory default and the mix is unchanged until the user edits that
- * param. Chosen out of every valid range (incl. negative echo tone). */
+/* Sentinel for the extended FX params. While a field holds it, fx_push_*
+ * leaves the matching amy_event field at AMY_UNSET so AMY keeps its factory
+ * default. Chosen outside every valid range, incl. negative echo tone. */
 #define FX_PARAM_UNSET  INT16_MIN
 
 typedef struct {
@@ -26,10 +25,8 @@ typedef struct {
     uint8_t echo_level;    /* 0..100 -> 0..1 */
     uint8_t chorus_level;  /* 0..100 -> 0..1 */
     uint8_t reverb_level;  /* 0..100 -> 0..1 */
-    /* Extended global-FX params. Each holds FX_PARAM_UNSET until the user
-     * dials it in; while unset the matching amy_event field is left at its
-     * AMY_UNSET default, so AMY keeps its own boot value. Percent fields map
-     * /100 to AMY's 0..1 float; others as noted. */
+    /* Extended global-FX params, FX_PARAM_UNSET until dialed in. Percent
+     * fields map /100 to AMY's 0..1 float; others as noted. */
     int16_t echo_delay_ms;   /* 0..743 ms;   unset -> AMY 500 ms          */
     int16_t echo_feedback;   /* 0..99 (%);   unset -> AMY 0 (one repeat)  */
     int16_t echo_tone;       /* -99..99 (% filter coef); unset -> AMY 0   */
@@ -38,21 +35,18 @@ typedef struct {
     int16_t reverb_xover_hz; /* 500..8000 Hz; unset -> AMY 3000 Hz        */
     int16_t chorus_rate;     /* centi-Hz (0.01 Hz); unset -> AMY 0.5 Hz   */
     int16_t chorus_depth;    /* 0..100 (%);  unset -> AMY 0.5             */
-    /* When false, loading a synth patch must NOT change the global FX: every
-     * AMY built-in Juno patch string ends with `x<eq>k<chorus>` commands that
-     * write the single global EQ/chorus (amy_global.*), so without this guard a
-     * preset change on any one synth (sequencer row, arp, drone) re-skins the
-     * whole mix's FX. The patch-load sites call synth_ui_fx_reassert_global()
-     * which, when this is false, re-imposes these cached user values right after
-     * the patch's FX deltas, making presets effectively per-synth (timbre only).
-     * When true, the most-recently-loaded preset's FX is allowed to apply
-     * globally (the original behaviour). */
+    /* False: loading a patch must NOT change the global FX. Every built-in
+     * Juno patch string ends with `x<eq>k<chorus>` commands writing the single
+     * global EQ/chorus, so without this guard a preset change on any synth
+     * re-skins the whole mix. Patch-load sites call
+     * synth_ui_fx_reassert_global(), which re-imposes these cached values
+     * right after the patch's FX deltas, making presets timbre-only.
+     * True: the most-recently-loaded preset's FX applies globally. */
     bool    presets_alter_global;
 } fx_state_t;
 
-/* Live FX cache — written by the menu handler in synth_ui.c, read by the
- * fx_push_* functions below.  Declared non-static so synth_ui.c can update
- * individual fields directly before calling the corresponding fx_push_*. */
+/* Live FX cache: synth_ui.c's menu handler updates fields directly, then calls
+ * the matching fx_push_* below. */
 extern fx_state_t s_fx;
 
 /* Push individual effect bands to AMY's global event bus. */
@@ -61,16 +55,14 @@ void fx_push_echo(void);
 void fx_push_chorus(void);
 void fx_push_reverb(void);
 
-/* Re-impose the cached global FX (EQ/echo/chorus/reverb) after a synth patch
- * load. Every AMY built-in Juno patch ends with global EQ/chorus commands, so
- * loading a preset onto any synth would otherwise re-skin the whole mix's FX.
- * The sequencer/arp/drone patch-load paths call this immediately after loading;
- * it is a no-op while the user has enabled the "Preset FX" menu toggle (i.e.
- * deliberately letting presets drive the global FX). */
+/* Re-impose the cached global FX after a patch load, since every built-in Juno
+ * patch ends with global EQ/chorus commands that would re-skin the whole mix.
+ * The sequencer/arp/drone patch-load paths call this right after loading; it
+ * is a no-op while the "Preset FX" toggle is on. */
 void synth_ui_fx_reassert_global(void);
 
-/* Master output volume (0..2.0, unity=1.0).  Written to amy_global.volume[]
- * on every change.  2× headroom allows boosting quiet sources. */
+/* Master output volume (0..2.0, unity=1.0), written to amy_global.volume[].
+ * The 2x headroom allows boosting quiet sources. */
 void  amy_fx_set_master_volume(float v);   /* clamps 0..2 and pushes to AMY */
 float amy_fx_get_master_volume(void);      /* returns current cached value    */
 

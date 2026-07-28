@@ -3,31 +3,30 @@
 #include "seq_clamp.h"
 
 /* ── State definitions — owns drum engine selector ──────────────────── */
-/* Drum sound source for the whole drum layer. SYNTH = tonal AMY patches (Juno/
- * DX7) per track; PCM = built-in 808 samples per track. Switchable at runtime;
- * changing it re-configures the drum layer's synth slots in place. */
+/* Drum sound source for the whole drum layer. SYNTH = tonal AMY patches per
+ * track, PCM = built-in 808 samples. Switching reconfigures the drum layer's
+ * synth slots in place. */
 seq_drum_engine_t s_drum_engine = SEQ_DRUM_PCM;
 
-/* Curated drum-patch cycle list for SYNTH (tonal-patch) drum mode. The per-track
- * patch-select control steps through this list (wraps); it is NOT the full
- * 0..256 range. Now spans both banks: the DX7 idiophones (BLOCK/LOG DRUM/COW
- * BELL/MARIMBA/etc.) have far sharper attack + shorter decay than the Juno
- * "drum" patches, so they read as real percussion. Pitch still drives timbre
- * (low = body/kick, high = hat/shaker) — see role-based defaults below. */
+/* Curated drum-patch cycle list for SYNTH mode - the per-track patch control
+ * wraps within this list, NOT the full 0..256 range. The DX7 idiophones have
+ * much sharper attack and shorter decay than the Juno "drum" patches, so they
+ * read as real percussion. Pitch drives timbre (low = body/kick, high =
+ * hat/shaker); see the role-based defaults below. */
 #if CONFIG_SYNTH_DRUM_SYNTH_MODE
 static const uint16_t SEQ_DRUM_PATCH_LIST[] = {
-    245,  /* DX7 B.DRM-SNAR  — dedicated bass-drum/snare, closest to a kit voice */
-    221,  /* DX7 BLOCK       — woodblock, tight click (hat/rim)                  */
-    223,  /* DX7 LOG DRUM    — tuned tom/perc, musical                          */
-    220,  /* DX7 COW BELL    — metallic accent                                  */
-    149,  /* DX7 MARIMBA     — clean mallet (melodic perc / blips)              */
-    215,  /* DX7 XYLOPHONE   — bright mallet (hat-ish at high pitch)            */
-    148,  /* DX7 VIBE 1      — soft mallet (ghost notes)                        */
-    219,  /* DX7 BELLS       — bell accent                                      */
-    58,   /* Juno Drum Booms — boomy low (kick body at low pitch)               */
-    61,   /* Juno Hand Claps — clap                                             */
-    46,   /* Juno Shaker     — shaker/hat texture                               */
-    70,   /* Juno Perc Pluck — plucky perc                                      */
+    245,  /* DX7 B.DRM-SNAR  - bass-drum/snare, closest to a kit voice */
+    221,  /* DX7 BLOCK       - woodblock, tight click (hat/rim)        */
+    223,  /* DX7 LOG DRUM    - tuned tom/perc                          */
+    220,  /* DX7 COW BELL    - metallic accent                         */
+    149,  /* DX7 MARIMBA     - clean mallet (melodic perc / blips)     */
+    215,  /* DX7 XYLOPHONE   - bright mallet (hat-ish at high pitch)   */
+    148,  /* DX7 VIBE 1      - soft mallet (ghost notes)               */
+    219,  /* DX7 BELLS       - bell accent                             */
+    58,   /* Juno Drum Booms - kick body at low pitch                  */
+    61,   /* Juno Hand Claps - clap                                    */
+    46,   /* Juno Shaker     - shaker/hat texture                      */
+    70,   /* Juno Perc Pluck - plucky perc                             */
 };
 #define SEQ_DRUM_PATCH_COUNT ((int)(sizeof(SEQ_DRUM_PATCH_LIST) / sizeof(SEQ_DRUM_PATCH_LIST[0])))
 
@@ -40,11 +39,11 @@ static const patch_domain_t s_drum_domain = {
 /* ── Drum sample banks (menu "Drum Bank" selector) ──
  * One row per selectable PCM bank: the compiled-in 808 ROM bank plus the
  * gamma9001 banks streamed from the 'drums' flash partition. first/count are
- * PCM preset ranges; roles[] seeds the four tracks (kick, snare, hat,
- * clap-analog) when the bank is selected. Preset numbers mirror the vendored
- * amy/src/pcm_gamma9001.h map (256=909BD .. 391=Narrow) — re-verify after any
- * AMY re-vendor. Banks are contiguous in preset space, so free per-track
- * cycling after a seed stays inside the bank until the user walks out. */
+ * PCM preset ranges; roles[] seeds the four tracks on selection. Preset numbers
+ * mirror the vendored amy/src/pcm_gamma9001.h map (256=909BD .. 391=Narrow) -
+ * re-verify after any AMY re-vendor. Banks are contiguous in preset space, so
+ * per-track cycling after a seed stays inside the bank until the user walks
+ * out. */
 typedef struct {
     const char *name;
     uint16_t    first, count;
@@ -81,11 +80,9 @@ static inline bool drum_gamma_available(void)
 #endif
 }
 
-/* Built-in 808 PCM sample indices used by PCM drum mode, one per track:
- * kick, snare, closed-hat, clap. The compiled-in ROM bank (and with it the
- * preset numbering) follows CONFIG_AMY_PCM_GAMMA808: the gamma808 TR-808
- * bank (amy/src/pcm_gamma808.h pcm_map[]) vs the legacy tiny set
- * (amy/src/pcm_tiny.h pcm_map[]). */
+/* Built-in PCM sample indices, one per track (kick, snare, closed-hat, clap).
+ * The ROM bank and its preset numbering follow CONFIG_AMY_PCM_GAMMA808:
+ * amy/src/pcm_gamma808.h pcm_map[] vs the tiny set in amy/src/pcm_tiny.h. */
 #if CONFIG_AMY_PCM_GAMMA808
 static const int16_t SEQ_DRUM_PCM_PRESET[SEQ_TRACKS] = {
     2,    /* track 0: [2] TR-808 Bass Drum 3 (punchy) */
@@ -102,10 +99,10 @@ static const int16_t SEQ_DRUM_PCM_PRESET[SEQ_TRACKS] = {
 };
 #endif
 
-/* Per-layer, per-track PCM preset override. Defaults (lazily) to
- * SEQ_DRUM_PCM_PRESET; sequencer_core_set_drum_pcm_preset() is the only way
- * to change an entry, letting a runtime-recorded sample (custompatches/
- * sample_rec) take over one track's slot without a shared-struct field. */
+/* Per-layer, per-track PCM preset override, lazily defaulted to
+ * SEQ_DRUM_PCM_PRESET. sequencer_core_set_drum_pcm_preset() is the only writer,
+ * letting a runtime-recorded sample (custompatches/sample_rec) take over one
+ * track's slot without a shared-struct field. */
 static uint16_t s_drum_pcm_preset[MAX_LAYERS][SEQ_TRACKS];
 static bool     s_drum_pcm_preset_init[MAX_LAYERS];
 
@@ -164,11 +161,10 @@ void sequencer_kill_synth_voices(uint8_t synth_id)
 }
 
 /* ── Chord-aware per-track voice budget ───────────────────────────────────
- * What each melodic row's synth was last configured with, so a chord
- * assign/remove or slot resize can detect "my voice count no longer fits"
- * without re-deriving AMY-side state. Runtime bookkeeping only; non-static so
- * delete_layer's compaction (seq_core_state.c) can shift it in lockstep with
- * the other per-layer parallel arrays. */
+ * The voice count each melodic row's synth was last configured with, so a
+ * chord assign/remove or slot resize can detect a no-longer-fitting count
+ * without re-deriving AMY-side state. Non-static so delete_layer's compaction
+ * (seq_core_state.c) can shift it with the other per-layer parallel arrays. */
 uint8_t s_voices_applied[MAX_LAYERS][SEQ_TRACKS];
 
 uint8_t seq_track_num_voices(const seq_layer_t *layer, uint8_t track)
@@ -195,14 +191,13 @@ bool sequencer_layer_voices_stale(uint8_t layer_idx)
     return false;
 }
 
-/* Configure a single melodic synth slot as a bare AMY oscillator.
- * Mirrors arp_configure_wave_synth() but for melodic tracks (SEQ_MEL_VOICES
- * voices per synth slot).  Envelope, filter, and LFO are applied by the caller.
+/* Configure a single melodic synth slot as a bare AMY oscillator. Mirrors
+ * arp_configure_wave_synth(). Envelope, filter and LFO are the caller's job.
  *
- * In native LFO mode oscs_per_voice=3 keeps the osc1 (LFO carrier) and osc2
- * (wobble) INDEX slots reserved so toggling the LFO later never forces a pool
- * resize — but their ~532 B/osc synth structs stay unallocated until an LFO
- * is actually authored (lazy materialization, see voice_config.h). */
+ * In native LFO mode oscs_per_voice=3 reserves the osc1 (LFO carrier) and osc2
+ * (wobble) INDEX slots so toggling the LFO never forces a pool resize; their
+ * ~532 B/osc structs stay unallocated until an LFO is authored (lazy
+ * materialization, see voice_config.h). */
 static void sequencer_configure_melodic_wave_track(uint8_t synth_id,
                                                     uint16_t patch,
                                                     uint16_t num_voices,
@@ -252,9 +247,9 @@ static void sequencer_configure_melodic_wave_track(uint8_t synth_id,
     voice_build_wave(&cfg);
 
 #if CONFIG_SEQ_MELODIC_AMY_NATIVE_LFO
-    /* osc 1: LFO carrier slot. Only re-park it when it may already exist
-     * (it survived a same-shape rebuild); on a fresh pool the event itself
-     * would allocate the osc and forfeit the lazy reservation. */
+    /* osc 1 (LFO carrier): only re-park it when it may already exist, i.e. it
+     * survived a same-shape rebuild. On a fresh pool the event itself would
+     * allocate the osc and forfeit the lazy reservation. */
     if (voice_lfo_siblings_materialized(synth_id)) {
         amy_event *e = amy_helpers_event_begin();
         e->synth                 = synth_id;
@@ -272,15 +267,13 @@ static void sequencer_configure_melodic_wave_track(uint8_t synth_id,
 static void sequencer_configure_melodic_envelope(uint8_t layer_idx)
 {
     const seq_layer_t *layer = &s_layers[layer_idx];
-    /* Raw-wave primitives (SINE..KS, wavetables) carry no patch envelope of
-     * their own. With no envelope pushed, the carrier's COEF_EG0 stays a
-     * constant 1.0: AMY reads an empty breakpoint set as a permanently open
-     * gate (envelope.c) and a velocity-0 note-off never zeroes it (amy.c), so
-     * the oscillator rings forever — surviving both patch changes and pause,
-     * which both silence voices via that same velocity-0 note-off. Force the
-     * default melodic envelope onto every such unauthored row so a note-off
-     * actually releases it. (KS/NOISE additionally get their sustain floor
-     * applied downstream in sequencer_configure_melodic_envelope_track.) */
+    /* Raw-wave primitives carry no patch envelope. With none pushed, the
+     * carrier's COEF_EG0 stays 1.0: AMY reads an empty breakpoint set as a
+     * permanently open gate (envelope.c) and a velocity-0 note-off never zeroes
+     * it (amy.c), so the oscillator rings forever - surviving patch changes and
+     * pause, which both silence voices via that same note-off. Force the
+     * default envelope onto every such unauthored row. (KS/NOISE also get their
+     * sustain floor in sequencer_configure_melodic_envelope_track.) */
     bool force_wave = sequencer_core_is_wave_patch(layer->patch);
     for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
         if (layer->vp[t].env_authored || force_wave) {
@@ -289,9 +282,8 @@ static void sequencer_configure_melodic_envelope(uint8_t layer_idx)
     }
 }
 
-/* Push each AUTHORED row's stored second envelope (EG1) to its own synth.
- * No "force" case (unlike EG0/KS above): EG1 has no raw-wave fallback role,
- * it only matters once a row has actually been authored. */
+/* Push each AUTHORED row's stored EG1 to its own synth. No "force" case unlike
+ * EG0 above: EG1 has no raw-wave fallback role. */
 static void sequencer_configure_melodic_envelope1(uint8_t layer_idx)
 {
     const seq_layer_t *layer = &s_layers[layer_idx];
@@ -302,13 +294,10 @@ static void sequencer_configure_melodic_envelope1(uint8_t layer_idx)
     }
 }
 
-/* Push the filter for every authored row in a layer (called after patch reload).
- *
- * Unauthored rows normally keep whatever filter the just-loaded patch string
- * baked in (built-in Juno/DX7 patches carry a G/F/R filter block, so a fresh
- * voice inherits that patch's LPF). With CONFIG_SEQ_MELODIC_DISABLE_DEFAULT_LPF
- * set, those unauthored rows instead get a FILTER_NONE event so the raw patch
- * tone is heard; authored rows always take their stored filter. */
+/* Push the filter for every authored row in a layer (after a patch reload).
+ * Unauthored rows keep whatever filter the patch string baked in (Juno/DX7
+ * patches carry a G/F/R block), unless CONFIG_SEQ_MELODIC_DISABLE_DEFAULT_LPF
+ * is set, which strips it so the raw patch tone is heard. */
 static void sequencer_configure_melodic_filter(uint8_t layer_idx)
 {
     const seq_layer_t *layer = &s_layers[layer_idx];
@@ -327,12 +316,10 @@ static void sequencer_configure_melodic_filter(uint8_t layer_idx)
     }
 }
 
-/* The melodic envelope is stored PER ROW (per track). Each row now owns its own
- * AMY synth slot (synth_id[track]), so every row holds its own independent live
- * envelope — there is no shared synth and no "active row" to arbitrate. This
- * accessor is the single point of truth for "which env applies to (layer,track,
- * step)". For per-step support later, add a step parameter and index a wider
- * env[][] array here — callers stay unchanged. */
+/* The melodic envelope is stored PER ROW. Each row owns its own AMY synth slot
+ * (synth_id[track]), so there is no shared synth and no "active row" to
+ * arbitrate. Single point of truth for "which env applies to (layer,track)";
+ * per-step support would add a step parameter here, callers unchanged. */
 seq_env_t *seq_layer_env(uint8_t layer_idx, uint8_t track)
 {
     if (layer_idx >= s_num_layers) layer_idx = 0;
@@ -340,8 +327,7 @@ seq_env_t *seq_layer_env(uint8_t layer_idx, uint8_t track)
     return &s_layers[layer_idx].vp[track].env;
 }
 
-/* Second envelope (EG1) counterpart of seq_layer_env() above — same clamping,
- * same single point of truth for "which EG1 applies to (layer,track)". */
+/* EG1 counterpart of seq_layer_env(). */
 seq_env_t *seq_layer_env1(uint8_t layer_idx, uint8_t track)
 {
     if (layer_idx >= s_num_layers) layer_idx = 0;
@@ -349,28 +335,28 @@ seq_env_t *seq_layer_env1(uint8_t layer_idx, uint8_t track)
     return &s_layers[layer_idx].vp[track].env1;
 }
 
-/* AMY events are emitted through the shared amy_helpers scratch buffer (see
- * amy_helpers.{c,h}) — one module-level event + mutex for all first-party
- * callers, all of which are FreeRTOS tasks (never ISRs). */
+/* AMY events are emitted through the shared amy_helpers scratch buffer - one
+ * module-level event + mutex for all first-party callers, all of which are
+ * FreeRTOS tasks, never ISRs. */
 
-/* Apply one routable patch (0..SEQ_PATCH_FULL_MAX) to a synth slot,
- * dispatching per kind — the SINGLE dispatch for every consumer (melodic
- * tracks and the arp; the drone has its own excitation model):
- *   raw wave / wavetable  → direct oscillator config (no patch string)
- *   bass preset (264-266) → bass_preset_configure_track (oscs_per_voice=2)
- *   FM/ALGO (272-276)     → fm preset / live-editable custom voice (7 oscs)
- *   additive (277-279)    → additive preset / custom voice (N+1 oscs)
- *   everything else       → amy_send_patch() string loader (Juno/DX7/piano)
+/* Apply one routable patch (0..SEQ_PATCH_FULL_MAX) to a synth slot. The SINGLE
+ * kind dispatch for every consumer (melodic tracks and the arp; the drone has
+ * its own excitation model):
+ *   raw wave / wavetable  -> direct oscillator config (no patch string)
+ *   bass preset (264-266) -> bass_preset_configure_track (oscs_per_voice=2)
+ *   FM/ALGO (272-276)     -> fm preset / live-editable custom voice (7 oscs)
+ *   additive (277-279)    -> additive preset / custom voice (N+1 oscs)
+ *   everything else       -> amy_send_patch() string loader
  * Returns true when a patch STRING was loaded: those carry global EQ/chorus
- * commands, so the caller must synth_ui_fx_reassert_global() afterwards
- * (once, even when applying to several slots). */
+ * commands, so the caller owes one synth_ui_fx_reassert_global() afterwards,
+ * even when applying to several slots. */
 static bool sequencer_apply_patch_kind(uint8_t synth_id, uint16_t patch,
                                        uint16_t num_voices, uint32_t synth_flags,
                                        bool filter_authored, float ks_feedback)
 {
-    /* Virtual patch number whose feature is not in this build (browse skips
-     * these, but stored/programmatic values can still arrive): snap to raw
-     * SINE rather than letting a virtual number reach the string loader. */
+    /* Virtual patch whose feature is compiled out (browse skips these, but
+     * stored/programmatic values still arrive): snap to raw SINE rather than
+     * letting a virtual number reach the string loader. */
     if (sequencer_core_patch_compiled_out(patch)) {
         sequencer_configure_melodic_wave_track(synth_id, SEQ_PATCH_SINE,
                                                num_voices, filter_authored,
@@ -382,10 +368,9 @@ static bool sequencer_apply_patch_kind(uint8_t synth_id, uint16_t patch,
                                                filter_authored, ks_feedback);
         return false;
     }
-    /* Bass presets participate in the reserved-LFO-pair contract (they
-     * register their own pool shape); every OTHER branch below configures a
-     * foreign osc topology, voiding the lazy-LFO shape proof
-     * (see voice_config.h). */
+    /* Bass presets participate in the reserved-LFO-pair contract (they register
+     * their own pool shape); every OTHER branch below configures a foreign osc
+     * topology, voiding the lazy-LFO shape proof (see voice_config.h). */
     if (patch >= SEQ_PATCH_BASS_BASE && patch <= SEQ_PATCH_BASS_MAX) {
         bass_preset_configure_track(synth_id, patch, num_voices);
         return false;
@@ -417,10 +402,8 @@ static bool sequencer_apply_patch_kind(uint8_t synth_id, uint16_t patch,
     return true;
 }
 
-/* Apply one patch to one slot and remember whether it needs a global-FX
- * reassert, without doing the reassert yet — batch callers apply to several
- * slots and must reassert exactly once after the loop. Returns true if a
- * later flush is owed. */
+/* Apply one patch to one slot, returning whether an FX reassert is owed.
+ * Batch callers apply to several slots and must flush exactly once after. */
 static bool seq_apply_patch(uint8_t synth_id, uint16_t patch,
                             uint16_t num_voices, uint32_t synth_flags,
                             bool filter_authored, float ks_feedback)
@@ -429,11 +412,10 @@ static bool seq_apply_patch(uint8_t synth_id, uint16_t patch,
                                       synth_flags, filter_authored, ks_feedback);
 }
 
-/* Reassert global FX iff any patch applied since the last flush was a patch
- * STRING (Juno/DX7/piano): those carry global EQ/chorus commands that
- * overwrite the user's FX state on load. Raw-wave, bass, and FM patches carry
- * none and owe nothing. Idempotent; safe to call with owed == false. Every
- * patch-load path flushes through here so no caller can forget the reassert. */
+/* Reassert global FX iff a patch STRING was applied since the last flush:
+ * those carry global EQ/chorus commands that overwrite the user's FX state.
+ * Raw-wave, bass and FM patches owe nothing. Every patch-load path flushes
+ * through here so no caller can forget the reassert. */
 static inline void seq_flush_patch_fx(bool owed)
 {
     if (owed) synth_ui_fx_reassert_global();
@@ -448,14 +430,12 @@ void sequencer_configure_synth(uint8_t layer_idx)
 
     if (layer->type == SEQ_LAYER_DRUM) {
         if (s_drum_engine == SEQ_DRUM_PCM) {
-            /* PCM mode: each track's synth slot becomes a 1-osc PCM player loaded
-             * with a built-in 808 sample. We allocate the voice with
-             * oscs_per_voice=1 (no patch string), then set wave=PCM + preset on
-             * osc 0. Note-on/off + velocity + pitch flow through the SAME emit
-             * path as synth mode, so hits get accent/jitter dynamics and the
-             * sample is tuned by midi_note (render_pcm) — not the old clinical
-             * fixed-velocity drumkit path. PCM carries no global EQ/chorus, so no
-             * reassert needed here. */
+            /* PCM mode: each track's slot becomes a 1-osc PCM player - allocate
+             * with oscs_per_voice=1 (no patch string), then set wave=PCM +
+             * preset on osc 0. Note-on/off, velocity and pitch flow through the
+             * SAME emit path as synth mode, so hits keep accent/jitter dynamics
+             * and midi_note tunes the sample (render_pcm). PCM carries no
+             * global EQ/chorus, so no reassert is owed. */
             for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
                 /* Allocate/realloc the slot as a 1-osc voice (clears old patch). */
                 amy_event *e = amy_helpers_event_begin();
@@ -477,25 +457,22 @@ void sequencer_configure_synth(uint8_t layer_idx)
             return;
         }
 
-        /* SYNTH mode — per-track: each drum row loads its OWN patch onto its OWN
-         * synth slot, note-offs honored (flags = 0). Mirrors the melodic loop. */
+        /* SYNTH mode: each drum row loads its OWN patch onto its OWN slot,
+         * note-offs honored (flags = 0). Mirrors the melodic loop. */
         for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
             sequencer_kill_synth_voices(layer->synth_id[t]);
             amy_send_patch(layer->synth_id[t], layer->track_patch[t],
                            layer->num_voices, layer->synth_flags);
         }
         /* Every drum SYNTH slot loads a patch string, so a flush is always
-         * owed here (once, after the loop). */
+         * owed - once, after the loop. */
         seq_flush_patch_fx(true);
         return;
     }
 
-    /* Melodic: push the shared patch/flags to each row's own synth. The voice
-     * count is per-track: layer->num_voices, widened to the chord tone count
-     * on rows carrying a chord preset (seq_track_num_voices) — voices are
-     * spent only where chords play. Kind dispatch (raw wave / bass / FM /
-     * patch string) lives in sequencer_apply_patch_kind() above, shared with
-     * the arp. */
+    /* Melodic: push the shared patch/flags to each row's own synth. Voice count
+     * is per-track - layer->num_voices, widened to the chord tone count on rows
+     * carrying a chord preset, so voices are spent only where chords play. */
     bool string_patch = false;
     for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
         uint8_t voices = seq_track_num_voices(layer, t);
@@ -513,8 +490,7 @@ void sequencer_configure_synth(uint8_t layer_idx)
     sequencer_configure_melodic_envelope1(layer_idx);
     sequencer_configure_melodic_filter(layer_idx);
     sequencer_configure_melodic_lfo(layer_idx);
-    /* Glide is an AMY per-osc setting that a voice rebuild clears, so reassert
-     * it here after the pool/patch has been (re)built. */
+    /* Glide is a per-osc AMY setting that a voice rebuild clears - reassert. */
     sequencer_core_push_melodic_portamento(layer_idx);
 }
 
@@ -522,28 +498,24 @@ void sequencer_configure_synth(uint8_t layer_idx)
 
 /* Reconfigure a layer's synths with its scheduled events paused.
  *
- * The grid steps are repeating events inside AMY's sequencer, fired
- * autonomously from the 500 us sequencer poll task — leaving them live while
- * a patch load rebuilds the voice/osc tables lets a note-on resolve against
- * half-updated mappings and strand an osc as AUDIBLE outside any voice, where
- * no later kill can reach it (kills resolve through the CURRENT voice map).
- * That is the intermittent "ringing that survives patch changes" heard when
- * rapidly cycling patches on a playing layer. Same discipline as
- * arp_rebuild(): clear the schedule, rebuild (configure kills sounding voices
- * per track — mandatory, their note-offs were just cleared too), re-emit.
- * sequencer_emit_step() is s_playing-gated, so the resync is a no-op while
- * paused. Cost: the layer goes quiet for the events cleared mid-flight; the
- * re-emit restores the same absolute tick positions, so groove phase is kept.
- * Non-static since chord presets: also the reconfigure path for per-track
- * voice-count changes (chord assign/remove, slot resize) — see
- * seq_core_internal.h. */
+ * Grid steps are repeating events inside AMY's sequencer, fired autonomously.
+ * Leaving them live while a patch load rebuilds the voice/osc tables lets a
+ * note-on resolve against half-updated mappings and strand an osc AUDIBLE
+ * outside any voice, where no later kill can reach it (kills resolve through
+ * the CURRENT voice map) - the intermittent "ringing that survives patch
+ * changes". Same discipline as arp_rebuild(): clear the schedule, rebuild
+ * (configure MUST kill sounding voices per track, their note-offs were just
+ * cleared too), re-emit. sequencer_emit_step() is s_playing-gated, so the
+ * resync no-ops while paused. Cost: the layer goes quiet for the events cleared
+ * mid-flight; the re-emit restores absolute tick positions, keeping groove
+ * phase. Also the reconfigure path for per-track voice-count changes (chord
+ * assign/remove, slot resize) - see seq_core_internal.h. */
 void sequencer_reconfigure_layer_paused(uint8_t layer_idx)
 {
     sequencer_clear_layer_tags(layer_idx);
-    /* Also drop the trig engine's pending one-shots (ratchet + chord tone
-     * pairs): a sub-hit scheduled moments ago must not resolve against the
-     * half-rebuilt voice pool below — the same stranded-osc mechanism the
-     * periodic clear above exists to prevent. */
+    /* Drop the trig engine's pending one-shots (ratchet + chord tone pairs)
+     * too: a sub-hit scheduled moments ago must not resolve against the
+     * half-rebuilt pool - same stranded-osc mechanism as above. */
     sequencer_core_trig_clear_all(layer_idx);
     sequencer_configure_synth(layer_idx);
     sequencer_resync_layer(layer_idx);
@@ -551,13 +523,9 @@ void sequencer_reconfigure_layer_paused(uint8_t layer_idx)
 
 void sequencer_core_set_melodic_patch(uint16_t patch_number)
 {
-    /* 0..127: Juno, 128..255: DX7, 256: built-in piano.
-     * 257..263: raw-waveform virtual patches (SEQ_PATCH_SINE..SEQ_PATCH_WAVE_MAX).
-     * 264..266: multi-osc bass presets (SEQ_PATCH_BASS_BASE..SEQ_PATCH_BASS_MAX).
-     * 267..271: wavetable banks (AMY_WAVETABLE only). 272..276: FM/ALGO voices.
-     * 277..279: additive/partials voices
-     * (SEQ_PATCH_ADDITIVE_BASE..SEQ_PATCH_ADDITIVE_MAX), always the true
-     * ceiling. */
+    /* 0..127 Juno, 128..255 DX7, 256 piano, 257..263 raw waves, 264..266 bass
+     * presets, 267..271 wavetables (AMY_WAVETABLE only), 272..276 FM/ALGO,
+     * 277..279 additive - SEQ_PATCH_ADDITIVE_MAX is the true ceiling. */
     patch_number = SEQ_CLAMP_U16(patch_number, 0, SEQ_PATCH_ROUTABLE_MAX);
     if (s_melodic_patch == patch_number) {
         return;
@@ -581,10 +549,9 @@ uint16_t sequencer_core_get_melodic_patch(void)
     return s_melodic_patch;
 }
 
-/* Per-layer patch access — targets a single melodic layer rather than all of
- * them at once (unlike sequencer_core_set_melodic_patch).  Used by the UI
- * patch-cycle widget so each active melodic layer can step its patch
- * independently. */
+/* Per-layer patch access: one melodic layer, unlike
+ * sequencer_core_set_melodic_patch which hits them all. Lets the UI
+ * patch-cycle widget step each layer independently. */
 
 uint16_t sequencer_core_get_layer_patch(uint8_t layer_idx)
 {
@@ -600,18 +567,17 @@ void sequencer_core_set_layer_patch(uint8_t layer_idx, uint16_t patch_number)
     patch_number = SEQ_CLAMP_U16(patch_number, 0, SEQ_PATCH_ROUTABLE_MAX);
     if (layer->patch == patch_number) return;
     layer->patch    = patch_number;
-    s_melodic_patch = patch_number;  /* side-effect write: the global accessor
-                                        doubles as the display fallback, which
-                                        must track the last-touched layer (see
-                                        the contract in seq_core_internal.h) */
+    s_melodic_patch = patch_number;  /* the global accessor doubles as the
+                                        display fallback and must track the
+                                        last-touched layer (contract in
+                                        seq_core_internal.h) */
     sequencer_reconfigure_layer_paused(layer_idx);
     ESP_LOGI(TAG, "L%u patch -> %u", (unsigned)layer_idx + 1u, (unsigned)patch_number);
 }
 
-/* Re-apply the layer's current patch and every stored/authored parameter to
- * its synth slots — the exact-state restore used when an editor's live
- * preview is cancelled on a row whose target state came from the patch itself
- * (never authored) and so cannot be re-pushed from the store. */
+/* Re-apply the layer's patch and every authored parameter to its synth slots.
+ * The exact-state restore for cancelling a live preview on a never-authored
+ * row, whose state came from the patch and cannot be re-pushed from the store. */
 void sequencer_core_reload_layer_synth(uint8_t layer_idx)
 {
     if (layer_idx >= s_num_layers) return;
@@ -658,8 +624,7 @@ void sequencer_core_additive_voice_changed(void)
 
 /* ── Drum per-track patch (curated Juno list) ────────────────────────────── */
 
-/* Set one drum track's patch directly (clamped to the curated list membership;
- * a value not in the list snaps to the nearest list entry by index 0). Reloads
+/* Set one drum track's patch (expected to be a curated-list member) and reload
  * just that track's synth slot. */
 void sequencer_core_set_drum_patch(uint8_t layer_idx, uint8_t track,
                                    uint16_t patch_number)
@@ -672,18 +637,16 @@ void sequencer_core_set_drum_patch(uint8_t layer_idx, uint8_t track,
     layer->track_patch[track] = patch_number;
     if (track == 0) layer->patch = patch_number;  /* keep display fallback live */
 
-    /* In PCM mode the slot is a PCM player, not a patch — store the selection for
-     * when we switch back to SYNTH mode, but don't push a patch load now (it
-     * would clobber the PCM osc). */
+    /* In PCM mode the slot is a PCM player: store the selection for the switch
+     * back to SYNTH, but pushing a patch load now would clobber the PCM osc. */
     if (s_drum_engine == SEQ_DRUM_PCM) {
         ESP_LOGI(TAG, "drum L%u T%u patch -> %u (stored; PCM active)",
                  layer_idx + 1u, track + 1u, (unsigned)patch_number);
         return;
     }
 
-    /* Reload only this track's synth slot with the new patch — with the
-     * layer's schedule paused around the load (see
-     * sequencer_reconfigure_layer_paused for why); resynced below. */
+    /* Reload only this track's slot, with the layer's schedule paused around
+     * the load (see sequencer_reconfigure_layer_paused for why). */
     sequencer_clear_layer_tags(layer_idx);
     sequencer_kill_synth_voices(layer->synth_id[track]);
     amy_send_patch(layer->synth_id[track], patch_number,
@@ -703,8 +666,8 @@ uint16_t sequencer_core_get_drum_patch(uint8_t layer_idx, uint8_t track)
     return s_layers[layer_idx].track_patch[track];
 }
 
-/* Step one drum track's patch `dir` (+/-1) entries through the curated list,
- * wrapping at the ends. Returns the newly-applied patch number. */
+/* Step one drum track's patch `dir` entries through the curated list, wrapping.
+ * Returns the newly-applied patch number. */
 uint16_t sequencer_core_cycle_drum_patch(uint8_t layer_idx, uint8_t track,
                                          int dir)
 {
@@ -735,9 +698,8 @@ void sequencer_core_set_drum_engine(seq_drum_engine_t engine)
     if (s_drum_engine == engine) return;
     s_drum_engine = engine;
 
-    /* Re-configure every drum layer's synth slots in place for the new source.
-     * The grid/velocity/pitch and scheduled note events are untouched, so the
-     * pattern keeps playing — only the per-track sound source swaps. */
+    /* Reconfigure every drum layer's slots in place. Grid/velocity/pitch and
+     * scheduled events are untouched, so the pattern keeps playing. */
     for (uint8_t i = 0; i < s_num_layers; i++) {
         if (s_layers[i].type == SEQ_LAYER_DRUM) {
             sequencer_reconfigure_layer_paused(i);
@@ -762,7 +724,7 @@ void sequencer_core_set_drum_pcm_preset(uint8_t layer_idx, uint8_t track,
     s_drum_pcm_preset[layer_idx][track] = preset_number;
 
     if (s_drum_engine == SEQ_DRUM_PCM) {
-        /* Live-reload just this track's osc (mirrors sequencer_core_set_drum_patch). */
+        /* Live-reload just this track's osc. */
         amy_event *e = amy_helpers_event_begin();
         e->synth  = s_layers[layer_idx].synth_id[track];
         e->osc    = 0;
@@ -780,12 +742,11 @@ uint16_t sequencer_core_cycle_drum_pcm_preset(uint8_t layer_idx, uint8_t track,
     if (layer_idx >= s_num_layers || track >= SEQ_TRACKS) return 0;
     if (s_layers[layer_idx].type != SEQ_LAYER_DRUM) return 0;
 
-    /* Combined drum sample domain: the ROM bank (0 .. pcm_wavetable_base-1;
-     * pcm_wavetable_base is the first non-drum map entry — gamma808: 19,
-     * pcm_tiny: 11) followed by the gamma9001 banks (256..391) when their
-     * blob is mounted. The two ranges are walked as one wrapping list via a
-     * linear index. Memory presets (sample_rec overrides, outside both
-     * ranges) step back into the domain at the near end. */
+    /* Combined drum sample domain: the ROM bank (0 .. pcm_wavetable_base-1,
+     * that base being the first non-drum map entry) then the gamma9001 banks
+     * (256..391) when their blob is mounted, walked as one wrapping list via a
+     * linear index. Memory presets (sample_rec overrides, outside both ranges)
+     * step back into the domain at the near end. */
     uint16_t bound = pcm_wavetable_base;
     if (bound == 0) return 0;
     uint16_t total = bound + (drum_gamma_available() ? SEQ_GAMMA_PCM_COUNT : 0);
@@ -859,10 +820,9 @@ void sequencer_core_set_drum_source(uint8_t idx)
     s_drum_bank = bank;
     const seq_drum_bank_t *b = &s_drum_banks[bank];
 
-    /* Seed every drum layer's four tracks with the bank's role defaults.
-     * set_drum_pcm_preset live-reloads each track's osc when PCM is already
-     * active; the engine switch below covers the Synth->PCM case (it
-     * reconfigures the slots and picks up the just-seeded presets). */
+    /* Seed every drum layer's tracks with the bank's role defaults.
+     * set_drum_pcm_preset live-reloads each osc when PCM is already active;
+     * the engine switch below covers the Synth->PCM case. */
     for (uint8_t i = 0; i < s_num_layers; i++) {
         if (s_layers[i].type != SEQ_LAYER_DRUM) continue;
         for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
@@ -936,10 +896,10 @@ void sequencer_core_push_envelope_eg1(uint8_t synth, uint8_t osc, const seq_env_
     amy_helpers_event_send(e);
 }
 
-/* Push the layer's melodic glide time to each row's synth slot. Mirrors
- * arp_push_portamento(): a bare portamento_ms event (no velocity) fans out to
- * every voice's base osc, where AMY applies portamento_alpha as a logfreq
- * low-pass. 0 ms = off. Drum layers never call this (melodic-only config path).*/
+/* Push the layer's glide time to each row's slot. Mirrors arp_push_portamento():
+ * a bare portamento_ms event (no velocity) fans out to every voice's base osc,
+ * where AMY applies portamento_alpha as a logfreq low-pass. 0 ms = off.
+ * Melodic-only config path; drum layers never call this. */
 void sequencer_core_push_melodic_portamento(uint8_t layer_idx)
 {
     const seq_layer_t *layer = &s_layers[layer_idx];
@@ -954,12 +914,10 @@ void sequencer_core_push_melodic_portamento(uint8_t layer_idx)
 void sequencer_core_arp_configure(uint16_t patch_number, uint8_t num_voices,
                                   bool filter_authored, float ks_feedback)
 {
-    /* Full catalog, same as melodic: kind dispatch (raw wave / bass / FM /
-     * patch string) is shared via sequencer_apply_patch_kind(). */
+    /* Full catalog, same kind dispatch as melodic. */
     patch_number = SEQ_CLAMP_U16(patch_number, 0, SEQ_PATCH_FULL_MAX);
-    /* Osc topology can change between kinds (1-2 oscs for waves/bass, 7 for
-     * FM voices, N+1 for additive); kill sounding voices before the pool is
-     * rebuilt. */
+    /* Osc topology changes between kinds, so kill sounding voices before the
+     * pool is rebuilt. */
     sequencer_kill_synth_voices(SEQ_ARP_SYNTH);
     bool string_patch = seq_apply_patch(SEQ_ARP_SYNTH, patch_number,
                                         num_voices, 0,
@@ -969,12 +927,11 @@ void sequencer_core_arp_configure(uint16_t patch_number, uint8_t num_voices,
              (unsigned)SEQ_ARP_SYNTH, (unsigned)patch_number, (unsigned)num_voices);
 }
 
-/* The AMY synth slot backing a melodic row. Exposed so UI code that has to
- * address the row's actual voices - the live filter overlay reads their
- * modulated cutoff - does not duplicate the layer/track -> slot mapping, which
- * is assigned at layer build time and is not derivable from the indices.
- * Returns 0 (never a melodic slot; melodic starts at SEQ_MEL_SYNTH_BASE) when
- * the indices are out of range, so callers can treat 0 as "no such row". */
+/* The AMY synth slot backing a melodic row. Exposed so UI code addressing the
+ * row's real voices (the live filter overlay) need not duplicate the
+ * layer/track -> slot mapping, which is assigned at layer build time and is not
+ * derivable from the indices. Returns 0 out of range - never a melodic slot,
+ * those start at SEQ_MEL_SYNTH_BASE - so 0 means "no such row". */
 uint8_t sequencer_core_get_track_synth(uint8_t layer_idx, uint8_t track)
 {
     if (layer_idx >= MAX_LAYERS || track >= SEQ_TRACKS) {
@@ -987,8 +944,7 @@ void sequencer_core_configure_synth_slot(uint8_t synth_id, uint16_t patch_number
                                          uint8_t num_voices)
 {
     patch_number = SEQ_CLAMP_U16(patch_number, 0, SEQ_PATCH_FULL_MAX);
-    /* Osc topology can change between patch kinds; kill sounding voices
-     * before the pool is rebuilt (same discipline as the arp path above). */
+    /* Kill sounding voices before the pool is rebuilt (as in the arp path). */
     sequencer_kill_synth_voices(synth_id);
     bool string_patch = seq_apply_patch(synth_id, patch_number, num_voices,
                                         0, false, 0.0f);

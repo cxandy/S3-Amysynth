@@ -34,11 +34,10 @@ static inline seq_env_t seq_default_melodic_env(void)
     };
 }
 
-/* Default second envelope (EG1). Fixed (not Kconfig-gated): EG1 is dormant
- * until either a patch's own coefs reference it or the row's filter routes
- * through it, so a compile-time constant here is enough — the classic
- * "slower filter sweep than the amp" shape, noticeably longer decay/release
- * than seq_default_melodic_env() above. */
+/* Default EG1, deliberately not Kconfig-gated: EG1 stays dormant until a
+ * patch's coefs reference it or the row's filter routes through it, so a
+ * constant suffices. Slower decay/release than the amp env above - the
+ * classic "filter sweep lags the amp" shape. */
 static inline seq_env_t seq_default_melodic_env1(void)
 {
     return (seq_env_t) {

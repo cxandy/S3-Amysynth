@@ -5,8 +5,8 @@
 uint8_t  s_cached_step[MAX_LAYERS];
 uint8_t  s_track_source_note[MAX_LAYERS][SEQ_TRACKS];
 uint32_t s_bar_baseline = 0;
-/* Last plain source note per track — chord-slot-delete fallback (see the
- * declaration comment in seq_core_internal.h). */
+/* Last plain source note per track - chord-slot-delete fallback (see
+ * seq_core_internal.h). */
 uint8_t  s_track_prev_plain[MAX_LAYERS][SEQ_TRACKS];
 
 /* ── Bar counter ─────────────────────────────────────────────────────────
@@ -21,7 +21,7 @@ uint32_t sequencer_bars_elapsed(void)
 
 /* ── Tag helpers ─────────────────────────────────────────────────────── */
 /*
- * Tag layout (uint32_t — tag space is effectively unlimited):
+ * Tag layout (uint32_t, so tag space is effectively unlimited):
  *
  *   ON  tag = layer * (SEQ_TRACKS * SEQ_MAX_STEPS * 2)
  *             + track * SEQ_MAX_STEPS + step
@@ -54,15 +54,15 @@ static inline uint32_t seq_preview_tag(uint8_t layer, uint8_t track)
          + track;
 }
 
-/* OFF tag for the preview note — occupies the block immediately after ON tags. */
+/* OFF tag for the preview note: the block immediately after the ON tags. */
 static inline uint32_t seq_preview_off_tag(uint8_t layer, uint8_t track)
 {
     return seq_preview_tag(layer, track) + (uint32_t)(MAX_LAYERS * SEQ_TRACKS);
 }
 
 /* Chord edit-preview tags: extra-tone (1..SEQ_CHORD_MAX_NOTES-1) on/off pairs
- * for the one-shot preview path; tone 0 stays on the legacy preview pair
- * above. Layout comment: seq_core_config.h chord tag space. */
+ * for the one-shot preview path; tone 0 stays on the preview pair above.
+ * Layout: seq_core_config.h chord tag space. */
 static inline uint32_t seq_chord_preview_on_tag(uint8_t layer, uint8_t track,
                                                 uint8_t tone /* 1.. */)
 {
@@ -77,10 +77,9 @@ static inline uint32_t seq_chord_preview_off_tag(uint8_t layer, uint8_t track,
     return seq_chord_preview_on_tag(layer, track, tone) + 1u;
 }
 
-/* Clear the extra-tone preview pairs from `first_tone` up — run on every
- * chord preview (a shrink between two previews must not let a pending
- * higher-tone pair from the previous voicing fire) and when a track's
- * resolved note leaves the chord zone. */
+/* Clear the extra-tone preview pairs from `first_tone` up. Run on every chord
+ * preview - a shrink between two previews must not let a pending higher-tone
+ * pair fire - and when a track's resolved note leaves the chord zone. */
 static void seq_chord_preview_clear_from(uint8_t layer, uint8_t track,
                                          uint8_t first_tone)
 {
@@ -92,13 +91,11 @@ static void seq_chord_preview_clear_from(uint8_t layer, uint8_t track,
 
 /* ── Chord expansion (shared with seq_core_trig.c) ─────────────────────── */
 
-/* Progression transpose for chord presets: presets are authored as the "I"
+/* Progression transpose for chord presets. Presets are authored as the "I"
  * voicing (progression entry 0); each advance moves them by the delta between
- * the live chord root and entry 0's root, so the whole voicing tracks the bar
- * exactly as the single-note tracks do — but as a rigid transpose, never
- * per-tone re-quantization. With the progression off (including manual layer
- * chord snap), chords play exactly as entered. Computed at fire time, so a
- * progression advance re-pitches chords with zero re-emit plumbing. */
+ * the live chord root and entry 0's root - a rigid transpose, never per-tone
+ * re-quantization. With the progression off, chords play exactly as entered.
+ * Computed at fire time, so an advance re-pitches with no re-emit plumbing. */
 int sequencer_chord_transpose(const seq_layer_t *layer)
 {
     if (!s_prog.enabled || s_prog.count == 0) return 0;
@@ -117,15 +114,12 @@ uint8_t seq_track_fire_notes(const seq_layer_t *layer, uint8_t stored_note,
                               sequencer_chord_transpose(layer), out);
 }
 
-/* Swing / shuffle: delay ODD 16th-steps by swing_pct% of one step so the
- * off-beats land late, giving a shuffled groove. Even steps (the on-beats) are
- * untouched. Pure function of the step index + the layer's swing_pct, so the
- * emitted schedule stays beat-locked and tempo-independent (it is expressed in
- * ticks, exactly like the drone stutter-grid swing in drone_core.c). Integer
- * math only — this runs on the Core-0 emit path, never in render/ISR.
- * swing_pct==0 (the memset-zero default) returns 0 => bit-identical to the
- * pre-swing schedule. swing_pct is clamped to SEQ_SWING_MAX (<100) so the
- * result is always a fraction of one step and never crosses the next step. */
+/* Swing: delay ODD 16th-steps by swing_pct% of one step so off-beats land late.
+ * Pure function of step index + swing_pct, expressed in ticks, so the schedule
+ * stays beat-locked and tempo-independent (same as the drone stutter-grid swing
+ * in drone_core.c). Integer math only - this is the Core-0 emit path.
+ * swing_pct is clamped to SEQ_SWING_MAX (<100), so the offset is always a
+ * fraction of one step and never crosses into the next. */
 static inline uint32_t sequencer_step_swing_offset(const seq_layer_t *layer,
                                                    uint8_t step)
 {
@@ -136,9 +130,7 @@ static inline uint32_t sequencer_step_swing_offset(const seq_layer_t *layer,
 float sequencer_step_velocity(const seq_layer_t *layer,
                               uint8_t track, uint8_t step)
 {
-    /* Drums now share the melodic accent+jitter curve for a less "machine-gun"
-     * groove (the old fixed 1.0 made every hit identical). Falls through to the
-     * same expressive path as melodic below. */
+    /* Drums share the melodic accent+jitter curve rather than a flat 1.0. */
     (void)layer;
 
 #if !CONFIG_SEQ_MELODIC_EXPRESSIVE_DEFAULTS
@@ -147,11 +139,9 @@ float sequencer_step_velocity(const seq_layer_t *layer,
     return 1.0f;
 #else
 
-    /* With the EG0 envelope now shaping onset/tail, we can use a wider dynamic
-     * range without the notes sounding dull — the accent pattern provides the
-     * groove that breaks up the old "machine-gun" monotony. Base level sits
-     * mid-range so accents have room to push up and ghost notes can drop down.
-     * Tracks are spread slightly so stacked voices don't all hit identically. */
+    /* Base level sits mid-range so accents have room to push up and ghost notes
+     * to drop down; tracks are spread slightly so stacked voices don't hit
+     * identically. */
     float velocity = 0.62f + (0.02f * (float)track);
 
     /* Metric accents: strong downbeat, lighter backbeat, weak off-beats. */
@@ -160,27 +150,26 @@ float sequencer_step_velocity(const seq_layer_t *layer,
     } else if ((step % 4) == 2) {
         velocity += 0.16f; /* backbeat emphasis */
     } else {
-        velocity -= 0.04f; /* the in-between 8ths sit back as ghost notes */
+        velocity -= 0.04f; /* in-between 8ths sit back as ghost notes */
     }
 
-    /* Deterministic per-step jitter so repeated bars are not bit-identical
-     * (light "humanization"). Cycles every 4 steps with a small +/- swing. */
+    /* Deterministic per-step jitter (light humanization) so repeated bars are
+     * not bit-identical. Cycles every 4 steps. */
     static const float jitter[4] = { 0.015f, -0.02f, 0.01f, -0.015f };
     velocity += jitter[step & 3];
 
     velocity = SEQ_CLAMP_F32(velocity, 0.45f, 1.0f);
 
-    /* NoteFX GROOVE: blend between the full accent curve (100%) and flat
-     * velocity 1.0 (0%). Applied after the clamp so 0% is exactly 1.0 and
-     * 100% is bit-identical to the legacy curve. */
+    /* NoteFX GROOVE: blend the accent curve (100%) against flat 1.0 (0%).
+     * After the clamp, so 0% is exactly 1.0. */
     velocity = 1.0f - ((float)layer->groove_pct * 0.01f) * (1.0f - velocity);
     return velocity;
 #endif
 }
 
-/* True when any track in the layer has solo engaged (scans all SEQ_TRACKS,
- * not just num_tracks, so a stale solo flag on an unused track slot can never
- * silently affect audibility of the tracks actually in use). */
+/* True when any track has solo engaged. Scans all SEQ_TRACKS, not just
+ * num_tracks, so a stale flag on an unused slot cannot silently affect the
+ * tracks in use. */
 static bool sequencer_layer_has_solo(const seq_layer_t *layer)
 {
     for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
@@ -189,9 +178,9 @@ static bool sequencer_layer_has_solo(const seq_layer_t *layer)
     return false;
 }
 
-/* Whether `track` will actually sound: solo overrides mute (even on the same
- * track) whenever any track in the layer is soloed; otherwise mute alone gates.
- * Not static: also called from seq_core_trig.c's decorated-step ratchet path. */
+/* Whether `track` will sound: solo overrides mute (even on the same track)
+ * whenever any track is soloed, otherwise mute alone gates. Not static: also
+ * used by seq_core_trig.c's decorated-step ratchet path. */
 bool sequencer_track_audible(const seq_layer_t *layer, uint8_t track)
 {
     if (sequencer_layer_has_solo(layer)) {
@@ -216,10 +205,9 @@ uint8_t sequencer_resolve_track_note(const seq_layer_t *layer,
         return sequencer_clamp_layer_note(layer, source_note);
     }
 
-    /* Chord preset sentinel: passes through untouched — no quantize, no clamp
-     * (the clamp would smash it to SEQ_MEL_NOTE_MAX). Expansion to pitches
-     * happens at fire time (seq_track_fire_notes); the quantizer/chord snap
-     * below never applies to individual chord tones by design. */
+    /* Chord preset sentinel passes through untouched: the clamp would smash it
+     * to SEQ_MEL_NOTE_MAX. Expansion happens at fire time
+     * (seq_track_fire_notes); quantize/chord snap never apply to chord tones. */
     if (SEQ_NOTE_IS_CHORD(source_note)) {
         return source_note;
     }
@@ -252,57 +240,54 @@ void sequencer_emit_clear_tag(uint32_t tag)
     amy_helpers_event_send(e);
 }
 
-/* Schedule (or cancel) one grid step as a pair of repeating AMY events: a
- * note-on at the step's position in the bar, and a note-off `gate` ticks later.
- * Both repeat every `bar_ticks` so the pattern loops automatically. AMY keys
- * each event by its tag, so re-emitting with the same tag updates in place. */
+/* Schedule (or cancel) one grid step as a pair of repeating AMY events: note-on
+ * at the step's position in the bar, note-off `gate` ticks later, both
+ * repeating every `bar_ticks`. AMY keys events by tag, so re-emitting with the
+ * same tag updates in place. */
 void sequencer_emit_step(uint8_t layer_idx, uint8_t track, uint8_t step)
 {
     seq_layer_t *layer  = &s_layers[layer_idx];
     /* Total ticks in one loop of this layer's pattern. */
     uint32_t bar_ticks  = (uint32_t)layer->num_steps * SEQ_TICKS_PER_STEP;
-    /* Repeat rate: fire every N bars. period scales bar_ticks accordingly.
-     * note-off must wrap against the same period so it lands in the correct
-     * half of the extended window (not just within the first bar). */
+    /* Repeat rate: fire every N bars, so period scales bar_ticks. The note-off
+     * must wrap against the same period to land in the correct half of the
+     * extended window. */
     uint32_t rr         = (layer->repeat_rate[track] >= SEQ_REPEAT_2)
                           ? (uint32_t)layer->repeat_rate[track] : 1u;
     uint32_t period     = bar_ticks * rr;
-    /* Plain-trig note-hold incl. the melodic off-beat groove shortening;
-     * shared with the ratchet n==1 path (seq_core_trig.c) via seq_step_gate. */
+    /* Plain-trig note-hold incl. the off-beat groove shortening; shared with
+     * the ratchet n==1 path (seq_core_trig.c) via seq_step_gate. */
     uint8_t  gate       = (uint8_t)seq_step_gate(layer, step);
     uint32_t tag_on     = seq_tag_on(layer_idx, track, step);
     uint32_t tag_off    = seq_tag_off(layer_idx, track, step);
-    /* +1 so tick 0 stays reserved (AMY treats tick 0 specially as "clear").
-     * Two per-step timing offsets fold into the note-on tick: swing shifts odd
-     * steps later, and micro-timing (patch-06) adds the signed per-step nudge on
-     * top. Both are added into tick_on only; tick_off is derived from it below,
-     * so gate length is preserved. A negative nudge on an early step can land
-     * before the bar origin, so the combined value is wrapped into the tail of
-     * the loop window (a late "drag"). Defaults (swing 0, nudge 0) leave the
-     * on-grid tick byte-identical. */
+    /* +1 so tick 0 stays reserved (AMY treats tick 0 as "clear"). Two per-step
+     * offsets fold into the note-on tick: swing (odd steps later) and the
+     * signed micro-timing nudge. Both apply to tick_on only - tick_off derives
+     * from it below, preserving gate length. A negative nudge on an early step
+     * can land before the bar origin, so the result is wrapped into the tail of
+     * the loop window (a late "drag"). */
     int32_t  tick_on_s  = (int32_t)(1 + step * SEQ_TICKS_PER_STEP)
                         + (int32_t)sequencer_step_swing_offset(layer, step)
                         + (int32_t)layer->step_nudge[track][step];
     while (tick_on_s < 1) tick_on_s += (int32_t)period;
     uint32_t tick_on    = (uint32_t)tick_on_s % period;
     if (tick_on == 0) tick_on = 1;
-    /* Note-off wraps within the full period (not just bar_ticks) so a note at
-     * repeat_rate=2 whose gate spills past bar_ticks still fires correctly. */
+    /* Wrap within the full period, not bar_ticks, so a repeat_rate=2 note whose
+     * gate spills past bar_ticks still fires correctly. */
     uint32_t tick_off   = (tick_on + gate) % period;
     float note_velocity = sequencer_step_velocity(layer, track, step);
-    /* Apply per-track amplitude trim (default 1.0; set by graph editor amp mode). */
+    /* Per-track amplitude trim (default 1.0, set by graph editor amp mode). */
     note_velocity *= layer->vp[track].amp_trim;
-    /* Per-step velocity offset (patch-06): signed percentage points, default 0. */
+    /* Per-step velocity offset in signed percentage points. */
     note_velocity += (float)layer->step_velocity_adj[track][step] * 0.01f;
     note_velocity = SEQ_CLAMP_F32(note_velocity, 0.0f, 1.0f);
     if (tick_off == 0) tick_off = 1; /* avoid the reserved tick 0 */
 
-    /* If stopped, this step is off, the track is muted/soloed-out, or the
-     * step carries a probability/ratchet/conditional decoration, cancel the
-     * plain periodic tag pair instead of emitting a note-on. Decorated steps
-     * are one-shot scheduled per loop-iteration by
-     * sequencer_core_service_tick() (seq_core_trig.c) instead, since AMY's
-     * own period-repeat has no hook to gate an individual repetition. */
+    /* Stopped, step off, track inaudible, or the step carries a
+     * probability/ratchet/conditional decoration: cancel the plain periodic tag
+     * pair instead of emitting. Decorated steps are one-shot scheduled per
+     * loop-iteration by sequencer_core_service_tick() (seq_core_trig.c),
+     * because AMY's period-repeat has no hook to gate one repetition. */
     if (!s_playing || !layer->grid[track][step] ||
         !sequencer_track_audible(layer, track) ||
         sequencer_core_step_is_decorated(layer, track, step)) {
@@ -311,7 +296,7 @@ void sequencer_emit_step(uint8_t layer_idx, uint8_t track, uint8_t step)
         return;
     }
 
-    /* Both drum and melodic layers now have one synth slot per track. */
+    /* Drum and melodic layers alike have one synth slot per track. */
     uint8_t synth = layer->synth_id[track];
 
     amy_helpers_note_send(synth, layer->step_note[track][step], note_velocity,
@@ -343,10 +328,9 @@ void sequencer_clear_layer_tags(uint8_t layer_idx)
     }
 }
 
-/* Re-resolve a track's note (clamp + optional scale quantization), update every
- * step on that track to the new note, and re-emit them. When `preview` is set
- * (interactive editing) also fire a short one-shot so the user hears the note
- * immediately, even if quantization left the resolved note unchanged. */
+/* Re-resolve a track's note (clamp + optional quantization), write it to every
+ * step, and re-emit. With `preview` set, also fire a short one-shot so the note
+ * is audible even when quantization left it unchanged. */
 static void sequencer_refresh_track_note(uint8_t layer_idx, uint8_t track,
                                         bool preview)
 {
@@ -361,19 +345,19 @@ static void sequencer_refresh_track_note(uint8_t layer_idx, uint8_t track,
      * one scale degree remains audible. */
     if (layer->track_base_note[track] == resolved_note) {
         if (preview) {
-            /* Keep the preview path active even when the snapped note does not change. */
+            /* fall through to the preview below */
         } else {
             return;
         }
     } else if (SEQ_NOTE_IS_CHORD(layer->track_base_note[track])) {
-        /* Leaving (or switching) a chord: kill this track's pending chord-tone
-         * one-shots and extra-tone preview pairs so no scheduled tone from the
-         * old voicing survives the transition (clear -> rebuild, every time). */
+        /* Leaving or switching a chord: kill this track's pending chord-tone
+         * one-shots and preview pairs so no tone from the old voicing survives
+         * the transition (clear -> rebuild, every time). */
         sequencer_core_trig_clear_track_chord(layer_idx, track);
         seq_chord_preview_clear_from(layer_idx, track, 1);
     }
 
-    /* Apply the resolved note to the whole track (all steps play one pitch). */
+    /* All steps on a track play one pitch. */
     layer->track_base_note[track] = resolved_note;
     for (uint8_t s = 0; s < layer->num_steps; s++) {
         layer->step_note[track][s] = resolved_note;
@@ -387,14 +371,12 @@ static void sequencer_refresh_track_note(uint8_t layer_idx, uint8_t track,
         return;
     }
 
-    /* One-shot preview: fires a few ticks from now using the same tag slot.
-     * Rapid scrolling overwrites the slot so only the last change is heard.
-     * Velocity matches what a real downbeat step on this track would play
-     * (groove velocity x amp trim) so the preview is honest about level.
-     * A chord sentinel previews the full voicing (that IS the feature): tone 0
-     * on the legacy preview pair, extra tones on the chord preview pairs, and
-     * any pairs past the tone count cleared so a shrink between two previews
-     * cannot leave a stale higher tone pending. */
+    /* One-shot preview a few ticks out, reusing the same tag slot so rapid
+     * scrolling only sounds the last change. Velocity matches a real downbeat
+     * step (groove velocity x amp trim) so the level is honest. A chord
+     * sentinel previews the full voicing: tone 0 on the plain preview pair,
+     * extra tones on the chord pairs, pairs past the tone count cleared so a
+     * shrink cannot leave a stale higher tone pending. */
     uint8_t tones[SEQ_CHORD_MAX_NOTES];
     uint8_t ntones = seq_track_fire_notes(layer, resolved_note, tones);
     if (ntones == 0) return;   /* undefined chord slot: nothing to audition */
@@ -448,9 +430,8 @@ void sequencer_core_set_step(uint8_t layer_idx, uint8_t track,
     sequencer_emit_step(layer_idx, track, step);
 }
 
-/* Derive the currently-playing step from AMY's free-running tick counter:
- * position within the bar divided by ticks-per-step. When paused we return the
- * frozen value captured at pause time so the UI playhead stops in place. */
+/* Derive the playing step from AMY's free-running tick counter. When paused,
+ * return the value captured at pause time so the UI playhead stops in place. */
 uint8_t sequencer_core_get_current_step(uint8_t layer_idx)
 {
     if (layer_idx >= s_num_layers) return 0;
@@ -460,32 +441,30 @@ uint8_t sequencer_core_get_current_step(uint8_t layer_idx)
     return s_cached_step[layer_idx];
 }
 
-/* Start/stop playback. On start, every step is re-emitted so AMY repopulates
- * its schedule; on stop, each layer's playhead is captured (for a frozen UI)
- * and all scheduled events are cancelled so nothing keeps triggering. */
+/* Start/stop playback. Start re-emits every step so AMY repopulates its
+ * schedule; stop captures each layer's playhead (frozen UI) and cancels all
+ * scheduled events so nothing keeps triggering. */
 void sequencer_core_set_playing(bool p)
 {
     if (s_playing == p) return;
     s_playing = p;
     if (s_playing) {
-        /* Anchor the bar counter to the NEXT absolute bar boundary, not the raw
-         * play-press tick. AMY fires periodic events on tick % period, so
-         * pattern loops are phase-locked to the absolute tick grid; rounding up
-         * makes every progression bar line coincide with step 0 of 16-step
-         * patterns (32-step layers align every other loop boundary). The
+        /* Anchor the bar counter to the NEXT absolute bar boundary, not the
+         * play-press tick: AMY fires periodic events on tick % period, so
+         * pattern loops are phase-locked to the absolute tick grid, and
+         * rounding up makes progression bar lines coincide with step 0. The
          * partial pre-boundary stretch counts as bar 0 (bars_elapsed clamps),
-         * so the first chord still gets its full duration. */
+         * so the first chord keeps its full duration. */
         uint32_t t = sequencer_ticks();
         s_bar_baseline = ((t + SEQ_TICKS_PER_BAR - 1) / SEQ_TICKS_PER_BAR)
                          * SEQ_TICKS_PER_BAR;
         s_prog.entry_start_bar = 0;
         s_prog.current = 0;
-        /* The progression restarts from entry 0 on play, but the layers/arp may
-         * still hold the chord of whichever entry was live at stop time —
-         * request a re-apply so what is shown as active is also what sounds.
-         * Drained by the progression service on synth_ui_task (single-applier).
-         * Flagged immediate: this is a correction, not a musical edit, so it
-         * must bypass the BAR launch-quantize hold. */
+        /* The progression restarts from entry 0, but the layers/arp may still
+         * hold the chord that was live at stop time - request a re-apply so
+         * what is shown active is what sounds. Drained by the progression
+         * service on synth_ui_task (single-applier). Immediate, because a
+         * correction must bypass the BAR launch-quantize hold. */
         if (s_prog.enabled) {
             s_prog_apply_immediate = true;
             s_prog_apply_pending = true;
@@ -494,13 +473,13 @@ void sequencer_core_set_playing(bool p)
             sequencer_core_trig_reset(i);
             sequencer_resync_layer(i);
         }
-        /* The pause path cleared the arp schedule and emission is s_playing-
-         * gated, so nothing re-armed it while stopped — request a coalesced
-         * re-emit (drained by arp_core_service() on the UI task). */
+        /* The pause path cleared the arp schedule and emission is
+         * s_playing-gated, so nothing re-armed it while stopped - request a
+         * coalesced re-emit (drained by arp_core_service() on the UI task). */
         arp_core_mark_dirty();
     } else {
-        /* Bug 1.1: clear arp scheduled events FIRST so repeating arp tags
-         * don't keep firing while the sequencer is paused. */
+        /* Clear arp scheduled events FIRST so repeating arp tags don't keep
+         * firing while the sequencer is paused. */
         arp_core_clear_all();
 
         /* Freeze display positions before clearing scheduled events. */
@@ -508,22 +487,16 @@ void sequencer_core_set_playing(bool p)
             seq_layer_t *layer = &s_layers[i];
             s_cached_step[i] = seq_playhead_step(layer, sequencer_ticks());
             sequencer_clear_layer_tags(i);
-            /* Bug-1.1-style fix, same rationale as arp_core_clear_all() above:
-             * decorated steps' one-shot ratchet tags are not touched by
-             * sequencer_clear_layer_tags() (different tag space), so clear
-             * them explicitly or a pending sub-hit could still fire after
-             * the user hits stop. */
+            /* Decorated steps' one-shot ratchet tags live in a different tag
+             * space and survive sequencer_clear_layer_tags(), so clear them
+             * explicitly or a pending sub-hit fires after stop. */
             sequencer_core_trig_clear_all(i);
         }
 
-        /* Bug 1.2: silence only the sequencer's own synth slots (melodic/drum
-         * per-layer, plus arp slot 63). Drone slots 64-65 are intentionally
-         * spared — they manage their own lifecycle and do not auto-resume, so
-         * a global notes-off would permanently silence the drone.
-         
-         This is dumb - God
-         
-         */
+        /* Silence only the sequencer's own synth slots (per-layer melodic/drum
+         * plus the arp). The drone slots are deliberately spared: they manage
+         * their own lifecycle and never auto-resume, so a global notes-off
+         * would silence the drone permanently. */
         for (uint8_t i = 0; i < s_num_layers; i++) {
             seq_layer_t *layer = &s_layers[i];
             for (uint8_t t = 0; t < layer->num_tracks; t++) {
@@ -541,26 +514,23 @@ void sequencer_core_set_track_midi_note(uint8_t layer_idx, uint8_t track,
     seq_layer_t *layer = &s_layers[layer_idx];
 
     /* A defined chord sentinel is a valid melodic assignment and must not be
-     * range-clamped (that would smash it to SEQ_MEL_NOTE_MAX). Anything else
-     * — plain notes, sentinels on drum layers, sentinels for undefined slots
-     * — takes the normal clamp. */
+     * range-clamped (that would smash it to SEQ_MEL_NOTE_MAX). Everything else
+     * takes the normal clamp. */
     bool chord_ok = layer->type == SEQ_LAYER_MELODIC &&
                     SEQ_NOTE_IS_CHORD(midi_note) &&
                     seq_chords_is_defined(SEQ_CHORD_INDEX(midi_note));
     if (!chord_ok) {
         midi_note = sequencer_clamp_layer_note(layer, midi_note);
-        /* Remember the last plain choice: the fallback if a chord slot this
-         * track later references gets deleted. */
+        /* Fallback if a chord slot this track later references is deleted. */
         s_track_prev_plain[layer_idx][track] = midi_note;
     }
 
     s_track_source_note[layer_idx][track] = midi_note;
     sequencer_refresh_track_note(layer_idx, track, true);
 
-    /* Chord assignment can widen (or release) this track's voice need beyond
-     * the layer's configured count. Reconfigure through the proven paused
-     * clear -> configure -> resync path — same discipline as patch cycling,
-     * and only when the need actually changed (menu-time cost only). */
+    /* Chord assignment can widen or release this track's voice need beyond the
+     * layer's configured count. Reconfigure through the paused
+     * clear -> configure -> resync path, only when the need actually changed. */
     if (layer->type == SEQ_LAYER_MELODIC && sequencer_layer_voices_stale(layer_idx)) {
         sequencer_reconfigure_layer_paused(layer_idx);
     }
@@ -579,7 +549,7 @@ uint8_t sequencer_core_get_track_source_note(uint8_t layer_idx, uint8_t track)
 }
 
 /* Chord table edit sweep (called by seq_chords_set/clear on the UI task).
- * Voicing edits need no re-emit — fires read the table live — but pending
+ * Voicing edits need no re-emit - fires read the table live - but pending
  * one-shots from the old voicing are cleared, a now-undefined slot drops
  * referencing tracks back to their last plain note, and a changed tone count
  * reconfigures the layer's voice budget. */
@@ -613,12 +583,11 @@ void sequencer_core_chord_slot_changed(uint8_t idx)
     }
 }
 
-/* Chord-editor audition: one-shot the (possibly not-yet-saved) voicing
- * through a melodic track's synth via the preview tag machinery. Plays the
- * tones exactly as authored (no progression transpose — the editor edits the
- * "I" voicing). Honest caveat: a voicing wider than the track's current voice
- * count will voice-steal until it is actually assigned (assignment widens the
- * count); still honest about timbre, which is the point of the audition. */
+/* Chord-editor audition: one-shot the (possibly unsaved) voicing through a
+ * melodic track's synth via the preview tags. Tones play exactly as authored -
+ * no progression transpose, the editor edits the "I" voicing. Caveat: a voicing
+ * wider than the track's current voice count voice-steals until assignment
+ * widens it; timbre, the point of the audition, is still accurate. */
 void sequencer_core_audition_chord(uint8_t layer_idx, uint8_t track,
                                    const seq_chord_t *chord)
 {
@@ -658,18 +627,17 @@ void sequencer_core_arp_emit_note(uint32_t tag_base, uint8_t midi_note,
                                   float velocity, uint32_t tick_on,
                                   uint32_t gate_ticks, uint32_t period)
 {
-    /* Slaved to the transport, same as sequencer_emit_step(): while paused
-     * nothing may (re)arm the arp's repeating schedule — otherwise any arp
-     * refresh during a pause (param edit, progression apply, project load)
-     * leaves the arp playing alone. The resume path in
-     * sequencer_core_set_playing() marks the arp dirty so the schedule is
-     * rebuilt when playback restarts; periodic events are phase-locked to the
-     * absolute tick grid, so the rebuild lands back in sync. */
+    /* Slaved to the transport like sequencer_emit_step(): nothing may re-arm
+     * the arp's repeating schedule while paused, or an arp refresh during a
+     * pause (param edit, progression apply, project load) leaves the arp
+     * playing alone. sequencer_core_set_playing() marks the arp dirty on
+     * resume; periodic events are phase-locked to the absolute tick grid, so
+     * the rebuild lands back in sync. */
     if (!s_playing) return;
 
-    /* Defensive: never let an out-of-range tag reach AMY. Its sequences[] table
-     * is sized to max_sequencer_tags and add_event has a `tag > max` off-by-one,
-     * so a stray tag would smash the heap. Cap to the reserved arp window. */
+    /* Never let an out-of-range tag reach AMY: sequences[] is sized to
+     * max_sequencer_tags and add_event has a `tag > max` off-by-one, so a stray
+     * tag smashes the heap. Cap to the reserved arp window. */
     if (tag_base + 1 > SEQ_ARP_TAG_MAX) {
         ESP_LOGE(TAG, "arp tag %u out of range (max %u) - dropped",
                  (unsigned)tag_base, (unsigned)SEQ_ARP_TAG_MAX);
@@ -719,13 +687,12 @@ seq_repeat_rate_t sequencer_core_get_track_repeat_rate(uint8_t layer_idx,
 }
 
 /* ── Per-layer swing ─────────────────────────────────────────────────────
- * Swing is a whole-layer feel control (not per-track): every odd step across
- * all tracks shifts by the same fraction, so the layer grooves as a unit.
- * Re-emit the entire layer so AMY re-schedules every step at its swung tick.
+ * Whole-layer feel control, not per-track: every odd step across all tracks
+ * shifts by the same fraction, so the layer grooves as a unit. Re-emit the
+ * whole layer so AMY reschedules each step at its swung tick.
  *
- * TODO(ui): no UI wiring yet — this ships engine + public API only. A layer-
- * level menu item (swing is per-layer, not per-track) should call these from
- * the TrackOpts/UI dispatch once someone is in that screen code. */
+ * TODO(ui): engine + public API only, no UI wiring yet. A layer-level menu
+ * item should call these from the TrackOpts/UI dispatch. */
 void sequencer_core_set_layer_swing(uint8_t layer_idx, uint8_t swing_pct)
 {
     if (layer_idx >= s_num_layers) return;
@@ -743,11 +710,11 @@ uint8_t sequencer_core_get_layer_swing(uint8_t layer_idx)
 }
 
 /* ── Per-layer melodic NoteFX: gate length + glide (portamento) ────────────
- * Both are per-layer scalars edited from the NoteFX menu page. Gate is applied
- * at emit time (seq_step_gate), so a change must re-emit the layer's steps so
- * the new note-off ticks take effect immediately, exactly like swing. Glide is
- * an AMY per-osc setting, pushed straight to the row synths. Both are no-ops on
- * drum layers (gate uses the fixed SEQ_GATE_DRUM; drums don't glide). */
+ * Per-layer scalars from the NoteFX menu page. Gate applies at emit time
+ * (seq_step_gate), so a change must re-emit the layer's steps for the new
+ * note-off ticks to take effect, exactly like swing. Glide is an AMY per-osc
+ * setting pushed straight to the row synths. Both no-op on drum layers (gate
+ * uses the fixed SEQ_GATE_DRUM; drums don't glide). */
 void sequencer_core_set_melodic_gate_pct(uint8_t layer_idx, uint8_t gate_pct)
 {
     if (layer_idx >= s_num_layers) return;
@@ -826,10 +793,9 @@ void sequencer_core_set_track_solo(uint8_t layer_idx, uint8_t track, bool solo)
     seq_layer_t *layer = &s_layers[layer_idx];
     if (layer->solo[track] == solo) return;
     layer->solo[track] = solo;
-    /* Solo changes every track's audibility in this layer, not just this
-     * one's, so re-emit the whole layer and hard-kill whichever tracks just
-     * became inaudible (a note already sounding would otherwise ring out
-     * until its scheduled note-off, which re-emit alone does not force). */
+    /* Solo changes every track's audibility, not just this one's: re-emit the
+     * whole layer and hard-kill the tracks that just became inaudible - a note
+     * already sounding would otherwise ring to its scheduled note-off. */
     sequencer_resync_layer(layer_idx);
     for (uint8_t t = 0; t < layer->num_tracks; t++) {
         if (!sequencer_track_audible(layer, t)) {

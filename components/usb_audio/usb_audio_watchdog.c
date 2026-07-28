@@ -12,10 +12,9 @@
  * at ~14745. */
 #define OWD_SCAN_SAMPLES  2048u   /* ~21 ms of 48 kHz stereo per poll */
 #define OWD_CLIP_PEAK     14700   /* peak at/above the soft-clip knee */
-#define OWD_LOUD_MEAN     6500    /* mean-abs of a ~-4 dBFS sine; only
-                                   * near-full-scale sustained material counts
-                                   * as stuck-loud, so intentional drones at
-                                   * normal volume do not trip it */
+#define OWD_LOUD_MEAN     6500    /* mean-abs of a ~-4 dBFS sine: only
+                                   * near-full-scale sustained material trips,
+                                   * not drones at normal volume */
 #define OWD_CLIP_POLLS    10      /* ~0.5 s at synth_ui's 50 ms cadence */
 #define OWD_LOUD_POLLS    50      /* ~2.5 s */
 
@@ -31,9 +30,8 @@ void output_wd_poll(void)
     size_t idx;
     if (!usb_audio_peek_levels(OWD_SCAN_SAMPLES, &peak, &mean, &idx)
         || idx == s_last_write_idx) {
-        /* Driver down, or no new audio since the last poll (no host
-         * consuming): nothing is audible, so there is nothing to warn
-         * about - and the window under the write index is stale. */
+        /* Driver down, or no new audio since the last poll: nothing audible to
+         * warn about, and the window under the write index is stale. */
         s_clip_polls = 0;
         s_loud_polls = 0;
         s_state = OUTPUT_WD_OK;
@@ -41,10 +39,9 @@ void output_wd_poll(void)
     }
     s_last_write_idx = idx;
 
-    /* Consecutive-poll hysteresis separates a fault from music: real program
-     * material has note decays and gaps that reset the counters within a
-     * bar; ringing or a stuck voice holds level indefinitely. Saturate so a
-     * permanently-tripped condition cannot wrap back to OK. */
+    /* Consecutive-poll hysteresis separates a fault from music: program
+     * material has decays and gaps that reset the counters within a bar, a
+     * stuck voice does not. Saturate so a tripped state cannot wrap to OK. */
     if (peak >= OWD_CLIP_PEAK) {
         if (s_clip_polls < OWD_CLIP_POLLS) ++s_clip_polls;
     } else {

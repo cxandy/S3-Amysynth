@@ -4,21 +4,16 @@
 #include <stdint.h>
 
 /* ── Patch-cycle descriptor ────────────────────────────────────────────────
- * Describes a named domain of patches that can be stepped through with a
- * single encoder click.  When `list` is NULL the domain operates in
- * full-range mode (0 .. full_max inclusive); otherwise it steps through the
- * curated list in order, wrapping at the ends.
+ * A domain of patches steppable with one encoder click. `list` NULL = full
+ * range (0 .. full_max); otherwise it steps the curated list, wrapping.
  *
- * All consumers share ONE catalog (list + ceiling, see ui_patch_cycle.c); a
- * consumer that cannot play some patches EXCLUDES them via the `excluded`
- * predicate instead of maintaining its own copy of the list.
- * patch_domain_step() skips excluded entries, so cycling stays monotonic and
- * new catalog entries reach every consumer automatically unless a predicate
- * opts out.
+ * All consumers share ONE catalog (ui_patch_cycle.c); a consumer that cannot
+ * play some patches EXCLUDES them via the `excluded` predicate rather than
+ * keeping its own list. patch_domain_step() skips excluded entries, so new
+ * catalog entries reach every consumer unless a predicate opts out.
  *
- * Off-list / out-of-range values snap to index 0 *before* the step is
- * applied, so the result is always the neighbour of index 0 — never index 0
- * itself — when the current patch is not part of the domain. */
+ * Off-list / out-of-range values snap to index 0 BEFORE the step, so a patch
+ * outside the domain always lands on index 0's neighbour, never index 0. */
 typedef bool (*patch_excluded_fn)(uint16_t patch);
 
 typedef struct {
@@ -33,9 +28,9 @@ static inline bool patch_domain_allows(const patch_domain_t *d, uint16_t p)
     return d->excluded == NULL || !d->excluded(p);
 }
 
-/* Step `current` by `dir` (any sign; clamped to ±1 internally) through the
- * domain, wrapping at the ends and skipping excluded entries.  Returns the
- * new patch number, or `current` unchanged if every entry is excluded. */
+/* Step `current` by `dir` (any sign, clamped to +/-1) through the domain,
+ * wrapping and skipping excluded entries. Returns `current` unchanged if
+ * every entry is excluded. */
 static inline uint16_t patch_domain_step(const patch_domain_t *d,
                                          uint16_t current, int dir)
 {

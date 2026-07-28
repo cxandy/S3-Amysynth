@@ -9,22 +9,20 @@ extern "C" {
 #endif
 
 /* ── Arp screen renderer ──────────────────────────────────────────────────
- * Like the menu, the arp logic lives in the synth_core component (arp_core).
- * synth_ui populates this flat view each frame; the renderer just draws it.
+ * Arp logic lives in synth_core (arp_core); synth_ui populates this flat view
+ * each frame and the renderer just draws it.
  *
- * Layout (everything visible at once — no multiplexed slots):
- *   ARP:ON | MODE | OCT:2 |      R:1/16   <- macro row 1 (cursor 0..3, L→R)
- *   GATE:75% |  W:SAW/P12  |      GL:200   <- macro row 2 (cursor 4..7, L→R)
+ * Layout (everything visible at once, no multiplexed slots):
+ *   ARP:ON | MODE | OCT:2 |      R:1/16   <- macro row 1 (cursor 0..3, L->R)
+ *   GATE:75% |  W:SAW/P12  |      GL:200   <- macro row 2 (cursor 4..7, L->R)
  *   [C3]  E3   G3   B3   --   --  ...      <- 8 note slots
  *
  * Cursor index space:
  *   0=ARP enable, 1=MODE, 2=OCT, 3=RATE, 4=GATE,
  *   5=SOURCE, 6=WAVE (skipped in PATCH mode), 7=GLIDE, 8..15 = slots 0..7.
  *
- * The row-2 centre indicator shows the source implicitly (W: = wave engine,
- * P = patch); on the SOURCE cursor it reads SRC:W / SRC:P. GLIDE (portamento)
- * now has its own permanent right-aligned readout rather than borrowing the
- * indicator slot, so no field is hidden behind the cursor position. */
+ * The row-2 centre indicator implies the source (W: = wave engine, P = patch);
+ * on the SOURCE cursor it reads SRC:W / SRC:P. */
 
 #define ARP_VIEW_SLOTS 8
 
@@ -59,9 +57,9 @@ typedef struct {
     const char *wave_str;     /* waveform name, e.g. "SAW"                 */
     bool        wave_mode;    /* true when source == ARP_SRC_WAVE           */
     uint16_t    portamento_ms;/* glide time, ms (0 = off)                   */
-    /* Patch indicator (mirrors the sequencer view). The number is always shown
-     * top-right in PATCH mode; while the patch-select button is held,
-     * patch_name (if non-NULL) is drawn as a centred banner. */
+    /* Patch indicator (mirrors the sequencer view): the number shows top-right
+     * in PATCH mode; while the select button is held, a non-NULL patch_name is
+     * drawn as a centred banner. */
     uint16_t    patch;
     bool        patch_select; /* true while the patch hold+turn gesture is active */
     const char *patch_name;   /* human-readable name or NULL (table excluded)     */

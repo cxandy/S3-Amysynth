@@ -9,10 +9,9 @@ extern "C" {
 #endif
 
 /* ── Step Trig editor renderer ─────────────────────────────────────────────
- * Full-screen popup (same "takes over the display" convention as the ADSR /
- * filter / LFO editors) for one step's probability / ratchet / conditional
- * trig, addressed by the sequencer grid's existing cursor (active layer,
- * selected track, selected step) — no separate cursor of its own.
+ * Full-screen popup (same convention as the ADSR / filter / LFO editors) for
+ * one step's probability / ratchet / conditional trig, addressed by the
+ * sequencer grid's existing cursor - no separate cursor of its own.
  *
  *   STEP L1 T2 S05
  *   ───────────────

@@ -405,6 +405,14 @@ int instrument_get_num_voices(int instrument_number, uint16_t *amy_voices) {
         //fprintf(stderr, "get_num_voices: instrument_number %d is not defined.\n", instrument_number);
     } else {
         num_voices = instrument->num_voices;
+        // LOCAL EDIT (S3-Amysynth, 2026-07-28): clamp the copy to the
+        // MAX_VOICES_PER_INSTRUMENT-sized buffer callers pass. A legitimate
+        // num_voices never exceeds it, but this is also called without the
+        // queue lock from a UI task while another core can release the
+        // instrument; a torn read of freed memory must not drive an unbounded
+        // write into the caller's stack array. See AMY-EDITS.md.
+        if (num_voices > MAX_VOICES_PER_INSTRUMENT)
+            num_voices = MAX_VOICES_PER_INSTRUMENT;
         if (amy_voices != NULL)
             for (int i = 0; i < num_voices; ++i)
                 amy_voices[i] = instrument->amy_voices[i];

@@ -135,6 +135,16 @@ void filter_scope_render_tick(void)
 
 bool filter_scope_read(float *lo_logfreq, float *hi_logfreq)
 {
+    /* A disarmed scope must never serve data. disarm() cannot clear `valid`
+     * (the tap owns that word, and an in-flight block could re-set it), so
+     * without this gate a popup on a never-armed target - the drone editors -
+     * would read the LAST armed target's final band forever, pinning its
+     * cursor at some fossil cutoff. arm/disarm/read all run on the synth_ui
+     * task, so this load is coherent with the caller's own arm state. */
+    if (!atomic_load_explicit(&s_cell.armed, memory_order_relaxed)) {
+        return false;
+    }
+
     const bool valid = atomic_load_explicit(&s_cell.valid, memory_order_acquire);
     const float lo = s_cell.lo;
     const float hi = s_cell.hi;

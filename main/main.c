@@ -883,19 +883,14 @@ static void encoder_init_task(void *pvParameters)
     esp_err_t err = rotary_encoder_new_with_config(&enc_cfg, &enc);
     ESP_LOGI(TAG, "[encoder_init] rotary_encoder_new_with_config returned %d", err);
     if (err == ESP_OK && enc) {
-        // 8192: the patch-toggle gesture (MY_BUTTON_1 held + encoder turn)
-        // runs the AMY patch-string parse INLINE on this task stack —
-        // synth_ui_cycle_*_patch → amy_send_patch → patches_load_patch →
-        // parse_patch_string_to_queue, whose amy_event frame (~828 B) plus the
-        // nested amy_parse_message buffers drive peak usage to ~3.3-3.6 KB.
-        // A 4096 stack could not absorb that inline frame plus an ISR frame
-        // landing at the peak, causing intermittent patch-toggle stack
-        // overflow (regression from the 8192->4096 trim in 4258556). Restored
-        // to 8192 (~8 KB DRAM back, the amount the trim reclaimed). The
-        // DRAM-preserving alternative is to port the amy_ingest pump task so
-        // the parse runs on its own stack instead of the caller's.
-        // Pin to Core 0 so the encoder poll never migrates onto Core 1 and
-        // jitters the audio DSP now running there.
+        // 8192, not 4096: the patch-toggle gesture runs AMY's patch-string
+        // parse inline on this stack (amy_send_patch -> amy_add_event; the
+        // amy_event itself is static in amy_helpers, but the nested
+        // amy_parse_message frame is ~3.4 KB and lands here). A 4096 stack
+        // overflowed intermittently on exactly this path once already -
+        // re-trim only after the parse moves to its own task (amy_ingest
+        // pump). Pin to Core 0 so the encoder poll never migrates onto
+        // Core 1 and jitters the audio DSP.
         xTaskCreatePinnedToCore(encoder_task,
              "encoder_task",
              8192,
@@ -911,6 +906,7 @@ static void encoder_init_task(void *pvParameters)
     // This delayed bring-up is the last init step (encoder task just spawned
     // above), so free-internal here is the steady-state figure placement
     // decisions should be based on.
+    // Piggybacks on the encoders dying task to not  
     ESP_LOGI(TAG,
              "post-init heap: internal free=%u largest=%u min_free=%u | psram free=%u",
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),

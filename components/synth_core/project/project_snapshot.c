@@ -104,7 +104,7 @@ static bool de_filter(tlv_reader_t *r, seq_filter_t *f, bool has_feedback)
         feedback = sequencer_core_ks_feedback_from_q(resonance);
     }
 
-    if (ft > SEQ_FILTER_LPF24) {
+    if (ft >= SEQ_FILTER_COUNT) {
         *f = (seq_filter_t){0};
         return true;
     }

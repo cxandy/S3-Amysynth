@@ -295,6 +295,7 @@ enum coefs{
 #define FILTER_BPF 2
 #define FILTER_HPF 3
 #define FILTER_LPF24 4
+#define FILTER_NOTCH 5  // LOCAL EDIT: upstream PR candidate (notch filter type)
 // synth[].wave values
 #define SINE 0
 #define PULSE 1

@@ -84,6 +84,8 @@ typedef enum {
 #define SEQ_FILTER_BPF   2
 #define SEQ_FILTER_HPF   3
 #define SEQ_FILTER_LPF24 4
+#define SEQ_FILTER_NOTCH 5
+#define SEQ_FILTER_COUNT 6   /* first invalid value — range guards use this */
 
 /* ── Per-voice filter state (stored alongside the ADSR envelope) ──
  * enabled=false means FILTER_NONE is sent (bypass); enabled=true uses filter_type.

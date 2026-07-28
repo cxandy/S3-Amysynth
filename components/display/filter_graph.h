@@ -13,7 +13,8 @@ extern "C" {
 #define FGRAPH_FILTER_BPF   2
 #define FGRAPH_FILTER_HPF   3
 #define FGRAPH_FILTER_LPF24 4
-#define FGRAPH_FILTER_COUNT 5
+#define FGRAPH_FILTER_NOTCH 5
+#define FGRAPH_FILTER_COUNT 6
 
 /* Frequency + resonance mapping constants (used by synth_ui for en/de-normalise). */
 #define FGRAPH_CUTOFF_HZ_MIN   20.0f

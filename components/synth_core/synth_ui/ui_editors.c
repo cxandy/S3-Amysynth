@@ -1657,9 +1657,9 @@ bool synth_ui_filter_handle_encoder(long delta)
         case 3: {   /* type (melodic/arp only) */
             if (!drone) {
                 int t = (int)s_filter_edit.filter_type + (int)delta;
-                /* Wrap within 1..4 (NONE is toggled via MY_BUTTON_1, not the type cursor). */
-                if (t < 1) t = 4;
-                if (t > 4) t = 1;
+                /* Wrap within 1..COUNT-1 (NONE is toggled via MY_BUTTON_1, not the type cursor). */
+                if (t < 1) t = SEQ_FILTER_COUNT - 1;
+                if (t >= SEQ_FILTER_COUNT) t = 1;
                 s_filter_edit.filter_type = (uint8_t)t;
                 s_fgraph.filter_type      = (uint8_t)t;
             }

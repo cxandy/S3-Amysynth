@@ -21,7 +21,7 @@
 #define FG_NPTS  24
 
 static const char * const s_type_names[FGRAPH_FILTER_COUNT] = {
-    "NONE", "LPF", "BPF", "HPF", "LPF24"
+    "NONE", "LPF", "BPF", "HPF", "LPF24", "NOTCH"
 };
 
 /* ── Response functions (2nd-order biquad magnitude, unclipped) ── */
@@ -47,6 +47,13 @@ static float bpf2_mag(float r, float Q)
     float d1  = 1.0f - r * r;
     float d2  = r / Q;
     return num / sqrtf(d1 * d1 + d2 * d2 + 1e-12f);
+}
+
+static float notch2_mag(float r, float Q)
+{
+    float num = 1.0f - r * r;
+    float d2  = r / Q;
+    return fabsf(num) / sqrtf(num * num + d2 * d2 + 1e-12f);
 }
 
 /* Compute display magnitude (0..1) for a given frequency f (Hz),
@@ -77,6 +84,11 @@ static float filter_display_mag(uint8_t type, float f, float fc, float Q)
         case FGRAPH_FILTER_BPF: {
             float m = bpf2_mag(r, Q);
             /* BPF unity gain at center = 1.0; scale to passband level. */
+            mag = m * FG_PASSBAND_NORM;
+            break;
+        }
+        case FGRAPH_FILTER_NOTCH: {
+            float m = notch2_mag(r, Q);
             mag = m * FG_PASSBAND_NORM;
             break;
         }

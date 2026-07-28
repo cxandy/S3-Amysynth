@@ -250,7 +250,7 @@ void sequencer_core_set_melodic_filter(uint8_t layer_idx, uint8_t track,
     seq_layer_t *layer = &s_layers[layer_idx];
 
     seq_filter_t *dst = &layer->vp[track].filter;
-    dst->filter_type = (f->filter_type < 5) ? f->filter_type : FILTER_NONE;
+    dst->filter_type = (f->filter_type < SEQ_FILTER_COUNT) ? f->filter_type : FILTER_NONE;
     dst->cutoff_hz   = SEQ_CLAMP_F32(f->cutoff_hz,  65.0f, 8000.0f);
     dst->resonance   = SEQ_CLAMP_F32(f->resonance,  0.51f, 8.0f);
     dst->enabled     = f->enabled;
@@ -515,7 +515,7 @@ void sequencer_core_preview_melodic_filter(uint8_t layer_idx, uint8_t track,
     /* Same clamps the committing setter applies, so the audition matches what
      * confirm would store. */
     seq_filter_t tmp = *f;
-    tmp.filter_type       = (f->filter_type < 5) ? f->filter_type : FILTER_NONE;
+    tmp.filter_type       = (f->filter_type < SEQ_FILTER_COUNT) ? f->filter_type : FILTER_NONE;
     tmp.cutoff_hz         = SEQ_CLAMP_F32(f->cutoff_hz,  65.0f, 8000.0f);
     tmp.resonance         = SEQ_CLAMP_F32(f->resonance,  0.51f, 8.0f);
     tmp.filter_env_amount = SEQ_CLAMP_F32(f->filter_env_amount, -8.0f, 8.0f);

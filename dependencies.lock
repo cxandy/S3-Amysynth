@@ -20,19 +20,9 @@ dependencies:
       require: private
       version: '>=4.1'
     source:
-      registry_url: https://components.espressif.com/
+      registry_url: https://components.espressif.com
       type: service
     version: 1.1.1
-  espressif/esp-dsp:
-    component_hash: ed9ac175b14e0414399a2b33c525579414b5bad19a2a67b12ea212def96f9a98
-    dependencies:
-    - name: idf
-      require: private
-      version: '>=4.2'
-    source:
-      registry_url: https://components.espressif.com/
-      type: service
-    version: 1.8.2
   espressif/tinyusb:
     component_hash: 7f73a4159dc95325ceaa4ade5e88734c4e1f5124746a3765cf61dc6157d78798
     dependencies:
@@ -85,11 +75,9 @@ dependencies:
     version: 1.22.2
 direct_dependencies:
 - espressif/button
-- espressif/cmake_utilities
-- espressif/esp-dsp
 - espressif/usb_device_uac
 - idf
 - joltwallet/littlefs
-manifest_hash: 4ae4d7ac7e82138227486ee42d2706fcb09b7d9e584ecb7ea5fb8b73ac0742bd
+manifest_hash: 6a04dfa93ae65f23a8145186a0d7a7ebaad9af11f3edc65b60f497da4a13b561
 target: esp32s3
 version: 3.0.0

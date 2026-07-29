@@ -1,5 +1,6 @@
 #include "amy.h"
 #include "assert.h"
+#include <math.h>
 
 #ifndef M_PI
     #define M_PI 3.14159265358979323846f
@@ -74,7 +75,7 @@ int8_t dsps_biquad_gen_lpf_f32(SAMPLE *coeffs, float f, float qFactor)
         r = MIN(0.99f, sqrtf(a2 / a0));
         float alphadash = (1 - r * r) / (1 + r * r);
         float cosww = c / sqrtf(1 - alphadash * alphadash);
-        if (fabs(cosww) < 1.0) {
+        if (fabsf(cosww) < 1.0f) {
             ww = acosf(cosww);
             a1 = a0 * (-2 * r * cosf(ww));
             a2 = a0 * r * r;

@@ -21,7 +21,7 @@
 
 option(AMYSYNTH_LTO "Compile the hot components with GCC LTO" ON)
 
-# ltrans partitioning: "max" (upstream script's choice) favors parallel link;
+# ltrans partitioning: "max" favors parallel link;
 # "one"/"none" compile the whole program as a single ltrans unit, widening
 # cross-TU inlining scope at the cost of link time. A/B via
 # -DAMYSYNTH_LTO_PARTITION=one + full clean; ELF codegen diff is the judge.

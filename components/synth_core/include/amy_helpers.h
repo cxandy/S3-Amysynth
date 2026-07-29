@@ -11,10 +11,14 @@ extern "C" {
 void amy_helpers_init(void);
 /* Register the AMY render task so debug builds can assert that no ingress
  * helper is ever called from the locked render body. Lock order is
- * s_event_mutex -> amy_queue_lock/SEQ_LOCK; the render body holds
- * amy_queue_lock and must not re-enter this seam. */
+ * s_event_mutex -> ingest FIFO, with amy_queue_lock/SEQ_LOCK taken later on the
+ * pump task; the render body holds amy_queue_lock and must not re-enter this
+ * seam. */
 void amy_helpers_set_render_task(TaskHandle_t render_task);
 amy_event *amy_helpers_event_begin(void);
+/* Hands the event to the ingest pump: a send is NOT an apply. Ordering between
+ * sends is preserved, but the engine applies them asynchronously - never read
+ * AMY state right after a send to observe its effect. Task context only. */
 void amy_helpers_event_send(amy_event *event);
 void amy_helpers_event_cancel(amy_event *event);
 

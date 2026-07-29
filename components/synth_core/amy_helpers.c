@@ -1,17 +1,68 @@
 #include "amy_helpers.h"
 
 #include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 
+#include "esp_heap_caps.h"
+#include "esp_log.h"
+
 /*
  * amy_event is large enough to be risky on small task stacks. First-party synth
- * modules share one scratch event and serialize access around amy_add_event().
+ * modules share one scratch event and serialize access around the ingress seam.
  * Callers must not hold the returned pointer after send/cancel.
  */
 static amy_event s_event;
 static SemaphoreHandle_t s_event_mutex = NULL;
 static TaskHandle_t s_render_task = NULL;
+
+/*
+ * AMY ingest pump.
+ *
+ * amy_add_event() runs AMY's full ingest in the caller's context, and for a
+ * patch-number event that includes the patch-string parse - a multi-KB stack
+ * frame with millisecond-scale runtime. Applying it inline meant two things:
+ * every emitting task had to be sized for that worst case, and the parse ran
+ * while holding the ingress mutex, so a UI gesture could stall the sequencer,
+ * arp and live-play senders for the duration of the parse.
+ *
+ * Instead, producers copy their filled event into a FIFO and one pump task -
+ * holding the single copy of the parse-frame stack rent - drains it into
+ * amy_add_event(). The mutex hold collapses to a memcpy.
+ *
+ * Ordering: the copy into the FIFO happens BEFORE the mutex is released, so
+ * FIFO order equals the global emission order the previous inline scheme
+ * produced. Voice-kill -> patch-load -> note-on chains cannot reorder across
+ * producers, and events carry their own time/sequence fields, so AMY-side
+ * scheduling is untouched.
+ *
+ * Backpressure: a full queue blocks the producer rather than dropping - losing
+ * a patch-define or a note-off is worse than a short stall, and the wait is
+ * strictly narrower than the old "block for someone else's whole parse".
+ *
+ * The pump loop must never acquire a lock beyond what amy_add_event() takes
+ * internally, and must never block on anything but its own queue: it inherits
+ * the failure potential the inline scheme had, where one stalled parse froze
+ * render, the tick-slaved sequencer and all controls at once.
+ */
+#define AMY_INGEST_QUEUE_DEPTH          64
+/* Shallower internal-RAM queue used only when the PSRAM storage alloc fails;
+ * degraded burst headroom is acceptable, refusing to run is not. */
+#define AMY_INGEST_QUEUE_DEPTH_FALLBACK 16
+#define AMY_INGEST_TASK_STACK           8192
+/* Same tier as the UI producers AND the TinyUSB device task: a long patch
+ * parse time-slices with USB exactly as the old inline scheme did, instead of
+ * strictly preempting it. Note the pump does NOT outrank every producer - the
+ * NimBLE host and the render task sit far above it - so drain latency is
+ * bounded by scheduling, not priority alone; the 64-deep FIFO absorbs bursts. */
+#define AMY_INGEST_TASK_PRIO            5
+#define AMY_INGEST_TASK_CORE            0  /* Core 1 is budgeted for the AMY DSP */
+
+static const char *TAG_INGEST = "amy_ingest";
+
+static QueueHandle_t s_ingest_queue = NULL;
+static StaticQueue_t s_ingest_queue_struct;
 
 /* Bounded wait so a leaked begin/send pair asserts loudly instead of hanging
  * every AMY sender. Well above the worst-case legitimate hold (a patch-string
@@ -19,21 +70,59 @@ static TaskHandle_t s_render_task = NULL;
  * contended. */
 #define AMY_HELPERS_EVENT_TIMEOUT_MS 250
 
+static void amy_ingest_task(void *arg)
+{
+    (void)arg;
+    amy_event ev;
+    for (;;) {
+        if (xQueueReceive(s_ingest_queue, &ev, portMAX_DELAY) == pdTRUE) {
+            amy_add_event(&ev);
+        }
+    }
+}
+
 void amy_helpers_init(void)
 {
     if (s_event_mutex == NULL) {
         s_event_mutex = xSemaphoreCreateMutex();
         configASSERT(s_event_mutex != NULL);
     }
+    if (s_ingest_queue == NULL) {
+        /* Queue storage is bulk cold data touched only by memcpy, so it lives
+         * in PSRAM to keep tens of KB out of scarce internal RAM. */
+        const size_t item = sizeof(amy_event);
+        uint8_t *storage = heap_caps_malloc(AMY_INGEST_QUEUE_DEPTH * item,
+                                            MALLOC_CAP_SPIRAM);
+        if (storage != NULL) {
+            s_ingest_queue = xQueueCreateStatic(AMY_INGEST_QUEUE_DEPTH, item,
+                                                storage,
+                                                &s_ingest_queue_struct);
+        } else {
+            ESP_LOGW(TAG_INGEST, "PSRAM queue alloc failed; using internal RAM");
+            s_ingest_queue = xQueueCreate(AMY_INGEST_QUEUE_DEPTH_FALLBACK, item);
+        }
+        /* Lazy init runs single-threaded during startup, before any producer
+         * task exists; a missing queue here means the seam would be used from
+         * a task with nowhere to put events. */
+        configASSERT(s_ingest_queue != NULL);
+
+        BaseType_t ok = xTaskCreatePinnedToCore(amy_ingest_task, "amy_ingest",
+                                                AMY_INGEST_TASK_STACK, NULL,
+                                                AMY_INGEST_TASK_PRIO, NULL,
+                                                AMY_INGEST_TASK_CORE);
+        configASSERT(ok == pdPASS);
+    }
 }
 
 /* Lock hierarchy: s_event_mutex is the OUTERMOST first-party lock. It is held
- * ACROSS amy_add_event(), so the acquisition order is
- *     s_event_mutex -> (amy_queue_lock | SEQ_LOCK).
+ * across the FIFO enqueue only; the AMY-side locks are taken later, on the pump
+ * task, so the acquisition order is
+ *     s_event_mutex -> ingest FIFO, then (amy_queue_lock | SEQ_LOCK) on the pump.
  * The render body (amy_render on Core 1) holds amy_queue_lock for its whole
- * duration, so it must NEVER call an ingress helper. Register its handle here
- * so a debug build can catch that inversion. Optional: the guard is skipped
- * until a handle is set. */
+ * duration, so it must NEVER call an ingress helper: it would both invert that
+ * order and risk blocking on a FIFO the pump cannot drain. Register its handle
+ * here so a debug build can catch that inversion. Optional: the guard is
+ * skipped until a handle is set. */
 void amy_helpers_set_render_task(TaskHandle_t render_task)
 {
     s_render_task = render_task;
@@ -56,10 +145,32 @@ amy_event *amy_helpers_event_begin(void)
     return &s_event;
 }
 
+/* INVARIANT: a send is not an apply. This hands the event to the pump; the
+ * engine applies it later. Reading AMY state (synth[]/msynth[], patch or voice
+ * info) right after a send to observe that send's effect is a bug class - the
+ * read will race the pump. Express dependencies as send ORDER, which the FIFO
+ * preserves exactly, or poll state that self-heals across UI frames. There is
+ * deliberately no flush/drain barrier; add one only when a caller genuinely
+ * needs synchronous apply. */
 void amy_helpers_event_send(amy_event *event)
 {
     configASSERT(event == &s_event);
-    amy_add_event(event);
+    if (s_ingest_queue == NULL) {
+        /* Init failed in a build with assertions compiled out: degrade to the
+         * inline apply rather than dropping the event or crashing. */
+        amy_add_event(event);
+        xSemaphoreGive(s_event_mutex);
+        return;
+    }
+    /* Enqueue BEFORE releasing the mutex: that is what makes FIFO order equal
+     * global emission order across producers. */
+    if (xQueueSend(s_ingest_queue, event,
+                   pdMS_TO_TICKS(AMY_HELPERS_EVENT_TIMEOUT_MS)) != pdTRUE) {
+        /* 64 events of sustained backlog means ingest has stalled system-wide
+         * (wedged or starved pump). Fail loud rather than hang the senders
+         * silently; events are never dropped while assertions are enabled. */
+        configASSERT(0 && "amy_helpers: ingest queue full, pump stalled");
+    }
     xSemaphoreGive(s_event_mutex);
 }
 

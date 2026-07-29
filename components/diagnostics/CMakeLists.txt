@@ -7,7 +7,10 @@
 # reads two AMY counters). Depending on synth_core, usb_audio or display from
 # here would create a cycle, since those are the components that instrument.
 idf_component_register(SRCS
+    "diag_report.c"
     "render_stats.c"
-    PRIV_REQUIRES amy esp_hw_support
+    "rtos_stats.c"
+    "amy_profile.c"
+    PRIV_REQUIRES amy esp_hw_support esp_timer
     INCLUDE_DIRS "include"
 )

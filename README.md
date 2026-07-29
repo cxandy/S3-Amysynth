@@ -355,9 +355,9 @@ Peculiarities when reading it:
 
 ### `CONFIG_AMYSYNTH_HEAP_CHECK` - heap-corruption bisection
 
-Compiles in `HEAP_CHECK()` / `SEQ_HEAP_CHECK()` / `CORE_HEAP_CHECK()` / `ARP_HEAP_CHECK()`
-checkpoints that run `heap_caps_check_integrity_all()` at key init steps and log
-`HEAP OK` / `HEAP CORRUPT` with a label, to pin corruption to its source. Disabled, every
+Compiles in the `DIAG_HEAP_CHECK()` checkpoints (`components/diagnostics/include/diag_heap.h`)
+that run `heap_caps_check_integrity_all()` at key init steps and log `HEAP OK` / `HEAP CORRUPT`
+with a label under the `heapchk` tag, to pin corruption to its source. Disabled, every
 checkpoint compiles to nothing.
 
 > **Watchdog caveat:** with `CONFIG_HEAP_POISONING_COMPREHENSIVE` the integrity scan is very

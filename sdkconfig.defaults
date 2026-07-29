@@ -43,3 +43,15 @@ CONFIG_CU_GCC_LTO_ENABLE=y
 # instruction fetch for all flash-resident (non-IRAM) code.
 #
 CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+#
+# RELIABILITY (2026-07): let the render-clock GPTimer ISR run while the flash
+# cache is disabled (LittleFS project I/O, NVS). Without it the alarm interrupt
+# is masked for the whole cache-off window: pending alarms collapse to one
+# delivery, so the render/sequencer clock silently loses time and the stall is
+# invisible to the overrun counter. With it, ticks keep arriving and a stall
+# surfaces honestly as counted render_overruns. Safe here: the handler is
+# IRAM_ATTR, GPTIMER_OBJ_CACHE_SAFE=y keeps driver state in DRAM, and
+# vTaskNotifyGiveFromISR stays in IRAM (FREERTOS_PLACE_ISR_FUNCTIONS_INTO_FLASH
+# is off).
+#
+CONFIG_GPTIMER_ISR_CACHE_SAFE=y

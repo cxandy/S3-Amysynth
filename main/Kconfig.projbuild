@@ -104,11 +104,11 @@ config AMYSYNTH_HEAP_CHECK
     bool "Enable bisecting heap-integrity checkpoints"
     default n
     help
-        Compiles in HEAP_CHECK() / SEQ_HEAP_CHECK() / CORE_HEAP_CHECK() /
-        ARP_HEAP_CHECK() checkpoints that call heap_caps_check_integrity_all()
-        at key init steps and log HEAP OK / HEAP CORRUPT with a label, to bisect
-        heap corruption to its source. When disabled (default) every checkpoint
-        compiles to nothing (zero overhead).
+        Compiles in the DIAG_HEAP_CHECK() checkpoints (diagnostics component,
+        diag_heap.h) that call heap_caps_check_integrity_all() at key init steps
+        and log HEAP OK / HEAP CORRUPT with a label under the "heapchk" tag, to
+        bisect heap corruption to its source. When disabled (default) every
+        checkpoint compiles to nothing (zero overhead).
 
         NOTE: with CONFIG_HEAP_POISONING_COMPREHENSIVE the integrity scan is very
         slow; running many checks back-to-back inside app_main can starve the

@@ -15,7 +15,7 @@
 #include "seq_defaults.h"
 #include "sdkconfig.h"
 #include "esp_log.h"
-#include "esp_heap_caps.h"
+#include "diag_heap.h"
 #include <string.h>
 #include <math.h>
 #include "freertos/semphr.h"
@@ -27,19 +27,6 @@
 
 /* ── Logging tag — static per TU, one copy each, no ODR conflict ────── */
 static const char * const TAG = "seq_core";
-
-/* ── Heap integrity check, gated by Kconfig ─────────────────────────── */
-#if CONFIG_AMYSYNTH_HEAP_CHECK
-#define CORE_HEAP_CHECK(where) do { \
-    if (!heap_caps_check_integrity_all(true)) { \
-        ESP_LOGE(TAG, "HEAP CORRUPT detected at: %s", where); \
-    } else { \
-        ESP_LOGI(TAG, "HEAP OK at: %s", where); \
-    } \
-} while (0)
-#else
-#define CORE_HEAP_CHECK(where) do { (void)(where); } while (0)
-#endif
 
 /* ── External dependency ─────────────────────────────────────────────── */
 extern uint32_t sequencer_ticks(void);

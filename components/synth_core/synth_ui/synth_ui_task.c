@@ -24,7 +24,7 @@
 #include "freertos/semphr.h"
 #include "seq_clamp.h"
 #include "esp_log.h"
-#include "esp_heap_caps.h"
+#include "diag_heap.h"
 #include "sdkconfig.h"
 #if CONFIG_SYNTH_WIRELESS
 #include "radio_manager.h"
@@ -48,21 +48,6 @@ static volatile uint8_t s_layer_delete_idx     = 0;
  * path (memset + patch-string parse via amy_send_patch) is too heavy for the
  * esp_timer task's 3584-byte stack, so it defers here like delete. */
 static volatile bool    s_layer_add_pending    = false;
-
-/* Bisect heap corruption in the init chain. Gated by CONFIG_AMYSYNTH_HEAP_CHECK
- * (menuconfig: Heap Diagnostics), off by default and compiling to nothing. When
- * on, the first "HEAP CORRUPT" line names the sub-step that smashed the heap. */
-#if CONFIG_AMYSYNTH_HEAP_CHECK
-#define SEQ_HEAP_CHECK(where) do { \
-    if (!heap_caps_check_integrity_all(true)) { \
-        ESP_LOGE(TAG_TASK, "HEAP CORRUPT detected at: %s", where); \
-    } else { \
-        ESP_LOGI(TAG_TASK, "HEAP OK at: %s", where); \
-    } \
-} while (0)
-#else
-#define SEQ_HEAP_CHECK(where) do { (void)(where); } while (0)
-#endif
 
 static void synth_ui_task(void *pvParameters)
 {
@@ -235,16 +220,16 @@ void synth_ui_init(u8g2_t *u8g2)
     seq_state.menu_cursor = 0;
     seq_state.menu_editing = false;
 
-    SEQ_HEAP_CHECK("ui_init: entry");
+    DIAG_HEAP_CHECK("ui_init: entry");
     amy_helpers_init();
     sequencer_core_init();
-    SEQ_HEAP_CHECK("ui_init: after sequencer_core_init");
+    DIAG_HEAP_CHECK("ui_init: after sequencer_core_init");
     arp_core_init();
-    SEQ_HEAP_CHECK("ui_init: after arp_core_init");
+    DIAG_HEAP_CHECK("ui_init: after arp_core_init");
     drone_core_init();
-    SEQ_HEAP_CHECK("ui_init: after drone_core_init");
+    DIAG_HEAP_CHECK("ui_init: after drone_core_init");
     drone_std_core_init();
-    SEQ_HEAP_CHECK("ui_init: after drone_std_core_init");
+    DIAG_HEAP_CHECK("ui_init: after drone_std_core_init");
 #if CONFIG_SYNTH_CUSTOM_FM
     fm_voice_default(&s_fm_voice);
 #endif
@@ -252,11 +237,11 @@ void synth_ui_init(u8g2_t *u8g2)
     additive_voice_default(&s_additive_voice);
 #endif
     sample_rec_init();
-    SEQ_HEAP_CHECK("ui_init: after sample_rec_init");
+    DIAG_HEAP_CHECK("ui_init: after sample_rec_init");
 
     /* Add drum layer (index 0). */
     synth_ui_add_layer(SEQ_LAYER_DRUM, SEQ_STEPS);
-    SEQ_HEAP_CHECK("ui_init: after add_layer(drum)");
+    DIAG_HEAP_CHECK("ui_init: after add_layer(drum)");
 
     /* Default pattern: 4-on-the-floor house groove across all 4 tracks so the
      * boot loop is immediately musical; the velocity accent/jitter engine adds
@@ -274,9 +259,9 @@ void synth_ui_init(u8g2_t *u8g2)
     drum->grid[3][7]  = drum->grid[3][15] = true;   /* perc  */
 
     sync_layer_to_core(0);
-    SEQ_HEAP_CHECK("ui_init: after sync_layer_to_core(0)");
+    DIAG_HEAP_CHECK("ui_init: after sync_layer_to_core(0)");
     sequencer_core_set_playing(true);
-    SEQ_HEAP_CHECK("ui_init: after set_playing");
+    DIAG_HEAP_CHECK("ui_init: after set_playing");
 
     /* First melodic layer. Added HERE, before the UI task exists: running
      * single-threaded on the main stack, before the applier is registered,
@@ -284,7 +269,7 @@ void synth_ui_init(u8g2_t *u8g2)
      * here - deferring boot work into the seq_ui drain buys nothing and once
      * wedged boot on a stack overflow under s_event_mutex + amy_queue_lock. */
     synth_ui_add_layer(SEQ_LAYER_MELODIC, SEQ_STEPS);
-    SEQ_HEAP_CHECK("ui_init: after add_layer(melodic)");
+    DIAG_HEAP_CHECK("ui_init: after add_layer(melodic)");
 
 #if CONFIG_SYNTH_PROJECT_SELFTEST
     /* Snapshot round-trip against the boot-default state. Must run HERE -

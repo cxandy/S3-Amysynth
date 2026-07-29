@@ -9,23 +9,9 @@
 #include "seq_clamp.h"
 #include "sdkconfig.h"
 #include "esp_log.h"
-#include "esp_heap_caps.h"
+#include "diag_heap.h"
 #include <math.h>
 #include <string.h>
-
-/* Heap-corruption bisect for arp init; compiles to nothing when the Kconfig
- * flag is off (default). */
-#if CONFIG_AMYSYNTH_HEAP_CHECK
-#define ARP_HEAP_CHECK(where) do { \
-    if (!heap_caps_check_integrity_all(true)) { \
-        ESP_LOGE(TAG, "HEAP CORRUPT detected at: %s", where); \
-    } else { \
-        ESP_LOGI(TAG, "HEAP OK at: %s", where); \
-    } \
-} while (0)
-#else
-#define ARP_HEAP_CHECK(where) do { (void)(where); } while (0)
-#endif
 
 #ifndef CONFIG_SEQ_ARP_DEFAULT_ENABLED
 #define CONFIG_SEQ_ARP_DEFAULT_ENABLED 0
@@ -409,9 +395,9 @@ void arp_core_init(void)
     if (s_arp.scale_index >= quantizer_scale_count()) s_arp.scale_index = 0;
     for (uint8_t i = 0; i < ARP_MAX_SLOTS; i++) s_arp.slots[i] = -1;
 
-    ARP_HEAP_CHECK("arp_init: before arp_configure");
+    DIAG_HEAP_CHECK("arp_init: before arp_configure");
     arp_rebuild();
-    ARP_HEAP_CHECK("arp_init: after arp_configure");
+    DIAG_HEAP_CHECK("arp_init: after arp_configure");
     /* If the arp boots enabled, let the first service tick emit rather than
      * emitting inline during init. */
     arp_mark_dirty();

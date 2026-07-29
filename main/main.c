@@ -24,6 +24,7 @@
 #include "esp_heap_caps.h"
 #include "render_clock.h"
 #include "render_stats.h"
+#include "diag_heap.h"
 #include "esp_compiler.h"
 #include "soc/gpio_num.h"
 #include "my_buttons.h"
@@ -42,21 +43,6 @@
 #endif
 
 static const char *TAG = "main"; // For ESP_LOG and related logs in this file
-
-/* Heap-corruption bisect probe; compiles to nothing unless
- * CONFIG_AMYSYNTH_HEAP_CHECK. Slow under comprehensive poisoning - enable only
- * while hunting. */
-#if CONFIG_AMYSYNTH_HEAP_CHECK
-#define HEAP_CHECK(where) do { \
-    if (!heap_caps_check_integrity_all(true)) { \
-        ESP_LOGE(TAG, "HEAP CORRUPT detected at: %s", where); \
-    } else { \
-        ESP_LOGI(TAG, "HEAP OK at: %s", where); \
-    } \
-} while (0)
-#else
-#define HEAP_CHECK(where) do { (void)(where); } while (0)
-#endif
 
 // Rotary encoder pins
 #define ENCODER_PIN_A GPIO_NUM_40
@@ -935,9 +921,9 @@ void app_main(void)
 
     ESP_LOGI(TAG, "Starting AMY synth engine... (audio=%d, Fs=%d)", amy_cfg.audio, AMY_SAMPLE_RATE);
     ESP_LOGI(TAG, "[startup] before amy_start");
-    HEAP_CHECK("before amy_start");
+    DIAG_HEAP_CHECK("before amy_start");
     amy_start(amy_cfg);
-    HEAP_CHECK("after amy_start");
+    DIAG_HEAP_CHECK("after amy_start");
 
 #if defined(CONFIG_AMY_PROFILE_COARSE) || defined(CONFIG_AMY_PROFILE_FULL)
     // Characterize profiler timestamp cost before the dumps below.
@@ -946,7 +932,7 @@ void app_main(void)
 
     // Our USB Audio (must be after TinyUSB init)
     ESP_ERROR_CHECK(usb_audio_init());
-    HEAP_CHECK("after usb_audio_init");
+    DIAG_HEAP_CHECK("after usb_audio_init");
 
     /* Project storage: non-fatal if absent/corrupt. Mounted before
      * synth_ui_init so the snapshot selftest runs single-threaded against the
@@ -960,7 +946,7 @@ void app_main(void)
     /* synth_ui_init adds the boot layers (drum + first melodic) itself,
      * single-threaded on this task's stack, before the UI task starts. */
     synth_ui_init(s_u8g2);
-    HEAP_CHECK("after synth_ui_init");
+    DIAG_HEAP_CHECK("after synth_ui_init");
 
 #if CONFIG_SYNTH_WIRELESS
     /* Wire the MIDI transports to the live-play voice. wireless knows
@@ -1042,7 +1028,7 @@ void app_main(void)
             s_button_queue = NULL;
         }
     }
-    HEAP_CHECK("before my_buttons_init");
+    DIAG_HEAP_CHECK("before my_buttons_init");
     esp_err_t btn_err = my_buttons_init();
     if (btn_err != ESP_OK) {
         ESP_LOGE(TAG, "my_buttons_init failed: %s", esp_err_to_name(btn_err));
@@ -1065,8 +1051,6 @@ void app_main(void)
     // Idle diagnostics loop.
 #if CONFIG_AMYSYNTH_RTOS_STATS
     const uint32_t idle_loop_ms = CONFIG_AMYSYNTH_RTOS_STATS_PERIOD_MS;
-      void heap_caps_get_info( multi_heap_info_t *info, uint32_t caps );
-     void heap_caps_print_heap_info( uint32_t caps );
 #elif defined(CONFIG_AMY_PROFILE_COARSE) || defined(CONFIG_AMY_PROFILE_FULL)
     const uint32_t idle_loop_ms = CONFIG_AMY_PROFILE_INTERVAL_MS;
 #else

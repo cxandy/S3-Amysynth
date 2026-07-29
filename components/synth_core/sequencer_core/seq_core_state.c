@@ -76,9 +76,9 @@ void sequencer_core_init(void)
     memset(s_lfo_phase, 0, MAX_LAYERS * SEQ_TRACKS * sizeof(s_lfo_phase[0][0]));
     memset(s_lfo_hz,    0, MAX_LAYERS * SEQ_TRACKS * sizeof(s_lfo_hz[0][0]));
     memset(s_lfo_rnd,   0, MAX_LAYERS * SEQ_TRACKS * sizeof(s_lfo_rnd[0][0]));
-    CORE_HEAP_CHECK("core_init: before push_tempo");
+    DIAG_HEAP_CHECK("core_init: before push_tempo");
     sequencer_push_tempo(s_bpm);
-    CORE_HEAP_CHECK("core_init: after push_tempo");
+    DIAG_HEAP_CHECK("core_init: after push_tempo");
     ESP_LOGI(TAG, "sequencer_core initialized");
 }
 
@@ -178,9 +178,9 @@ uint8_t sequencer_core_add_layer(seq_layer_type_t type, uint8_t num_steps)
         }
     }
 
-    CORE_HEAP_CHECK("add_layer: before configure_synth");
+    DIAG_HEAP_CHECK("add_layer: before configure_synth");
     sequencer_configure_synth(idx);
-    CORE_HEAP_CHECK("add_layer: after configure_synth");
+    DIAG_HEAP_CHECK("add_layer: after configure_synth");
     /* Fully initialised: now expose it to the tick path. */
     s_num_layers++;
     /* Check the permanent-drum-layer invariant here once rather than trusting

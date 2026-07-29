@@ -98,64 +98,6 @@ config RENDER_CLOCK_I2S_DMA_DESC_NUM
 
 endmenu
 
-menu "Heap Diagnostics"
-
-config AMYSYNTH_HEAP_CHECK
-    bool "Enable bisecting heap-integrity checkpoints"
-    default n
-    help
-        Compiles in the DIAG_HEAP_CHECK() checkpoints (diagnostics component,
-        diag_heap.h) that call heap_caps_check_integrity_all() at key init steps
-        and log HEAP OK / HEAP CORRUPT with a label under the "heapchk" tag, to
-        bisect heap corruption to its source. When disabled (default) every
-        checkpoint compiles to nothing (zero overhead).
-
-        NOTE: with CONFIG_HEAP_POISONING_COMPREHENSIVE the integrity scan is very
-        slow; running many checks back-to-back inside app_main can starve the
-        idle task and trip the task watchdog. Only enable this for debugging.
-
-endmenu
-
-menu "RTOS Diagnostics"
-
-config AMYSYNTH_RTOS_STATS
-    bool "Enable periodic RTOS runtime-stats diagnostic dump"
-    default n
-    help
-        When enabled, app_main periodically prints the FreeRTOS task list,
-        per-task CPU runtime %, per-core load, and per-task stack high-water
-        marks via ESP_LOGI. Profiling aid; leave off for release builds.
-
-config AMYSYNTH_RTOS_STATS_PERIOD_MS
-    int "RTOS stats dump period (ms)"
-    depends on AMYSYNTH_RTOS_STATS
-    default 5000
-    range 1000 60000
-    help
-        Interval between RTOS runtime-stats dumps emitted by app_main.
-
-endmenu
-
-menu "Render Diagnostics"
-
-config AMYSYNTH_RENDER_STATS
-    bool "Enable per-block render-time statistics"
-    default n
-    help
-        Times every render block with the CPU cycle counter and keeps a
-        min/mean/p99/max window, a 16-bucket histogram of block time as a
-        fraction of the 5.333 ms budget, and a worst-block snapshot
-        (delta-queue depth, sequencer-tick coincidence) for outlier
-        attribution. Reported and reset from the app_main idle loop.
-        When disabled (default) every call compiles to nothing.
-
-config AMYSYNTH_RENDER_STATS_SPIKE_PCT
-    int "Spike threshold (% of block budget)"
-    depends on AMYSYNTH_RENDER_STATS
-    default 80
-    range 10 100
-    help
-        Blocks at or above this percentage of the block budget are counted
-        as spikes in the periodic report.
-
-endmenu
+# The heap / RTOS / render-timing diagnostic menus moved to
+# components/diagnostics/Kconfig, alongside the code they gate. Symbol names
+# are unchanged; they now appear under Component config -> Diagnostics.

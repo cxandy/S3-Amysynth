@@ -1,0 +1,71 @@
+menu "Diagnostics"
+
+# Symbol names are unchanged from when these lived in main/Kconfig.projbuild:
+# they moved here to sit with the code they gate, and renaming them would
+# invalidate every existing sdkconfig for no benefit. Only the menuconfig
+# location changed (top level -> Component config -> Diagnostics).
+
+comment "Heap"
+
+config AMYSYNTH_HEAP_CHECK
+    bool "Enable bisecting heap-integrity checkpoints"
+    default n
+    help
+        Compiles in the DIAG_HEAP_CHECK() checkpoints (diag_heap.h) that call
+        heap_caps_check_integrity_all() at key init steps and log HEAP OK /
+        HEAP CORRUPT with a label under the "heapchk" tag, to bisect heap
+        corruption to its source. When disabled (default) every checkpoint
+        compiles to nothing (zero overhead).
+
+        NOTE: with CONFIG_HEAP_POISONING_COMPREHENSIVE the integrity scan is very
+        slow; running many checks back-to-back inside app_main can starve the
+        idle task and trip the task watchdog. Only enable this for debugging.
+
+comment "RTOS"
+
+config AMYSYNTH_RTOS_STATS
+    bool "Enable periodic RTOS runtime-stats diagnostic dump"
+    default n
+    help
+        When enabled, the reporting loop periodically prints the FreeRTOS task
+        list, per-task CPU runtime %, per-core load, and per-task stack
+        high-water marks via ESP_LOGI. Profiling aid; leave off for release
+        builds.
+
+        Has hard prerequisites this symbol does not select:
+        FREERTOS_USE_TRACE_FACILITY (uxTaskGetSystemState),
+        FREERTOS_GENERATE_RUN_TIME_STATS (ulRunTimeCounter) and
+        FREERTOS_VTASKLIST_INCLUDE_COREID (TaskStatus_t.xCoreID).
+
+config AMYSYNTH_RTOS_STATS_PERIOD_MS
+    int "RTOS stats dump period (ms)"
+    depends on AMYSYNTH_RTOS_STATS
+    default 5000
+    range 1000 60000
+    help
+        Interval between RTOS runtime-stats dumps. Also sets the period of the
+        whole reporting loop (see diag_report_interval_ms()).
+
+comment "Render timing"
+
+config AMYSYNTH_RENDER_STATS
+    bool "Enable per-block render-time statistics"
+    default n
+    help
+        Times every render block with the CPU cycle counter and keeps a
+        min/mean/p99/max window, a 16-bucket histogram of block time as a
+        fraction of the 5.333 ms budget, and a worst-block snapshot
+        (delta-queue depth, sequencer-tick coincidence) for outlier
+        attribution. Reported and reset from the idle reporting loop.
+        When disabled (default) every call compiles to nothing.
+
+config AMYSYNTH_RENDER_STATS_SPIKE_PCT
+    int "Spike threshold (% of block budget)"
+    depends on AMYSYNTH_RENDER_STATS
+    default 80
+    range 10 100
+    help
+        Blocks at or above this percentage of the block budget are counted
+        as spikes in the periodic report.
+
+endmenu

@@ -33,6 +33,8 @@ static const ble_uuid128_t midi_chr_uuid =
                      0x12, 0x41, 0x68, 0x38, 0xDB, 0xE5, 0x72, 0x77);
 
 static volatile bool s_connected = false;
+static volatile bool s_synced = false;    /* host reached sync; cleared on reset */
+static volatile bool s_stopping = false;  /* teardown begun: stop re-advertising */
 static void (*s_disconnect_cb)(void) = 0;
 static uint8_t s_own_addr_type = 0;
 
@@ -159,6 +161,11 @@ static int ble_midi_gap_event(struct ble_gap_event *event, void *arg)
 
 static void ble_midi_advertise(void)
 {
+    /* GAP calls against a host that is stopping or not yet synced return
+     * BLE_HS_EDISABLED; the disconnect/adv-complete events that fire during
+     * teardown would otherwise spam retries here. */
+    if (s_stopping || !ble_hs_synced()) return;
+
     /* 31-byte legacy ADV payload: flags (3) + 128-bit service UUID (18).
      * The device name does not fit alongside them, so it goes in the scan
      * response - standard practice for BLE-MIDI peripherals. */
@@ -205,6 +212,7 @@ static void ble_midi_on_sync(void)
         ESP_LOGE(TAG, "infer_auto rc=%d", rc);
         return;
     }
+    s_synced = true;
     ble_midi_advertise();
     ESP_LOGI(TAG, "advertising as \"%s\"", BLE_MIDI_DEVICE_NAME);
 }
@@ -212,12 +220,15 @@ static void ble_midi_on_sync(void)
 static void ble_midi_on_reset(int reason)
 {
     s_connected = false;
+    s_synced = false;
     ESP_LOGW(TAG, "host reset, reason %d", reason);
 }
 
 int ble_midi_setup(void)
 {
     s_connected = false;
+    s_synced = false;
+    s_stopping = false;
 
     ble_hs_cfg.sync_cb  = ble_midi_on_sync;
     ble_hs_cfg.reset_cb = ble_midi_on_reset;
@@ -255,6 +266,16 @@ void ble_midi_host_task(void *param)
 bool ble_midi_connected(void)
 {
     return s_connected;
+}
+
+bool ble_midi_synced(void)
+{
+    return s_synced;
+}
+
+void ble_midi_prepare_stop(void)
+{
+    s_stopping = true;
 }
 
 void ble_midi_set_disconnect_cb(void (*cb)(void))

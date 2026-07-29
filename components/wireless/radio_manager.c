@@ -10,6 +10,8 @@
 #include "esp_heap_caps.h"
 #include "nvs_flash.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 static const char *TAG = "radio_mgr";
 
@@ -19,12 +21,17 @@ static const char *TAG = "radio_mgr";
 #define RADIO_MIN_FREE_INTERNAL   (40 * 1024)
 #define RADIO_MIN_LARGEST_BLOCK   (16 * 1024)
 
+/* Controller bring-up + host sync normally lands within tens of ms; a host
+ * that has not synced by now never will (bad config, controller fault). */
+#define RADIO_SYNC_TIMEOUT_MS     5000
+
 enum { REQ_NONE = 0, REQ_START, REQ_STOP };
 
 static volatile uint8_t     s_req   = REQ_NONE;
 static radio_state_t        s_state = RADIO_OFF;
 static const radio_hooks_t *s_hooks = 0;
 static bool                 s_nvs_ready = false;
+static TickType_t           s_start_tick = 0;
 
 void radio_manager_init(const radio_hooks_t *hooks)
 {
@@ -106,22 +113,29 @@ static void radio_session_start(void)
     }
     nimble_port_freertos_init(ble_midi_host_task);
 
-    if (s_hooks && s_hooks->session_start) s_hooks->session_start();
-    s_state = RADIO_ACTIVE;
-    ESP_LOGI(TAG, "BLE MIDI session up (internal free=%u)",
-             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    /* The stack is allocated but the host has not synced with the controller
+     * yet; the session is confirmed ACTIVE from service() once ble_midi
+     * reports sync (or torn down if it never arrives). */
+    s_start_tick = xTaskGetTickCount();
+    s_state = RADIO_STARTING;
 }
 
 static void radio_session_stop(void)
 {
     s_state = RADIO_STOPPING;
+    ble_midi_prepare_stop();          /* no re-advertising under teardown */
     /* Release held live notes while the ingest path is still coherent. */
     if (s_hooks && s_hooks->session_stop) s_hooks->session_stop();
 
     int rc = nimble_port_stop();      /* blocks until the host quiesces; the
                                        * host task then self-deletes */
     if (rc != 0) {
-        ESP_LOGE(TAG, "nimble_port_stop rc=%d", rc);
+        /* Deinit over a host that refused to stop dereferences freed or
+         * never-built stack state (ble_att_svr ctx). Leaking the session's
+         * heap is the safe failure; a power cycle reclaims it. */
+        ESP_LOGE(TAG, "nimble_port_stop rc=%d - stack left allocated", rc);
+        s_state = RADIO_FAILED_ERR;
+        return;
     }
     nimble_port_deinit();             /* disables + deinits the controller,
                                        * returning the stack's heap */
@@ -132,6 +146,21 @@ static void radio_session_stop(void)
 
 void radio_manager_service(void)
 {
+    if (s_state == RADIO_STARTING) {
+        if (ble_midi_synced()) {
+            if (s_hooks && s_hooks->session_start) s_hooks->session_start();
+            s_state = RADIO_ACTIVE;
+            ESP_LOGI(TAG, "BLE MIDI session up (internal free=%u)",
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+        } else if ((xTaskGetTickCount() - s_start_tick) >
+                   pdMS_TO_TICKS(RADIO_SYNC_TIMEOUT_MS)) {
+            ESP_LOGE(TAG, "host did not sync within %d ms - tearing down",
+                     RADIO_SYNC_TIMEOUT_MS);
+            radio_session_stop();
+            if (s_state == RADIO_OFF) s_state = RADIO_FAILED_ERR;
+        }
+    }
+
     uint8_t req = s_req;
     if (req == REQ_NONE) return;
     s_req = REQ_NONE;
@@ -140,7 +169,8 @@ void radio_manager_service(void)
         (s_state == RADIO_OFF || s_state == RADIO_FAILED_RAM ||
          s_state == RADIO_FAILED_ERR)) {
         radio_session_start();
-    } else if (req == REQ_STOP && s_state == RADIO_ACTIVE) {
+    } else if (req == REQ_STOP &&
+               (s_state == RADIO_ACTIVE || s_state == RADIO_STARTING)) {
         radio_session_stop();
     }
 }

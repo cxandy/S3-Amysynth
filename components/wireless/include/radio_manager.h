@@ -17,11 +17,15 @@ extern "C" {
 
 typedef enum {
     RADIO_OFF = 0,
-    RADIO_STARTING,     /* transient inside one service() call */
-    RADIO_ACTIVE,       /* advertising or connected */
+    RADIO_STARTING,     /* stack allocated, waiting for host-controller sync;
+                         * promoted to ACTIVE (or torn down on timeout) by a
+                         * later service() call */
+    RADIO_ACTIVE,       /* synced: advertising or connected */
     RADIO_STOPPING,     /* transient inside one service() call */
     RADIO_FAILED_RAM,   /* pre-flight refusal: not enough internal heap */
-    RADIO_FAILED_ERR,   /* stack init failed; session unwound */
+    RADIO_FAILED_ERR,   /* stack init/teardown failed; session unusable. If
+                         * teardown failed the stack's heap stays allocated -
+                         * deinit over a live host is the one forbidden move */
 } radio_state_t;
 
 /* Hooks into the synth application, registered once at boot from main so

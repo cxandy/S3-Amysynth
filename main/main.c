@@ -23,6 +23,7 @@
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "render_clock.h"
+#include "render_stats.h"
 #include "esp_compiler.h"
 #include "soc/gpio_num.h"
 #include "my_buttons.h"
@@ -238,6 +239,9 @@ static void amy_usb_render_task(void *arg) {
             s_render_overruns += (ticks - 1);  // diagnostic only
         }
 
+        render_stats_block_begin();
+        uint32_t tick_hooks_pre = s_seq_tick_hook_count;
+
         int16_t *block = amy_update();           // synthesizes everything / advances AMY sample clock
         if (likely(block != NULL)) {
             s_render_block_count++;
@@ -271,6 +275,9 @@ static void amy_usb_render_task(void *arg) {
             }
 #endif
         }
+        // Measures the full block's work (DSP + sampler/scope hooks + USB
+        // ring write); the seq-tick flag feeds the worst-block snapshot.
+        render_stats_block_end(s_seq_tick_hook_count != tick_hooks_pre);
     }
 }
 static void dispatch_button_event(my_button_id_t button_id, button_event_t event);
@@ -1073,6 +1080,7 @@ void app_main(void)
 #if CONFIG_USB_AUDIO_DIAGNOSTICS
         main_log_audio_diagnostics();
 #endif
+        render_stats_report();   // no-op unless CONFIG_AMYSYNTH_RENDER_STATS
 #if CONFIG_AMYSYNTH_RTOS_STATS
         log_rtos_stats();
 #endif

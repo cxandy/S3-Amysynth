@@ -233,3 +233,20 @@ void sequencer_core_trig_reset_all(void);            /* called on layer add/dele
  * resolved note moves away from a chord, so no scheduled extra tone survives
  * the transition. */
 void sequencer_core_trig_clear_track_chord(uint8_t layer_idx, uint8_t track);
+/* One-shot schedule step_ratchet sub-hits for a decorated fire: velocity,
+ * pitch/chord/transform resolve, tag emission via amy_helpers_note_send().
+ * MUST NOT be called from the render task - see seq_trig_pump.c. */
+void trig_schedule_ratchets(uint8_t layer_idx, const seq_layer_t *layer,
+                            uint8_t track, uint8_t step, uint32_t now_ticks);
+
+/* From seq_trig_pump.c - moves trig_schedule_ratchets() off the render task.
+ * sequencer_core_service_tick() runs on amy_usb_render_task and must never
+ * block or call into the amy_helpers ingress seam directly (that's what
+ * trips amy_helpers_event_begin's render-task assert); it instead hands a
+ * tiny job descriptor to a dedicated consumer task via a non-blocking
+ * enqueue. All decision-making (edge detection, condition eval, probability
+ * roll, the trig RNG) stays on the render task unchanged - only the AMY-facing
+ * emission tail moves. See docs/plans/decorated-trig-render-task-fix-2026-07-29.md. */
+void sequencer_core_trig_pump_init(void);
+void sequencer_core_trig_enqueue(uint8_t layer_idx, uint8_t track, uint8_t step,
+                                 uint32_t now_ticks);

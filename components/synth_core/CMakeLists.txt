@@ -46,6 +46,7 @@ idf_component_register(SRCS "live_play.c" "amy_helpers.c" "amy_fx.c" "arp_core.c
                             "sequencer_core/seq_core_progression.c"
                             "sequencer_core/seq_core_tempo.c"
                             "sequencer_core/seq_core_trig.c"
+                            "sequencer_core/seq_trig_pump.c"
                             "sequencer_core/seq_core_snapshot.c"
                             "sequencer_core/seq_chords.c"
                             "custompatches/drone_core.c"

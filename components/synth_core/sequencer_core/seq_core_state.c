@@ -57,6 +57,7 @@ static const uint8_t SEQ_DRUM_DEFAULT_NOTE[SEQ_TRACKS] = {
 void sequencer_core_init(void)
 {
     amy_helpers_init();
+    sequencer_core_trig_pump_init();
     s_num_layers = 0;
     s_next_melodic_synth = SEQ_MEL_SYNTH_BASE;
     memset(s_layers, 0, sizeof(s_layers));

@@ -26,6 +26,7 @@
 #include "render_stats.h"
 #include "diag_heap.h"
 #include "diag_report.h"
+#include "diag_mem.h"
 #include "amy_profile.h"
 #include "esp_compiler.h"
 #include "soc/gpio_num.h"
@@ -679,6 +680,11 @@ static void encoder_init_task(void *pvParameters)
              (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
 
+    // Where the notable allocations actually landed. Same reasoning as the
+    // baseline above: init is done, and placement does not change after this,
+    // so once here beats polling.
+    diag_mem_report();
+
     vTaskDelete(NULL);
 }
 
@@ -719,6 +725,7 @@ static void gamma9001_pcm_mount(void)
     if (esp_partition_mmap(part, 0, bytes, ESP_PARTITION_MMAP_DATA,
                            &map, &handle) == ESP_OK) {
         amy_set_gamma9001_pcm((const int16_t *)map);
+        diag_mem_track("drums-pcm", map, bytes);
         ESP_LOGI(TAG, "gamma9001: drum banks flash-mapped (%u KB)",
                  (unsigned)(bytes / 1024u));
         return;
@@ -737,6 +744,7 @@ static void gamma9001_pcm_mount(void)
         return;
     }
     amy_set_gamma9001_pcm(buf);
+    diag_mem_track("drums-pcm", buf, bytes);
     ESP_LOGI(TAG, "gamma9001: drum banks copied to PSRAM (%u KB; flash mmap unavailable)",
              (unsigned)(bytes / 1024u));
 }

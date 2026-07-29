@@ -8,6 +8,7 @@
 # here would create a cycle, since those are the components that instrument.
 idf_component_register(SRCS
     "diag_report.c"
+    "diag_mem.c"
     "render_stats.c"
     "rtos_stats.c"
     "amy_profile.c"

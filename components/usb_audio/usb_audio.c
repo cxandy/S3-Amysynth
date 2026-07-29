@@ -7,6 +7,7 @@
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_compiler.h"   // likely()/unlikely() branch hints
+#include "diag_mem.h"
 #include <stdatomic.h>
 #include <string.h>
 
@@ -191,6 +192,12 @@ esp_err_t usb_audio_init(void)
     // Zero the ring: a level peek or the host's first read must never see
     // uninitialized PSRAM as (loud) audio.
     memset(s_ring_buffer, 0, RING_BUFFER_SIZE * sizeof(int16_t));
+
+    // A SPIRAM cap request can be served from internal RAM under pressure, and
+    // this buffer is large enough that the fallback would matter. Record where
+    // it actually landed.
+    diag_mem_track("usb-ring", s_ring_buffer,
+                   RING_BUFFER_SIZE * sizeof(int16_t));
 
     atomic_store_explicit(&s_write_idx, 0, memory_order_relaxed);
     atomic_store_explicit(&s_read_idx, 0, memory_order_relaxed);

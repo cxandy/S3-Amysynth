@@ -143,7 +143,7 @@ extern uint32_t amy_gamma9001_pcm_bytes(void);
 #define AMY_MAX_CV_IN 2
 
 // LOCAL EDIT (S3-Amysynth): Kconfig-gated fixed-point toggle. See AMY-EDITS.md.
-// On ESP32-S3 the hardware FPU makes float equal or faster; default is float.
+// Kconfig default is y (fixed-point s8.23, exact SMUL64R multiplies on S3).
 // Toggle via menuconfig: AMY Synthesizer → "Use fixed-point arithmetic".
 #ifdef CONFIG_AMY_USE_FIXEDPOINT
 #define AMY_USE_FIXEDPOINT

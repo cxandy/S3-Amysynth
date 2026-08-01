@@ -21,7 +21,7 @@
 #define FG_NPTS  24
 
 static const char * const s_type_names[FGRAPH_FILTER_COUNT] = {
-    "NONE", "LPF", "BPF", "HPF", "LPF24", "NOTCH"
+    "NONE", "LPF", "BPF", "HPF", "LPF24", "NOTCH", "PHASR"
 };
 
 /* ── Response functions (2nd-order biquad magnitude, unclipped) ── */
@@ -56,6 +56,56 @@ static float notch2_mag(float r, float Q)
     return fabsf(num) / sqrtf(num * num + d2 * d2 + 1e-12f);
 }
 
+/* 6-stage allpass phaser (AMY FILTER_PHASER): six identical first-order
+ * allpasses H1 = (a + z^-1)/(1 + a z^-1), feedback fb around the chain with a
+ * one-sample loop delay, then a 50/50 dry/wet sum. |H1| = 1, so only the chain
+ * phase moves — the dry+wet sum nulls at the -180/-540/-900 degree crossings,
+ * giving 3 notches with the middle one at the cutoff. Coefficient mapping
+ * mirrors the engine (filters.c): a from tan(pi*fc/fs), fb linear in Q up to
+ * 0.85. Unlike the biquads this depends on absolute frequency, hence f and fc
+ * instead of their ratio; fs must match AMY_SAMPLE_RATE. */
+static float phaser_mag(float f, float fc, float Q)
+{
+    const float fs = 48000.0f;
+    float t  = tanf((float)M_PI * fc / fs);
+    float a  = (t - 1.0f) / (t + 1.0f);
+    float fb = 0.85f * (Q - FGRAPH_RES_MIN) / (FGRAPH_RES_MAX - FGRAPH_RES_MIN);
+    fb = SEQ_CLAMP_F32(fb, 0.0f, 0.85f);
+
+    float w  = 2.0f * (float)M_PI * f / fs;
+    float zr = cosf(w);              /* z^-1 = e^{-jw} */
+    float zi = -sinf(w);
+
+    /* H1 = (a + z^-1) / (1 + a z^-1) */
+    float nr = a + zr,        ni = zi;
+    float dr = 1.0f + a * zr, di = a * zi;
+    float dm = dr * dr + di * di + 1e-12f;
+    float h1r = (nr * dr + ni * di) / dm;
+    float h1i = (ni * dr - nr * di) / dm;
+
+    /* Hc = H1^6 */
+    float hr = h1r, hi = h1i;
+    for (int k = 1; k < 6; k++) {
+        float tr = hr * h1r - hi * h1i;
+        hi = hr * h1i + hi * h1r;
+        hr = tr;
+    }
+
+    /* Hw = Hc / (1 - fb * Hc * z^-1) */
+    float lr = hr * zr - hi * zi;
+    float li = hr * zi + hi * zr;
+    dr = 1.0f - fb * lr;
+    di = -fb * li;
+    dm = dr * dr + di * di + 1e-12f;
+    float wr = (hr * dr + hi * di) / dm;
+    float wi = (hi * dr - hr * di) / dm;
+
+    /* out = 0.5 * (dry + wet) */
+    float sr = 0.5f * (1.0f + wr);
+    float si = 0.5f * wi;
+    return sqrtf(sr * sr + si * si);
+}
+
 /* Display magnitude (0..1) at frequency f for cutoff fc, Q and filter type.
  * Passband = FG_PASSBAND_NORM; a resonance spike may exceed it, capped at 1. */
 static float filter_display_mag(uint8_t type, float f, float fc, float Q)
@@ -88,6 +138,11 @@ static float filter_display_mag(uint8_t type, float f, float fc, float Q)
         }
         case FGRAPH_FILTER_NOTCH: {
             float m = notch2_mag(r, Q);
+            mag = m * FG_PASSBAND_NORM;
+            break;
+        }
+        case FGRAPH_FILTER_PHASER: {
+            float m = phaser_mag(f, fc, Q);
             mag = m * FG_PASSBAND_NORM;
             break;
         }

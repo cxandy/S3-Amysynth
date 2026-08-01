@@ -260,6 +260,12 @@ void trig_schedule_ratchets(uint8_t layer_idx, const seq_layer_t *layer,
     }
     uint8_t synth = layer->synth_id[track];
 
+    /* PCM drums get no scheduled note-off - same rule and rationale as the
+     * plain path in sequencer_emit_step(): the off is a hard cut for PCM, and
+     * the sample self-terminates under EG0. */
+    bool send_offs = !(layer->type == SEQ_LAYER_DRUM &&
+                       s_drum_engine == SEQ_DRUM_PCM);
+
     /* Ratchet velocity taper: sub-hit k scales by (1 - taper*k%). 0 = flat,
      * positive decays toward the tail, negative ramps up; k==0 is always
      * full velocity. */
@@ -272,13 +278,15 @@ void trig_schedule_ratchets(uint8_t layer_idx, const seq_layer_t *layer,
         uint32_t tick_off = tick_on + gate;
         amy_helpers_note_send(synth, (float)tones[0], v,
                             ratchet_on_tag(layer_idx, track, k), tick_on, 0);
-        amy_helpers_note_send(synth, (float)tones[0], 0.0f,
-                            ratchet_off_tag(layer_idx, track, k), tick_off, 0);
+        if (send_offs)
+            amy_helpers_note_send(synth, (float)tones[0], 0.0f,
+                                ratchet_off_tag(layer_idx, track, k), tick_off, 0);
         for (uint8_t i = 1; i < ntones; i++) {
             amy_helpers_note_send(synth, (float)tones[i], v,
                                 chord_on_tag(layer_idx, track, k, i), tick_on, 0);
-            amy_helpers_note_send(synth, (float)tones[i], 0.0f,
-                                chord_off_tag(layer_idx, track, k, i), tick_off, 0);
+            if (send_offs)
+                amy_helpers_note_send(synth, (float)tones[i], 0.0f,
+                                    chord_off_tag(layer_idx, track, k, i), tick_off, 0);
         }
     }
 }

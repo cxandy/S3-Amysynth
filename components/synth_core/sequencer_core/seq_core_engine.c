@@ -301,8 +301,20 @@ void sequencer_emit_step(uint8_t layer_idx, uint8_t track, uint8_t step)
 
     amy_helpers_note_send(synth, layer->step_note[track][step], note_velocity,
                         tag_on, tick_on, period);
-    amy_helpers_note_send(synth, layer->step_note[track][step], 0.0f,
-                        tag_off, tick_off, period);
+    /* PCM drums get no scheduled note-off: pcm_note_off() is a hard phase-jump
+     * to the sample end, so the gate would truncate even the natural tail. The
+     * hit rings to the sample's own end under EG0 (sustain 0 - the decay the
+     * user authors is what shapes the audible length), and non-looping PCM
+     * self-terminates, so nothing is left held. Suppressing only the emit
+     * keeps every velocity-0 kill path (stop/mute/solo) fully effective -
+     * unlike SYNTH_FLAGS_IGNORE_NOTE_OFFS, which swallows those too. SYNTH
+     * mode keeps its note-offs: patch releases shape those tails on purpose. */
+    if (layer->type == SEQ_LAYER_DRUM && s_drum_engine == SEQ_DRUM_PCM) {
+        sequencer_emit_clear_tag(tag_off);
+    } else {
+        amy_helpers_note_send(synth, layer->step_note[track][step], 0.0f,
+                            tag_off, tick_off, period);
+    }
 }
 
 /* Re-emit all steps for a layer (used on play-resume). */
@@ -386,17 +398,23 @@ static void sequencer_refresh_track_note(uint8_t layer_idx, uint8_t track,
     if (preview_vel > 1.0f) preview_vel = 1.0f;
     uint32_t fire_tick = sequencer_ticks() + SEQ_PREVIEW_DELAY_TICKS;
     uint32_t off_tick  = fire_tick + seq_step_gate(layer, 0);
+    /* PCM drums get no note-off, same rule as sequencer_emit_step(): a preview
+     * while tuning a drum's pitch should sound like the real hit. */
+    bool send_offs = !(layer->type == SEQ_LAYER_DRUM &&
+                       s_drum_engine == SEQ_DRUM_PCM);
     amy_helpers_note_send(layer->synth_id[track], tones[0], preview_vel,
                         seq_preview_tag(layer_idx, track), fire_tick, 0);
-    amy_helpers_note_send(layer->synth_id[track], tones[0], 0.0f,
-                        seq_preview_off_tag(layer_idx, track), off_tick, 0);
+    if (send_offs)
+        amy_helpers_note_send(layer->synth_id[track], tones[0], 0.0f,
+                            seq_preview_off_tag(layer_idx, track), off_tick, 0);
     for (uint8_t i = 1; i < ntones; i++) {
         amy_helpers_note_send(layer->synth_id[track], tones[i], preview_vel,
                             seq_chord_preview_on_tag(layer_idx, track, i),
                             fire_tick, 0);
-        amy_helpers_note_send(layer->synth_id[track], tones[i], 0.0f,
-                            seq_chord_preview_off_tag(layer_idx, track, i),
-                            off_tick, 0);
+        if (send_offs)
+            amy_helpers_note_send(layer->synth_id[track], tones[i], 0.0f,
+                                seq_chord_preview_off_tag(layer_idx, track, i),
+                                off_tick, 0);
     }
     if (SEQ_NOTE_IS_CHORD(resolved_note)) {
         seq_chord_preview_clear_from(layer_idx, track, ntones);

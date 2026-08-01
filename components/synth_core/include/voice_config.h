@@ -14,6 +14,14 @@
 #define VOICE_LFO_DEPTH_SCAN   0.5f
 #define VOICE_LFO_DEPTH_PAN    0.5f  /* swing around the 0.5 center baseline */
 
+/* Anchor for software-LFO pitch pushes (every software stepper: sequencer
+ * layers, arp, live voice). AMY's freq COEF_CONST is an absolute frequency in
+ * Hz, converted via logfreq_of_freq(x) = log2(x / 440) (amy.c,
+ * ZERO_LOGFREQ_IN_HZ). Multiplying the desired ratio by this base makes the
+ * resulting logfreq constant the pure octave offset - 440 Hz itself is the
+ * neutral push, identical to the reset default of 0. */
+#define SEQ_LFO_PITCH_BASE_HZ 440.0f
+
 /* FILTER-target swing ceiling, in quarter-octave steps (16 = 4.0 octaves). */
 #define VOICE_LFO_FLT_OCT_Q_MAX 16u
 

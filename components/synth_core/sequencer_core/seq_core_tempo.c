@@ -1,4 +1,5 @@
 #include "sequencer_core/seq_core_internal.h"
+#include "voice_config.h"                   /* SEQ_LFO_PITCH_BASE_HZ */
 #include "custompatches/drone_std_core.h"   /* drone_std_core_refresh_lfo_freq */
 #include "seq_clamp.h"
 #include "sdkconfig.h"

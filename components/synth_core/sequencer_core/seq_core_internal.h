@@ -192,13 +192,6 @@ uint16_t sequencer_clamp_bpm(uint16_t b);
 void     sequencer_push_tempo(uint16_t b);
 /* lfo_rate_to_hz is already declared in the public sequencer_core.h */
 
-/* Anchor for software-LFO pitch pushes. AMY's freq COEF_CONST is an absolute
- * frequency in Hz, converted via logfreq_of_freq(x) = log2(x / 440) (amy.c,
- * ZERO_LOGFREQ_IN_HZ). Multiplying the desired ratio by this base makes the
- * resulting logfreq constant the pure octave offset - 440 Hz itself is the
- * neutral push, identical to the reset default of 0. */
-#define SEQ_LFO_PITCH_BASE_HZ 440.0f
-
 /* LFO Hz for the 20 Hz software fallback stepper: lfo_rate_to_hz capped to
  * SEQ_LFO_SW_MAX_HZ, since the fast end of the rate range needs >= 4 stepper
  * samples per LFO cycle. */

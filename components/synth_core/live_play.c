@@ -368,14 +368,22 @@ void live_play_lfo_service(void)
     }
     if (LFO_HAS_TGT(lfo, LFO_TARGET_AMP))
         e->amp_coefs[COEF_CONST] = 1.0f - d * (0.5f - 0.5f * val);
-    if (LFO_HAS_TGT(lfo, LFO_TARGET_PITCH))
-        /* Absolute Hz: see SEQ_LFO_PITCH_BASE_HZ - a bare ratio here lands
-         * ~8.8 octaves down. */
-        e->freq_coefs[COEF_CONST] = SEQ_LFO_PITCH_BASE_HZ * powf(2.0f, d * val);
     if (LFO_HAS_TGT(lfo, LFO_TARGET_PAN))
         e->pan_coefs[COEF_CONST] = 0.5f + d * 0.5f * val;
     /* SCAN needs a wavetable voice - wave patches / native only. */
     amy_helpers_event_send(e);
+
+    if (LFO_HAS_TGT(lfo, LFO_TARGET_PITCH)) {
+        /* Absolute Hz: see SEQ_LFO_PITCH_BASE_HZ - a bare ratio here lands
+         * ~8.8 octaves down. Osc 0 only: a synth-wide push would rewrite
+         * patch-internal modulator oscs' rates (stopgap - revisit, see the
+         * sequencer stepper). */
+        e = amy_helpers_event_begin();
+        e->synth = LIVE_SYNTH;
+        e->osc   = 0;
+        e->freq_coefs[COEF_CONST] = SEQ_LFO_PITCH_BASE_HZ * powf(2.0f, d * val);
+        amy_helpers_event_send(e);
+    }
 }
 
 /* ── Runtime-editable voice params (shared editors) ──────────────────────

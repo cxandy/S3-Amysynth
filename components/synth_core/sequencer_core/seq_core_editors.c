@@ -386,18 +386,31 @@ void __attribute__((optimize("O3", "unroll-loops", "fast-math"))) sequencer_core
             }
             if (LFO_HAS_TGT(lfo, LFO_TARGET_AMP))
                 e->amp_coefs[COEF_CONST] = 1.0f - d*(0.5f - 0.5f*val);
-            if (LFO_HAS_TGT(lfo, LFO_TARGET_PITCH))
+            if (LFO_HAS_TGT(lfo, LFO_TARGET_PAN))
+                e->pan_coefs[COEF_CONST] = 0.5f + d*0.5f*val;
+            amy_helpers_event_send(e);
+
+            if (LFO_HAS_TGT(lfo, LFO_TARGET_PITCH)) {
                 /* freq COEF_CONST is an ABSOLUTE frequency in Hz - AMY maps it
                  * through logfreq_of_freq(x) = log2(x/440). Anchoring the swing
                  * at SEQ_LFO_PITCH_BASE_HZ makes the constant term exactly
                  * d*val octaves, matching the note-neutral reset default of 0.
                  * (A bare ratio here lands ~-8.8 octaves down and mutes the
-                 * track - sub-audible playback rate on PCM oscs.) */
+                 * track - sub-audible playback rate on PCM oscs.)
+                 *
+                 * Pitch is pushed to osc 0 ONLY: a synth-wide event fans out to
+                 * every osc of the voice, rewriting patch-internal modulator
+                 * oscs' freq CONST - their RATE - and wrecking patch LFOs
+                 * (chorus/PWM) beyond repair short of a patch reload. Stopgap:
+                 * multi-carrier patches get vibrato on their first osc only;
+                 * revisit with a per-voice offset or a reserved-carrier topo. */
+                e = amy_helpers_event_begin();
+                e->synth = syn;
+                e->osc   = 0;
                 e->freq_coefs[COEF_CONST] =
                     SEQ_LFO_PITCH_BASE_HZ * powf(2.0f, d * val);
-            if (LFO_HAS_TGT(lfo, LFO_TARGET_PAN))
-                e->pan_coefs[COEF_CONST] = 0.5f + d*0.5f*val;
-            amy_helpers_event_send(e);
+                amy_helpers_event_send(e);
+            }
         }
     }
 }

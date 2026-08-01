@@ -73,8 +73,11 @@ void lfo_push_target_neutral(uint8_t synth_id, lfo_target_t target)
         case LFO_TARGET_AMP:    e->amp_coefs[COEF_CONST]  = 1.0f;           break;
         /* Absolute Hz, not a ratio: 440 = SEQ_LFO_PITCH_BASE_HZ maps to a
          * logfreq constant of 0, the note-neutral reset default. (1.0f here
-         * parked the osc ~8.8 octaves down, muting PCM drums until reboot.) */
-        case LFO_TARGET_PITCH:  e->freq_coefs[COEF_CONST] = SEQ_LFO_PITCH_BASE_HZ; break;
+         * parked the osc ~8.8 octaves down, muting PCM drums until reboot.)
+         * Osc 0 only, mirroring the service push: synth-wide would stomp
+         * patch-internal modulator oscs' rates (stopgap - revisit). */
+        case LFO_TARGET_PITCH:  e->osc = 0;
+                                e->freq_coefs[COEF_CONST] = SEQ_LFO_PITCH_BASE_HZ; break;
         case LFO_TARGET_PAN:    e->pan_coefs[COEF_CONST]  = 0.5f;           break;
         default: break;
     }

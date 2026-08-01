@@ -124,31 +124,46 @@ static const float DRUM_PCM_REL_MS[SEQ_TRACKS] = {50.0f,  30.0f,  15.0f,  20.0f}
 
 /* ── Private helpers ─────────────────────────────────────────────────── */
 
+/* Apply one track's envelope shape and hat HPF after PCM wave/preset are set.
+ * A row whose envelope the user has committed in the graph editor keeps its
+ * authored shape (same deferred-authority rule as the melodic reconfigure
+ * path); otherwise the EDM-tuned defaults above apply. */
+static void sequencer_configure_drum_pcm_track_params(uint8_t layer_idx,
+                                                      uint8_t track)
+{
+    const seq_layer_t *layer = &s_layers[layer_idx];
+
+    if (layer->vp[track].env_authored) {
+        sequencer_configure_melodic_envelope_track(layer_idx, track);
+    } else {
+        amy_event *e = amy_helpers_event_begin();
+        e->synth         = layer->synth_id[track];
+        e->bp_is_set[0]  = 1;
+        e->eg_type[0]    = ENVELOPE_LINEAR;
+        e->eg0_times[0]  = DRUM_PCM_ATK_MS[track];
+        e->eg0_values[0] = 1.0f;
+        e->eg0_times[1]  = DRUM_PCM_DEC_MS[track];
+        e->eg0_values[1] = 0.0f;   /* one-shot: no sustain, sample shapes the body */
+        e->eg0_times[2]  = DRUM_PCM_REL_MS[track];
+        e->eg0_values[2] = 0.0f;
+        amy_helpers_event_send(e);
+    }
+
+    if (track == 2) {   /* hat: HPF to strip low-end rumble, add crispness */
+        amy_event *e = amy_helpers_event_begin();
+        e->synth      = layer->synth_id[track];
+        e->filter_type = FILTER_HPF;
+        e->filter_freq_coefs[COEF_CONST] = 3000.0f;
+        e->resonance  = 0.5f;
+        amy_helpers_event_send(e);
+    }
+}
+
 /* Apply per-track envelope shape and hat HPF after PCM wave/preset are set. */
 static void sequencer_configure_drum_pcm_voice_params(uint8_t layer_idx)
 {
-    const seq_layer_t *layer = &s_layers[layer_idx];
     for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
-        amy_event *e = amy_helpers_event_begin();
-        e->synth         = layer->synth_id[t];
-        e->bp_is_set[0]  = 1;
-        e->eg_type[0]    = ENVELOPE_LINEAR;
-        e->eg0_times[0]  = DRUM_PCM_ATK_MS[t];
-        e->eg0_values[0] = 1.0f;
-        e->eg0_times[1]  = DRUM_PCM_DEC_MS[t];
-        e->eg0_values[1] = 0.0f;   /* one-shot: no sustain, sample shapes the body */
-        e->eg0_times[2]  = DRUM_PCM_REL_MS[t];
-        e->eg0_values[2] = 0.0f;
-        amy_helpers_event_send(e);
-
-        if (t == 2) {   /* hat: HPF to strip low-end rumble, add crispness */
-            e = amy_helpers_event_begin();
-            e->synth      = layer->synth_id[t];
-            e->filter_type = FILTER_HPF;
-            e->filter_freq_coefs[COEF_CONST] = 3000.0f;
-            e->resonance  = 0.5f;
-            amy_helpers_event_send(e);
-        }
+        sequencer_configure_drum_pcm_track_params(layer_idx, t);
     }
 }
 
@@ -724,13 +739,25 @@ void sequencer_core_set_drum_pcm_preset(uint8_t layer_idx, uint8_t track,
     s_drum_pcm_preset[layer_idx][track] = preset_number;
 
     if (s_drum_engine == SEQ_DRUM_PCM) {
-        /* Live-reload just this track's osc. */
+        /* Reset the osc before reconfiguring, so any stray coefficient state
+         * (a software-LFO push, filter residue) is wiped on every preset
+         * change instead of surviving until the next full re-alloc. reset_osc
+         * is voice-relative when synth is set. */
         amy_event *e = amy_helpers_event_begin();
+        e->synth     = s_layers[layer_idx].synth_id[track];
+        e->reset_osc = 0;
+        amy_helpers_event_send(e);
+
+        /* Live-reload just this track's osc. */
+        e = amy_helpers_event_begin();
         e->synth  = s_layers[layer_idx].synth_id[track];
         e->osc    = 0;
         e->wave   = PCM;
         e->preset = preset_number;
         amy_helpers_event_send(e);
+
+        /* The reset also cleared the envelope and hat HPF - re-apply. */
+        sequencer_configure_drum_pcm_track_params(layer_idx, track);
     }
     ESP_LOGI(TAG, "drum L%u T%u PCM preset -> %u",
              layer_idx + 1u, track + 1u, (unsigned)preset_number);

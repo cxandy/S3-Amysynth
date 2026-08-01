@@ -79,7 +79,8 @@ typedef enum {
 #define SEQ_FILTER_HPF   3
 #define SEQ_FILTER_LPF24 4
 #define SEQ_FILTER_NOTCH 5
-#define SEQ_FILTER_COUNT 6   /* first invalid value — range guards use this */
+#define SEQ_FILTER_PHASER 6
+#define SEQ_FILTER_COUNT 7   /* first invalid value — range guards use this */
 
 /* ── Per-voice filter state (stored alongside the ADSR envelope) ──
  * enabled=false sends FILTER_NONE (bypass). cutoff_hz is in Hz, the same unit

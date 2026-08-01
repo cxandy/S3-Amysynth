@@ -288,7 +288,13 @@ void sequencer_core_set_melodic_lfo(uint8_t layer_idx, uint8_t track,
     layer->vp[track].lfo_authored = true;
 
 #if CONFIG_SEQ_MELODIC_AMY_NATIVE_LFO
-    bool is_native = sequencer_core_lfo_native_layout(layer->patch, NULL, NULL);
+    /* Native topology is melodic-only: it writes voice-relative oscs 1 and 2,
+     * and AMY applies the base_osc offset without a bounds check, so on a
+     * 1-osc-per-voice synth (a PCM drum slot) those events would land on the
+     * NEXT synth's oscillators. A drum layer's `patch` is only the stored
+     * SYNTH-mode selection, so it must never enable the native path. */
+    bool is_native = layer->type == SEQ_LAYER_MELODIC &&
+                     sequencer_core_lfo_native_layout(layer->patch, NULL, NULL);
     if (is_native) {
         melodic_configure_native_lfo_track(layer, track);
         /* Restore the static target value when disabled: native clears COEF_MOD
@@ -381,7 +387,14 @@ void __attribute__((optimize("O3", "unroll-loops", "fast-math"))) sequencer_core
             if (LFO_HAS_TGT(lfo, LFO_TARGET_AMP))
                 e->amp_coefs[COEF_CONST] = 1.0f - d*(0.5f - 0.5f*val);
             if (LFO_HAS_TGT(lfo, LFO_TARGET_PITCH))
-                e->freq_coefs[COEF_CONST] = powf(2.0f, d * val);
+                /* freq COEF_CONST is an ABSOLUTE frequency in Hz - AMY maps it
+                 * through logfreq_of_freq(x) = log2(x/440). Anchoring the swing
+                 * at SEQ_LFO_PITCH_BASE_HZ makes the constant term exactly
+                 * d*val octaves, matching the note-neutral reset default of 0.
+                 * (A bare ratio here lands ~-8.8 octaves down and mutes the
+                 * track - sub-audible playback rate on PCM oscs.) */
+                e->freq_coefs[COEF_CONST] =
+                    SEQ_LFO_PITCH_BASE_HZ * powf(2.0f, d * val);
             if (LFO_HAS_TGT(lfo, LFO_TARGET_PAN))
                 e->pan_coefs[COEF_CONST] = 0.5f + d*0.5f*val;
             amy_helpers_event_send(e);
@@ -423,6 +436,10 @@ void melodic_lfo_refresh_native_freq(void)
     for (int li = 0; li < s_num_layers; li++) {
         const seq_layer_t *layer = &s_layers[li];
         uint8_t carrier;
+        /* Melodic-only, same reason as sequencer_core_set_melodic_lfo(): the
+         * carrier oscs don't exist on non-melodic (1-osc) synths. */
+        if (layer->type != SEQ_LAYER_MELODIC)
+            continue;
         if (!sequencer_core_lfo_native_layout(layer->patch, &carrier, NULL))
             continue;
         for (int tr = 0; tr < SEQ_TRACKS; tr++) {

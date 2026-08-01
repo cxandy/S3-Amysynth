@@ -70,7 +70,10 @@ void lfo_push_target_neutral(uint8_t synth_id, lfo_target_t target)
     switch (target) {
         case LFO_TARGET_FILTER: e->filter_freq_coefs[COEF_CONST] = 8000.0f; break;
         case LFO_TARGET_AMP:    e->amp_coefs[COEF_CONST]  = 1.0f;           break;
-        case LFO_TARGET_PITCH:  e->freq_coefs[COEF_CONST] = 1.0f;           break;
+        /* Absolute Hz, not a ratio: 440 = SEQ_LFO_PITCH_BASE_HZ maps to a
+         * logfreq constant of 0, the note-neutral reset default. (1.0f here
+         * parked the osc ~8.8 octaves down, muting PCM drums until reboot.) */
+        case LFO_TARGET_PITCH:  e->freq_coefs[COEF_CONST] = SEQ_LFO_PITCH_BASE_HZ; break;
         case LFO_TARGET_PAN:    e->pan_coefs[COEF_CONST]  = 0.5f;           break;
         default: break;
     }
@@ -87,8 +90,11 @@ void sequencer_core_set_bpm(uint16_t new_bpm)
 #if CONFIG_SEQ_MELODIC_AMY_NATIVE_LFO
         /* Native-LFO tracks must keep s_lfo_hz == 0: their carrier is retuned
          * by melodic_lfo_refresh_native_freq() below, and a nonzero value would
-         * start the software stepper double-modulating on top of it. */
-        if (sequencer_core_lfo_native_layout(s_layers[li].patch, NULL, NULL)) continue;
+         * start the software stepper double-modulating on top of it. Only
+         * melodic layers can be native - a drum layer's `patch` is just its
+         * stored SYNTH-mode selection and must not shadow the software rate. */
+        if (s_layers[li].type == SEQ_LAYER_MELODIC &&
+            sequencer_core_lfo_native_layout(s_layers[li].patch, NULL, NULL)) continue;
 #endif
         for (int tr = 0; tr < SEQ_TRACKS; tr++) {
             if (s_layers[li].vp[tr].lfo_authored && s_layers[li].vp[tr].lfo.enabled)

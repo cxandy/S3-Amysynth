@@ -220,13 +220,13 @@ int8_t dsps_biquad_gen_notch_f32(SAMPLE *coeffs, float f, float qFactor)
 // H(z) = (a + z^-1)/(1 + a z^-1): the same a feeds both multiplies, so each
 // stage is exactly allpass for any representable |a| < 1 - coefficient
 // quantization moves the phase curve but never the gain.
-static inline SAMPLE allpass1_chain(SAMPLE u, SAMPLE a, SAMPLE *s, int n) {
+static inline SAMPLE allpass1_chain(SAMPLE x0, SAMPLE a, SAMPLE *w, int n) {
     for (int k = 0; k < n; ++k) {
-        SAMPLE y = FILT_MUL_SS(a, u) + s[k];
-        s[k] = u - FILT_MUL_SS(a, y);
-        u = y;
+        SAMPLE y0 = FILT_MUL_SS(a, x0) + w[k];
+        w[k] = x0 - FILT_MUL_SS(a, y0);
+        x0 = y0;
     }
-    return u;
+    return x0;
 }
 
 #define PHASER_STAGES 6
@@ -236,13 +236,12 @@ static inline SAMPLE allpass1_chain(SAMPLE u, SAMPLE a, SAMPLE *s, int n) {
 // w[PHASER_STAGES] = feedback sample.  The chain is unity-gain and the loop
 // gain is fb < 1 at every frequency, so no block-floating-point wrapper is
 // needed: worst-case resonant gain 1/(1-fb) stays inside s8.23 headroom.
-static AMY_IRAM_ATTR void dsps_phaser_6stage(SAMPLE *block, int len, SAMPLE a, SAMPLE fb, SAMPLE *w) {
+static AMY_IRAM_ATTR void dsps_phaser_f32_ansi(SAMPLE *block, int len, SAMPLE a, SAMPLE fb, SAMPLE *w) {
     for (int i = 0; i < len; ++i) {
-        SAMPLE x = block[i];
-        SAMPLE u = x + FILT_MUL_SS(fb, w[PHASER_STAGES]);
-        u = allpass1_chain(u, a, w, PHASER_STAGES);
-        w[PHASER_STAGES] = u;
-        block[i] = SHIFTR(x + u, 1);
+        SAMPLE x0 = block[i];
+        SAMPLE y0 = allpass1_chain(x0 + FILT_MUL_SS(fb, w[PHASER_STAGES]), a, w, PHASER_STAGES);
+        w[PHASER_STAGES] = y0;
+        block[i] = SHIFTR(x0 + y0, 1);
     }
 }
 
@@ -940,7 +939,7 @@ AMY_IRAM_ATTR SAMPLE filter_process(SAMPLE * block, uint16_t osc, SAMPLE max_val
         if (fb > 0.85f) fb = 0.85f;
         AMY_PROFILE_STOP(FILTER_PROCESS_STAGE0)
         AMY_PROFILE_START(FILTER_PROCESS_STAGE1)
-        dsps_phaser_6stage(block, AMY_BLOCK_SIZE, F2S(a), F2S(fb), synth[osc]->filter_delay);
+        dsps_phaser_f32_ansi(block, AMY_BLOCK_SIZE, F2S(a), F2S(fb), synth[osc]->filter_delay);
         AMY_PROFILE_STOP(FILTER_PROCESS_STAGE1)
         AMY_PROFILE_STOP(FILTER_PROCESS)
         // Post-filter max_val is a hint on this path (see split_fb below); the

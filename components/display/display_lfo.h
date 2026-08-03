@@ -42,6 +42,9 @@ typedef struct {
     uint8_t     track_idx;
     bool        apply_all;    /* true = commit applies to all tracks        */
     const char *target_label; /* "ARP"/"DRONE" label override, or NULL      */
+    bool        wob_native;   /* target runs the native LFO carrier; false =
+                                 software stepper, where the WOBBLE rows are
+                                 inert and drawn struck-through             */
 } lfo_view_t;
 
 void lfo_view_draw(u8g2_t *u8g2, const lfo_view_t *v);

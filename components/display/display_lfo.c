@@ -238,5 +238,19 @@ void lfo_view_draw(u8g2_t *u8g2, const lfo_view_t *v)
                 break;
         }
         draw_right_row(u8g2, base, buf, sel, v->editing, scroll);
+
+        /* WOBBLE rows are inert when the target runs the software stepper
+         * (patch strings without a native carrier): strike them through
+         * rather than hide them - the values persist and re-arm the moment
+         * the patch turns native. Match the row's colour context so the
+         * strike stays legible on the inverted selection bar. */
+        if (!v->wob_native &&
+            (fld == LFO_FLD_WOB_RATE || fld == LFO_FLD_WOB_DEPTH ||
+             fld == LFO_FLD_WOB_MODE)) {
+            u8g2_SetDrawColor(u8g2, sel ? 0 : 1);
+            u8g2_DrawHLine(u8g2, LFO_RCOL_X, (uint8_t)(base - 3),
+                           u8g2_GetStrWidth(u8g2, buf));
+            u8g2_SetDrawColor(u8g2, 1);
+        }
     }
 }

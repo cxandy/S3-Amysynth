@@ -1845,6 +1845,29 @@ void synth_ui_editors_live_service(void)
 
 uint32_t lfo_view_signature(void)
 {
+    /* The wobble-inert marker is re-derived every frame (one cheap
+     * native-layout check) and hashed, so a patch change under the open
+     * editor flips the strike and redraws - no open-time snapshot to go
+     * stale. WOBBLE only exists on the native carrier (voice_config.c);
+     * the software steppers never implemented it. */
+    bool native;
+#if CONFIG_SYNTH_WIRELESS
+    if (s_lfo_live_target)
+        native = live_play_lfo_native_eligible();
+    else
+#endif
+    if (seq_state.ui_mode == UI_MODE_ARP)
+        native = sequencer_core_lfo_native_layout(arp_get_patch(), NULL, NULL);
+    else if (seq_state.ui_mode == UI_MODE_DRONE_STD)
+        native = true;   /* drone_std always drives the native applier */
+    else
+        native = sequencer_core_get_layer_type(s_lfo_view.layer_idx)
+                     == SEQ_LAYER_MELODIC
+              && sequencer_core_lfo_native_layout(
+                     sequencer_core_get_layer_patch(s_lfo_view.layer_idx),
+                     NULL, NULL);
+    s_lfo_view.wob_native = native;
+
     const seq_lfo_t *l = &s_lfo_view.lfo;
     return (uint32_t)l->enabled
          | ((uint32_t)l->wave    <<  1)   /* 3 bits */
@@ -1852,7 +1875,8 @@ uint32_t lfo_view_signature(void)
          | ((uint32_t)l->depth   <<  7)   /* 7 bits (0..100) */
          | ((uint32_t)l->targets << 14)   /* 5 bits */
          | ((uint32_t)s_lfo_view.cursor  << 19)   /* 4 bits (0..8) */
-         | ((uint32_t)s_lfo_view.editing << 23);
+         | ((uint32_t)s_lfo_view.editing << 23)
+         | ((uint32_t)(native ? 1u : 0u) << 24);
 }
 
 bool synth_ui_lfo_is_active(void) { return s_lfo_active; }

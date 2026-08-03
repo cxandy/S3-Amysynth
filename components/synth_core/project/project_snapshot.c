@@ -123,7 +123,9 @@ static void ser_lfo(tlv_writer_t *w, const seq_lfo_t *l)
     tlv_put_u8(w, l->targets);   /* section v2+: target-set bitmask (v1: index) */
     tlv_put_u8(w, l->wob_rate);  /* LAYR v5+ / ARP v3+: WOBBLE second-order LFO */
     tlv_put_u8(w, l->wob_depth);
-    tlv_put_u8(w, l->wob_depth_only ? 1 : 0);  /* LAYR v6+ / ARP v4+ */
+    tlv_put_u8(w, l->wob_reach);  /* LAYR v6+ / ARP v4+: reach (0 both,
+                                   * 1 depth, 2 rate). Older firmware reads
+                                   * 2 as nonzero = depth-only - benign. */
     tlv_put_u8(w, l->flt_oct_q);  /* LAYR v8+ / ARP v7+: FILTER swing in
                                    * quarter-octaves; 0 = legacy depth-derived */
 }
@@ -133,7 +135,8 @@ static void ser_lfo(tlv_writer_t *w, const seq_lfo_t *l)
  * migrate index -> bit when reading an old file.
  * Presence flags are caller-resolved because the version threshold differs
  * per containing section: `wobble` = two WOBBLE bytes (LAYR v5+, ARP v3+),
- * `wob_mode` = depth-only reach byte (LAYR v6+, ARP v4+; absent = depth+rate),
+ * `wob_mode` = reach byte (LAYR v6+, ARP v4+; absent = depth+rate; 0 both,
+ * 1 depth-only, 2 rate-only),
  * `flt_oct` = FILTER octave-swing byte (LAYR v8+, ARP v7+; absent leaves the
  * 0 sentinel = old depth-derived filter law). */
 static bool de_lfo(tlv_reader_t *r, seq_lfo_t *l, uint8_t ver, bool wobble,
@@ -176,7 +179,7 @@ static bool de_lfo(tlv_reader_t *r, seq_lfo_t *l, uint8_t ver, bool wobble,
      * 5 %-grid values, where a stored 5 % reads as OFF while the modulator
      * still runs. */
     l->wob_depth = voice_wob_db_to_depth(voice_wob_depth_to_db(wdepth));
-    l->wob_depth_only = (wdeponly != 0);
+    l->wob_reach = (wdeponly < WOB_REACH_COUNT) ? wdeponly : 0;
     l->flt_oct_q = (foct > VOICE_LFO_FLT_OCT_Q_MAX)
                    ? (uint8_t)VOICE_LFO_FLT_OCT_Q_MAX : foct;
     return true;

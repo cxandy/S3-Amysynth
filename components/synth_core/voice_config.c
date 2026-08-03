@@ -2,6 +2,7 @@
 #include "amy.h"            /* wave constants, COEF_* indices */
 #include "amy_helpers.h"    /* shared scratch-event begin/send */
 #include "sequencer_core.h" /* sequencer_core_ks_feedback_from_q */
+#include <math.h>           /* powf: wobble downward-only center offset */
 #include <string.h>
 
 void voice_params_init_defaults(voice_params_t *vp)
@@ -168,15 +169,23 @@ void voice_apply_native_lfo_topo(uint8_t synth, const seq_lfo_t *lfo,
             amy_helpers_event_send(e);
         }
 
-        /* Carrier: BPM-synced, no pitch tracking / velocity / envelope; amp
-         * CONST=1 so AMY computes a mod value every block. WOBBLE (second-order
-         * LFO) chains the next osc as the carrier's own mod_source, targeting
-         * both its amplitude (depth breathing) and log-frequency (rate wobble)
-         * per AMY's chained-modulator semantics (mod_osc_would_cause_loop /
-         * compute_mod_scale). Both coefs are ALWAYS written so a stale wobble
-         * cannot keep modulating after it is turned off (the clear-siblings
-         * contract). */
+        /* Carrier: BPM-synced, no pitch tracking / velocity / envelope. WOBBLE
+         * (second-order LFO) chains the next osc as the carrier's own
+         * mod_source per AMY's chained-modulator semantics
+         * (mod_osc_would_cause_loop / compute_mod_scale); the reach picks
+         * which carrier rails it drives. Depth breathing is DOWNWARD-ONLY:
+         * amp CONST is pre-dropped by the swing so the breath peaks exactly
+         * at the authored LFO depth (an unclamped +swing would multiply the
+         * effective depth through the exponential MOD rail - voice_config.h).
+         * All coupled coefs are ALWAYS written so a stale wobble cannot keep
+         * modulating after it is turned off or its reach changes (the
+         * clear-siblings contract). */
         float w = (float)lfo->wob_depth / 100.0f;
+        float wcoef = w * VOICE_WOB_DEPTH_AMP;
+        bool wob_depth_live = lfo->wob_depth > 0 &&
+                              lfo->wob_reach != WOB_REACH_RATE;
+        bool wob_rate_live  = lfo->wob_depth > 0 &&
+                              lfo->wob_reach != WOB_REACH_DEPTH;
         e = amy_helpers_event_begin();
         e->synth                  = synth;
         e->osc                    = carrier_osc;
@@ -184,16 +193,14 @@ void voice_apply_native_lfo_topo(uint8_t synth, const seq_lfo_t *lfo,
         e->freq_coefs[COEF_CONST] = lfo_rate_to_hz(lfo->rate, bpm);
         e->freq_coefs[COEF_NOTE]  = 0.0f;
         e->freq_coefs[COEF_BEND]  = 0.0f;
-        e->amp_coefs[COEF_CONST]  = 1.0f;
+        e->amp_coefs[COEF_CONST]  = wob_depth_live
+                                  ? powf(10.0f, -3.0f * wcoef) : 1.0f;
         e->amp_coefs[COEF_VEL]    = 0.0f;
         e->amp_coefs[COEF_EG0]    = 0.0f;
         e->mod_source             = wobble_osc;
-        e->amp_coefs[COEF_MOD]    = w * VOICE_WOB_DEPTH_AMP;
-        /* Reach toggle: depth-only leaves the carrier's rate steady. Written
-         * unconditionally (zero, not skipped) so switching to depth-only
-         * cannot leave a previous rate coupling live. */
-        e->freq_coefs[COEF_MOD]   = lfo->wob_depth_only
-                                  ? 0.0f : w * VOICE_WOB_DEPTH_RATE;
+        e->amp_coefs[COEF_MOD]    = wob_depth_live ? wcoef : 0.0f;
+        e->freq_coefs[COEF_MOD]   = wob_rate_live
+                                  ? w * VOICE_WOB_DEPTH_RATE : 0.0f;
         amy_helpers_event_send(e);
 
         /* The wobble modulator itself: fixed TRIANGLE (smooth, no steps on the

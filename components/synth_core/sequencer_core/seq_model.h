@@ -131,6 +131,15 @@ typedef enum {
     LFO_RATE_1_4T,    LFO_RATE_1_8T, LFO_RATE_1_16T, LFO_RATE_1_32T,
     LFO_RATE_COUNT,
 } lfo_rate_t;
+typedef enum {
+    /* WOBBLE reach: which carrier rails the second-order LFO drives. One
+     * persisted byte; 0 keeps the historic depth+rate meaning so zero-init
+     * structs and pre-reach snapshot files keep their sound. APPEND-ONLY. */
+    WOB_REACH_BOTH  = 0,   /* depth + rate (historic default)          */
+    WOB_REACH_DEPTH = 1,   /* depth only (was wob_depth_only = true)   */
+    WOB_REACH_RATE  = 2,   /* rate only - no depth breathing           */
+    WOB_REACH_COUNT,
+} wob_reach_t;
 typedef struct {
     bool         enabled;
     lfo_mode_t   mode;
@@ -146,13 +155,13 @@ typedef struct {
                               rate via chained mod_source.                    */
     uint8_t      wob_depth;/* 0..100 % of VOICE_WOB_DEPTH_AMP; 0 (zero-init) =
                               wobble off, osc2 dormant. The UI authors this in
-                              whole dB of carrier swing (see voice_config.h);
-                              the stored unit is unchanged so project
-                              snapshots stay compatible.                      */
-    bool    wob_depth_only;/* WOBBLE reach. false (zero-init) swings both the
-                              carrier's depth AND its rate (+/-1 octave); true
-                              restricts it to depth. Phrased as the opt-in
-                              restriction so zero-init files keep their sound. */
+                              whole dB of dip below the authored LFO depth
+                              (see voice_config.h); the stored unit is
+                              unchanged so project snapshots stay compatible. */
+    uint8_t      wob_reach;/* wob_reach_t. Persisted as the former
+                              wob_depth_only byte: 0 both, 1 depth-only,
+                              2 rate-only; older firmware reads 2 as nonzero
+                              = depth-only, a benign degrade.                 */
     uint8_t flt_oct_q;     /* FILTER-target swing in quarter-octaves (1..16 =
                               +/-0.25..4.0 oct), independent of the shared
                               depth % - octaves are what the ear and AMY's log2

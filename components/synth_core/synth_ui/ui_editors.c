@@ -1979,7 +1979,8 @@ bool synth_ui_lfo_handle_button(bool is_long)
         l->enabled = !l->enabled;              /* boolean: toggle directly */
         s_lfo_view.editing = false;
     } else if (c == LFO_FLD_WOB_MODE) {
-        l->wob_depth_only = !l->wob_depth_only; /* boolean: toggle directly */
+        /* 3-way reach cycle: depth+rate -> depth -> rate -> ... */
+        l->wob_reach = (uint8_t)((l->wob_reach + 1u) % WOB_REACH_COUNT);
         s_lfo_view.editing = false;
     } else {
         s_lfo_view.editing = !s_lfo_view.editing;  /* WAVE/RATE/DEPTH/WOB: adjust mode */

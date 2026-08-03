@@ -39,27 +39,35 @@ static inline float voice_lfo_filter_octaves(const seq_lfo_t *l)
 
 /* WOBBLE (second-order LFO): osc2 chained as the osc1 carrier's mod_source.
  * AMP rides the dB combine (contribution is linear in the exponent: amp
- * multiplier = 10^(3 * coef * wob) => 0.15 ~ +/-9 dB depth breathing at full
- * wobble). RATE is linear in log2-frequency: 1.0 => +/-1 octave rate swing. */
-#define VOICE_WOB_DEPTH_AMP    0.15f
+ * multiplier = 10^(3 * coef * wob)) and is applied DOWNWARD-ONLY: the
+ * carrier's amp CONST is pre-dropped by the swing (10^(-3*coef)) so the
+ * breathing peaks exactly at the authored LFO depth and dips below it, never
+ * above. Untamed, the +half of the swing multiplies the effective LFO depth
+ * through the unclamped exponential MOD rail (2.8x at the former 0.15 coef)
+ * and overdrives every target - the "too loud" wobble finding, 2026-08-03.
+ * RATE is linear in log2-frequency: 1.0 => +/-1 octave rate swing. */
+#define VOICE_WOB_DEPTH_AMP    0.075f
 #define VOICE_WOB_DEPTH_RATE   1.0f
 
 /* ── WOBBLE authoring unit ───────────────────────────────────────────────
  * Stored wob_depth is a 0..100 percentage of VOICE_WOB_DEPTH_AMP - meaningless
- * to the user, so authoring and display speak whole dB of carrier swing.
+ * to the user, so authoring and display speak whole dB of TOTAL DIP below the
+ * authored depth: the LFO breathes from full authored depth down to -N dB and
+ * back (downward-only, see above).
  *
  * The AMP coefficient enters AMY's dB combine linearly (amp = 10^(3*coef*mod),
- * amp_combine_controls), so peak swing = 60 * coef dB with coef = wob/100 *
- * 0.15: full scale is 60 * VOICE_WOB_DEPTH_AMP = 9 dB in 1 dB steps.
+ * amp_combine_controls) and the carrier CONST is dropped by the same swing, so
+ * total dip = 120 * coef dB with coef = wob/100 * VOICE_WOB_DEPTH_AMP: full
+ * scale is 120 * VOICE_WOB_DEPTH_AMP = 9 dB in 1 dB steps.
  *
  * 0 dB is OFF, not a distinct setting: at zero swing the modulator is parked
  * (osc2 silenced), so nothing exists between "off" and "1 dB". The stored byte
  * keeps its 0..100 meaning, so old snapshots load unchanged.
  *
  * The same control also swings carrier RATE by up to +/-1 octave
- * (VOICE_WOB_DEPTH_RATE); the readout names the amplitude half because that is
- * what the user hears. */
-#define VOICE_WOB_DB_MAX  9u   /* = 60 * VOICE_WOB_DEPTH_AMP; keep in step */
+ * (VOICE_WOB_DEPTH_RATE) when the reach includes rate; rate-only reach has no
+ * depth breathing to measure, so its readout speaks octaves instead of dB. */
+#define VOICE_WOB_DB_MAX  9u   /* = 120 * VOICE_WOB_DEPTH_AMP; keep in step */
 
 /* Stored 0..100 -> whole dB of swing, rounded (0 => OFF). */
 uint8_t voice_wob_depth_to_db(uint8_t wob_depth);

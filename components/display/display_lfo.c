@@ -213,18 +213,26 @@ void lfo_view_draw(u8g2_t *u8g2, const lfo_view_t *v)
                 snprintf(buf, sizeof(buf), "WRt %s", rate_label((lfo_rate_t)l->wob_rate));
                 break;
             case LFO_FLD_WOB_DEPTH: {
-                /* Carrier's peak dB swing (voice_config.h) rather than a
-                 * percentage of an internal coefficient. Zero swing is OFF. */
+                /* Depth reaches speak dB of dip below the authored depth
+                 * (voice_config.h); rate-only has no depth breathing to
+                 * measure, so it speaks rate-swing octaves instead. */
                 uint8_t wob_db = voice_wob_depth_to_db(l->wob_depth);
                 if (wob_db == 0) snprintf(buf, sizeof(buf), "Wob OFF");
-                else             snprintf(buf, sizeof(buf), "Wob %udB", (unsigned)wob_db);
+                else if (l->wob_reach == WOB_REACH_RATE)
+                    snprintf(buf, sizeof(buf), "Wob %.2foc",
+                             (double)((float)l->wob_depth / 100.0f
+                                      * VOICE_WOB_DEPTH_RATE));
+                else snprintf(buf, sizeof(buf), "Wob %udB", (unsigned)wob_db);
                 break;
             }
-            case LFO_FLD_WOB_MODE:
+            case LFO_FLD_WOB_MODE: {
                 /* Which of the carrier's two rails the wobble reaches. */
-                snprintf(buf, sizeof(buf), "WTo %s",
-                         l->wob_depth_only ? "Dep" : "Dep+Rt");
+                static const char *reach_lbl[WOB_REACH_COUNT] =
+                    { "Dep+Rt", "Dep", "Rate" };
+                uint8_t wr = (l->wob_reach < WOB_REACH_COUNT) ? l->wob_reach : 0;
+                snprintf(buf, sizeof(buf), "WTo %s", reach_lbl[wr]);
                 break;
+            }
             default:
                 buf[0] = '\0';
                 break;

@@ -845,6 +845,8 @@ static void graph_live_cancel_restore(void)
     }
     s_graph_live_env  = false;
     s_graph_live_fenv = false;
+    /* Drop the preview slot the fenv restore may have re-armed. */
+    sequencer_core_preview_melodic_clear();
 }
 
 /* Convert the edited points back to ms and push them to the bound target. */
@@ -915,6 +917,7 @@ static void graph_commit_to_env(void)
         }
         s_graph_fenv_dirty = false;
     }
+    sequencer_core_preview_melodic_clear();
 }
 
 /* Set the time-range mode and remap on-screen points so in-progress edits
@@ -1645,6 +1648,7 @@ static void filter_live_cancel_restore(void)
     }
     if (need_reload) {
         sequencer_core_reload_layer_synth(li);
+        sequencer_core_preview_melodic_clear();
         return;
     }
     for (uint8_t t = t0; t <= t1; ++t) {
@@ -1652,6 +1656,9 @@ static void filter_live_cancel_restore(void)
         if (sequencer_core_get_melodic_filter(li, t, &f))
             sequencer_core_preview_melodic_filter(li, t, &f);
     }
+    /* The restore above re-armed the slot with stored values; drop it so the
+     * LFO service goes back to reading the store directly. */
+    sequencer_core_preview_melodic_clear();
 }
 
 bool synth_ui_filter_is_active(void)
@@ -1848,6 +1855,7 @@ bool synth_ui_filter_close_commit(void)
             sequencer_core_set_melodic_filter(li, seq_state.selected_track, &s_filter_edit);
         }
     }
+    sequencer_core_preview_melodic_clear();
     s_filter_active = false;
     s_force_redraw  = true;
     return true;
@@ -1963,6 +1971,36 @@ void synth_ui_lfo_open(void)
     ESP_LOGI(TAG, "LFO editor open L%u T%u", li + 1u, tr + 1u);
 }
 
+/* Live audition for the LFO editor - melodic tracks only (arp/drone/live
+ * keep their commit-on-close behavior; their setters ARE their appliers and
+ * every exit commits). Single-track even in apply-all scope: the selected
+ * track is the audition voice, the rest follow at commit. */
+static void lfo_live_push_preview(void)
+{
+#if CONFIG_SYNTH_WIRELESS
+    if (s_lfo_live_target) return;
+#endif
+    if (seq_state.ui_mode == UI_MODE_ARP || seq_state.ui_mode == UI_MODE_DRONE ||
+        seq_state.ui_mode == UI_MODE_DRONE_STD)
+        return;
+    sequencer_core_preview_melodic_lfo(s_lfo_view.layer_idx,
+                                       s_lfo_view.track_idx,
+                                       &s_lfo_view.lfo);
+}
+
+/* Cancel path: drop the preview slot and re-push the committed state. */
+static void lfo_preview_cancel_restore(void)
+{
+    sequencer_core_preview_melodic_clear();
+#if CONFIG_SYNTH_WIRELESS
+    if (s_lfo_live_target) return;
+#endif
+    if (seq_state.ui_mode == UI_MODE_ARP || seq_state.ui_mode == UI_MODE_DRONE ||
+        seq_state.ui_mode == UI_MODE_DRONE_STD)
+        return;
+    sequencer_core_reapply_melodic_lfo(s_lfo_view.layer_idx, s_lfo_view.track_idx);
+}
+
 bool synth_ui_lfo_handle_encoder(long delta)
 {
     if (!s_lfo_active) return false;
@@ -2021,6 +2059,7 @@ bool synth_ui_lfo_handle_encoder(long delta)
         }
         default: break;
     }
+    lfo_live_push_preview();
     s_force_redraw = true;
     return true;
 }
@@ -2029,6 +2068,7 @@ bool synth_ui_lfo_handle_button(bool is_long)
 {
     if (!s_lfo_active) return false;
     if (is_long) {
+        lfo_preview_cancel_restore();
         s_lfo_active   = false;
         s_force_redraw = true;
         ESP_LOGI(TAG, "LFO editor cancelled");
@@ -2039,13 +2079,16 @@ bool synth_ui_lfo_handle_button(bool is_long)
     if (c < LFO_TARGET_COUNT) {
         l->targets ^= LFO_TGT_BIT(c);          /* toggle this target in/out of the set */
         s_lfo_view.editing = false;
+        lfo_live_push_preview();
     } else if (c == LFO_FLD_EN) {
         l->enabled = !l->enabled;              /* boolean: toggle directly */
         s_lfo_view.editing = false;
+        lfo_live_push_preview();
     } else if (c == LFO_FLD_WOB_MODE) {
         /* 3-way reach cycle: depth+rate -> depth -> rate -> ... */
         l->wob_reach = (uint8_t)((l->wob_reach + 1u) % WOB_REACH_COUNT);
         s_lfo_view.editing = false;
+        lfo_live_push_preview();
     } else {
         s_lfo_view.editing = !s_lfo_view.editing;  /* WAVE/RATE/DEPTH/WOB: adjust mode */
     }
@@ -2079,6 +2122,7 @@ bool synth_ui_lfo_close_commit(void)
                                        s_lfo_view.track_idx,
                                        &s_lfo_view.lfo);
     }
+    sequencer_core_preview_melodic_clear();
     s_lfo_active   = false;
     s_force_redraw = true;
     ESP_LOGI(TAG, "LFO editor committed (apply_all=%d)", (int)s_editor_apply_all);

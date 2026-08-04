@@ -311,6 +311,17 @@ bool sequencer_core_get_melodic_lfo(uint8_t layer_idx, uint8_t track,
                                     seq_lfo_t *out);
 void sequencer_core_lfo_service(void);
 
+/* LFO live preview: apply the editor's scratch to the engine per detent
+ * WITHOUT storing (native tracks hear it immediately; software tracks are
+ * served from the preview slot by lfo_service). Store untouched, authored
+ * flag untouched. Cancel = reapply (re-push the committed state); commit =
+ * the normal setter. Editors must call preview_clear on every close path
+ * (commit AND cancel) so the service returns to reading the store. */
+void sequencer_core_preview_melodic_lfo(uint8_t layer_idx, uint8_t track,
+                                        const seq_lfo_t *lfo);
+void sequencer_core_reapply_melodic_lfo(uint8_t layer_idx, uint8_t track);
+void sequencer_core_preview_melodic_clear(void);
+
 /* Returns the current playhead step for the given layer (0..num_steps-1).
  * When paused the last computed step is returned (display freezes). */
 uint8_t sequencer_core_get_current_step(uint8_t layer_idx);

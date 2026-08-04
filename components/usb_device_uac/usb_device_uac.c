@@ -357,6 +357,25 @@ bool tud_audio_set_itf_cb(uint8_t rhport, tusb_control_request_t const *p_reques
         s_uac_device->mic_resolution = mic_resolutions_per_format[alt - 1];
         s_uac_device->mic_active = true;
         s_uac_device->mic_bytes_per_ms = s_uac_device->current_sample_rate / 1000 * MIC_CHANNEL_NUM * s_uac_device->mic_resolution / 8;
+        // LOCAL EDIT (S3-Amysynth): prefill the EP-IN FIFO to its flow-control
+        // setpoint (half depth) at stream start. TinyUSB's EP_IN_FLOW_CONTROL
+        // sizes packets to steer the fill toward depth/2, but corrections are
+        // capped at one +-1-frame packet per 11 frames (~0.4%), so climbing
+        // from empty takes seconds - and any frame that catches the FIFO
+        // below one packet during the climb ships a zero-length packet, an
+        // audible 1 ms hole. Starting at the setpoint skips the climb; the
+        // cost is half a FIFO of silence once per stream open. Mirrors the
+        // buffered-start the component already does for the speaker path.
+        tu_fifo_t *in_ff = tud_audio_get_ep_in_ff();
+        if (in_ff != NULL) {
+            static const uint8_t zeros[64] = {0};
+            uint16_t want = tu_fifo_depth(in_ff) / 2;
+            while (want > 0) {
+                uint16_t chunk = (want > sizeof(zeros)) ? (uint16_t)sizeof(zeros) : want;
+                if (tud_audio_write(zeros, chunk) != chunk) break;
+                want -= chunk;
+            }
+        }
         xTaskNotifyGive(s_uac_device->mic_task_handle);
         TU_LOG1("Microphone interface %d-%d opened", itf, alt);
         printf("Microphone interface %d-%d opened\n", itf, alt);

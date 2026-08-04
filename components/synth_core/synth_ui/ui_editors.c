@@ -1184,6 +1184,16 @@ bool synth_ui_graph_handle_button(bool is_long)
 {
     if (!graph_popup_is_active(&s_graph_popup)) return false;
 
+    /* Encoder press while the amp/EG1-bipolar sub-mode is active commits
+     * it (values are already live-pushed per turn) and returns the encoder
+     * to the ADSR points - the same enter/exit symmetry every other editor
+     * has. Without this, the press fell through to the popup widget and
+     * toggled a hidden cursor flag while the sub-mode stayed stuck on. */
+    if (s_graph_amp_mode) {
+        synth_ui_graph_toggle_amp_mode();
+        return true;
+    }
+
     gpopup_result_t r = is_long
         ? graph_popup_handle_button_long(&s_graph_popup)
         : graph_popup_handle_button(&s_graph_popup);
@@ -1446,6 +1456,20 @@ static void filter_sync_live_band(void)
 }
 #endif /* CONFIG_FILTER_SCOPE */
 
+/* UI-only cycle order for the encoder's filter-type row. The SEQ_FILTER_* /
+ * AMY FILTER_* values are ABI (persisted in snapshots, sent to the engine)
+ * and stay untouched - this table only reorders how the encoder steps
+ * through them: most-used first, kindred types adjacent, and no hazardous
+ * neighbor pairs (stepping LPF24<->LPF must never pass through HPF/NOTCH,
+ * which would dump full-level highs into the speakers mid-turn). NONE is
+ * not a member: it is reached via the separate enable toggle. */
+static const uint8_t s_filter_ui_order[] = {
+    SEQ_FILTER_LPF24, SEQ_FILTER_LPF, SEQ_FILTER_PHASER,
+    SEQ_FILTER_NOTCH, SEQ_FILTER_HPF, SEQ_FILTER_BPF,
+};
+#define FILTER_UI_ORDER_COUNT \
+    ((int)(sizeof(s_filter_ui_order) / sizeof(s_filter_ui_order[0])))
+
 /* Populate s_fgraph from s_filter_edit and the current graph target. */
 static void filter_sync_fgraph(void)
 {
@@ -1468,7 +1492,7 @@ static void filter_load_from_target(void)
          * the ui_mode ladder: the Wireless page is an overlay. */
         live_play_get_filter(&f);
         if (f.cutoff_hz <= 0.0f) {
-            f.filter_type = SEQ_FILTER_LPF;
+            f.filter_type = SEQ_FILTER_LPF24;
             f.cutoff_hz   = 800.0f;
             f.resonance   = 1.0f;
             f.enabled     = false;
@@ -1491,7 +1515,7 @@ static void filter_load_from_target(void)
         /* Never-authored: seed sensible starting values but read "OFF" until
          * the user enables. */
         if (f.cutoff_hz <= 0.0f) {
-            f.filter_type = SEQ_FILTER_LPF;
+            f.filter_type = SEQ_FILTER_LPF24;
             f.cutoff_hz   = 1200.0f;
             f.resonance   = 1.0f;
             f.enabled     = false;
@@ -1503,7 +1527,7 @@ static void filter_load_from_target(void)
          * display defaults, so an authored-but-disabled filter round-trips.
          * Defaults open disabled - they are just a starting point. */
         if (f.cutoff_hz <= 0.0f) {
-            f.filter_type = SEQ_FILTER_LPF;
+            f.filter_type = SEQ_FILTER_LPF24;
             f.cutoff_hz   = 800.0f;
             f.resonance   = 1.0f;
             f.enabled     = false;
@@ -1515,7 +1539,7 @@ static void filter_load_from_target(void)
         sequencer_core_get_melodic_filter(li, tr, &f);
         /* Same sentinel: zero cutoff = never authored. */
         if (f.cutoff_hz <= 0.0f) {
-            f.filter_type = SEQ_FILTER_LPF;
+            f.filter_type = SEQ_FILTER_LPF24;
             f.cutoff_hz   = 800.0f;
             f.resonance   = 1.0f;
             f.enabled     = false;
@@ -1710,12 +1734,19 @@ bool synth_ui_filter_handle_encoder(long delta)
         }
         case 3: {   /* type (melodic/arp only) */
             if (!drone) {
-                int t = (int)s_filter_edit.filter_type + (int)delta;
-                /* Wrap 1..COUNT-1; NONE is toggled via MY_BUTTON_1. */
-                if (t < 1) t = SEQ_FILTER_COUNT - 1;
-                if (t >= SEQ_FILTER_COUNT) t = 1;
-                s_filter_edit.filter_type = (uint8_t)t;
-                s_fgraph.filter_type      = (uint8_t)t;
+                /* Step through the UI order table, not the raw enum; wrap
+                 * both ways. An unknown stored value resolves to slot 0. */
+                int idx = 0;
+                for (int i = 0; i < FILTER_UI_ORDER_COUNT; i++) {
+                    if (s_filter_ui_order[i] == s_filter_edit.filter_type) {
+                        idx = i;
+                        break;
+                    }
+                }
+                idx = (idx + (int)delta) % FILTER_UI_ORDER_COUNT;
+                if (idx < 0) idx += FILTER_UI_ORDER_COUNT;
+                s_filter_edit.filter_type = s_filter_ui_order[idx];
+                s_fgraph.filter_type      = s_filter_ui_order[idx];
             }
             break;
         }
@@ -1954,10 +1985,19 @@ bool synth_ui_lfo_handle_encoder(long delta)
         case LFO_FLD_RATE:
             l->rate = (lfo_rate_t)((l->rate + LFO_RATE_COUNT + d) % LFO_RATE_COUNT);
             break;
-        case LFO_FLD_DEPTH: /* ±5%, clamped 0..100 */
-            if (d > 0) l->depth = (l->depth < 95) ? l->depth + 5 : 100;
-            else       l->depth = (l->depth >  5) ? l->depth - 5 : 0;
+        case LFO_FLD_DEPTH: {
+            /* Fine 1% steps in 0..10 (on sensitive targets like pitch even
+             * 5% is a lot), 5% steps above; clamped 0..100. Stepping down
+             * from 10 enters the fine range (10 -> 9), up leaves it
+             * (10 -> 15). */
+            int cur  = (int)l->depth;
+            int next = (d > 0) ? cur + ((cur < 10) ? 1 : 5)
+                               : cur - ((cur <= 10) ? 1 : 5);
+            if (next < 0)   next = 0;
+            if (next > 100) next = 100;
+            l->depth = (uint8_t)next;
             break;
+        }
         case LFO_FLD_FLT_OCT: {
             /* Quarter-octave steps. A legacy (sentinel) value materialises at
              * its current effective swing first, so the first click nudges the

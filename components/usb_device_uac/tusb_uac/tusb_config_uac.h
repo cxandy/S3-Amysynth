@@ -50,15 +50,23 @@ extern "C" {
 // MIC: keep EP size aligned to one complete audio frame.
 #define CFG_TUD_AUDIO_FUNC_1_FORMAT_1_EP_SZ_IN    ((CFG_TUD_AUDIO_FUNC_1_MAX_SAMPLE_RATE / 1000 * CFG_TUD_AUDIO_FUNC_1_FORMAT_1_FRAME_SZ_RX) + CFG_TUD_AUDIO_FUNC_1_FORMAT_1_FRAME_SZ_RX)
 
-// LOCAL EDIT (S3-Amysynth): deepen the EP-IN software FIFO from
-// (MIC_INTERVAL_MS + 1) = 3 ms to ~11 ms. The default leaves single-ms
-// margin between the 1 ms/frame drain (host clock) and the 2 ms lumpy
-// refill (device tick clock); as the two clocks beat, the FIFO touches
-// empty at frame time and TinyUSB ships a short packet = audible click
-// (measured: 4-16 sample zero-insertions, uncounted by any app counter).
-// Purely internal buffering - no descriptor change, host sees no
-// difference. Cost: ~1.6 KB internal RAM, ~+8 ms output latency.
-#define CFG_TUD_AUDIO_FUNC_1_EP_IN_SW_BUF_SZ      CFG_TUD_AUDIO_FUNC_1_FORMAT_1_EP_SZ_IN * (MIC_INTERVAL_MS + 9)
+// LOCAL EDIT (S3-Amysynth): the EP-IN software FIFO depth is a tunable
+// (CONFIG_UAC_MIC_FIFO_DEPTH_MS, Kconfig.uac) instead of the original
+// hardwired (MIC_INTERVAL_MS + 1) packets. The original sizing violates
+// TinyUSB's EP-IN flow-control precondition ("FIFO size of at least
+// 4*Navg", audio_device.c): the controller steers fill toward depth/2 but
+// the component's refill gate (needs MIC_INTERVAL_MS of free space) caps
+// fill at ~1 packet above empty, below the setpoint - so any ~1 ms
+// scheduling hiccup drops the fill under one packet and the class driver
+// ships a zero-length packet, an audible 1 ms hole. Depth is purely
+// internal buffering (no descriptor change, host-invisible); steady-state
+// latency and jitter margin are both ~depth/2.
+#ifdef CONFIG_UAC_MIC_FIFO_DEPTH_MS
+#define UAC_MIC_FIFO_DEPTH_MS   CONFIG_UAC_MIC_FIFO_DEPTH_MS
+#else
+#define UAC_MIC_FIFO_DEPTH_MS   10
+#endif
+#define CFG_TUD_AUDIO_FUNC_1_EP_IN_SW_BUF_SZ      CFG_TUD_AUDIO_FUNC_1_FORMAT_1_EP_SZ_IN * UAC_MIC_FIFO_DEPTH_MS
 #define CFG_TUD_AUDIO_FUNC_1_EP_IN_SZ_MAX         CFG_TUD_AUDIO_FUNC_1_FORMAT_1_EP_SZ_IN  // Maximum EP IN size for all AS alternate settings used
 
 // EP and buffer size - for isochronous EP´s, the buffer and EP size are equal (different sizes would not make sense)

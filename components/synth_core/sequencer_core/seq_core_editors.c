@@ -408,7 +408,7 @@ void __attribute__((optimize("O3", "unroll-loops", "fast-math"))) sequencer_core
                 e->synth = syn;
                 e->osc   = 0;
                 e->freq_coefs[COEF_CONST] =
-                    SEQ_LFO_PITCH_BASE_HZ * powf(2.0f, d * val);
+                    SEQ_LFO_PITCH_BASE_HZ * powf(2.0f, d * VOICE_LFO_DEPTH_PITCH * val);
                 amy_helpers_event_send(e);
             }
         }

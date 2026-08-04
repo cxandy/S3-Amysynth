@@ -18,9 +18,24 @@ void amy_helpers_set_render_task(TaskHandle_t render_task);
 amy_event *amy_helpers_event_begin(void);
 /* Hands the event to the ingest pump: a send is NOT an apply. Ordering between
  * sends is preserved, but the engine applies them asynchronously - never read
- * AMY state right after a send to observe its effect. Task context only. */
+ * AMY state right after a send to observe its effect. Task context only.
+ * Exception: on the pump task itself (urgent-source callbacks) a send applies
+ * inline and returns only once applied. */
 void amy_helpers_event_send(amy_event *event);
 void amy_helpers_event_cancel(amy_event *event);
+
+/* Register the pump's single urgent source: a callback that drains one
+ * deadline-sensitive job and returns true, or false when it has none. The
+ * pump invokes it before every FIFO event, on the pump task, so the callback
+ * may use begin()/send() freely (those apply inline there) but must never
+ * block. Obligations: call once, during single-threaded init, before the
+ * producer of those jobs starts. */
+void amy_helpers_pump_register_urgent_source(bool (*drain_one)(void));
+
+/* Ring the pump's doorbell after enqueueing work for the urgent source.
+ * Non-blocking; callable from any task INCLUDING the render task (it is the
+ * one ingress-seam entry point the render task may use). Not ISR-safe. */
+void amy_helpers_pump_wake(void);
 
 /* One-liners over begin/send for the two recurring event shapes; everything
  * else sets its own field mix via begin()/send() directly. The names state

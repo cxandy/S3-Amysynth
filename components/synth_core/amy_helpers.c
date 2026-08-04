@@ -31,20 +31,33 @@ static TaskHandle_t s_render_task = NULL;
  * holding the single copy of the parse-frame stack rent - drains it into
  * amy_add_event(). The mutex hold collapses to a memcpy.
  *
+ * The pump also serves one URGENT SOURCE: a registered drain callback for
+ * deadline-sensitive jobs produced by a context that may not block on the
+ * FIFO (the render task's decorated-step trigs, seq_trig_pump.c). The loop
+ * drains the urgent source before every FIFO item, and sends made ON the
+ * pump task (i.e. from that callback) apply inline instead of re-entering
+ * the FIFO - so a decorated note never waits out a parse backlog, and the
+ * pump cannot deadlock against its own queue. One doorbell (a task
+ * notification) covers both sources; producers ring it after enqueueing.
+ *
  * Ordering: the copy into the FIFO happens BEFORE the mutex is released, so
  * FIFO order equals the global emission order the previous inline scheme
  * produced. Voice-kill -> patch-load -> note-on chains cannot reorder across
  * producers, and events carry their own time/sequence fields, so AMY-side
- * scheduling is untouched.
+ * scheduling is untouched. Urgent jobs jumping the FIFO does not weaken
+ * this: they originate on the render task, which never participates in the
+ * producer mutex, so no order between them and FIFO events ever existed.
  *
  * Backpressure: a full queue blocks the producer rather than dropping - losing
  * a patch-define or a note-off is worse than a short stall, and the wait is
  * strictly narrower than the old "block for someone else's whole parse".
  *
  * The pump loop must never acquire a lock beyond what amy_add_event() takes
- * internally, and must never block on anything but its own queue: it inherits
- * the failure potential the inline scheme had, where one stalled parse froze
- * render, the tick-slaved sequencer and all controls at once.
+ * internally - in particular never s_event_mutex, which a producer can hold
+ * while blocked on a full FIFO only this task drains - and must never block
+ * on anything but its own doorbell: it inherits the failure potential the
+ * inline scheme had, where one stalled parse froze render, the tick-slaved
+ * sequencer and all controls at once.
  */
 #define AMY_INGEST_QUEUE_DEPTH          64
 /* Shallower internal-RAM queue used only when the PSRAM storage alloc fails;
@@ -63,6 +76,18 @@ static const char *TAG_INGEST = "amy_ingest";
 
 static QueueHandle_t s_ingest_queue = NULL;
 static StaticQueue_t s_ingest_queue_struct;
+static TaskHandle_t s_pump_task = NULL;
+
+/* Deadline-sensitive side channel: drains one job and returns true, or false
+ * when empty. Registered once, single-threaded, at init time. */
+static bool (*s_urgent_drain)(void) = NULL;
+
+/* Pump-context sends use a private scratch and never touch s_event_mutex; see
+ * amy_helpers_event_begin(). */
+static amy_event s_pump_event;
+#if !defined(NDEBUG)
+static bool s_pump_event_busy = false;
+#endif
 
 /* Bounded wait so a leaked begin/send pair asserts loudly instead of hanging
  * every AMY sender. Well above the worst-case legitimate hold (a patch-string
@@ -75,8 +100,17 @@ static void amy_ingest_task(void *arg)
     (void)arg;
     amy_event ev;
     for (;;) {
-        if (xQueueReceive(s_ingest_queue, &ev, portMAX_DELAY) == pdTRUE) {
-            amy_add_event(&ev);
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        for (;;) {
+            /* Urgent jobs first - and again between every FIFO item, so a
+             * decorated-step note due next sequencer tick is never stuck
+             * behind a backlog of parses. */
+            if (s_urgent_drain != NULL && s_urgent_drain()) continue;
+            if (xQueueReceive(s_ingest_queue, &ev, 0) == pdTRUE) {
+                amy_add_event(&ev);
+                continue;
+            }
+            break;
         }
     }
 }
@@ -108,10 +142,24 @@ void amy_helpers_init(void)
 
         BaseType_t ok = xTaskCreatePinnedToCore(amy_ingest_task, "amy_ingest",
                                                 AMY_INGEST_TASK_STACK, NULL,
-                                                AMY_INGEST_TASK_PRIO, NULL,
+                                                AMY_INGEST_TASK_PRIO,
+                                                &s_pump_task,
                                                 AMY_INGEST_TASK_CORE);
         configASSERT(ok == pdPASS);
     }
+}
+
+void amy_helpers_pump_register_urgent_source(bool (*drain_one)(void))
+{
+    configASSERT(s_urgent_drain == NULL || s_urgent_drain == drain_one);
+    s_urgent_drain = drain_one;
+}
+
+void amy_helpers_pump_wake(void)
+{
+    /* Non-blocking; safe from any task including render. NULL only in the
+     * asserts-off degrade path where sends apply inline anyway. */
+    if (s_pump_task != NULL) xTaskNotifyGive(s_pump_task);
 }
 
 /* Lock hierarchy: s_event_mutex is the OUTERMOST first-party lock. It is held
@@ -136,6 +184,19 @@ amy_event *amy_helpers_event_begin(void)
     configASSERT(s_render_task == NULL ||
                  xTaskGetCurrentTaskHandle() != s_render_task);
 #endif
+    if (s_pump_task != NULL && xTaskGetCurrentTaskHandle() == s_pump_task) {
+        /* Pump-context send (urgent-source expansion): private scratch, no
+         * mutex. A producer can legitimately hold s_event_mutex while blocked
+         * on a full FIFO that only this task drains - taking it here would
+         * close that cycle into a deadlock. */
+#if !defined(NDEBUG)
+        configASSERT(!s_pump_event_busy &&
+                     "amy_helpers: nested pump-context begin");
+        s_pump_event_busy = true;
+#endif
+        s_pump_event = amy_default_event();
+        return &s_pump_event;
+    }
     if (xSemaphoreTake(s_event_mutex,
                        pdMS_TO_TICKS(AMY_HELPERS_EVENT_TIMEOUT_MS)) != pdTRUE) {
         /* A prior begin/send pair leaked the mutex: fail loud, never hang. */
@@ -154,6 +215,16 @@ amy_event *amy_helpers_event_begin(void)
  * needs synchronous apply. */
 void amy_helpers_event_send(amy_event *event)
 {
+    if (event == &s_pump_event) {
+        /* On the pump task a send IS an apply: routing through the FIFO from
+         * its own consumer would deadlock when full, and the urgent path
+         * exists precisely to skip the backlog. */
+        amy_add_event(event);
+#if !defined(NDEBUG)
+        s_pump_event_busy = false;
+#endif
+        return;
+    }
     configASSERT(event == &s_event);
     if (s_ingest_queue == NULL) {
         /* Init failed in a build with assertions compiled out: degrade to the
@@ -171,11 +242,18 @@ void amy_helpers_event_send(amy_event *event)
          * silently; events are never dropped while assertions are enabled. */
         configASSERT(0 && "amy_helpers: ingest queue full, pump stalled");
     }
+    amy_helpers_pump_wake();
     xSemaphoreGive(s_event_mutex);
 }
 
 void amy_helpers_event_cancel(amy_event *event)
 {
+    if (event == &s_pump_event) {
+#if !defined(NDEBUG)
+        s_pump_event_busy = false;
+#endif
+        return;
+    }
     configASSERT(event == &s_event);
     xSemaphoreGive(s_event_mutex);
 }

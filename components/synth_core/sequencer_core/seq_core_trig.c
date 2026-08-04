@@ -207,10 +207,11 @@ static bool trig_roll_probability(uint8_t prob_pct)
  * shortening) so a merely probabilistic or conditional step feels identical to
  * a plain one when it fires; n>1 subdivides the slot.
  *
- * Not static: called only from seq_trig_pump.c's consumer task, never from
- * this file's own render-task tick hook below (which only enqueues a job) -
- * this function ends in amy_helpers_note_send(), which asserts if called
- * from the render task and would block that task even if it didn't. */
+ * Not static: called only from seq_trig_pump.c's urgent-source drain on the
+ * AMY ingest pump task, never from this file's own render-task tick hook
+ * below (which only enqueues a job) - this function ends in
+ * amy_helpers_note_send(), which asserts if called from the render task and
+ * would block that task even if it didn't. */
 void trig_schedule_ratchets(uint8_t layer_idx, const seq_layer_t *layer,
                             uint8_t track, uint8_t step, uint32_t now_ticks)
 {
@@ -345,9 +346,9 @@ void sequencer_core_service_tick(void)
                      * which asserts if called from this (the render) task and
                      * can block for up to 250ms even when it doesn't - both
                      * forbidden on the render path. Hand off a tiny job
-                     * descriptor to seq_trig_pump's consumer task instead;
-                     * the non-blocking enqueue is the render task's entire
-                     * touch on this path. */
+                     * descriptor to the ingest pump's urgent source instead
+                     * (seq_trig_pump.c); the non-blocking enqueue + doorbell
+                     * is the render task's entire touch on this path. */
                     sequencer_core_trig_enqueue(li, tr, cur_step, now_ticks);
                 }
             }

@@ -243,10 +243,10 @@ void trig_schedule_ratchets(uint8_t layer_idx, const seq_layer_t *layer,
  * sequencer_core_service_tick() runs on amy_usb_render_task and must never
  * block or call into the amy_helpers ingress seam directly (that's what
  * trips amy_helpers_event_begin's render-task assert); it instead hands a
- * tiny job descriptor to a dedicated consumer task via a non-blocking
- * enqueue. All decision-making (edge detection, condition eval, probability
- * roll, the trig RNG) stays on the render task unchanged - only the AMY-facing
- * emission tail moves. See docs/plans/decorated-trig-render-task-fix-2026-07-29.md. */
+ * tiny job descriptor to the AMY ingest pump's urgent source via a
+ * non-blocking enqueue + doorbell. All decision-making (edge detection,
+ * condition eval, probability roll, the trig RNG) stays on the render task
+ * unchanged - only the AMY-facing emission tail moves. */
 void sequencer_core_trig_pump_init(void);
 void sequencer_core_trig_enqueue(uint8_t layer_idx, uint8_t track, uint8_t step,
                                  uint32_t now_ticks);

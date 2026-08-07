@@ -13,7 +13,15 @@
 #include "u8g2.h"              /* u8g2_t */
 
 /* ─── Cross-file shared state (owners noted; only these need extern) ──── */
-extern synth_ui_state_t  seq_state;        /* owner: synth_ui_state.c */
+/* UI state lives behind a pointer so CONFIG_SEQ_STATE_IN_PSRAM can place it
+ * in PSRAM (static internal storage when off). The macro keeps every existing
+ * seq_state.field / &seq_state.field expression source-compatible. Owner:
+ * synth_ui_state.c. Valid from synth_ui_state_alloc() onward, which
+ * synth_ui_init() calls first - nothing may touch seq_state before
+ * synth_ui_init(). UI/input task context only - never ISR, never render. */
+extern synth_ui_state_t *seq_state_ptr;
+#define seq_state (*seq_state_ptr)
+void synth_ui_state_alloc(void);
 extern volatile bool     s_force_redraw;   /* owner: synth_ui_task.c */
 extern uint8_t           s_graph_layer;    /* owner: ui_editors.c; task clamps it */
 extern uint8_t           s_graph_track;    /* owner: ui_editors.c; task clamps it */

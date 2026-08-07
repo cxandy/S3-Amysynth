@@ -1,9 +1,18 @@
 #include "sequencer_core/seq_core_internal.h"
 #include "voice_config.h"
+#include "esp_heap_caps.h"
 #include <assert.h>
 
 /* ── State definitions — owns the core layer table and play state ─── */
-seq_layer_t s_layers[MAX_LAYERS];
+#if CONFIG_SEQ_STATE_IN_PSRAM
+/* Allocated once in sequencer_core_init(), PSRAM-first with internal
+ * fallback. NULL only before init; the tick path never dereferences the
+ * table while s_num_layers == 0. */
+seq_layer_t *s_layers = NULL;
+#else
+static seq_layer_t s_layers_storage[MAX_LAYERS];
+seq_layer_t *s_layers = s_layers_storage;
+#endif
 uint8_t     s_num_layers   = 0;
 bool        s_playing      = true;
 /* Guards delete_layer()'s ~4 KB s_layers compaction against the sequencer tick,
@@ -60,7 +69,25 @@ void sequencer_core_init(void)
     sequencer_core_trig_pump_init();
     s_num_layers = 0;
     s_next_melodic_synth = SEQ_MEL_SYNTH_BASE;
-    memset(s_layers, 0, sizeof(s_layers));
+#if CONFIG_SEQ_STATE_IN_PSRAM
+    if (s_layers == NULL) {
+        s_layers = heap_caps_malloc(MAX_LAYERS * sizeof(seq_layer_t),
+                                    MALLOC_CAP_SPIRAM);
+        if (s_layers == NULL) {
+            ESP_LOGW(TAG, "s_layers: PSRAM alloc failed, using internal heap");
+            s_layers = heap_caps_malloc(MAX_LAYERS * sizeof(seq_layer_t),
+                                        MALLOC_CAP_DEFAULT);
+        }
+        if (s_layers == NULL) {
+            /* Core state with no degrade path: fail loudly at boot rather
+             * than NULL-deref on the first layer access. */
+            ESP_LOGE(TAG, "s_layers: allocation failed (%u B)",
+                     (unsigned)(MAX_LAYERS * sizeof(seq_layer_t)));
+            abort();
+        }
+    }
+#endif
+    memset(s_layers, 0, MAX_LAYERS * sizeof(seq_layer_t));
     memset(s_cached_step, 0, MAX_LAYERS * sizeof(s_cached_step[0]));
     memset(s_track_source_note, 0, MAX_LAYERS * SEQ_TRACKS * sizeof(s_track_source_note[0][0]));
     memset(s_track_prev_plain, 0, MAX_LAYERS * SEQ_TRACKS * sizeof(s_track_prev_plain[0][0]));

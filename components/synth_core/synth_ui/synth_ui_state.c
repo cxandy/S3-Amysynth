@@ -1,25 +1,49 @@
 #include "synth_ui/synth_ui_internal.h"
 #include "sequencer_core.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 static const char *TAG = "synth_ui";
 
 /* ── Sequencer UI state ─────────────────────────────────────────────────── */
 
-synth_ui_state_t seq_state = {
-    /* layers[] is zero-initialized by C99 partial-init rules */
-    .num_layers       = 0,
-    .active_layer_idx = 0,
-    .current_pattern  = 1,
-    .current_step     = 0,
-    .playing          = true,
-    .selected_track   = 0,
-    .selected_step    = 0,
-    .edit_mode        = true,
-    .drum_select_mode = false,
-};
+#if CONFIG_SEQ_STATE_IN_PSRAM
+synth_ui_state_t *seq_state_ptr = NULL;   /* allocated in synth_ui_state_alloc() */
+#else
+static synth_ui_state_t seq_state_storage;
+synth_ui_state_t *seq_state_ptr = &seq_state_storage;
+#endif
+
+/* Allocate (PSRAM path) and apply the boot defaults that used to live in the
+ * static initializer - everything not set here is correct at zero. Must run
+ * before any seq_state access; synth_ui_init() calls it first. */
+void synth_ui_state_alloc(void)
+{
+#if CONFIG_SEQ_STATE_IN_PSRAM
+    if (seq_state_ptr == NULL) {
+        seq_state_ptr = heap_caps_calloc(1, sizeof(synth_ui_state_t),
+                                         MALLOC_CAP_SPIRAM);
+        if (seq_state_ptr == NULL) {
+            ESP_LOGW(TAG, "seq_state: PSRAM alloc failed, using internal heap");
+            seq_state_ptr = heap_caps_calloc(1, sizeof(synth_ui_state_t),
+                                             MALLOC_CAP_DEFAULT);
+        }
+        if (seq_state_ptr == NULL) {
+            /* Core UI state with no degrade path: fail loudly at boot rather
+             * than NULL-deref on the first field access. */
+            ESP_LOGE(TAG, "seq_state: allocation failed (%u B)",
+                     (unsigned)sizeof(synth_ui_state_t));
+            abort();
+        }
+    }
+#endif
+    seq_state.current_pattern = 1;
+    seq_state.playing         = true;
+    seq_state.edit_mode       = true;
+}
 
 /* Mirror the UI's grid of active steps into the audio core so the core
  * schedules notes for every step the user has toggled on. Only "on" steps are

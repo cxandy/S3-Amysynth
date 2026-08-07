@@ -237,6 +237,7 @@ static void synth_ui_task(void *pvParameters)
 void synth_ui_init(u8g2_t *u8g2)
 {
     s_u8g2 = u8g2;
+    synth_ui_state_alloc();   /* must precede every seq_state access */
     seq_state.playing  = true;
     seq_state.ui_mode  = UI_MODE_SEQUENCER;
     seq_state.menu_open = false;

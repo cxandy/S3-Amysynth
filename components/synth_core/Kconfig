@@ -9,6 +9,21 @@ config SYNTH_DEV_MENU
 		Controls graduate to real screens if they prove out; disable for
 		a clean end-user build - no DEV code is compiled in when off.
 
+config SEQ_STATE_IN_PSRAM
+	bool "Place sequencer layer tables in PSRAM"
+	depends on SPIRAM
+	default y
+	help
+		Allocate the sequencer core layer table (s_layers, ~7.5 KB) and the
+		UI mirror state (seq_state, ~7.5 KB) from PSRAM at init instead of
+		static internal DRAM, freeing ~15 KB of internal RAM. Accesses run
+		through the data cache; the sequencer tick reads the layer table
+		per block, so disable this if a render-path regression is ever
+		traced here. Falls back to internal heap if the PSRAM allocation
+		fails (and aborts at boot if both fail - this state is not
+		optional). When disabled, both tables are static internal arrays
+		exactly as before.
+
 config SEQ_QUANTIZER_DEFAULT_ENABLED
 	bool "Enable quantizer by default"
 	default y

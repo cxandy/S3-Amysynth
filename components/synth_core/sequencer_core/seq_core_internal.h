@@ -92,8 +92,12 @@ typedef struct {
 
 /* ── Shared state — defined (non-static) in the owning .c file ───────── */
 
-/* Owned by seq_core_state.c */
-extern seq_layer_t    s_layers[];
+/* Owned by seq_core_state.c. Storage is behind a pointer so
+ * CONFIG_SEQ_STATE_IN_PSRAM can place the table in PSRAM: static array when
+ * off, allocated in sequencer_core_init() when on. Valid (non-NULL) from
+ * sequencer_core_init() onward; before that s_num_layers == 0 keeps every
+ * reader out of the table. Task context only - never ISR. */
+extern seq_layer_t   *s_layers;
 extern uint8_t        s_num_layers;
 extern bool           s_playing;
 extern uint8_t        s_next_melodic_synth;

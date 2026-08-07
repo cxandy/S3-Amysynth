@@ -808,6 +808,16 @@ void app_main(void)
     /* Above the default-64 instrument table: stutter drone 64/65, normal
      * drone 66/67. Keep in sync with drone_core.c / drone_std_core.c. */
     amy_cfg.max_synths = 68;
+    /* Disable AMY's CPU-overload failsafe (v1.2.121+): its per-block timing
+     * span wraps amy_render(), whose body holds amy_queue_lock, so time the
+     * render task spends BLOCKED on the lock while the ingest pump applies
+     * patch loads is billed as render load. Sustained patch scrolling pins
+     * the smoothed estimate past the 98% threshold on wall time alone and
+     * the failsafe wipes every osc, note, and sequencer tag out from under
+     * the app. Real overload on this platform is already observable: the
+     * strict 1:1 GPTimer render pacing plus the USB output-level watchdog.
+     * threshold 0 => overload_threshold_us 0 => amy_overload_check no-ops. */
+    amy_cfg.overload_threshold = 0.0f;
 #ifdef GAMMA9001
     gamma9001_pcm_mount();
 #endif

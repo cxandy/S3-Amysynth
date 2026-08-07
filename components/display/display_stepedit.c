@@ -7,22 +7,27 @@
 #define SE_ROW_H     10
 #define SE_FIRST_ROW 24
 
-/* Mirrors display_trackopts.c's to_draw_row: box+invert when selected. This
- * editor has no separate select/adjust phase (the encoder always adjusts the
- * cursored field), so "selected" alone is enough context. */
+/* Mirrors display_trackopts.c's to_draw_row select/adjust phases: triangle
+ * marker when merely selected (turn navigates), box+invert when in adjust
+ * mode (turn changes the value). */
 static void se_draw_row(u8g2_t *u8g2, uint8_t y, const char *label,
-                        const char *value, bool selected)
+                        const char *value, bool selected, bool editing)
 {
     char buf[26];
     snprintf(buf, sizeof(buf), "%-8s: %s", label, value);
-    if (selected) {
+    if (selected && editing) {
         uint8_t w = (uint8_t)(u8g2_GetStrWidth(u8g2, buf) + 4);
-        u8g2_DrawBox(u8g2, 0, (uint8_t)(y - 8), w, SE_ROW_H);
+        u8g2_DrawBox(u8g2, 4, (uint8_t)(y - 8), w, SE_ROW_H);
         u8g2_SetDrawColor(u8g2, 0);
-        u8g2_DrawStr(u8g2, 2, y, buf);
+        u8g2_DrawStr(u8g2, 6, y, buf);
         u8g2_SetDrawColor(u8g2, 1);
+    } else if (selected) {
+        u8g2_DrawStr(u8g2, 6, y, buf);
+        u8g2_DrawTriangle(u8g2, 0, (int16_t)(y - 6),
+                                0, (int16_t)(y - 1),
+                                3, (int16_t)(y - 3));
     } else {
-        u8g2_DrawStr(u8g2, 2, y, buf);
+        u8g2_DrawStr(u8g2, 6, y, buf);
     }
 }
 
@@ -45,17 +50,18 @@ void display_stepedit_draw_frame(u8g2_t *u8g2, const stepedit_view_t *view)
     char val[8];
 
     snprintf(val, sizeof(val), "%u%%", (unsigned)view->prob);
-    se_draw_row(u8g2, y, "Prob", val, view->field_cursor == SE_FIELD_PROB);
+    se_draw_row(u8g2, y, "Prob", val, view->field_cursor == SE_FIELD_PROB, view->editing);
     y = (uint8_t)(y + SE_ROW_H);
 
     snprintf(val, sizeof(val), "%u", (unsigned)view->ratchet);
-    se_draw_row(u8g2, y, "Ratchet", val, view->field_cursor == SE_FIELD_RATCHET);
+    se_draw_row(u8g2, y, "Ratchet", val, view->field_cursor == SE_FIELD_RATCHET, view->editing);
     y = (uint8_t)(y + SE_ROW_H);
 
     snprintf(val, sizeof(val), "%u", (unsigned)view->every);
-    se_draw_row(u8g2, y, "Every", val, view->field_cursor == SE_FIELD_EVERY);
+    se_draw_row(u8g2, y, "Every", val, view->field_cursor == SE_FIELD_EVERY, view->editing);
     y = (uint8_t)(y + SE_ROW_H);
 
+    /* Prev is click-toggled and has no adjust phase - never inverted. */
     se_draw_row(u8g2, y, "Prev", view->prev ? "ON" : "OFF",
-                view->field_cursor == SE_FIELD_PREV);
+                view->field_cursor == SE_FIELD_PREV, false);
 }

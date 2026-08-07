@@ -11,8 +11,14 @@
  * selected_step) rather than a parallel one: the user navigates to a step as
  * usual, then opens this popup (MY_BUTTON_2 long-press, main.c). */
 
-static bool    s_se_active = false;
-static uint8_t s_se_field  = SE_FIELD_PROB;
+static bool    s_se_active  = false;
+static uint8_t s_se_field   = SE_FIELD_PROB;
+/* Select/adjust phases, same workflow as trackopts and the LFO editor: turn
+ * navigates fields, click enters adjust mode (inverted row), turn changes the
+ * value, click confirms back to navigation. Prev is a boolean and follows the
+ * LFO editor's checkbox convention: click toggles it directly, no adjust
+ * phase. */
+static bool    s_se_editing = false;
 
 bool synth_ui_stepedit_is_active(void)
 {
@@ -34,21 +40,32 @@ void synth_ui_stepedit_open(void)
     if (seq_state.ui_mode != UI_MODE_SEQUENCER || seq_state.menu_open) {
         return;
     }
-    s_se_active = true;
-    s_se_field  = SE_FIELD_PROB;
+    s_se_active  = true;
+    s_se_field   = SE_FIELD_PROB;
+    s_se_editing = false;
     s_force_redraw = true;
 }
 
 void synth_ui_stepedit_close(void)
 {
-    s_se_active = false;
+    s_se_active  = false;
+    s_se_editing = false;
     s_force_redraw = true;
 }
 
 bool synth_ui_stepedit_handle_button(void)
 {
     if (!s_se_active) return false;
-    s_se_field = (uint8_t)((s_se_field + 1) % SE_FIELD_COUNT);
+    if (s_se_field == SE_FIELD_PREV) {
+        /* Boolean: toggle on click, never enter adjust mode. */
+        uint8_t li = seq_state.active_layer_idx;
+        uint8_t t  = seq_state.selected_track;
+        uint8_t s  = seq_state.selected_step;
+        sequencer_core_set_step_prev(li, t, s,
+                                     !sequencer_core_get_step_prev(li, t, s));
+    } else {
+        s_se_editing = !s_se_editing;
+    }
     s_force_redraw = true;
     return true;
 }
@@ -56,6 +73,13 @@ bool synth_ui_stepedit_handle_button(void)
 bool synth_ui_stepedit_handle_encoder(long delta)
 {
     if (!s_se_active) return false;
+    if (!s_se_editing) {
+        /* Navigate: one field per event, direction only. */
+        if (delta > 0)      s_se_field = (uint8_t)((s_se_field + 1) % SE_FIELD_COUNT);
+        else if (delta < 0) s_se_field = (uint8_t)((s_se_field + SE_FIELD_COUNT - 1) % SE_FIELD_COUNT);
+        s_force_redraw = true;
+        return true;
+    }
     uint8_t li = seq_state.active_layer_idx;
     uint8_t t  = seq_state.selected_track;
     uint8_t s  = seq_state.selected_step;
@@ -77,15 +101,8 @@ bool synth_ui_stepedit_handle_encoder(long delta)
             sequencer_core_set_step_every(li, t, s, SEQ_CLAMP_U8(v, 1, SEQ_STEP_EVERY_MAX));
             break;
         }
-        case SE_FIELD_PREV: {
-            /* Two-state toggle: any turn flips it. */
-            if (d != 0) {
-                sequencer_core_set_step_prev(li, t, s,
-                                             !sequencer_core_get_step_prev(li, t, s));
-            }
-            break;
-        }
         default:
+            /* SE_FIELD_PREV never enters adjust mode (click-toggle). */
             break;
     }
     s_force_redraw = true;
@@ -106,6 +123,7 @@ void stepedit_build_view(stepedit_view_t *out)
     out->every        = sequencer_core_get_step_every(li, t, s);
     out->prev         = sequencer_core_get_step_prev(li, t, s) ? 1u : 0u;
     out->field_cursor = s_se_field;
+    out->editing      = s_se_editing ? 1u : 0u;
 }
 
 uint32_t stepedit_view_signature(stepedit_view_t *out)

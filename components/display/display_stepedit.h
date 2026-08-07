@@ -20,9 +20,12 @@ extern "C" {
  *   Every   : 2
  *   Prev    : OFF
  *
- * field_cursor selects which row the encoder currently adjusts; short-press
- * cycles it, encoder turns adjust the value. Every and Prev are independent
- * conditions (both must hold for the step to fire); Every 1 = every loop. */
+ * Select/adjust workflow, matching trackopts: encoder turns navigate the
+ * field cursor (triangle marker), short-press enters adjust mode (row
+ * inverted), turns change the value, short-press confirms. Prev is a boolean
+ * and click-toggles directly, with no adjust phase. Every and Prev are
+ * independent conditions (both must hold for the step to fire); Every 1 =
+ * every loop. */
 
 typedef enum {
     SE_FIELD_PROB    = 0,
@@ -41,6 +44,7 @@ typedef struct {
     uint8_t every;        /* 1..SEQ_STEP_EVERY_MAX; 1 = every loop */
     uint8_t prev;         /* 0/1 */
     uint8_t field_cursor; /* stepedit_field_t */
+    uint8_t editing;      /* 1 = adjust mode (cursored row inverted) */
 } stepedit_view_t;
 
 void display_stepedit_draw_frame(u8g2_t *u8g2, const stepedit_view_t *view);

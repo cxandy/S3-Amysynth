@@ -379,6 +379,24 @@ static void sequencer_refresh_track_note(uint8_t layer_idx, uint8_t track,
         sequencer_emit_step(layer_idx, track, s);
     }
 
+    /* Kill anything this track is CURRENTLY sounding at the old pitch. Since
+     * AMY v1.2.121 note-offs match by note number (instrument.c
+     * _instrument_voice_for_note): the re-emits above and the preview
+     * reschedule below rewrite the pending off tags with the NEW pitch, so a
+     * note whose on already fired would never receive a matching off and ring
+     * indefinitely (nearly every preview during a pitch scroll, since preview
+     * spacing < gate). A velocity-0 event with NO midi_note is AMY's
+     * synth-scoped all-notes-off (patches.c) - matched by voice, silent no-op
+     * on an idle instrument. Melodic-only: the 1-voice drum-PCM instruments
+     * take the single-voice path where a no-note event means note 0, and PCM
+     * drums schedule no offs anyway. */
+    if (layer->type == SEQ_LAYER_MELODIC) {
+        amy_event *kill = amy_helpers_event_begin();
+        kill->synth    = layer->synth_id[track];
+        kill->velocity = 0.0f;
+        amy_helpers_event_send(kill);
+    }
+
     if (!preview) {
         return;
     }

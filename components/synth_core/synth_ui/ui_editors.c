@@ -1722,7 +1722,10 @@ bool synth_ui_filter_handle_encoder(long delta)
     /* Editing: adjust the selected parameter. */
     switch (s_fgraph.cursor) {
         case 0: {   /* cutoff */
-            float step = 0.015f * (float)delta;
+            /* One semitone per detent: the norm axis is log2-mapped over
+             * FGRAPH_CUTOFF_OCTAVES, so this step multiplies the cutoff by
+             * exactly 2^(1/12). Fast spins batch detents into one delta. */
+            float step = (1.0f / (12.0f * FGRAPH_CUTOFF_OCTAVES)) * (float)delta;
             s_fgraph.cutoff_norm = SEQ_CLAMP_F32(s_fgraph.cutoff_norm + step, 0.0f, 1.0f);
             s_filter_edit.cutoff_hz = filter_norm_to_hz(s_fgraph.cutoff_norm);
             break;

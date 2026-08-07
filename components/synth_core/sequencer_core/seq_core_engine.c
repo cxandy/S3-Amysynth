@@ -234,9 +234,9 @@ uint8_t sequencer_resolve_track_note(const seq_layer_t *layer,
 void sequencer_emit_clear_tag(uint32_t tag)
 {
     amy_event *e = amy_helpers_event_begin();
-    e->sequence[SEQUENCE_TAG]    = tag;
-    e->sequence[SEQUENCE_TICK]   = 0;
-    e->sequence[SEQUENCE_PERIOD] = 0;
+    e->ticks[TICKS_TAG]    = tag;
+    e->ticks[TICKS_TICK]   = 0;
+    e->ticks[TICKS_PERIOD] = 0;
     amy_helpers_event_send(e);
 }
 

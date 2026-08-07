@@ -165,7 +165,7 @@ void amy_helpers_pump_wake(void)
 /* Lock hierarchy: s_event_mutex is the OUTERMOST first-party lock. It is held
  * across the FIFO enqueue only; the AMY-side locks are taken later, on the pump
  * task, so the acquisition order is
- *     s_event_mutex -> ingest FIFO, then (amy_queue_lock | SEQ_LOCK) on the pump.
+ *     s_event_mutex -> ingest FIFO, then amy_queue_lock on the pump.
  * The render body (amy_render on Core 1) holds amy_queue_lock for its whole
  * duration, so it must NEVER call an ingress helper: it would both invert that
  * order and risk blocking on a FIFO the pump cannot drain. Register its handle
@@ -259,11 +259,12 @@ void amy_helpers_event_cancel(amy_event *event)
 }
 
 /* ── Typed ingress entry points ─────────────────────────────────────────
- * amy_add_event() routes by shape: an event with sequence[] set is
- * tick-scheduled whole (sequencer_add_event / SEQ_LOCK); one without is
- * applied now (add_delta_to_queue / amy_queue_lock). These entry points make
- * the route visible at the call site; the note-send signature is also where
- * per-step parameter-lock fields will attach. */
+ * amy_add_event() routes by shape: an event with ticks[] set is serialized
+ * to a wire string and tick-scheduled whole (sequencer_add_wire, under
+ * amy_queue_lock); one without is applied now (add_delta_to_queue /
+ * amy_queue_lock). These entry points make the route visible at the call
+ * site; the note-send signature is also where per-step parameter-lock
+ * fields will attach. */
 
 void amy_helpers_note_send(uint8_t synth, float midi_note, float velocity,
                            uint32_t tag, uint32_t tick, uint32_t period)
@@ -272,9 +273,9 @@ void amy_helpers_note_send(uint8_t synth, float midi_note, float velocity,
     e->synth                     = synth;
     e->midi_note                 = midi_note;
     e->velocity                  = velocity;
-    e->sequence[SEQUENCE_TAG]    = tag;
-    e->sequence[SEQUENCE_TICK]   = tick;
-    e->sequence[SEQUENCE_PERIOD] = period;
+    e->ticks[TICKS_TAG]    = tag;
+    e->ticks[TICKS_TICK]   = tick;
+    e->ticks[TICKS_PERIOD] = period;
     amy_helpers_event_send(e);
 }
 
@@ -283,9 +284,9 @@ void amy_helpers_config_send(amy_event *event)
     /* A sequence[] tuple would silently reroute this to the tick scheduler
      * instead of applying now. "Unset" is the AMY_UNSET sentinel, NOT zero;
      * mirrors amy_add_event's own routing test. */
-    configASSERT(AMY_IS_UNSET(event->sequence[SEQUENCE_TAG]) &&
-                 AMY_IS_UNSET(event->sequence[SEQUENCE_TICK]) &&
-                 AMY_IS_UNSET(event->sequence[SEQUENCE_PERIOD]));
+    configASSERT(AMY_IS_UNSET(event->ticks[TICKS_TAG]) &&
+                 AMY_IS_UNSET(event->ticks[TICKS_TICK]) &&
+                 AMY_IS_UNSET(event->ticks[TICKS_PERIOD]));
     amy_helpers_event_send(event);
 }
 

@@ -11,7 +11,7 @@ extern "C" {
 void amy_helpers_init(void);
 /* Register the AMY render task so debug builds can assert that no ingress
  * helper is ever called from the locked render body. Lock order is
- * s_event_mutex -> ingest FIFO, with amy_queue_lock/SEQ_LOCK taken later on the
+ * s_event_mutex -> ingest FIFO, with amy_queue_lock taken later on the
  * pump task; the render body holds amy_queue_lock and must not re-enter this
  * seam. */
 void amy_helpers_set_render_task(TaskHandle_t render_task);
@@ -40,13 +40,13 @@ void amy_helpers_pump_wake(void);
 /* One-liners over begin/send for the two recurring event shapes; everything
  * else sets its own field mix via begin()/send() directly. The names state
  * the ingress route:
- * - NOTE-send: sequence[] set -> tick-scheduled whole via sequencer_add_event
- *   under AMY's SEQ_LOCK.
- * - CONFIG-send: no sequence[] -> applied now via add_delta_to_queue under
+ * - NOTE-send: ticks[] set -> serialized to a wire string and tick-scheduled
+ *   whole via sequencer_add_wire under amy_queue_lock.
+ * - CONFIG-send: no ticks[] -> applied now via add_delta_to_queue under
  *   amy_queue_lock. */
 
-/* Scheduled note-on/off (NOTE route). Carries the sequence[] tuple
- * (tag/tick/period) driving the active-tag index; velocity 0.0f = note-off.
+/* Scheduled note-on/off (NOTE route). Carries the ticks[] tuple
+ * (tick/period/tag); velocity 0.0f = note-off.
  * This signature is the attach seam for per-step parameter locks. */
 void amy_helpers_note_send(uint8_t synth, float midi_note, float velocity,
                            uint32_t tag, uint32_t tick, uint32_t period);

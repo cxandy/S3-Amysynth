@@ -485,7 +485,6 @@ void buses_reset() {
     }
 }
 
-
 int8_t global_init(amy_config_t c) {
     peek_stack("init");
     amy_global.config = c;
@@ -501,7 +500,7 @@ int8_t global_init(amy_config_t c) {
         amy_global.volume[bus] = 1.0f;
     amy_global.pitch_bend = 0;
     amy_global.latency_ms = 0;
-    amy_global.tempo = 108.0; 
+    amy_global.tempo = 108.0;
     amy_global.pitch_bend = 0;
     amy_global.transfer_flag = AMY_TRANSFER_TYPE_NONE;
     amy_global.transfer_storage = NULL;
@@ -518,7 +517,6 @@ int8_t global_init(amy_config_t c) {
     amy_global.sequencer_tick_count = 0;
     amy_global.next_amy_tick_us = 0;
     amy_global.us_per_tick = 0;
-    amy_global.sequence_entry_ll_start = NULL;
 
     struct bus_state *bus_configs = malloc_caps(sizeof(struct bus_state) * AMY_NUM_BUSES,
                                                 amy_global.config.ram_caps_synth);
@@ -732,7 +730,14 @@ void amy_event_to_deltas_queue(amy_event *e, uint16_t base_osc, struct delta **q
             amy_global.highest_bus = e->bus;
     }
     EVENT_TO_DELTA_I(wave, WAVE)
+    // PRESET before MODE, and it matters: pcm_loop_config_allowed() refuses
+    // whichever of the pair arrives second and makes the configuration
+    // impossible. A single message asking for a file-backed preset AND a
+    // PCM_LOOP* mode is the common way to hit that, and refusing the *mode*
+    // leaves something useful (the sample, playing once) where refusing the
+    // preset would leave a loop mode pointing at nothing.
     EVENT_TO_DELTA_I(preset, PRESET)
+    EVENT_TO_DELTA_I(mode, MODE)
     EVENT_TO_DELTA_F(midi_note, MIDI_NOTE)
     EVENT_TO_DELTA_COEFS(amp_coefs, AMP)
     EVENT_TO_DELTA_FREQ_COEFS(freq_coefs, FREQ)
@@ -845,6 +850,7 @@ void reset_modosc(struct mod_synthinfo *pmsynth) {
         pmsynth->pan = 0.5f;
         pmsynth->feedback = F2S(0); //.996; todo ks feedback is v different from fm feedback
         pmsynth->resonance = 0.7f;
+        pmsynth->state = 0;
     }
 }
 
@@ -853,8 +859,9 @@ void reset_osc_params(struct synthinfo *psynth) {
     // Event-derived config
     psynth->bus = AMY_DEFAULT_BUS;
     psynth->wave = SINE;
+    psynth->mode = MODE_NONE;
     AMY_UNSET(psynth->preset);
-    AMY_UNSET(psynth->note_source_channel);
+    AMY_UNSET(psynth->s_note_source_channel);
     AMY_UNSET(psynth->midi_note);
     psynth->velocity = 0;
     for (int j = 0; j < NUM_COMBO_COEFS; ++j)  psynth->amp_coefs[j] = 0;
@@ -1136,8 +1143,8 @@ void fprint_combo_coefs(char *name, float *coefs) {
 
 void print_osc_debug(uint16_t i /* osc */, bool show_eg) {
     if (synth[i] == NULL)  {fprintf(stderr, "osc %" PRIu16 " not defined\n", i); return; }
-    fprintf(stderr,"osc %" PRIu16 ": status %" PRIu8 " role %" PRIu8 " wave %" PRIu16 " mod_source %" PRIu16 " velocity %f logratio %f feedback %f filtype %" PRIu8 " resonance %f portamento_alpha %f step %f chained %" PRIu16 " algo %" PRIu8 " algo_source %" PRIu16 ",%" PRIu16 ",%" PRIu16 ",%" PRIu16 ",%" PRIu16 ",%" PRIu16 "  \n",
-            i, synth[i]->status, synth[i]->role, synth[i]->wave, synth[i]->mod_source,
+    fprintf(stderr,"osc %" PRIu16 ": status %" PRIu8 " role %" PRIu8 " wave %" PRIu16 " mode %" PRIu16 " mod_source %" PRIu16 " velocity %f logratio %f feedback %f filtype %" PRIu8 " resonance %f portamento_alpha %f step %f chained %" PRIu16 " algo %" PRIu8 " algo_source %" PRIu16 ",%" PRIu16 ",%" PRIu16 ",%" PRIu16 ",%" PRIu16 ",%" PRIu16 "  \n",
+            i, synth[i]->status, synth[i]->role, synth[i]->wave, synth[i]->mode, synth[i]->mod_source,
             synth[i]->velocity, synth[i]->logratio, synth[i]->feedback, synth[i]->filter_type, synth[i]->resonance, synth[i]->portamento_alpha, P2F(synth[i]->step), synth[i]->chained_osc,
             synth[i]->algorithm,
             synth[i]->algo_source[0], synth[i]->algo_source[1], synth[i]->algo_source[2], synth[i]->algo_source[3], synth[i]->algo_source[4], synth[i]->algo_source[5] );
@@ -1154,7 +1161,7 @@ void print_osc_debug(uint16_t i /* osc */, bool show_eg) {
             }
             fprintf(stderr,"\n");
         }
-        fprintf(stderr,"mod osc %" PRIu16 ": amp: %f, logfreq %f duty %f filter_logfreq %f resonance %f fb/bw %f pan %f \n", i, msynth[i]->amp, msynth[i]->logfreq, msynth[i]->duty, msynth[i]->filter_logfreq, msynth[i]->resonance, msynth[i]->feedback, msynth[i]->pan);
+        fprintf(stderr,"mod osc %" PRIu16 ": amp: %f, logfreq %f duty %f filter_logfreq %f resonance %f fb/bw %f pan %f state %" PRIu16 "\n", i, msynth[i]->amp, msynth[i]->logfreq, msynth[i]->duty, msynth[i]->filter_logfreq, msynth[i]->resonance, msynth[i]->feedback, msynth[i]->pan, msynth[i]->state);
     }
 }
 
@@ -1373,17 +1380,29 @@ void play_delta(struct delta *d) {
             sine_note_on(d->osc, freq_of_logfreq(synth[d->osc]->logfreq_coefs[COEF_CONST]));
         }
     }
+    // MODE and PRESET are assigned together, because neither is valid on its
+    // own: a PCM_LOOP* mode on a file-backed preset is a configuration AMY
+    // cannot honor. Whichever of the pair this delta carries is checked
+    // against the value already on the osc, and refused with a warning rather
+    // than accepted and quietly doing something else at note-on. (Only one
+    // param matches per delta, so this reads as two cases but runs as one.)
+    if (d->param == MODE || d->param == PRESET) {
+        bool setting_mode = (d->param == MODE);
+        uint16_t mode = setting_mode ? (uint16_t)d->data.i : synth[d->osc]->mode;
+        uint16_t preset = setting_mode ? synth[d->osc]->preset : (uint16_t)d->data.i;
+        if (pcm_loop_config_allowed(d->osc, mode, preset, setting_mode)) {
+            if (setting_mode) synth[d->osc]->mode = mode;
+            else synth[d->osc]->preset = preset;
+        }
+    }
     DELTA_TO_SYNTH_I(BUS, bus)
     DELTA_TO_SYNTH_F(FEEDBACK, feedback)
     DELTA_TO_SYNTH_F(RATIO, logratio)
     DELTA_TO_SYNTH_F(RESONANCE, resonance)
     DELTA_TO_SYNTH_I(FILTER_TYPE, filter_type)
-    DELTA_TO_SYNTH_I(NOTE_SOURCE_CHANNEL, note_source_channel)
+    DELTA_TO_SYNTH_I(NOTE_SOURCE_CHANNEL, s_note_source_channel)
     DELTA_TO_SYNTH_I(EG0_TYPE, eg_type[0])
     DELTA_TO_SYNTH_I(EG1_TYPE, eg_type[1])
-    if (d->param == PRESET) {
-        synth[d->osc]->preset = (uint16_t)d->data.i;
-    }
     if (d->param == PORTAMENTO) synth[d->osc]->portamento_alpha = portamento_ms_to_alpha(d->data.i);
     if (d->param == PHASE) {
         // Phase sets the *initial* phase of the osc.
@@ -1626,11 +1645,6 @@ void play_delta(struct delta *d) {
                     switch(synth[osc]->wave) {
                     case KS: ks_note_off(osc); break;
                     case ALGO: algo_note_off(osc); break;
-                    case PCM:
-                    case PCM_LEFT:
-                    case PCM_RIGHT:
-                        pcm_note_off(osc);
-                        break;
                     case AMY_MIDI: amy_send_midi_note_off(osc); break;
                     case CUSTOM: custom_note_off(osc); break;
                     case BYO_PARTIALS:
@@ -1639,6 +1653,19 @@ void play_delta(struct delta *d) {
                         synth[osc]->note_off_clock = amy_global.total_samples;
                         if(synth[osc]->wave==INTERP_PARTIALS) interp_partials_note_off(osc);
                         else partials_note_off(osc);
+                        break;
+                    case PCM:
+                    case PCM_LEFT:
+                    case PCM_RIGHT:
+                        pcm_note_off(osc);
+                        if (synth[osc]->mode == PCM_LOOP_FOREVER) {
+                            // Special case: with LOOP_FOREVER, we assume envelope is set.
+                            AMY_UNSET(synth[osc]->note_on_clock);
+                            if (AMY_IS_UNSET(synth[osc]->note_off_clock)) {
+                                // Only set the note_off_clock (start of release) if we don't already have one.
+                                synth[osc]->note_off_clock = amy_global.total_samples;
+                            }
+                        }
                         break;
                     default:
                         // ** no_amp_001
@@ -1762,10 +1789,7 @@ void hold_and_modify(uint16_t osc) {
         ctrl_inputs[COEF_EG1] = S2F(compute_breakpoint_scale(osc, 1, AMY_BLOCK_SIZE));
         msynth[osc]->amp = amp_combine_controls(ctrl_inputs, synth[osc]->amp_coefs);
     }
-    // synth[osc]->feedback is copied to msynth in pcm_note_on, then used to track note-off for looping PCM.
-    // For PCM, don't re-copy it every loop, or we'd lose track of that flag.  (This means you can't change feedback mid-playback for PCM).
-    // we also check for custom, for tulips' memorypcm 
-    if (synth[osc]->wave != PCM && synth[osc]->wave != CUSTOM)  msynth[osc]->feedback = synth[osc]->feedback;
+    msynth[osc]->feedback = synth[osc]->feedback;
     msynth[osc]->resonance = synth[osc]->resonance;
 
     if (osc == 999) {
@@ -2027,28 +2051,6 @@ AMY_IRAM_ATTR void amy_render(uint16_t start, uint16_t end, uint8_t core) {
 
 }
 
-
-// this plays just the next delta if it's time.
-void amy_execute_delta() {
-    AMY_PROFILE_START(AMY_EXECUTE_DELTAS)
-    // check to see which sounds to play
-    uint32_t sysclock = amy_sysclock();
-    amy_grab_lock();
-
-    // find any deltas that need to be played from the (in-order) queue
-    struct delta *d = amy_global.delta_queue;
-    if(d && AMY_TIME_GEQ(sysclock, d->time)) {
-        play_delta(d);
-        d = delta_release(d);
-        amy_global.delta_qsize--;
-    }
-    amy_global.delta_queue = d;
-
-    amy_release_lock();
-
-    AMY_PROFILE_STOP(AMY_EXECUTE_DELTAS)
-
-}
 
 // LOCAL EDIT (S3-Amysynth): the due-delta flush is split out of
 // amy_execute_deltas() so amy_event_to_deltas_queue() can settle pending

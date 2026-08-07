@@ -300,8 +300,8 @@ enum coefs{
 #define FILTER_BPF 2
 #define FILTER_HPF 3
 #define FILTER_LPF24 4
-#define FILTER_NOTCH 5  // LOCAL EDIT: upstream PR candidate (notch filter type)
-#define FILTER_PHASER 6  // LOCAL EDIT: upstream PR candidate (phaser filter type)
+#define FILTER_NOTCH 5
+#define FILTER_PHASER 6
 // synth[].wave values
 #define SINE 0
 #define PULSE 1
@@ -327,6 +327,13 @@ enum coefs{
 #define SILENT 20  // A control osc for applying filte and env without contributing waveform
 #define CUSTOM 21
 #define WAVE_OFF 22
+// wave mode values, depend on wave type
+#define MODE_NONE 0
+#define PCM_PLAY_STOP 0
+#define PCM_PLAY 1
+#define PCM_LOOP 2
+#define PCM_LOOP_STOP 3
+#define PCM_LOOP_FOREVER 4
 
 #define AMY_WAVE_IS_PCM(w) ((w) == PCM || (w) == PCM_LEFT || (w) == PCM_RIGHT)
 
@@ -346,10 +353,10 @@ enum coefs{
 #define ENVELOPE_DX7 2
 #define ENVELOPE_TRUE_EXPONENTIAL 3
 
-// Sequence enum
-#define SEQUENCE_TICK 0
-#define SEQUENCE_PERIOD 1
-#define SEQUENCE_TAG 2
+// Ticks enum
+#define TICKS_TICK 0
+#define TICKS_PERIOD 1
+#define TICKS_TAG 2
 
 // Reset masks
 #define RESET_SEQUENCER 4096
@@ -408,6 +415,7 @@ enum params{
     ALGORITHM, LATENCY, TEMPO,           // 62, 63, 64
     VOLUME_BASE,                         // 65..68
     VOLUME_END=VOLUME_BASE + AMY_NUM_BUSES, // 69
+    MODE=99,                             // 99
     ALGO_SOURCE_START=100,               // 100..105
     ALGO_SOURCE_END=100+MAX_ALGO_OPS,    // 106
     BP_START=ALGO_SOURCE_END + 1,        // 107..202
@@ -581,6 +589,7 @@ typedef struct amy_event {
     uint32_t time;  // event only
     uint16_t osc;
     uint16_t wave;
+    uint16_t mode;   // sub-mode within wave
     int16_t preset;  // Negative preset is voice count for build-your-own PARTIALS
     float midi_note;
     uint16_t patch_number;  // event only
@@ -625,7 +634,7 @@ typedef struct amy_event {
     uint16_t num_voices;
     uint8_t oscs_per_voice;  // Used when initializing a synth without a patch.
     //
-    uint32_t sequence[3]; // tick, period, tag
+    uint32_t ticks[3]; // tick, period, tag
     //
     uint8_t note_source_channel;  // .. to mark the channel of events that come from MIDI so we don't send them back out again.
     uint32_t reset_osc;
@@ -652,8 +661,9 @@ struct synthinfo {
     // Configuration (can be fixed during oscillation)
     uint8_t bus;  // Which bus this osc ends up on
     uint16_t wave;
+    uint16_t mode;   // sub-mode within wave
     int16_t preset;  // Negative preset is voice count for build-your-own PARTIALS
-    uint8_t note_source_channel;  // Was the most recent note on/off received from a MIDI channel?
+    uint8_t s_note_source_channel;  // Was the most recent note on/off received from a MIDI channel?
     float midi_note;
     float velocity;
     float amp_coefs[NUM_COMBO_COEFS];
@@ -711,16 +721,8 @@ struct mod_synthinfo {
     float last_filter_logfreq;  // filter freq history for smoothing.
     float resonance;
     float feedback;
+    uint16_t state;    // Used for PCM looping state.
 };
-
-
-typedef struct sequence_entry_ll_t {
-    struct delta d;
-    uint32_t tag;
-    uint32_t tick; // 0 means not used 
-    uint32_t period; // 0 means not used 
-    struct sequence_entry_ll_t *next;
-} sequence_entry_ll_t;
 
 
 typedef struct delay_line {
@@ -802,6 +804,11 @@ typedef struct  {
     float (*amy_external_coef_hook)(uint16_t channel);
     void (*amy_external_block_done_hook)(void);
     void (*amy_external_midi_input_hook)(uint8_t *bytes, uint16_t len, uint8_t is_sysex);
+    // Called with every run of bytes AMY sends out over MIDI, before (and
+    // regardless of) any device interface configured in `midi`, so hosts can
+    // forward AMY's MIDI output to transports AMY doesn't drive itself (e.g.
+    // BLE MIDI).  May be called from the render/sequencer task; keep it fast.
+    void (*amy_external_midi_output_hook)(uint8_t *bytes, uint16_t len);
     void (*amy_external_sequencer_hook)(uint32_t tick_count);
     uint32_t (*amy_external_fopen_hook)(char *filename, const char *mode);
     uint32_t (*amy_external_fwrite_hook)(uint32_t fptr, uint8_t *bytes, uint32_t len);
@@ -930,7 +937,6 @@ typedef struct global_state {
     uint32_t sequencer_tick_count;
     uint64_t next_amy_tick_us;
     uint32_t us_per_tick;
-    sequence_entry_ll_t * sequence_entry_ll_start;
 
     // Buses
     bus_state_t *bus[AMY_NUM_BUSES];
@@ -1023,7 +1029,6 @@ void patches_init(int max_memory_patches);
 void patches_deinit();
 void parse_algo_source(char* message, int16_t *vals);
 void hold_and_modify(uint16_t osc) ;
-void amy_execute_delta();
 void amy_execute_deltas();
 int16_t * amy_fill_buffer();
 int16_t * amy_simple_fill_buffer();  // excute_deltas + render + fill_buffer
@@ -1033,11 +1038,14 @@ uint32_t ms_to_samples(uint32_t ms) ;
 
 // API
 void amy_add_message(char *message);
+// Parse and play a stored wire message now (a fired sequencer entry).
+void amy_play_message(char *message);
 // Like amy_add_message but the data is treated as coming from an external
 // sysex source, so file transfer routing (transfer_flag) applies.
-void amy_add_message_from_sysex(char *message);
+void amy_send_wire_from_sysex(char *message);
 void amy_add_event(amy_event *e);
 size_t yield_event_from_message(char *message, amy_event *e, size_t pos);
+void handle_ticks_message(char *message);
 int amy_parse_message(char * message, amy_event *e);
 void amy_start(amy_config_t);
 void amy_stop();
@@ -1189,6 +1197,7 @@ extern void patches_load_patch(amy_event *e);
 extern void patches_event_has_voices(amy_event *e, struct delta **queue);
 extern void patches_reset_patch(int patch_number);
 extern void patches_reset();
+extern void snprintfloat3dp(char *s, size_t max_len, float val);
 extern int sprint_event(amy_event *e, char *s, size_t len, bool wirecode);
 extern void fprintf_event_stderr(amy_event *e);
 extern void *yield_synth_events(uint8_t synth, struct amy_event *event, bool include_fx, void *state);
@@ -1287,6 +1296,12 @@ extern void custom_mod_trigger(uint16_t osc);
 extern int16_t * pcm_load(uint16_t preset_number, uint32_t length, uint32_t samplerate, uint8_t channels, uint8_t midinote, uint32_t loopstart, uint32_t loopend);
 extern const int16_t *pcm_get_sample_ram_for_preset(uint16_t preset_number, uint32_t *length);
 extern int pcm_load_file();
+// Guard against configuring a PCM loop on a file-backed (streamed) preset,
+// which can never loop. Called with the PROPOSED mode and preset as each is
+// set; returns false if that command should be dropped (having warned).
+// mode_is_the_new_part picks which of the two the message blames.
+extern bool pcm_loop_config_allowed(uint16_t osc, uint16_t mode, uint16_t preset_number,
+                                    bool mode_is_the_new_part);
 extern void pcm_unload_preset(uint16_t preset_number);
 extern void pcm_unload_all_presets();
 

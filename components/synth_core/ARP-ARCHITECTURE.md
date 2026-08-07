@@ -164,9 +164,9 @@ ratchet one-shots     : 1120 .. 1247  (decorated sequencer steps)
 Each arp step `i` uses tag `SEQ_ARP_TAG_BASE + i*2` (note-on) and `+1`
 (note-off). With `ARP_MAX_STEPS = 32`, that's tags 1056..1119.
 
-> **AMY off-by-one — critical.** AMY's `sequencer_add_event()` guards with
-> `tag > max_sequences` (NOT `>=`), so a write at index `max_sequences` is
-> allowed and overruns `sequences[]`. To stay clear, `main.c` sets
+> **AMY tag bound.** AMY's `sequencer_add_wire()` (v1.2.121+) rejects
+> `tag >= max_sequences`, fixing the historical off-by-one where a write at
+> index `max_sequences` overran `sequences[]`. To stay clear, `main.c` sets
 > `amy_cfg.max_sequencer_tags = 1280` (above the highest window at 1247).
 > `sequencer_core_arp_emit_note()` also defensively drops any tag
 > `> SEQ_ARP_TAG_MAX`. Keep `max_sequencer_tags`, `SEQ_ARP_TAG_BASE/COUNT`,

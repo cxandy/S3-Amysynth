@@ -131,9 +131,9 @@
  *   previews    : 1024 .. 1024 + MAX_LAYERS*SEQ_TRACKS*2 - 1       (..1055)
  * so the arp starts at 1056 and needs ARP_MAX_SLOTS*ARP_OCT_MAX*2 = 64 tags.
  *
- * IMPORTANT: AMY's sequencer_add_event guards with `tag > max_sequences` (NOT
- * >=), so sequences[] needs at least (highest_tag + 2) entries. Keep
- * main.c's amy_cfg.max_sequencer_tags in sync. */
+ * AMY's sequencer_add_wire rejects `tag >= max_sequences`, so sequences[]
+ * needs at least (highest_tag + 1) user-addressable entries. Keep main.c's
+ * amy_cfg.max_sequencer_tags in sync. */
 #define SEQ_ARP_TAG_BASE      1056u
 #define SEQ_ARP_TAG_COUNT     (ARP_MAX_SLOTS * ARP_OCT_MAX * 2)  /* = 64 */
 #define SEQ_ARP_TAG_MAX       (SEQ_ARP_TAG_BASE + SEQ_ARP_TAG_COUNT - 1)  /* 1119 */

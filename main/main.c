@@ -802,8 +802,8 @@ void app_main(void)
     amy_cfg.ram_caps_sample = MALLOC_CAP_SPIRAM;
     /* Default 256 covers only layer 0. Tag ranges: sequencer 0..1055, arp
      * 1056..1119, ratchet trigs 1120..1247, chord one-shots up to 1727
-     * (seq_core_config.h); 1730 also clears the off-by-one in
-     * sequencer_add_event's tag guard. */
+     * (seq_core_config.h); sequencer_add_wire rejects tag >= max_sequencer_tags,
+     * so 1730 leaves a small margin above the top tag. */
     amy_cfg.max_sequencer_tags = 1730;
     /* Above the default-64 instrument table: stutter drone 64/65, normal
      * drone 66/67. Keep in sync with drone_core.c / drone_std_core.c. */

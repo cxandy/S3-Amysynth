@@ -434,12 +434,11 @@ extern void esp_poll_midi(void);
 void amy_update_tasks() {
     if (!amy_global.config.platform.multithread) {
         amy_execute_deltas();
-        // LOCAL EDIT (S3-Amysynth, 2026-06): only poll UART MIDI when configured.
-        // Calling esp_poll_midi() unconditionally tries to read an uninstalled
-        // UART driver and emits uart_read_bytes() errors at runtime.
-        if (amy_global.config.midi & AMY_MIDI_IS_UART) {
-            esp_poll_midi();
-        }
+        // Only poll the UART if MIDI-over-UART is actually configured -- run_midi()
+        // only calls esp_init_midi() under the same condition, so without this the
+        // uart_read_bytes() below hits an uninstalled driver once per audio block
+        // and logs an error every time (~187/sec at 48kHz).
+        if (amy_global.config.midi & AMY_MIDI_IS_UART) esp_poll_midi();
     } else{
         // Rendering is happening on separate thread, nothing to do.
     }

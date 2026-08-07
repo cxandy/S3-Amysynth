@@ -1,6 +1,5 @@
 #include "amy.h"
 #include "assert.h"
-#include <math.h>
 
 #ifndef M_PI
     #define M_PI 3.14159265358979323846f
@@ -75,7 +74,7 @@ int8_t dsps_biquad_gen_lpf_f32(SAMPLE *coeffs, float f, float qFactor)
         r = MIN(0.99f, sqrtf(a2 / a0));
         float alphadash = (1 - r * r) / (1 + r * r);
         float cosww = c / sqrtf(1 - alphadash * alphadash);
-        if (fabsf(cosww) < 1.0f) {
+        if (fabs(cosww) < 1.0) {
             ww = acosf(cosww);
             a1 = a0 * (-2 * r * cosf(ww));
             a2 = a0 * r * r;
@@ -165,7 +164,6 @@ int8_t dsps_biquad_gen_bpf_f32(SAMPLE *coeffs, float f, float qFactor)
     return 0;
 }
 
-// LOCAL EDIT: upstream PR candidate (notch filter type).
 int8_t dsps_biquad_gen_notch_f32(SAMPLE *coeffs, float f, float qFactor)
 {
     if (qFactor <= 0.0001f) {
@@ -214,7 +212,6 @@ int8_t dsps_biquad_gen_notch_f32(SAMPLE *coeffs, float f, float qFactor)
 #define FILT_MUL_SS(a, b) SMULR6(a, b)
 #endif
 
-// LOCAL EDIT: upstream PR candidate (phaser filter type).
 // One sample through n first-order allpass stages sharing coefficient a;
 // s[0..n-1] are the per-stage memories.  One-multiply transposed form of
 // H(z) = (a + z^-1)/(1 + a z^-1): the same a feeds both multiplies, so each
@@ -254,6 +251,7 @@ static AMY_IRAM_ATTR void dsps_phaser_f32_ansi(SAMPLE *block, int len, SAMPLE a,
 #define FILTER_BIQUAD_SCALEUP_BITS 0  // Apply this gain to input before filtering to avoid underflow in intermediate value.
 #define FILTER_BIQUAD_SCALEDOWN_BITS 0  // Extra headroom for EQ filters to avoid clipping on loud signals.
 
+// LOCAL EDIT (S3-Amysynth): render-path kernel, keep in IRAM (upstream leaves unannotated)
 AMY_IRAM_ATTR int8_t dsps_biquad_f32_ansi(const SAMPLE *input, SAMPLE *output, int len, SAMPLE *coef, SAMPLE *w) {
     AMY_PROFILE_START(DSPS_BIQUAD_F32_ANSI)
 
@@ -298,6 +296,7 @@ int8_t dsps_biquad_f32_ansi_commuted(const SAMPLE *input, SAMPLE *output, int le
     return 0;
 }
 
+// LOCAL EDIT (S3-Amysynth): render-path kernel, keep in IRAM (upstream leaves unannotated)
 AMY_IRAM_ATTR int8_t dsps_biquad_f32_ansi_split_fb(const SAMPLE *input, SAMPLE *output, int len, SAMPLE *coef, SAMPLE *w) {
     AMY_PROFILE_START(DSPS_BIQUAD_F32_ANSI_SPLIT_FB)
     // Rewrite the feeedback coefficients as a1 = -2 + e and a2 = 1 - f
@@ -926,7 +925,7 @@ AMY_IRAM_ATTR SAMPLE filter_process(SAMPLE * block, uint16_t osc, SAMPLE max_val
 
     float ratio = freq_of_logfreq(msynth[osc]->filter_logfreq)/(float)AMY_SAMPLE_RATE;
     if(ratio < LOWEST_RATIO) ratio = LOWEST_RATIO;
-    if(synth[osc]->filter_type==FILTER_PHASER) {  // LOCAL EDIT: upstream PR candidate
+    if(synth[osc]->filter_type==FILTER_PHASER) {
         // Not a biquad: dedicated allpass-chain runner, no coeffs[5], no BFP wrapper.
         float f = ratio;
         if (f > 0.45f) f = 0.45f;
@@ -952,7 +951,7 @@ AMY_IRAM_ATTR SAMPLE filter_process(SAMPLE * block, uint16_t osc, SAMPLE max_val
         dsps_biquad_gen_bpf_f32(coeffs, ratio, msynth[osc]->resonance);
     else if(synth[osc]->filter_type==FILTER_HPF)
         dsps_biquad_gen_hpf_f32(coeffs, ratio, msynth[osc]->resonance);
-    else if(synth[osc]->filter_type==FILTER_NOTCH)  // LOCAL EDIT: upstream PR candidate
+    else if(synth[osc]->filter_type==FILTER_NOTCH)
         dsps_biquad_gen_notch_f32(coeffs, ratio, msynth[osc]->resonance);
     else {
         fprintf(stderr, "Unrecognized filter type %d\n", synth[osc]->filter_type);

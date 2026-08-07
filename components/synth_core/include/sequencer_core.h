@@ -217,6 +217,20 @@ void     sequencer_core_set_drum_pcm_preset(uint8_t layer_idx, uint8_t track,
                                             uint16_t preset_number);
 uint16_t sequencer_core_get_drum_pcm_preset(uint8_t layer_idx, uint8_t track);
 
+/* ── Drum per-track PCM playback mode ──
+ * AMY wave sub-mode for the track's PCM osc (PCM_PLAY / PCM_LOOP /
+ * PCM_LOOP_FOREVER..., amy.h); 0 = engine default (one-shot), and only a
+ * nonzero mode is ever pushed to the osc. PCM_LOOP_FOREVER ends notes via the
+ * amp EG release instead of a sample-level hard stop - loop modes only sound
+ * right on presets whose loopstart/loopend are musically set. Live-reloads
+ * the track's osc (via the preset reload path, so envelope/HPF re-apply) when
+ * PCM is active; otherwise takes effect on the next engine toggle. Call from
+ * the UI task only; no-op for non-drum/out-of-range layers. Persisted in
+ * LAYR v10+. No UI writer yet - groundwork for a loop toggle. */
+void    sequencer_core_set_drum_pcm_mode(uint8_t layer_idx, uint8_t track,
+                                         uint8_t pcm_mode);
+uint8_t sequencer_core_get_drum_pcm_mode(uint8_t layer_idx, uint8_t track);
+
 /* Step one drum track's PCM preset by `dir` through the combined drum sample
  * space: the ROM bank (0 .. pcm_wavetable_base-1) then the gamma9001 banks
  * (256..391) when their blob is mounted, wrapping, with wavetable and memory

@@ -265,6 +265,11 @@ typedef struct {
                                         refreshed each frame by
                                         seq_view_signature(). Drives the row
                                         label and name banner.                  */
+    uint8_t  track_pcm_mode[SEQ_TRACKS]; /* drum layer, PCM engine: AMY wave
+                                        sub-mode (PCM_PLAY/PCM_LOOP*...);
+                                        0 = engine default (one-shot). Same
+                                        mirror discipline as track_pcm_preset;
+                                        no UI writer yet.                       */
     uint32_t synth_flags;            /* shared flags across the layer's rows  */
     uint8_t  num_voices;             /* per-synth voice count                 */
     uint8_t  step_page;                              /* display page 0|1 (32-step) */

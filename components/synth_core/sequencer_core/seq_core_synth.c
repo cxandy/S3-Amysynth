@@ -106,6 +106,11 @@ static const int16_t SEQ_DRUM_PCM_PRESET[SEQ_TRACKS] = {
 static uint16_t s_drum_pcm_preset[MAX_LAYERS][SEQ_TRACKS];
 static bool     s_drum_pcm_preset_init[MAX_LAYERS];
 
+/* Per-track AMY PCM wave sub-mode (PCM_PLAY / PCM_LOOP / PCM_LOOP_FOREVER...).
+ * 0 = engine default (one-shot); only a nonzero value is pushed to the osc,
+ * so untouched tracks keep upstream's default behavior bit-for-bit. */
+static uint8_t s_drum_pcm_mode[MAX_LAYERS][SEQ_TRACKS];
+
 static uint16_t drum_pcm_preset_for(uint8_t layer_idx, uint8_t track)
 {
     if (!s_drum_pcm_preset_init[layer_idx]) {
@@ -490,6 +495,8 @@ void sequencer_configure_synth(uint8_t layer_idx)
                 e->osc    = 0;
                 e->wave   = PCM;
                 e->preset = drum_pcm_preset_for(layer_idx, t);
+                if (s_drum_pcm_mode[layer_idx][t])
+                    e->mode = s_drum_pcm_mode[layer_idx][t];
                 amy_helpers_event_send(e);
             }
             sequencer_configure_drum_pcm_voice_params(layer_idx);
@@ -779,6 +786,8 @@ void sequencer_core_set_drum_pcm_preset(uint8_t layer_idx, uint8_t track,
         e->osc    = 0;
         e->wave   = PCM;
         e->preset = preset_number;
+        if (s_drum_pcm_mode[layer_idx][track])
+            e->mode = s_drum_pcm_mode[layer_idx][track];
         amy_helpers_event_send(e);
 
         /* The reset also cleared the envelope and hat HPF - re-apply. */
@@ -786,6 +795,30 @@ void sequencer_core_set_drum_pcm_preset(uint8_t layer_idx, uint8_t track,
     }
     ESP_LOGI(TAG, "drum L%u T%u PCM preset -> %u",
              layer_idx + 1u, track + 1u, (unsigned)preset_number);
+}
+
+void sequencer_core_set_drum_pcm_mode(uint8_t layer_idx, uint8_t track,
+                                      uint8_t pcm_mode)
+{
+    if (layer_idx >= s_num_layers || track >= SEQ_TRACKS) return;
+    if (s_layers[layer_idx].type != SEQ_LAYER_DRUM) return;
+    if (s_drum_pcm_mode[layer_idx][track] == pcm_mode) return;
+
+    s_drum_pcm_mode[layer_idx][track] = pcm_mode;
+
+    /* Mode is applied together with wave/preset on the osc (AMY assigns MODE
+     * and PRESET as one block), so a live change rides the preset reload
+     * path - which also re-applies envelope and hat HPF after its reset. */
+    if (s_drum_engine == SEQ_DRUM_PCM) {
+        sequencer_core_set_drum_pcm_preset(layer_idx, track,
+                                           drum_pcm_preset_for(layer_idx, track));
+    }
+}
+
+uint8_t sequencer_core_get_drum_pcm_mode(uint8_t layer_idx, uint8_t track)
+{
+    if (layer_idx >= s_num_layers || track >= SEQ_TRACKS) return 0;
+    return s_drum_pcm_mode[layer_idx][track];
 }
 
 uint16_t sequencer_core_cycle_drum_pcm_preset(uint8_t layer_idx, uint8_t track,

@@ -98,8 +98,11 @@ uint32_t seq_view_signature(void)
             for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
                 L->track_pcm_preset[t] =
                     sequencer_core_get_drum_pcm_preset(seq_state.active_layer_idx, t);
+                L->track_pcm_mode[t] =
+                    sequencer_core_get_drum_pcm_mode(seq_state.active_layer_idx, t);
             }
             h = fnv1a_bytes(h, L->track_pcm_preset, sizeof(L->track_pcm_preset));
+            h = fnv1a_bytes(h, L->track_pcm_mode, sizeof(L->track_pcm_mode));
         }
         h = fnv1a_bytes(h, &L->type, sizeof(L->type));
         h = fnv1a_bytes(h, &L->patch, sizeof(L->patch));

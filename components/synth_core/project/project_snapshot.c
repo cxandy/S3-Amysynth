@@ -327,7 +327,7 @@ static void apply_glob(const staged_glob_t *g)
 
 static void ser_layer(tlv_writer_t *w, const seq_layer_t *L)
 {
-    size_t h = tlv_begin_section(w, TAG_LAYR, 9);  /* v2: LFO target bitmask;
+    size_t h = tlv_begin_section(w, TAG_LAYR, 10); /* v2: LFO target bitmask;
                                                     * v3: +gate_pct, +portamento_ms;
                                                     * v4: +groove_pct;
                                                     * v5: LFO +wob_rate/+wob_depth;
@@ -336,7 +336,8 @@ static void ser_layer(tlv_writer_t *w, const seq_layer_t *L)
                                                     * v8: LFO +flt_oct_q;
                                                     * v9: step cond enum+param ->
                                                     *     independent every+prev
-                                                    *     (same two array slots) */
+                                                    *     (same two array slots);
+                                                    * v10: +track_pcm_mode      */
     tlv_put_u8(w, (uint8_t)L->type);
     tlv_put_u8(w, L->num_steps);
     tlv_put_u16(w, L->patch);
@@ -350,6 +351,7 @@ static void ser_layer(tlv_writer_t *w, const seq_layer_t *L)
         tlv_put_u8(w, L->track_base_note[t]);
         tlv_put_u16(w, L->track_patch[t]);
         tlv_put_u16(w, L->track_pcm_preset[t]);
+        tlv_put_u8(w, L->track_pcm_mode[t]);   /* v10+ */
         tlv_put_u8(w, L->repeat_rate[t]);
         tlv_put_u8(w, L->mute[t] ? 1 : 0);
         tlv_put_u8(w, L->solo[t] ? 1 : 0);
@@ -417,6 +419,11 @@ static bool parse_layer(tlv_reader_t *b, seq_layer_t *L, uint8_t ver)
         if (!tlv_get_u16(b, &L->track_patch[t]))      return false;
         L->track_patch[t] = clamp_patch(L->track_patch[t]);
         if (!tlv_get_u16(b, &L->track_pcm_preset[t])) return false;
+        if (ver >= 10) {
+            if (!tlv_get_u8(b, &L->track_pcm_mode[t])) return false;
+        } else {
+            L->track_pcm_mode[t] = 0;   /* pre-v10: engine default (one-shot) */
+        }
         { uint8_t v; if (!tlv_get_u8(b, &v)) return false; L->repeat_rate[t] = v; }
         { uint8_t v; if (!tlv_get_u8(b, &v)) return false; L->mute[t] = v != 0; }
         { uint8_t v; if (!tlv_get_u8(b, &v)) return false; L->solo[t] = v != 0; }
@@ -930,7 +937,7 @@ bool project_snapshot_load(uint8_t slot)
         case TAG_LAYR:
             /* Ceiling must track ser_layer()'s version or the firmware
              * rejects its own files. */
-            if (ver < 1 || ver > 9 || staged_layer_count >= MAX_LAYERS) { ok = false; break; }
+            if (ver < 1 || ver > 10 || staged_layer_count >= MAX_LAYERS) { ok = false; break; }
             ok = parse_layer(&body, &staged_layers[staged_layer_count], ver);
             if (ok) staged_layer_count++;
             break;

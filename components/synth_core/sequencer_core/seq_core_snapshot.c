@@ -59,9 +59,11 @@ bool sequencer_core_import_layer(uint8_t layer_idx, const seq_layer_t *src)
      * authored env/env1/filter/LFO itself. */
     sequencer_configure_synth(layer_idx);
     if (dst->type == SEQ_LAYER_DRUM) {
-        /* Restore each track's PCM preset: live-reloads the osc when PCM is
-         * active, otherwise stores it for the next engine toggle. */
+        /* Restore each track's PCM mode then preset: mode first so the
+         * preset's live-reload (when PCM is active) applies both in one
+         * pass; otherwise both just store for the next engine toggle. */
         for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
+            sequencer_core_set_drum_pcm_mode(layer_idx, t, dst->track_pcm_mode[t]);
             sequencer_core_set_drum_pcm_preset(layer_idx, t, dst->track_pcm_preset[t]);
         }
     }

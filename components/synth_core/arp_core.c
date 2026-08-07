@@ -841,7 +841,7 @@ static void arp_swlfo_service(void)
         e = amy_helpers_event_begin();
         e->synth = sequencer_core_arp_synth();
         e->osc   = 0;
-        e->freq_coefs[COEF_CONST] = SEQ_LFO_PITCH_BASE_HZ * powf(2.0f, d * val);
+        e->freq_coefs[COEF_CONST] = SEQ_LFO_PITCH_BASE_HZ * powf(2.0f, d * VOICE_LFO_DEPTH_PITCH * val);
         amy_helpers_event_send(e);
     }
 }

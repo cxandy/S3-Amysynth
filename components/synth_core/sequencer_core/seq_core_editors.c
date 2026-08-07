@@ -26,15 +26,23 @@ static bool is_native_lfo_track(const seq_lfo_t *lfo)
 /* Push native LFO config to one track's AMY synth (patches with a reserved
  * carrier pair). Handles activation and deactivation (carrier dormant,
  * COEF_MOD cleared) so the caller always reaches a consistent AMY state. */
-static void melodic_configure_native_lfo_track(const seq_layer_t *layer, uint8_t track)
+/* Apply an EXPLICIT lfo struct (stored or an editor's live scratch) to one
+ * track's native topology; the wrapper below keeps the stored-state callers
+ * unchanged. */
+static void melodic_native_lfo_apply(const seq_layer_t *layer, uint8_t track,
+                                     const seq_lfo_t *lfo)
 {
-    const seq_lfo_t *lfo = &layer->vp[track].lfo;
     uint8_t carrier, coupled;
     if (!sequencer_core_lfo_native_layout(layer->patch, &carrier, &coupled))
         return;
     voice_apply_native_lfo_topo(layer->synth_id[track],
                                 is_native_lfo_track(lfo) ? lfo : NULL, s_bpm,
                                 carrier, coupled);
+}
+
+static void melodic_configure_native_lfo_track(const seq_layer_t *layer, uint8_t track)
+{
+    melodic_native_lfo_apply(layer, track, &layer->vp[track].lfo);
 }
 
 #endif /* CONFIG_SEQ_MELODIC_AMY_NATIVE_LFO */
@@ -277,6 +285,88 @@ void sequencer_core_push_filter(uint8_t synth, const seq_filter_t *f, bool is_ks
     amy_helpers_event_send(e);
 }
 
+/* Active editor-preview slot; contract at the "Live-preview pushes" section
+ * below. WRITTEN by the editor handlers (encoder/button tasks), READ by
+ * sequencer_core_lfo_service() on synth_ui_task - same core, same priority
+ * tier, so a round-robin boundary can land mid-write. seq_core is lock-free
+ * by discipline, so consistency is a generation counter (seqlock): writers
+ * bump to odd, mutate, bump to even; the reader snapshots once per service
+ * tick and falls back to the store if it caught a writer. An aligned 32-bit
+ * counter is single-copy atomic on Xtensa. */
+typedef struct {
+    bool         active;
+    uint8_t      li, tr;
+    bool         filter_valid;
+    seq_filter_t filter;
+    bool         lfo_valid;
+    seq_lfo_t    lfo;
+} melodic_preview_t;
+static melodic_preview_t s_preview;
+static volatile uint32_t s_preview_gen;   /* odd = writer mid-update */
+
+/* Re-point the slot at (li, tr), dropping stale scratch from another track.
+ * Callers hold the write side (odd s_preview_gen). */
+static void preview_slot_touch(uint8_t li, uint8_t tr)
+{
+    if (!s_preview.active || s_preview.li != li || s_preview.tr != tr) {
+        s_preview = (melodic_preview_t){0};
+        s_preview.active = true;
+        s_preview.li = li;
+        s_preview.tr = tr;
+    }
+}
+
+/* Consistent snapshot for the service loop; returns false when no preview is
+ * active or a writer was mid-update (caller then reads the store as usual -
+ * one 50 ms tick of committed values, self-healing). */
+static bool preview_snapshot(melodic_preview_t *out)
+{
+    uint32_t g0 = s_preview_gen;
+    if (g0 & 1u) return false;
+    *out = s_preview;
+    if (s_preview_gen != g0) return false;
+    return out->active;
+}
+
+/* Push an EXPLICIT lfo struct to one track's engine state (native topology or
+ * software-service arming) without touching the store. Shared by the
+ * committing setter (which passes the just-stored struct), the live preview
+ * (editor scratch) and cancel-restore (stored struct). */
+static void melodic_lfo_apply_runtime(uint8_t layer_idx, uint8_t track,
+                                      const seq_lfo_t *lfo)
+{
+    const seq_layer_t *layer = &s_layers[layer_idx];
+#if CONFIG_SEQ_MELODIC_AMY_NATIVE_LFO
+    /* Native topology is melodic-only: it writes voice-relative oscs 1 and 2,
+     * and AMY applies the base_osc offset without a bounds check, so on a
+     * 1-osc-per-voice synth (a PCM drum slot) those events would land on the
+     * NEXT synth's oscillators. A drum layer's `patch` is only the stored
+     * SYNTH-mode selection, so it must never enable the native path. */
+    bool is_native = layer->type == SEQ_LAYER_MELODIC &&
+                     sequencer_core_lfo_native_layout(layer->patch, NULL, NULL);
+    if (is_native) {
+        melodic_native_lfo_apply(layer, track, lfo);
+        /* Restore the static target value when disabled: native clears COEF_MOD
+         * but does not push the neutral coef. */
+        if (!lfo->enabled || !is_native_lfo_track(lfo)) {
+            lfo_restore_target_neutrals(layer, track, lfo);
+        }
+        /* s_lfo_hz = 0 makes the software service loop skip native tracks. */
+        s_lfo_hz[layer_idx][track] = (lfo->enabled && is_native_lfo_track(lfo))
+                                     ? 0.0f
+                                     : (lfo->enabled ? seq_lfo_sw_hz(lfo->rate, s_bpm) : 0.0f);
+        return;
+    }
+#endif
+    /* Software path: patches without a carrier pair, or native LFO compiled out. */
+    if (!lfo->enabled) {
+        lfo_restore_target_neutrals(layer, track, lfo);
+        s_lfo_hz[layer_idx][track] = 0.0f;
+    } else {
+        s_lfo_hz[layer_idx][track] = seq_lfo_sw_hz(lfo->rate, s_bpm);
+    }
+}
+
 void sequencer_core_set_melodic_lfo(uint8_t layer_idx, uint8_t track,
                                     const seq_lfo_t *lfo)
 {
@@ -287,45 +377,19 @@ void sequencer_core_set_melodic_lfo(uint8_t layer_idx, uint8_t track,
     if (layer->vp[track].lfo.depth > 100) layer->vp[track].lfo.depth = 100;
     layer->vp[track].lfo_authored = true;
 
-#if CONFIG_SEQ_MELODIC_AMY_NATIVE_LFO
-    /* Native topology is melodic-only: it writes voice-relative oscs 1 and 2,
-     * and AMY applies the base_osc offset without a bounds check, so on a
-     * 1-osc-per-voice synth (a PCM drum slot) those events would land on the
-     * NEXT synth's oscillators. A drum layer's `patch` is only the stored
-     * SYNTH-mode selection, so it must never enable the native path. */
-    bool is_native = layer->type == SEQ_LAYER_MELODIC &&
-                     sequencer_core_lfo_native_layout(layer->patch, NULL, NULL);
-    if (is_native) {
-        melodic_configure_native_lfo_track(layer, track);
-        /* Restore the static target value when disabled: native clears COEF_MOD
-         * but does not push the neutral coef. */
-        if (!lfo->enabled || !is_native_lfo_track(&layer->vp[track].lfo)) {
-            lfo_restore_target_neutrals(layer, track, lfo);
-        }
-        /* s_lfo_hz = 0 makes the software service loop skip native tracks. */
-        s_lfo_hz[layer_idx][track] = (lfo->enabled && is_native_lfo_track(&layer->vp[track].lfo))
-                                     ? 0.0f
-                                     : (lfo->enabled ? seq_lfo_sw_hz(lfo->rate, s_bpm) : 0.0f);
-        ESP_LOGI(TAG, "LFO L%u T%u %s %.2f Hz d=%u tgt=0x%02x [native]",
-                 layer_idx + 1u, track + 1u, lfo->enabled ? "ON" : "OFF",
-                 (double)s_lfo_hz[layer_idx][track], lfo->depth, lfo->targets);
-        return;
-    }
-#endif
-
-
-
-
-    /* Software path: patches without a carrier pair, or native LFO compiled out. */
-    if (!lfo->enabled) {
-        lfo_restore_target_neutrals(layer, track, lfo);
-        s_lfo_hz[layer_idx][track] = 0.0f;
-    } else {
-        s_lfo_hz[layer_idx][track] = seq_lfo_sw_hz(lfo->rate, s_bpm);
-    }
+    melodic_lfo_apply_runtime(layer_idx, track, &layer->vp[track].lfo);
     ESP_LOGI(TAG, "LFO L%u T%u %s %.2f Hz d=%u tgt=0x%02x",
              layer_idx + 1u, track + 1u, lfo->enabled ? "ON" : "OFF",
              (double)s_lfo_hz[layer_idx][track], lfo->depth, lfo->targets);
+}
+
+/* Cancel-restore for the LFO live preview: re-push the stored (committed)
+ * state. Safe on a never-authored row - the zeroed default is disabled with
+ * an empty target set, so the restore is a no-op push. */
+void sequencer_core_reapply_melodic_lfo(uint8_t layer_idx, uint8_t track)
+{
+    if (layer_idx >= s_num_layers || track >= SEQ_TRACKS) return;
+    melodic_lfo_apply_runtime(layer_idx, track, &s_layers[layer_idx].vp[track].lfo);
 }
 
 bool sequencer_core_get_melodic_lfo(uint8_t layer_idx, uint8_t track,
@@ -339,10 +403,20 @@ bool sequencer_core_get_melodic_lfo(uint8_t layer_idx, uint8_t track,
 void __attribute__((optimize("O3", "unroll-loops", "fast-math"))) sequencer_core_lfo_service(void) 
 {
     const float DT = 0.05f; /* 20 Hz */
+    /* One consistent preview snapshot per service tick: an open editor's
+     * scratch overrides the store for its one track, so relational edits are
+     * audible live instead of being stomped back to committed values. */
+    melodic_preview_t prev;
+    bool prev_ok = preview_snapshot(&prev);
     for (int li = 0; li < s_num_layers; li++) {
         for (int tr = 0; tr < SEQ_TRACKS; tr++) {
-            if (!s_layers[li].vp[tr].lfo_authored) continue;
-            const seq_lfo_t *lfo = &s_layers[li].vp[tr].lfo;
+            bool prev_here = prev_ok &&
+                             prev.li == (uint8_t)li &&
+                             prev.tr == (uint8_t)tr;
+            bool lfo_previewed = prev_here && prev.lfo_valid;
+            if (!lfo_previewed && !s_layers[li].vp[tr].lfo_authored) continue;
+            const seq_lfo_t *lfo = lfo_previewed ? &prev.lfo
+                                                 : &s_layers[li].vp[tr].lfo;
             if (!lfo->enabled) continue;
             float hz = s_lfo_hz[li][tr];
             if (hz <= 0.0f) continue;
@@ -378,9 +452,11 @@ void __attribute__((optimize("O3", "unroll-loops", "fast-math"))) sequencer_core
              * from the same LFO value. SCAN has no software analog - it needs a
              * wavetable voice, which always takes the native path. */
             if (LFO_HAS_TGT(lfo, LFO_TARGET_FILTER)) {
-                float base = (s_layers[li].vp[tr].filter.enabled &&
-                              s_layers[li].vp[tr].filter.cutoff_hz > 0.0f)
-                             ? s_layers[li].vp[tr].filter.cutoff_hz : 1000.0f;
+                const seq_filter_t *fb = (prev_here && prev.filter_valid)
+                                         ? &prev.filter
+                                         : &s_layers[li].vp[tr].filter;
+                float base = (fb->enabled && fb->cutoff_hz > 0.0f)
+                             ? fb->cutoff_hz : 1000.0f;
                 e->filter_freq_coefs[COEF_CONST] =
                     base * powf(2.0f, voice_lfo_filter_octaves(lfo) * val);
             }
@@ -408,7 +484,7 @@ void __attribute__((optimize("O3", "unroll-loops", "fast-math"))) sequencer_core
                 e->synth = syn;
                 e->osc   = 0;
                 e->freq_coefs[COEF_CONST] =
-                    SEQ_LFO_PITCH_BASE_HZ * powf(2.0f, d * val);
+                    SEQ_LFO_PITCH_BASE_HZ * powf(2.0f, d * VOICE_LFO_DEPTH_PITCH * val);
                 amy_helpers_event_send(e);
             }
         }
@@ -505,7 +581,24 @@ void sequencer_core_set_melodic_amp_scale(uint8_t layer_idx, uint8_t track,
  * Editors audition scratch values while the committed store stays the source of
  * truth. Cancel re-pushes the stored state (or reloads the layer's patch for a
  * never-authored row); confirm goes through the normal setters. A preview never
- * modifies the authored flags. */
+ * modifies the authored flags.
+ *
+ * The single active-preview slot below is what makes RELATIONAL edits
+ * composable: the software-LFO service recomputes swept COEF_CONST values
+ * every 50 ms from the model, so without it an uncommitted cutoff or LFO
+ * scratch would be stomped back toward the store on the next tick (or, for
+ * the LFO, not heard at all until commit). Editors register their scratch
+ * here; the service prefers it over the store for the matching track. One
+ * slot suffices - only one editor is open at a time, and filter/EG1/LFO
+ * previews for the SAME track compose (each keeps its own valid flag).
+ * (Slot definitions live above the service loop, which reads them.) */
+
+void sequencer_core_preview_melodic_clear(void)
+{
+    s_preview_gen++;
+    s_preview = (melodic_preview_t){0};
+    s_preview_gen++;
+}
 
 void sequencer_core_preview_melodic_envelope(uint8_t layer_idx, uint8_t track,
                                              const seq_env_t *env)
@@ -534,7 +627,35 @@ void sequencer_core_preview_melodic_filter(uint8_t layer_idx, uint8_t track,
     tmp.resonance         = SEQ_CLAMP_F32(f->resonance,  0.51f, 8.0f);
     tmp.filter_env_amount = SEQ_CLAMP_F32(f->filter_env_amount, -8.0f, 8.0f);
     tmp.feedback          = SEQ_CLAMP_F32(f->feedback, 0.0f, 1.0f);
+    /* Register the scratch so the software-LFO service sweeps around the
+     * in-progress cutoff instead of stomping it from the store. */
+    s_preview_gen++;
+    preview_slot_touch(layer_idx, track);
+    s_preview.filter       = tmp;
+    s_preview.filter_valid = true;
+    s_preview_gen++;
     melodic_filter_apply(layer_idx, track, &tmp);
+}
+
+void sequencer_core_preview_melodic_lfo(uint8_t layer_idx, uint8_t track,
+                                        const seq_lfo_t *lfo)
+{
+    if (!lfo || layer_idx >= s_num_layers || track >= SEQ_TRACKS) return;
+    /* Same clamp as the committing setter. */
+    seq_lfo_t tmp = *lfo;
+    if (tmp.depth > 100) tmp.depth = 100;
+
+    s_preview_gen++;
+    preview_slot_touch(layer_idx, track);
+    s_preview.lfo       = tmp;
+    s_preview.lfo_valid = true;
+    s_preview_gen++;
+
+    /* Native tracks hear the scratch immediately via the carrier topology;
+     * software tracks are armed here (rate/phase) and the service loop reads
+     * the slot for the rest. s_lfo_hz is runtime pacing, not authored state -
+     * cancel restores it via sequencer_core_reapply_melodic_lfo(). */
+    melodic_lfo_apply_runtime(layer_idx, track, &tmp);
 }
 
 bool sequencer_core_melodic_env_authored(uint8_t layer_idx, uint8_t track,

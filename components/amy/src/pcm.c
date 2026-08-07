@@ -150,9 +150,23 @@ void pcm_deinit() {
 }
 
 // How many bits used for fractional part of PCM table index.
-#define PCM_INDEX_FRAC_BITS 8
+// LOCAL EDIT (S3-Amysynth): 8 -> 12. With 8 bits the interpolation
+// coefficient has only 256 levels and the phase step quantizes to
+// ratio * 256 LSBs, audible as zipper noise and pitch offset on large
+// downward shifts. 12 bits still leaves 19 index bits = 524287 frames
+// (~10.9 s at 48 kHz); pcm_load() rejects anything longer.
+#define PCM_INDEX_FRAC_BITS 12
 // The number of bits used to hold the table index.
 #define PCM_INDEX_BITS (31 - PCM_INDEX_FRAC_BITS)
+
+// LOCAL EDIT (S3-Amysynth): retrigger declick. Re-onset of a sounding PCM osc
+// (and note-off of a non-looping one) snaps the phase, stepping the output
+// from wherever the old waveform was - a hard click when a long tail is cut
+// (measured ~40% of full scale retriggering a pitched-down 808 bass drum).
+// Cancel the step by adding it back as an exponentially decaying compensator:
+// declick -= declick >> PCM_DECLICK_SHIFT per sample, tau = 2^shift samples
+// (shift 6 = 1.3 ms at 48 kHz; the audible decay fits within one block).
+#define PCM_DECLICK_SHIFT 6
 
 static void fclose_if_file(memorypcm_preset_t *preset) {
     if (preset == NULL) {
@@ -241,12 +255,16 @@ void pcm_note_on(uint16_t osc) {
             if(synth[osc]->preset >= pcm_samples) synth[osc]->preset = 0;
         }
         
+        // LOCAL EDIT (S3-Amysynth): arm the retrigger declick before the
+        // phase snap below steps the output.
+        if (synth[osc]->status == SYNTH_AUDIBLE)
+            synth[osc]->pcm_declick += synth[osc]->pcm_last_out;
         if (AMY_IS_SET(synth[osc]->trigger_phase)) {
             // trigger_phase (P) sets the sample start point for this
             // note-on (start_frame / 2^PCM_INDEX_BITS).
             synth[osc]->phase = F2P(synth[osc]->trigger_phase);
         } else {
-            synth[osc]->phase = 0; // s16.15 index into the table; as if a PHASOR into a 16 bit sample table.
+            synth[osc]->phase = 0; // PCM_INDEX_BITS.PCM_INDEX_FRAC_BITS fixed-point index into the table.
         }
         // Copy the looping mode from the wave mode field.  Can be updated on note_off.
         msynth[osc]->state = synth[osc]->mode;
@@ -345,6 +363,9 @@ SAMPLE render_pcm(SAMPLE* buf, uint16_t osc) {
         PHASOR step = F2P((playback_freq / (float)AMY_SAMPLE_RATE) / (float)(1 << PCM_INDEX_BITS));
         const LUTSAMPLE* table = preset->sample_ram;
         uint32_t base_index = INT_OF_P(synth[osc]->phase, PCM_INDEX_BITS);
+        // LOCAL EDIT (S3-Amysynth): retrigger declick state, see PCM_DECLICK_SHIFT.
+        SAMPLE declick = synth[osc]->pcm_declick;
+        SAMPLE last_out = synth[osc]->pcm_last_out;
         for(uint16_t i=0; i < AMY_BLOCK_SIZE; i++) {
             SAMPLE frac = S_FRAC_OF_P(synth[osc]->phase, PCM_INDEX_BITS);
             LUTSAMPLE b = 0;
@@ -354,7 +375,11 @@ SAMPLE render_pcm(SAMPLE* buf, uint16_t osc) {
                 if (preset->type != AMY_PCM_TYPE_FILE) {
                     synth[osc]->status = SYNTH_OFF;
                 }
-                buf[i] = 0;
+                // Past the end the waveform is silent, but a note-off jump
+                // may have armed the compensator - let it finish its decay.
+                buf[i] = declick;
+                declick -= declick >> PCM_DECLICK_SHIFT;
+                last_out = 0;
                 continue;
             }
             if (preset->channels == 2) {
@@ -405,11 +430,18 @@ SAMPLE render_pcm(SAMPLE* buf, uint16_t osc) {
                     }
                 }
             }
-            SAMPLE value = buf[i] + MUL4_SS(amp, sample);
-            buf[i] = value;   
+            last_out = MUL4_SS(amp, sample);
+            SAMPLE value = buf[i] + last_out + declick;
+            declick -= declick >> PCM_DECLICK_SHIFT;
+            buf[i] = value;
             if (value < 0) value = -value;
-            if (value > max_value) max_value = value;  
+            if (value > max_value) max_value = value;
         }
+        // Snap sub-audible residue to zero so the shift decay terminates
+        // instead of freezing as a tiny DC offset.
+        if (declick > -(1 << 8) && declick < (1 << 8)) declick = 0;
+        synth[osc]->pcm_declick = declick;
+        synth[osc]->pcm_last_out = last_out;
         //printf("render_pcm: osc %d preset %d len %d base_ix %d phase %f step %f tablestep %f amp %f\n",
         //       osc, synth[osc]->preset, preset->length, base_index, P2F(synth[osc]->phase), P2F(step), (1 << PCM_INDEX_BITS) * P2F(step), S2F(msynth[osc]->amp));
         return max_value; 
@@ -495,6 +527,13 @@ int pcm_load_file() {
 // set loopstart, loopend, midinote, samplerate (and log2sr)
 // return the allocated sample ram that AMY will fill in.
 int16_t * pcm_load(uint16_t preset_number, uint32_t length, uint32_t samplerate, uint8_t channels, uint8_t midinote, uint32_t loopstart, uint32_t loopend) {
+    // A length that doesn't fit in PCM_INDEX_BITS would silently wrap the
+    // phase accumulator during playback; refuse it up front.
+    if (length > (uint32_t)((1UL << PCM_INDEX_BITS) - 1)) {
+        fprintf(stderr, "Sample too long for PCM index (%u > %u frames)\n",
+                (unsigned)length, (unsigned)((1UL << PCM_INDEX_BITS) - 1));
+        return NULL;
+    }
     // if preset was already a memorypcm, we need to unload it
     pcm_unload_preset(preset_number); // this is a no-op if preset doesn't exist or is a const pcm
     // now alloc a new LL entry and preset (the old LL entry is removed with pcm_unload_preset)

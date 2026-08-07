@@ -7,10 +7,19 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/* Canonical LFO-target depth scalars - single source of truth. */
+/* Canonical LFO-target depth scalars - single source of truth. Each is the
+ * per-domain exchange rate for the SHARED depth%: anchored so equal depth
+ * reads as equal musical intensity across targets. Applies to the native
+ * (COEF_MOD) path AND the software-stepper pushes (sequencer/arp/live),
+ * which must multiply the same scalar inside their powf(2, ...) term. */
 #define VOICE_LFO_DEPTH_FILTER 3.0f
 #define VOICE_LFO_DEPTH_AMP    0.5f
-#define VOICE_LFO_DEPTH_PITCH  1.0f
+/* Pitch is log2: 1.0 = a full octave at 100% depth, which made even 5%
+ * (+-60 cents) heavy vibrato. One semitone at 100% puts the whole musical
+ * vibrato range on the knob - depth% ~= 1.2 cents/%. Octave-scale sweeps
+ * are deliberately out of this LFO's reach (per-target field if ever
+ * wanted, like the filter's octave-denominated swing). */
+#define VOICE_LFO_DEPTH_PITCH  (1.0f / 12.0f)
 #define VOICE_LFO_DEPTH_SCAN   0.5f
 #define VOICE_LFO_DEPTH_PAN    0.5f  /* swing around the 0.5 center baseline */
 

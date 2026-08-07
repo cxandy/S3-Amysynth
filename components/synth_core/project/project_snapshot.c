@@ -327,13 +327,16 @@ static void apply_glob(const staged_glob_t *g)
 
 static void ser_layer(tlv_writer_t *w, const seq_layer_t *L)
 {
-    size_t h = tlv_begin_section(w, TAG_LAYR, 8);  /* v2: LFO target bitmask;
+    size_t h = tlv_begin_section(w, TAG_LAYR, 9);  /* v2: LFO target bitmask;
                                                     * v3: +gate_pct, +portamento_ms;
                                                     * v4: +groove_pct;
                                                     * v5: LFO +wob_rate/+wob_depth;
                                                     * v6: LFO +wob_depth_only;
                                                     * v7: filter +feedback (KS);
-                                                    * v8: LFO +flt_oct_q */
+                                                    * v8: LFO +flt_oct_q;
+                                                    * v9: step cond enum+param ->
+                                                    *     independent every+prev
+                                                    *     (same two array slots) */
     tlv_put_u8(w, (uint8_t)L->type);
     tlv_put_u8(w, L->num_steps);
     tlv_put_u16(w, L->patch);
@@ -356,8 +359,8 @@ static void ser_layer(tlv_writer_t *w, const seq_layer_t *L)
     tlv_put_bytes(w, L->step_note,          sizeof L->step_note);
     tlv_put_bytes(w, L->step_prob,          sizeof L->step_prob);
     tlv_put_bytes(w, L->step_ratchet,       sizeof L->step_ratchet);
-    tlv_put_bytes(w, L->step_cond_type,     sizeof L->step_cond_type);
-    tlv_put_bytes(w, L->step_cond_param,    sizeof L->step_cond_param);
+    tlv_put_bytes(w, L->step_every,         sizeof L->step_every);
+    tlv_put_bytes(w, L->step_prev,          sizeof L->step_prev);
     tlv_put_bytes(w, L->step_transform,     sizeof L->step_transform);
     tlv_put_bytes(w, L->step_quant_bypass,  sizeof L->step_quant_bypass);
     tlv_put_bytes(w, L->step_nudge,         sizeof L->step_nudge);
@@ -424,8 +427,11 @@ static bool parse_layer(tlv_reader_t *b, seq_layer_t *L, uint8_t ver)
     if (!tlv_get_bytes(b, L->step_note,          sizeof L->step_note))          return false;
     if (!tlv_get_bytes(b, L->step_prob,          sizeof L->step_prob))          return false;
     if (!tlv_get_bytes(b, L->step_ratchet,       sizeof L->step_ratchet))       return false;
-    if (!tlv_get_bytes(b, L->step_cond_type,     sizeof L->step_cond_type))     return false;
-    if (!tlv_get_bytes(b, L->step_cond_param,    sizeof L->step_cond_param))    return false;
+    /* v9 stores every+prev directly; v<=8 stored a cond enum (0 NONE / 1 FILL
+     * / 2 PREV) and its FILL divisor in the same two byte-array slots - read
+     * into the new fields and remap below. */
+    if (!tlv_get_bytes(b, L->step_every,         sizeof L->step_every))         return false;
+    if (!tlv_get_bytes(b, L->step_prev,          sizeof L->step_prev))          return false;
     if (!tlv_get_bytes(b, L->step_transform,     sizeof L->step_transform))     return false;
     if (!tlv_get_bytes(b, L->step_quant_bypass,  sizeof L->step_quant_bypass))  return false;
     if (!tlv_get_bytes(b, L->step_nudge,         sizeof L->step_nudge))         return false;
@@ -438,8 +444,19 @@ static bool parse_layer(tlv_reader_t *b, seq_layer_t *L, uint8_t ver)
             L->step_quant_bypass[t][s] = L->step_quant_bypass[t][s] ? 1 : 0;
             if (L->step_prob[t][s] > 100) L->step_prob[t][s] = 100;
             L->step_ratchet[t][s] = SEQ_CLAMP_U8(L->step_ratchet[t][s], 1, SEQ_MAX_RATCHET);
-            if (L->step_cond_type[t][s] >= SEQ_STEP_COND_COUNT) L->step_cond_type[t][s] = SEQ_STEP_COND_NONE;
-            if (L->step_cond_param[t][s] > 8) L->step_cond_param[t][s] = 8;  /* FILL divisor caps at 8 */
+            if (ver <= 8) {
+                /* Legacy cond enum in step_every's slot, FILL divisor in
+                 * step_prev's: FILL(1) -> every=divisor (capped), PREV(2) ->
+                 * prev on; anything else neutral. */
+                uint8_t cond = L->step_every[t][s];
+                uint8_t parm = L->step_prev[t][s];
+                L->step_every[t][s] = (cond == 1)
+                    ? SEQ_CLAMP_U8(parm, 1, SEQ_STEP_EVERY_MAX) : 1;
+                L->step_prev[t][s]  = (cond == 2) ? 1 : 0;
+            } else {
+                L->step_every[t][s] = SEQ_CLAMP_U8(L->step_every[t][s], 1, SEQ_STEP_EVERY_MAX);
+                L->step_prev[t][s]  = L->step_prev[t][s] ? 1 : 0;
+            }
             if (L->step_transform[t][s] >= SEQ_STEP_TRANSFORM_COUNT) L->step_transform[t][s] = SEQ_STEP_TRANSFORM_NONE;
         }
     }
@@ -913,7 +930,7 @@ bool project_snapshot_load(uint8_t slot)
         case TAG_LAYR:
             /* Ceiling must track ser_layer()'s version or the firmware
              * rejects its own files. */
-            if (ver < 1 || ver > 8 || staged_layer_count >= MAX_LAYERS) { ok = false; break; }
+            if (ver < 1 || ver > 9 || staged_layer_count >= MAX_LAYERS) { ok = false; break; }
             ok = parse_layer(&body, &staged_layers[staged_layer_count], ver);
             if (ok) staged_layer_count++;
             break;

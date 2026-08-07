@@ -383,12 +383,17 @@ void    sequencer_core_set_step_ratchet(uint8_t layer_idx, uint8_t track,
                                         uint8_t step, uint8_t count);
 uint8_t sequencer_core_get_step_ratchet(uint8_t layer_idx, uint8_t track,
                                         uint8_t step);
-void    sequencer_core_set_step_cond(uint8_t layer_idx, uint8_t track,
-                                     uint8_t step, seq_step_cond_type_t type,
-                                     uint8_t param);
-void    sequencer_core_get_step_cond(uint8_t layer_idx, uint8_t track,
-                                     uint8_t step, seq_step_cond_type_t *type,
-                                     uint8_t *param);
+/* EVERY and PREV are independent, composable conditions (both must hold, and
+ * only then is probability rolled). n clamps to 1..SEQ_STEP_EVERY_MAX; 1 is
+ * neutral (fires every loop). */
+void    sequencer_core_set_step_every(uint8_t layer_idx, uint8_t track,
+                                      uint8_t step, uint8_t n);
+uint8_t sequencer_core_get_step_every(uint8_t layer_idx, uint8_t track,
+                                      uint8_t step);
+void    sequencer_core_set_step_prev(uint8_t layer_idx, uint8_t track,
+                                     uint8_t step, bool on);
+bool    sequencer_core_get_step_prev(uint8_t layer_idx, uint8_t track,
+                                     uint8_t step);
 
 /* ── Per-step note transform + quantize bypass (OP-Z step-component subset) ──
  * transform==SEQ_STEP_TRANSFORM_NONE keeps the plain path. Any other mode

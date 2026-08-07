@@ -14,15 +14,6 @@
 static bool    s_se_active = false;
 static uint8_t s_se_field  = SE_FIELD_PROB;
 
-/* PARAM only means anything (and is only shown) for a FILL conditional. */
-static uint8_t se_max_field(uint8_t li, uint8_t t, uint8_t s)
-{
-    seq_step_cond_type_t type = SEQ_STEP_COND_NONE;
-    uint8_t param = 0;
-    sequencer_core_get_step_cond(li, t, s, &type, &param);
-    return (type == SEQ_STEP_COND_FILL) ? (uint8_t)SE_FIELD_PARAM : (uint8_t)SE_FIELD_COND;
-}
-
 bool synth_ui_stepedit_is_active(void)
 {
     /* The overlay decorates the grid's own cursor, so it is active only while
@@ -57,11 +48,7 @@ void synth_ui_stepedit_close(void)
 bool synth_ui_stepedit_handle_button(void)
 {
     if (!s_se_active) return false;
-    uint8_t li = seq_state.active_layer_idx;
-    uint8_t t  = seq_state.selected_track;
-    uint8_t s  = seq_state.selected_step;
-    uint8_t max_field = se_max_field(li, t, s);
-    s_se_field = (uint8_t)((s_se_field + 1) % (max_field + 1));
+    s_se_field = (uint8_t)((s_se_field + 1) % SE_FIELD_COUNT);
     s_force_redraw = true;
     return true;
 }
@@ -74,11 +61,6 @@ bool synth_ui_stepedit_handle_encoder(long delta)
     uint8_t s  = seq_state.selected_step;
     int d = (int)delta;
 
-    /* Cond type may have changed since the field cursor was set (PARAM left
-     * selected, then COND cycled away from FILL) - clamp before dispatch. */
-    uint8_t max_field = se_max_field(li, t, s);
-    if (s_se_field > max_field) s_se_field = max_field;
-
     switch (s_se_field) {
         case SE_FIELD_PROB: {
             int v = (int)sequencer_core_get_step_prob(li, t, s) + d * 5;
@@ -90,22 +72,17 @@ bool synth_ui_stepedit_handle_encoder(long delta)
             sequencer_core_set_step_ratchet(li, t, s, SEQ_CLAMP_U8(v, 1, SEQ_MAX_RATCHET));
             break;
         }
-        case SE_FIELD_COND: {
-            seq_step_cond_type_t type = SEQ_STEP_COND_NONE;
-            uint8_t param = 0;
-            sequencer_core_get_step_cond(li, t, s, &type, &param);
-            int v = (int)type + d;
-            v %= (int)SEQ_STEP_COND_COUNT;
-            if (v < 0) v += (int)SEQ_STEP_COND_COUNT;
-            sequencer_core_set_step_cond(li, t, s, (seq_step_cond_type_t)v, param);
+        case SE_FIELD_EVERY: {
+            int v = (int)sequencer_core_get_step_every(li, t, s) + d;
+            sequencer_core_set_step_every(li, t, s, SEQ_CLAMP_U8(v, 1, SEQ_STEP_EVERY_MAX));
             break;
         }
-        case SE_FIELD_PARAM: {
-            seq_step_cond_type_t type = SEQ_STEP_COND_NONE;
-            uint8_t param = 0;
-            sequencer_core_get_step_cond(li, t, s, &type, &param);
-            int v = (int)param + d;
-            sequencer_core_set_step_cond(li, t, s, type, SEQ_CLAMP_U8(v, 2, 8));
+        case SE_FIELD_PREV: {
+            /* Two-state toggle: any turn flips it. */
+            if (d != 0) {
+                sequencer_core_set_step_prev(li, t, s,
+                                             !sequencer_core_get_step_prev(li, t, s));
+            }
             break;
         }
         default:
@@ -120,17 +97,14 @@ void stepedit_build_view(stepedit_view_t *out)
     uint8_t li = seq_state.active_layer_idx;
     uint8_t t  = seq_state.selected_track;
     uint8_t s  = seq_state.selected_step;
-    seq_step_cond_type_t type = SEQ_STEP_COND_NONE;
-    uint8_t param = 0;
-    sequencer_core_get_step_cond(li, t, s, &type, &param);
 
     out->layer_idx    = li;
     out->track_idx    = t;
     out->step_idx     = s;
     out->prob         = sequencer_core_get_step_prob(li, t, s);
     out->ratchet      = sequencer_core_get_step_ratchet(li, t, s);
-    out->cond_type    = (uint8_t)type;
-    out->cond_param   = param;
+    out->every        = sequencer_core_get_step_every(li, t, s);
+    out->prev         = sequencer_core_get_step_prev(li, t, s) ? 1u : 0u;
     out->field_cursor = s_se_field;
 }
 

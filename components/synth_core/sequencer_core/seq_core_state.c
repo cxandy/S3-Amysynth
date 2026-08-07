@@ -169,13 +169,15 @@ uint8_t sequencer_core_add_layer(seq_layer_type_t type, uint8_t num_steps)
         }
     }
 
-    /* step_prob (0% silences every step) and step_ratchet (0 sub-hits fire
-     * nothing) need explicit non-zero defaults. The cond and transform arrays
-     * are correct at their zeroed no-op. */
+    /* step_prob (0% silences every step), step_ratchet (0 sub-hits fire
+     * nothing) and step_every (canonical neutral is 1, though the trig engine
+     * treats 0 the same defensively) need explicit non-zero defaults. The
+     * prev and transform arrays are correct at their zeroed no-op. */
     for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
         for (uint8_t s = 0; s < SEQ_MAX_STEPS; s++) {
             layer->step_prob[t][s]    = 100;
             layer->step_ratchet[t][s] = 1;
+            layer->step_every[t][s]   = 1;
         }
     }
 

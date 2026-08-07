@@ -17,18 +17,18 @@ extern "C" {
  *   ───────────────
  *  >Prob    : 75%
  *   Ratchet : 2
- *   Cond    : FILL
- *    Param  : 3
+ *   Every   : 2
+ *   Prev    : OFF
  *
  * field_cursor selects which row the encoder currently adjusts; short-press
- * cycles it, encoder turns adjust the value. The Param row is only shown
- * (and only reachable) when cond_type == SEQ_STEP_COND_FILL. */
+ * cycles it, encoder turns adjust the value. Every and Prev are independent
+ * conditions (both must hold for the step to fire); Every 1 = every loop. */
 
 typedef enum {
     SE_FIELD_PROB    = 0,
     SE_FIELD_RATCHET = 1,
-    SE_FIELD_COND    = 2,
-    SE_FIELD_PARAM   = 3,
+    SE_FIELD_EVERY   = 2,
+    SE_FIELD_PREV    = 3,
     SE_FIELD_COUNT,
 } stepedit_field_t;
 
@@ -38,8 +38,8 @@ typedef struct {
     uint8_t step_idx;     /* 0-based; rendered as 1-based */
     uint8_t prob;         /* 0..100 */
     uint8_t ratchet;      /* 1..SEQ_MAX_RATCHET */
-    uint8_t cond_type;    /* seq_step_cond_type_t */
-    uint8_t cond_param;   /* FILL: 2..8 */
+    uint8_t every;        /* 1..SEQ_STEP_EVERY_MAX; 1 = every loop */
+    uint8_t prev;         /* 0/1 */
     uint8_t field_cursor; /* stepedit_field_t */
 } stepedit_view_t;
 

@@ -7,15 +7,6 @@
 #define SE_ROW_H     10
 #define SE_FIRST_ROW 24
 
-static const char *se_cond_name(uint8_t cond_type)
-{
-    switch (cond_type) {
-        case 1: return "FILL";
-        case 2: return "PREV";
-        default: return "---";
-    }
-}
-
 /* Mirrors display_trackopts.c's to_draw_row: box+invert when selected. This
  * editor has no separate select/adjust phase (the encoder always adjusts the
  * cursored field), so "selected" alone is enough context. */
@@ -61,14 +52,10 @@ void display_stepedit_draw_frame(u8g2_t *u8g2, const stepedit_view_t *view)
     se_draw_row(u8g2, y, "Ratchet", val, view->field_cursor == SE_FIELD_RATCHET);
     y = (uint8_t)(y + SE_ROW_H);
 
-    se_draw_row(u8g2, y, "Cond", se_cond_name(view->cond_type),
-                view->field_cursor == SE_FIELD_COND);
+    snprintf(val, sizeof(val), "%u", (unsigned)view->every);
+    se_draw_row(u8g2, y, "Every", val, view->field_cursor == SE_FIELD_EVERY);
     y = (uint8_t)(y + SE_ROW_H);
 
-    /* Param only means anything for FILL; the encoder skips this row for any
-     * other condition type. */
-    if (view->cond_type == 1 /* SEQ_STEP_COND_FILL */) {
-        snprintf(val, sizeof(val), "%u", (unsigned)view->cond_param);
-        se_draw_row(u8g2, y, " Every", val, view->field_cursor == SE_FIELD_PARAM);
-    }
+    se_draw_row(u8g2, y, "Prev", view->prev ? "ON" : "OFF",
+                view->field_cursor == SE_FIELD_PREV);
 }

@@ -6,8 +6,8 @@
  * ════════════════════════════════════════════════════════════════════════
  *
  * A step is "plain" when step_prob==100 && step_ratchet==1 &&
- * step_cond_type==NONE: it keeps sequencer_emit_step()'s always-on repeating
- * AMY sequence tag (seq_core_engine.c) at zero added cost.
+ * step_every<=1 && !step_prev: it keeps sequencer_emit_step()'s always-on
+ * repeating AMY sequence tag (seq_core_engine.c) at zero added cost.
  *
  * Any other combination makes the step "decorated". sequencer_emit_step()
  * leaves such a step's plain ON/OFF tag pair cleared and
@@ -129,7 +129,8 @@ bool sequencer_core_step_is_decorated(const seq_layer_t *layer, uint8_t track, u
      * add no resident periodic events and cannot leave a tag ringing. */
     return layer->step_prob[track][step]      != 100
         || layer->step_ratchet[track][step]   != 1
-        || layer->step_cond_type[track][step] != (uint8_t)SEQ_STEP_COND_NONE
+        || layer->step_every[track][step]     > 1
+        || layer->step_prev[track][step]      != 0
         || layer->step_transform[track][step] != (uint8_t)SEQ_STEP_TRANSFORM_NONE
         || SEQ_NOTE_IS_CHORD(layer->step_note[track][step]);
 }
@@ -177,22 +178,17 @@ void sequencer_core_trig_clear_track_chord(uint8_t layer_idx, uint8_t track)
     }
 }
 
-/* ── Conditional trig evaluation ──────────────────────────────────────── */
+/* ── Conditional trig evaluation ──────────────────────────────────────────
+ * EVERY and PREV are independent conditions; both must hold. every==0 (an
+ * uninitialised or hand-edited value) is treated as 1 (neutral). */
 static bool trig_eval_condition(uint8_t layer_idx, const seq_layer_t *layer,
                                 uint8_t track, uint8_t step)
 {
-    switch ((seq_step_cond_type_t)layer->step_cond_type[track][step]) {
-        case SEQ_STEP_COND_FILL: {
-            uint8_t n = layer->step_cond_param[track][step];
-            if (n < 2) n = 2;
-            return (s_layer_loop_count[layer_idx] % n) == 0;
-        }
-        case SEQ_STEP_COND_PREV:
-            return s_track_last_played[layer_idx][track];
-        case SEQ_STEP_COND_NONE:
-        default:
-            return true;
-    }
+    uint8_t n = layer->step_every[track][step];
+    if (n > 1 && (s_layer_loop_count[layer_idx] % n) != 0) return false;
+    if (layer->step_prev[track][step] && !s_track_last_played[layer_idx][track])
+        return false;
+    return true;
 }
 
 static bool trig_roll_probability(uint8_t prob_pct)
@@ -359,7 +355,7 @@ void sequencer_core_service_tick(void)
 
 /* ── Public setters/getters ──────────────────────────────────────────────
  * Every setter re-emits the step so sequencer_emit_step() re-resolves
- * plain-vs-decorated. The trig service reads step_prob/step_ratchet/step_cond_*
+ * plain-vs-decorated. The trig service reads step_prob/step_ratchet/step_every/step_prev
  * live, so no other propagation is needed. */
 void sequencer_core_set_step_prob(uint8_t layer_idx, uint8_t track, uint8_t step,
                                   uint8_t prob_pct)
@@ -397,33 +393,41 @@ uint8_t sequencer_core_get_step_ratchet(uint8_t layer_idx, uint8_t track, uint8_
     return layer->step_ratchet[track][step];
 }
 
-void sequencer_core_set_step_cond(uint8_t layer_idx, uint8_t track, uint8_t step,
-                                  seq_step_cond_type_t type, uint8_t param)
+void sequencer_core_set_step_every(uint8_t layer_idx, uint8_t track, uint8_t step,
+                                   uint8_t n)
 {
     if (layer_idx >= s_num_layers) return;
     seq_layer_t *layer = &s_layers[layer_idx];
     if (track >= layer->num_tracks || step >= layer->num_steps) return;
-    if ((uint8_t)type >= SEQ_STEP_COND_COUNT) type = SEQ_STEP_COND_NONE;
-    if (type == SEQ_STEP_COND_FILL) param = SEQ_CLAMP_U8(param, 2, 8);
-    layer->step_cond_type[track][step]  = (uint8_t)type;
-    layer->step_cond_param[track][step] = param;
+    layer->step_every[track][step] = SEQ_CLAMP_U8(n, 1, SEQ_STEP_EVERY_MAX);
     sequencer_emit_step(layer_idx, track, step);
 }
 
-void sequencer_core_get_step_cond(uint8_t layer_idx, uint8_t track, uint8_t step,
-                                  seq_step_cond_type_t *type, uint8_t *param)
+uint8_t sequencer_core_get_step_every(uint8_t layer_idx, uint8_t track, uint8_t step)
 {
-    seq_step_cond_type_t t = SEQ_STEP_COND_NONE;
-    uint8_t p = 0;
-    if (layer_idx < s_num_layers) {
-        const seq_layer_t *layer = &s_layers[layer_idx];
-        if (track < layer->num_tracks && step < layer->num_steps) {
-            t = (seq_step_cond_type_t)layer->step_cond_type[track][step];
-            p = layer->step_cond_param[track][step];
-        }
-    }
-    if (type)  *type  = t;
-    if (param) *param = p;
+    if (layer_idx >= s_num_layers) return 1;
+    const seq_layer_t *layer = &s_layers[layer_idx];
+    if (track >= layer->num_tracks || step >= layer->num_steps) return 1;
+    uint8_t n = layer->step_every[track][step];
+    return n < 1 ? 1 : n;
+}
+
+void sequencer_core_set_step_prev(uint8_t layer_idx, uint8_t track, uint8_t step,
+                                  bool on)
+{
+    if (layer_idx >= s_num_layers) return;
+    seq_layer_t *layer = &s_layers[layer_idx];
+    if (track >= layer->num_tracks || step >= layer->num_steps) return;
+    layer->step_prev[track][step] = on ? 1u : 0u;
+    sequencer_emit_step(layer_idx, track, step);
+}
+
+bool sequencer_core_get_step_prev(uint8_t layer_idx, uint8_t track, uint8_t step)
+{
+    if (layer_idx >= s_num_layers) return false;
+    const seq_layer_t *layer = &s_layers[layer_idx];
+    if (track >= layer->num_tracks || step >= layer->num_steps) return false;
+    return layer->step_prev[track][step] != 0;
 }
 
 /* ── Per-step note transform + quantize bypass ────────────────────────────

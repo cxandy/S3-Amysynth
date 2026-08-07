@@ -41,17 +41,14 @@ typedef enum {
 #define SEQ_MAX_RATCHET 4
 
 /* ── Per-step conditional trig ──
- * NONE: fires whenever the step is ON, subject only to probability/ratchet.
- * FILL: fires once every step_cond_param loops of the layer's pattern (param
- *       clamped 2..8; the first loop after play-start always counts).
- * PREV: fires only if the preceding step on the SAME track sounded on its last
- *       evaluation, so any miss breaks the chain. */
-typedef enum {
-    SEQ_STEP_COND_NONE = 0,
-    SEQ_STEP_COND_FILL = 1,
-    SEQ_STEP_COND_PREV = 2,
-    SEQ_STEP_COND_COUNT,
-} seq_step_cond_type_t;
+ * Two independent, composable conditions (both must hold for the step to
+ * fire, and only then is probability rolled):
+ * EVERY n: fires on one loop pass out of every n of the layer's pattern
+ *          (1 = every loop = neutral; the first loop after play-start always
+ *          counts, since loop_count 0 satisfies any divisor).
+ * PREV:    fires only if this track's previous step-attempt sounded on its
+ *          last evaluation, so any miss breaks the chain. */
+#define SEQ_STEP_EVERY_MAX 4
 
 /* ── Per-step note transform ──
  * NONE is the zeroed default: the authored pitch, on the plain periodic-tag
@@ -273,17 +270,18 @@ typedef struct {
     uint8_t  step_page;                              /* display page 0|1 (32-step) */
 
     /* ── Per-step probability / ratchet / conditional trig ──
-     * A step with prob==100 && ratchet==1 && cond_type==NONE is "plain" and
+     * A step with prob==100 && ratchet==1 && every<=1 && !prev is "plain" and
      * keeps the always-on repeating AMY sequence tag at no extra cost. Any
      * other combination makes it "decorated": the periodic tag is left cleared
      * and sequencer_core_service_tick() decides per loop-iteration whether and
-     * how it fires. MUST be initialised to prob=100, ratchet=1 in
+     * how it fires. MUST be initialised to prob=100, ratchet=1, every=1 in
      * sequencer_core_add_layer - memset's 0% probability would silence every
-     * step. cond_type=0 (NONE) is the correct zeroed default. */
+     * step (the trig engine treats every==0 as 1 defensively, prev=0 is the
+     * correct zeroed default). */
     uint8_t  step_prob[SEQ_TRACKS][SEQ_MAX_STEPS];       /* 0..100 %, trigger probability */
     uint8_t  step_ratchet[SEQ_TRACKS][SEQ_MAX_STEPS];    /* 1..SEQ_MAX_RATCHET sub-hits    */
-    uint8_t  step_cond_type[SEQ_TRACKS][SEQ_MAX_STEPS];  /* seq_step_cond_type_t           */
-    uint8_t  step_cond_param[SEQ_TRACKS][SEQ_MAX_STEPS]; /* FILL: loop divisor 2..8        */
+    uint8_t  step_every[SEQ_TRACKS][SEQ_MAX_STEPS];      /* 1..SEQ_STEP_EVERY_MAX loop divisor, 1 = neutral */
+    uint8_t  step_prev[SEQ_TRACKS][SEQ_MAX_STEPS];       /* 1 = fire only if prev attempt fired */
     /* ── Per-step note transform ──
      * Both are neutral at 0: TRANSFORM_NONE keeps the authored pitch on the
      * plain path, and quant_bypass=0 re-snaps a transformed pitch to the scale.

@@ -284,6 +284,12 @@ bool sequencer_core_delete_layer(uint8_t layer_idx)
                 tail * sizeof(s_lfo_rnd[0]));
     }
     s_num_layers--;
+    /* Only the permanent drum layer left: every melodic slot is free again
+     * (AMY released each deleted layer's voices above), so rewind the bump
+     * allocator. Without this, project loads - which delete down to the drum
+     * layer and re-add - creep the counter 4 slots per melodic layer per load
+     * until the arena ceiling's shared-slot degrade kicks in. */
+    if (s_num_layers == 1) s_next_melodic_synth = SEQ_MEL_SYNTH_BASE;
     /* Table is fully compacted and the count updated; drop the guard. */
     s_layers_mutating = false;
     sequencer_core_trig_reset_all();  /* see rationale in sequencer_core_add_layer() */

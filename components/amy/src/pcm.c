@@ -150,14 +150,11 @@ void pcm_deinit() {
 }
 
 // How many bits used for fractional part of PCM table index.
-// LOCAL EDIT (S3-Amysynth): 8 -> 12. With 8 bits the interpolation
-// coefficient has only 256 levels and the phase step quantizes to
-// ratio * 256 LSBs, audible as zipper noise and pitch offset on large
-// downward shifts. 12 bits still leaves 19 index bits = 524287 frames
-// (~10.9 s at 48 kHz); pcm_load() rejects anything longer.
-#define PCM_INDEX_FRAC_BITS 12
+#define PCM_INDEX_FRAC_BITS 8
 // The number of bits used to hold the table index.
 #define PCM_INDEX_BITS (31 - PCM_INDEX_FRAC_BITS)
+// The phase advance step within a block is calculated with this many additional bits beyond PCM_INDEX_FRAC_BITS
+#define PCM_INDEX_STEP_EXTRA_BITS 8
 
 // LOCAL EDIT (S3-Amysynth): retrigger declick. Re-onset of a sounding PCM osc
 // (and note-off of a non-looping one) snaps the phase, stepping the output
@@ -360,27 +357,35 @@ SAMPLE render_pcm(SAMPLE* buf, uint16_t osc) {
         }
 
         SAMPLE amp = F2S(msynth[osc]->amp);
-        PHASOR step = F2P((playback_freq / (float)AMY_SAMPLE_RATE) / (float)(1 << PCM_INDEX_BITS));
+        PHASOR step = F2P((playback_freq / (float)AMY_SAMPLE_RATE) / (float)(1 << (PCM_INDEX_BITS - PCM_INDEX_STEP_EXTRA_BITS)));
         const LUTSAMPLE* table = preset->sample_ram;
-        uint32_t base_index = INT_OF_P(synth[osc]->phase, PCM_INDEX_BITS);
+        uint32_t base_index_base = INT_OF_P(synth[osc]->phase, PCM_INDEX_BITS);
+        uint32_t base_index = base_index_base;
+        PHASOR phase = (synth[osc]->phase - (base_index_base << PCM_INDEX_FRAC_BITS)) << PCM_INDEX_STEP_EXTRA_BITS;
         // LOCAL EDIT (S3-Amysynth): retrigger declick state, see PCM_DECLICK_SHIFT.
         SAMPLE declick = synth[osc]->pcm_declick;
         SAMPLE last_out = synth[osc]->pcm_last_out;
         for(uint16_t i=0; i < AMY_BLOCK_SIZE; i++) {
-            SAMPLE frac = S_FRAC_OF_P(synth[osc]->phase, PCM_INDEX_BITS);
+            SAMPLE frac = S_FRAC_OF_P(phase, PCM_INDEX_BITS - PCM_INDEX_STEP_EXTRA_BITS);
             LUTSAMPLE b = 0;
             LUTSAMPLE c = 0;
             uint32_t next_index = base_index + 1;
-            if (base_index >= sample_length) {
-                if (preset->type != AMY_PCM_TYPE_FILE) {
-                    synth[osc]->status = SYNTH_OFF;
+            // For non-file samples, we have to check for end of sample/looping.
+            if(preset->type != AMY_PCM_TYPE_FILE) {
+                if ((msynth[osc]->state == PCM_LOOP
+                     || msynth[osc]->state == PCM_LOOP_STOP
+                     || msynth[osc]->state == PCM_LOOP_FOREVER)
+                    && base_index >= preset->loopend) { // loopend
+                    // still looping.  The state may be modified by pcm_note_off.
+                    // back to loopstart
+                    phase &= ((1L << (PCM_INDEX_FRAC_BITS + PCM_INDEX_STEP_EXTRA_BITS)) - 1);
+                    base_index_base = preset->loopstart + (base_index - preset->loopend);
+                    base_index = base_index_base;
+                } else if(base_index >= sample_length) { // end
+                    synth[osc]->status = SYNTH_OFF;// is this right?
+                    buf[i] = 0;
+                    break;
                 }
-                // Past the end the waveform is silent, but a note-off jump
-                // may have armed the compensator - let it finish its decay.
-                buf[i] = declick;
-                declick -= declick >> PCM_DECLICK_SHIFT;
-                last_out = 0;
-                continue;
             }
             if (preset->channels == 2) {
                 uint32_t base_offset = base_index * 2;
@@ -408,28 +413,9 @@ SAMPLE render_pcm(SAMPLE* buf, uint16_t osc) {
                 c = (next_index < sample_length) ? table[next_index] : b;
             }
             SAMPLE sample = L2S(b) + MUL4_SS(L2S(c - b), frac);
-            synth[osc]->phase = P_WRAPPED_SUM(synth[osc]->phase, step);
-            base_index = INT_OF_P(synth[osc]->phase, PCM_INDEX_BITS);
+            phase = P_WRAPPED_SUM(phase, step);
+            base_index = base_index_base + INT_OF_P(phase, PCM_INDEX_BITS - PCM_INDEX_STEP_EXTRA_BITS);
 
-            if(preset->type != AMY_PCM_TYPE_FILE) {
-                // For non-file samples, we have to check for end of sample/looping.
-                if(base_index >= sample_length) { // end
-                    synth[osc]->status = SYNTH_OFF;// is this right?
-                    sample = 0;
-                } else {
-                    if(msynth[osc]->state == PCM_LOOP
-                       || msynth[osc]->state == PCM_LOOP_STOP
-                       || msynth[osc]->state == PCM_LOOP_FOREVER) {
-                        // still looping.  The state may be modified by pcm_note_off.
-                        if(base_index >= preset->loopend) { // loopend
-                            // back to loopstart
-                            int32_t loop_len = preset->loopend - preset->loopstart;
-                            synth[osc]->phase -= F2P(loop_len / (float)(1 << PCM_INDEX_BITS));
-                            base_index -= loop_len;
-                        }
-                    }
-                }
-            }
             last_out = MUL4_SS(amp, sample);
             SAMPLE value = buf[i] + last_out + declick;
             declick -= declick >> PCM_DECLICK_SHIFT;
@@ -437,14 +423,13 @@ SAMPLE render_pcm(SAMPLE* buf, uint16_t osc) {
             if (value < 0) value = -value;
             if (value > max_value) max_value = value;
         }
+        synth[osc]->phase = I2P(base_index, PCM_INDEX_BITS) + (S_FRAC_OF_P(phase, PCM_INDEX_BITS - PCM_INDEX_STEP_EXTRA_BITS) >> (S_FRAC_BITS - (PCM_INDEX_FRAC_BITS)));
         // Snap sub-audible residue to zero so the shift decay terminates
         // instead of freezing as a tiny DC offset.
         if (declick > -(1 << 8) && declick < (1 << 8)) declick = 0;
         synth[osc]->pcm_declick = declick;
         synth[osc]->pcm_last_out = last_out;
-        //printf("render_pcm: osc %d preset %d len %d base_ix %d phase %f step %f tablestep %f amp %f\n",
-        //       osc, synth[osc]->preset, preset->length, base_index, P2F(synth[osc]->phase), P2F(step), (1 << PCM_INDEX_BITS) * P2F(step), S2F(msynth[osc]->amp));
-        return max_value; 
+        return max_value;
         // i don't believe we ever need to detect silence in a sample. it will shut itself off at the end.
     }
     return 0;
@@ -527,13 +512,6 @@ int pcm_load_file() {
 // set loopstart, loopend, midinote, samplerate (and log2sr)
 // return the allocated sample ram that AMY will fill in.
 int16_t * pcm_load(uint16_t preset_number, uint32_t length, uint32_t samplerate, uint8_t channels, uint8_t midinote, uint32_t loopstart, uint32_t loopend) {
-    // A length that doesn't fit in PCM_INDEX_BITS would silently wrap the
-    // phase accumulator during playback; refuse it up front.
-    if (length > (uint32_t)((1UL << PCM_INDEX_BITS) - 1)) {
-        fprintf(stderr, "Sample too long for PCM index (%u > %u frames)\n",
-                (unsigned)length, (unsigned)((1UL << PCM_INDEX_BITS) - 1));
-        return NULL;
-    }
     // if preset was already a memorypcm, we need to unload it
     pcm_unload_preset(preset_number); // this is a no-op if preset doesn't exist or is a const pcm
     // now alloc a new LL entry and preset (the old LL entry is removed with pcm_unload_preset)

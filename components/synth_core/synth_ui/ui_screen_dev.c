@@ -6,6 +6,7 @@
 #include "sequencer_core.h"
 #include "amy.h"
 #include "esp_heap_caps.h"
+#include "core_load.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -83,15 +84,32 @@ static void heap_fmt(char *buf, size_t n, int arg)
                                 MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) / 1024u));
 }
 
-/* Heap status bar: while enabled, replaces the bottom hint strip on EVERY
- * screen (including ones that normally hide the hint) so internal-heap
- * headroom can be watched live under real load. Sampled from the UI task's
- * pre-gate service pass at HEAPBAR_PERIOD frames (20 Hz loop -> 500 ms);
- * the sampled text feeds the render gate so the bar refreshes on change. */
+/* Per-core busy % as "c0/c1", read from the status-LED sampler's last result
+ * (core_load_last(); "--" until it has published one, e.g. LED task absent). */
+static void cpu_fmt(char *buf, size_t n, int arg)
+{
+    (void)arg;
+    uint8_t busy[CORE_LOAD_NUM_CORES];
+    if (core_load_last(busy))
+        snprintf(buf, n, "%u/%u%%", (unsigned)busy[0], (unsigned)busy[1]);
+    else
+        snprintf(buf, n, "--");
+}
+
+/* Heap+CPU status bar: while enabled, replaces the bottom hint strip on EVERY
+ * screen (including ones that normally hide the hint) so internal-heap and
+ * CPU headroom can be watched live under real load. Sampled from the UI
+ * task's pre-gate service pass at HEAPBAR_PERIOD frames (20 Hz loop ->
+ * 500 ms); the sampled text feeds the render gate so the bar refreshes on
+ * change. Dev-facing abbreviations (deliberately terse, not end-user text):
+ *   TF  = total free internal heap (MALLOC_CAP_INTERNAL|8BIT), K
+ *   LB  = largest free block of the same heap, K
+ *   CPU = core0/core1 busy %, from the status-LED sampler via
+ *         core_load_last() (1 s cadence; omitted until first publish) */
 #define HEAPBAR_PERIOD 10
 
 static bool     s_heapbar_on = false;
-static char     s_heapbar_text[40];
+static char     s_heapbar_text[48];
 static uint32_t s_heapbar_sig;
 static uint8_t  s_heapbar_tick;
 
@@ -115,10 +133,18 @@ void synth_ui_dev_heapbar_poll(void)
         size_t f = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
         size_t b = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL |
                                                     MALLOC_CAP_8BIT);
+        uint8_t busy[CORE_LOAD_NUM_CORES];
+        char cpu[12];
+        if (core_load_last(busy))
+            snprintf(cpu, sizeof cpu, "%u/%u",
+                     (unsigned)busy[0], (unsigned)busy[1]);
+        else
+            snprintf(cpu, sizeof cpu, "--");
         snprintf(s_heapbar_text, sizeof s_heapbar_text,
-                 "INT free %u.%uK  blk %u.%uK",
+                 "TF:%u.%uK LB:%u.%uK CPU:%s",
                  (unsigned)(f / 1024u), (unsigned)((f % 1024u) * 10u / 1024u),
-                 (unsigned)(b / 1024u), (unsigned)((b % 1024u) * 10u / 1024u));
+                 (unsigned)(b / 1024u), (unsigned)((b % 1024u) * 10u / 1024u),
+                 cpu);
         /* Hash the text, not the raw sizes: sub-0.1K jitter then never forces
          * a physically identical redraw through the gate. */
         s_heapbar_sig = fnv1a_bytes(FNV1A_OFFSET, s_heapbar_text,
@@ -160,7 +186,8 @@ static const dev_item_t s_root_items[] = {
     { .label = "PCM Mode L1", .sub = &s_page_pcm },
     { .label = "AMY OOM",     .fmt = oom_fmt },
     { .label = "Heap int",    .fmt = heap_fmt },
-    { .label = "Heap bar",    .fmt = heapbar_fmt, .fire = heapbar_fire },
+    { .label = "CPU c0/c1",   .fmt = cpu_fmt },
+    { .label = "Status bar",  .fmt = heapbar_fmt, .fire = heapbar_fire },
 };
 static const dev_page_t s_page_root = { "", s_root_items,
                                         sizeof s_root_items / sizeof *s_root_items };

@@ -17,6 +17,21 @@
 // overflow degrades to "no data this call", never a truncated snapshot.
 #define CORE_LOAD_MAX_TASKS 24
 
+// Last successful sample, republished for lock-free readers (contract in
+// core_load.h). Per-byte stores are atomic on Xtensa; a reader racing the
+// writer sees at worst one core's value from the previous sample.
+static volatile uint8_t s_last_pct[CORE_LOAD_NUM_CORES];
+static volatile bool    s_last_valid;
+
+bool core_load_last(uint8_t busy_pct[CORE_LOAD_NUM_CORES])
+{
+    if (!s_last_valid) return false;
+    for (int core = 0; core < CORE_LOAD_NUM_CORES; core++) {
+        busy_pct[core] = s_last_pct[core];
+    }
+    return true;
+}
+
 bool core_load_sample(uint8_t busy_pct[CORE_LOAD_NUM_CORES])
 {
     static TaskStatus_t s_tasks[CORE_LOAD_MAX_TASKS];
@@ -60,6 +75,10 @@ bool core_load_sample(uint8_t busy_pct[CORE_LOAD_NUM_CORES])
             }
         }
         have_result = true;
+        for (int core = 0; core < CORE_LOAD_NUM_CORES; core++) {
+            s_last_pct[core] = busy_pct[core];
+        }
+        s_last_valid = true;
     }
 
     for (int core = 0; core < CORE_LOAD_NUM_CORES; core++) {

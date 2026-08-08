@@ -28,9 +28,26 @@
 
 bool core_load_sample(uint8_t busy_pct[CORE_LOAD_NUM_CORES]);
 
+// Read the most recent successful core_load_sample() result without becoming
+// a sampler.
+// Obligations: none beyond linking - callable from any task, lock-free, never
+// from an ISR only by convention (it is technically safe there too).
+// Guarantees: returns true with the last published busy_pct values (each
+// 0..100), which are as stale as the single sampler's call interval (status
+// LED: 1 s); returns false with busy_pct untouched until the sampler has
+// produced its first result (or when no sampler runs at all, e.g.
+// CONFIG_AMYSYNTH_STATUS_LED off).
+bool core_load_last(uint8_t busy_pct[CORE_LOAD_NUM_CORES]);
+
 #else
 
 static inline bool core_load_sample(uint8_t busy_pct[CORE_LOAD_NUM_CORES])
+{
+    (void)busy_pct;
+    return false;
+}
+
+static inline bool core_load_last(uint8_t busy_pct[CORE_LOAD_NUM_CORES])
 {
     (void)busy_pct;
     return false;

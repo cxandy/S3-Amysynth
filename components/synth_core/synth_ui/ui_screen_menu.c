@@ -34,7 +34,10 @@ static const char *TAG = "synth_ui";
  * seq_state.menu_cursor/menu_editing. */
 
 typedef enum {
-    MI_SCREEN_SEQ = 0,
+#if CONFIG_SYNTH_DEV_MENU
+    MI_DEV,               /* first row: DEV menu (temporary controls) */
+#endif
+    MI_SCREEN_SEQ,
     MI_SCREEN_ARP,
     MI_SCREEN_DRONE,
     MI_SCREEN_PROG,
@@ -172,6 +175,9 @@ void menu_build_view(menu_view_t *out)
         s_menu_items[i].value[0] = '\0';
     }
 
+#if CONFIG_SYNTH_DEV_MENU
+    snprintf(s_menu_items[MI_DEV].label, MENU_LABEL_LEN, "DEV");
+#endif
     snprintf(s_menu_items[MI_SCREEN_SEQ].label, MENU_LABEL_LEN, "Screen: Seq");
     snprintf(s_menu_items[MI_SCREEN_ARP].label, MENU_LABEL_LEN, "Screen: Arp");
     snprintf(s_menu_items[MI_SCREEN_DRONE].label, MENU_LABEL_LEN, "Screen: Drone");
@@ -612,6 +618,12 @@ bool synth_ui_menu_handle_button(void)
                 s_to_layer = seq_state.active_layer_idx;
                 s_to_track = seq_state.selected_track;
                 break;
+#if CONFIG_SYNTH_DEV_MENU
+            case MI_DEV:
+                seq_state.ui_mode = UI_MODE_DEV;
+                seq_state.menu_open = false;
+                break;
+#endif
 #if CONFIG_SYNTH_CUSTOM_FM
             case MI_SCREEN_FM:
                 seq_state.ui_mode = UI_MODE_FM;

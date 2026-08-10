@@ -116,6 +116,11 @@ bool synth_ui_trackopts_is_active(void);
 bool synth_ui_trackopts_handle_encoder(int delta);
 bool synth_ui_trackopts_handle_button(void);
 
+/* DEV menu screen (CONFIG_SYNTH_DEV_MENU) — temporary controls / diagnostics.
+ * Active when seq_state.ui_mode == UI_MODE_DEV and no overlay is up. */
+bool synth_ui_dev_handle_encoder(int delta);
+bool synth_ui_dev_handle_button(void);
+
 /* FM/ALGO voice editor — algorithm + per-operator ratio/level for the live
  * SEQ_PATCH_FM_CUSTOM voice (see custompatches/fm_voice.h). Active when
  * seq_state.ui_mode == UI_MODE_FM and no overlay is up. Reached via the menu
@@ -240,6 +245,7 @@ typedef enum {
     UI_VIEW_PROG,
     UI_VIEW_TRACKOPTS,
     UI_VIEW_FM,
+    UI_VIEW_DEV,
     UI_VIEW_SEQ,
     UI_VIEW_COUNT
 } ui_view_id_t;

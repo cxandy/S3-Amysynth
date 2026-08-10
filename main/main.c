@@ -512,6 +512,11 @@ static void dispatch_button_event(my_button_id_t button_id, button_event_t event
             case UI_VIEW_TRACKOPTS:
                 if (event == BUTTON_PRESS_DOWN) synth_ui_trackopts_handle_button();
                 return;
+#if CONFIG_SYNTH_DEV_MENU
+            case UI_VIEW_DEV:
+                if (event == BUTTON_PRESS_DOWN) synth_ui_dev_handle_button();
+                return;
+#endif
 #if CONFIG_SYNTH_CUSTOM_FM
             case UI_VIEW_FM:
                 if (event == BUTTON_PRESS_DOWN) synth_ui_fm_handle_button();
@@ -630,6 +635,10 @@ static void encoder_task(void *pvParameters)
                 synth_ui_prog_handle_encoder((int)steps);
             } else if (v == UI_VIEW_TRACKOPTS) {
                 synth_ui_trackopts_handle_encoder((int)steps);
+#if CONFIG_SYNTH_DEV_MENU
+            } else if (v == UI_VIEW_DEV) {
+                synth_ui_dev_handle_encoder((int)steps);
+#endif
 #if CONFIG_SYNTH_CUSTOM_FM
             } else if (v == UI_VIEW_FM) {
                 synth_ui_fm_handle_encoder((int)steps);

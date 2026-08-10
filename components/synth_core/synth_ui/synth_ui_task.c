@@ -141,6 +141,12 @@ static void synth_ui_task(void *pvParameters)
          * badge draw and signature mix below. */
         output_wd_poll();
 
+#if CONFIG_SYNTH_DEV_MENU
+        /* DEV heap status bar: throttled internal-heap sampling; its text
+         * joins the signature mix below so the bar refreshes on change. */
+        synth_ui_dev_heapbar_poll();
+#endif
+
         /* Trailing flush for throttled editor live-previews (amp trim), so the
          * last encoder value lands even after the user stops turning. */
         synth_ui_editors_live_service();
@@ -166,6 +172,10 @@ static void synth_ui_task(void *pvParameters)
             sig ^= ((uint32_t)radio_manager_state() * 2u +
                     (radio_manager_connected() ? 1u : 0u)) * 0x85EBCA6Bu;
 #endif
+#if CONFIG_SYNTH_DEV_MENU
+            /* DEV heap bar participates too (0 while off). */
+            sig ^= synth_ui_dev_heapbar_sig();
+#endif
             bool force = s_force_redraw || (view != last_view);
 
             if (force || sig != last_sig) {
@@ -176,6 +186,14 @@ static void synth_ui_task(void *pvParameters)
                  * the single SendBuffer below is the one physical transfer per
                  * redraw. Sending twice (without the hint, then with) makes the
                  * strip visibly flicker on every redraw. */
+#if CONFIG_SYNTH_DEV_MENU
+                /* DEV heap bar claims the strip on every screen while on -
+                 * even where the hint normally hides - so heap headroom stays
+                 * visible under whatever load scenario is being exercised. */
+                if (synth_ui_dev_heapbar_active()) {
+                    display_hint_draw(s_u8g2, synth_ui_dev_heapbar_text());
+                } else
+#endif
                 if (synth_ui_hint_visible()) {
                     display_hint_draw(s_u8g2, synth_ui_hint_text());
                 }

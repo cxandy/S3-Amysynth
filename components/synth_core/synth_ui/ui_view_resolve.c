@@ -27,6 +27,9 @@ ui_view_id_t synth_ui_active_view(void)
 #if CONFIG_SYNTH_CUSTOM_FM
         case UI_MODE_FM:        return UI_VIEW_FM;
 #endif
+#if CONFIG_SYNTH_DEV_MENU
+        case UI_MODE_DEV:       return UI_VIEW_DEV;
+#endif
         default:                return UI_VIEW_SEQ;
     }
 }
@@ -95,6 +98,11 @@ static uint32_t sig_fm(ui_view_vw_t *vw)  { return fm_view_signature(&vw->menu);
 static void     draw_fm(u8g2_t *g, ui_view_vw_t *vw) { display_menu_draw_frame_titled(g, "FM ALGO", &vw->menu); }
 #endif
 
+#if CONFIG_SYNTH_DEV_MENU
+static uint32_t sig_dev(ui_view_vw_t *vw)  { return dev_view_signature(&vw->dev); }
+static void     draw_dev(u8g2_t *g, ui_view_vw_t *vw) { display_dev_draw_frame(g, &vw->dev); }
+#endif
+
 /* ─── Dynamic hint labels (state the view id does not carry) ─────────────
  * Only the cells that vary on ui_mode: the LFO editor's b2 falls through to the
  * underlying screen. SHIFT gestures are not shown on the 3-button strip. */
@@ -149,6 +157,11 @@ const ui_view_desc_t ui_view_table[UI_VIEW_COUNT] = {
     [UI_VIEW_FM]        = { "FM",     sig_fm,        draw_fm,        "Patch",  "Pitch", "Menu",  NULL,               NULL,                   52 },
 #else
     [UI_VIEW_FM]        = { "FM",     NULL,          NULL,           "Patch",  "Pitch", "Menu",  NULL,               NULL,                   52 },
+#endif
+#if CONFIG_SYNTH_DEV_MENU
+    [UI_VIEW_DEV]       = { "DEV",    sig_dev,       draw_dev,       "-",      "-",     "Menu",  NULL,               NULL,                   30 },
+#else
+    [UI_VIEW_DEV]       = { "DEV",    NULL,          NULL,           "-",      "-",     "Menu",  NULL,               NULL,                   30 },
 #endif
     [UI_VIEW_SEQ]       = { "SEQ",    sig_seq,       draw_seq,       "Patch",  "Pitch", "Menu",  NULL,               NULL,                   44 },
 };

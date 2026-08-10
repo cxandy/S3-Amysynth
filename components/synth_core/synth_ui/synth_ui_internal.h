@@ -6,6 +6,7 @@
 #include "display_drone.h"     /* drone_view_t */
 #include "display_prog.h"      /* prog_view_t */
 #include "display_trackopts.h" /* trackopts_view_t */
+#include "display_dev.h"       /* dev_view_t (CONFIG_SYNTH_DEV_MENU) */
 #include "display_menu.h"      /* menu_view_t */
 #include "display_arp.h"       /* arp_view_t */
 #include "display_stepedit.h"  /* stepedit_view_t */
@@ -65,6 +66,19 @@ uint32_t prog_view_signature(prog_view_t *out);
 uint32_t trackopts_view_signature(trackopts_view_t *out);
 uint32_t stepedit_view_signature(stepedit_view_t *out);
 uint32_t fm_view_signature(menu_view_t *out);
+uint32_t dev_view_signature(dev_view_t *out);       /* CONFIG_SYNTH_DEV_MENU */
+bool     synth_ui_dev_is_active(void);
+
+/* ─── DEV heap status bar (ui_screen_dev.c; CONFIG_SYNTH_DEV_MENU) ──────
+ * While toggled on from the DEV menu it replaces the bottom hint strip on
+ * every screen with live internal-heap stats. poll() samples (throttled);
+ * call it from the UI task's pre-gate service pass only. active()/text()/
+ * sig() are side-effect-free; sig() is 0 while off, text() is only
+ * meaningful after a poll() with the bar active. UI task context only. */
+void        synth_ui_dev_heapbar_poll(void);
+bool        synth_ui_dev_heapbar_active(void);
+const char *synth_ui_dev_heapbar_text(void);
+uint32_t    synth_ui_dev_heapbar_sig(void);
 
 /* ─── View descriptor table (draw + hint), defined in ui_view_resolve.c ──
  * One scratch union holds whichever view struct the active screen builds:
@@ -78,6 +92,7 @@ typedef union {
     prog_view_t      prog;
     trackopts_view_t trackopts;
     stepedit_view_t  stepedit;
+    dev_view_t       dev;
 } ui_view_vw_t;
 
 typedef struct {

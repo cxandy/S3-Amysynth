@@ -19,6 +19,13 @@ if(CONFIG_SYNTH_ADDITIVE)
         "custompatches/additive_presets.c")
 endif()
 
+# DEV menu: temporary controls / diagnostics (CONFIG_SYNTH_DEV_MENU); all
+# reference sites are guarded by #if CONFIG_SYNTH_DEV_MENU.
+set(dev_srcs)
+if(CONFIG_SYNTH_DEV_MENU)
+    list(APPEND dev_srcs "synth_ui/ui_screen_dev.c")
+endif()
+
 idf_component_register(SRCS "live_play.c" "amy_helpers.c" "amy_fx.c" "arp_core.c" "quantizer.c" "graph_popup_amy.c" "voice_config.c"
                             "filter_scope.c"
                             "synth_ui/synth_ui_state.c"
@@ -56,6 +63,7 @@ idf_component_register(SRCS "live_play.c" "amy_helpers.c" "amy_fx.c" "arp_core.c
                             "project/project_snapshot.c"
                             ${fm_srcs}
                             ${additive_srcs}
+                            ${dev_srcs}
                        INCLUDE_DIRS "include" "sequencer_core" "project"
                        PRIV_INCLUDE_DIRS "."
                        REQUIRES u8g2 display amy

@@ -1,5 +1,14 @@
 menu "Sequencer Defaults"
 
+config SYNTH_DEV_MENU
+	bool "DEV menu (temporary/test controls)"
+	default y
+	help
+		Adds a DEV entry at the top of the main menu hosting temporary
+		test controls, runtime diagnostics and readouts (ui_screen_dev.c).
+		Controls graduate to real screens if they prove out; disable for
+		a clean end-user build - no DEV code is compiled in when off.
+
 config SEQ_QUANTIZER_DEFAULT_ENABLED
 	bool "Enable quantizer by default"
 	default y

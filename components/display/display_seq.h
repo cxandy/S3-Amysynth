@@ -18,6 +18,7 @@ typedef enum {
     UI_MODE_TRACKOPTS = 4,
     UI_MODE_FM        = 5,
     UI_MODE_DRONE_STD = 6,   /* normal (free-running) drone screen */
+    UI_MODE_DEV       = 7,   /* DEV menu (CONFIG_SYNTH_DEV_MENU) */
 } ui_mode_t;
 
 /* ── Global sequencer display/UI state ── */

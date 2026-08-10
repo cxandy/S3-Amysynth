@@ -844,6 +844,11 @@ typedef struct  {
 
     // memory caps for MCUs
     uint32_t ram_caps_events;
+    // LOCAL EDIT (S3-Amysynth): caps for stored sequencer wire strings and
+    // their serialize/fire buffers; defaults to ram_caps_events. Upstream PR
+    // candidate - lets small-heap targets keep cold control-plane strings
+    // out of the pool that backs per-osc synth state.
+    uint32_t ram_caps_sequencer;
     uint32_t ram_caps_sysex;
     uint32_t ram_caps_synth;
     uint32_t ram_caps_block;
@@ -1244,6 +1249,9 @@ extern int instrument_get_oscs_per_voice(int instrument_number);
 // LOCAL EDIT (S3-Amysynth, 2026-07-28): expose the voice -> base oscillator
 // mapping read-only; the table itself has no header declaration. See AMY-EDITS.md.
 extern bool amy_voice_base_osc(uint16_t voice, uint16_t *base_osc);
+// LOCAL EDIT (S3-Amysynth, 2026-08-07): oscs per voice for a patch (0 if
+// undefined), so embedders can budget num_voices before loading. AMY-EDITS.md.
+extern uint16_t amy_patch_oscs_per_voice(uint16_t patch_number);
 extern uint32_t instrument_get_flags(int instrument_number);
 extern void instrument_set_flags(int instrument_number, uint32_t flags);
 extern int instrument_get_bus(int instrument_number);

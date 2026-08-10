@@ -396,4 +396,16 @@ config SYNTH_DRUM_SYNTH_MODE
 		(808 ROM bank + gamma9001 sample banks) and projects saved with
 		the Synth engine load as PCM.
 
+config SEQ_OOM_RESYNC
+	bool "Resync sequencer after AMY OOM bursts"
+	default y
+	help
+		Poll AMY's OOM counter from the UI task; once a burst of
+		allocation failures settles, re-emit every layer's scheduled
+		steps and re-arm the arp. During an OOM window (e.g. an
+		oversized patch load exhausting internal heap) scheduled
+		events and tag cancels are dropped silently, leaving tracks
+		mute until something re-emits them - this closes that window
+		automatically. Disable to rule the hook out when debugging.
+
 endmenu

@@ -125,6 +125,14 @@
 /* One-shot preview fires this many ticks after an adjustment */
 #define SEQ_PREVIEW_DELAY_TICKS 4
 
+/* Per-track oscillator budget for string-patch loads: num_voices is clamped
+ * so oscs_per_voice x voices <= this. 32 keeps the standard polyphony intact
+ * (DX7 = 8 oscs/voice x 4 voices, Juno = 6 x 4) while the 25-osc/voice
+ * built-in piano degrades to 1 voice/track instead of exhausting the 250-osc
+ * pool and internal heap on a layer-wide load (4 tracks x 4 voices x 25 =
+ * 400 oscs attempted; see seq_clamp_patch_voices in seq_core_synth.c). */
+#define SEQ_TRACK_OSC_BUDGET 32
+
 /* ── Arpeggiator tag space ───────────────────────────────────────────────
  * Arp tags sit just above the sequencer's tag space:
  *   step on/off : 0 .. MAX_LAYERS*SEQ_TRACKS*SEQ_MAX_STEPS*2 - 1   (0..1023)

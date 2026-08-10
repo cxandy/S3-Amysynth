@@ -480,6 +480,35 @@ uint8_t sequencer_core_get_current_step(uint8_t layer_idx)
 /* Start/stop playback. Start re-emits every step so AMY repopulates its
  * schedule; stop captures each layer's playhead (frozen UI) and cancels all
  * scheduled events so nothing keeps triggering. */
+#if CONFIG_SEQ_OOM_RESYNC
+/* Self-heal after an AMY OOM burst. While internal heap is exhausted (e.g. an
+ * oversized patch load), scheduled events and tag cancels are dropped
+ * silently - only the FIRST failure prints (AMY's print-once policy), so
+ * tracks stay mute until something happens to re-emit them. Poll the OOM
+ * counter from the UI task; when a burst STOPS growing (one quiet service
+ * tick, 50 ms), re-emit everything once. Waiting for quiet avoids resyncing
+ * into the middle of the pressure that caused the drops. */
+void sequencer_core_oom_service(void)
+{
+    static uint32_t s_last_oom = 0;
+    static bool     s_resync_owed = false;
+    uint32_t count = amy_get_oom_count();
+    if (count != s_last_oom) {
+        s_last_oom = count;
+        s_resync_owed = true;   /* still growing - wait for a quiet tick */
+        return;
+    }
+    if (!s_resync_owed) return;
+    s_resync_owed = false;
+    ESP_LOGW(TAG, "AMY oom count %lu settled - resyncing all layers",
+             (unsigned long)count);
+    for (uint8_t i = 0; i < s_num_layers; i++) {
+        sequencer_resync_layer(i);
+    }
+    arp_core_mark_dirty();
+}
+#endif
+
 void sequencer_core_set_playing(bool p)
 {
     if (s_playing == p) return;

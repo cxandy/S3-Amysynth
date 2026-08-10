@@ -129,6 +129,23 @@ struct delta **queue_for_patch_number(int patch_number) {
     return &memory_patch_deltas[patch_index];
 }
 
+// LOCAL EDIT (S3-Amysynth): read accessor - oscs per voice for a patch, so an
+// embedder can budget num_voices BEFORE a load instead of discovering
+// exhaustion via "cannot find N oscs" partway through allocation. Returns 0
+// for undefined/reserved patch numbers. Upstream PR candidate (pairs with
+// amy_voice_base_osc as plain read API).
+uint16_t amy_patch_oscs_per_voice(uint16_t patch_number) {
+    if (patch_number < _PATCHES_FIRST_USER_PATCH) {
+        if (patch_number >= _PATCHES_NUM_BUILTIN || patch_commands[patch_number] == NULL)
+            return 0;
+        return patch_oscs[patch_number];
+    }
+    int32_t patch_index = (int32_t)patch_number - _PATCHES_FIRST_USER_PATCH;
+    if (memory_patch_oscs == NULL || patch_index >= (int32_t)max_num_memory_patches)
+        return 0;
+    return memory_patch_oscs[patch_index];
+}
+
 void update_num_oscs_for_patch_number(int patch_number) {
     int patch_index = patch_number - _PATCHES_FIRST_USER_PATCH;
     if (patch_index < 0 || patch_index >= (int)max_num_memory_patches) {

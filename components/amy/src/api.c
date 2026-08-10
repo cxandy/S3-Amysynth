@@ -68,7 +68,8 @@ amy_config_t amy_default_config() {
     c.ram_caps_delay = MALLOC_CAP_DEFAULT;
     c.ram_caps_sample = MALLOC_CAP_DEFAULT;
     c.ram_caps_sysex = MALLOC_CAP_DEFAULT;
-    #endif    
+    #endif
+    c.ram_caps_sequencer = c.ram_caps_events;
 
     c.capture_device_id = -1;
     c.playback_device_id = -1;
@@ -309,7 +310,14 @@ void amy_add_event(amy_event *e) {
     if(AMY_IS_SET(e->ticks[TICKS_TICK]) || AMY_IS_SET(e->ticks[TICKS_PERIOD]) || AMY_IS_SET(e->ticks[TICKS_TAG])) {
         // C-API ticks event: serialize it to a wire message and hand it to
         // the sequencer, so scheduled events have a single storage format.
-        char *buf = (char *)malloc_caps(MAX_MESSAGE_LEN, amy_global.config.ram_caps_events);
+        char *buf = (char *)malloc_caps(MAX_MESSAGE_LEN, amy_global.config.ram_caps_sequencer);
+        // LOCAL EDIT (S3-Amysynth): wire strings are control-path data with
+        // their own caps (ram_caps_sequencer), so a big patch exhausting
+        // ram_caps_events (which also backs per-osc synth state) can't make
+        // scheduled events and CANCELS silently drop. Fall back to the events
+        // pool before giving up.
+        if (buf == NULL)
+            buf = (char *)malloc_caps(MAX_MESSAGE_LEN, amy_global.config.ram_caps_events);
         if (buf == NULL) {
             amy_oom("add_event ticks");
             return;

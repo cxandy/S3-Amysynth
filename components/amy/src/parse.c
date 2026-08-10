@@ -642,7 +642,11 @@ void handle_ticks_message(char *message) {
     uint16_t schedule_len = 1 + _next_alpha(message + 1);
     char *payload = message + schedule_len;
     uint16_t payload_len = (uint16_t)strlen(payload);
-    char *stripped = (char *)malloc_caps(payload_len + 1, amy_global.config.ram_caps_events);
+    char *stripped = (char *)malloc_caps(payload_len + 1, amy_global.config.ram_caps_sequencer);
+    // LOCAL EDIT (S3-Amysynth): sequencer caps + events-pool fallback; see
+    // the matching site in amy_add_event (api.c).
+    if (stripped == NULL)
+        stripped = (char *)malloc_caps(payload_len + 1, amy_global.config.ram_caps_events);
     if (stripped == NULL) {
         amy_oom("ticks_message");
     } else {

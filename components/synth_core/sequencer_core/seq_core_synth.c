@@ -365,6 +365,29 @@ seq_env_t *seq_layer_env1(uint8_t layer_idx, uint8_t track)
  * Returns true when a patch STRING was loaded: those carry global EQ/chorus
  * commands, so the caller owes one synth_ui_fx_reassert_global() afterwards,
  * even when applying to several slots. */
+/* Clamp a string-patch load's polyphony so oscs_per_voice x voices fits the
+ * per-track osc budget. Built-in piano is 25 oscs/voice: a layer-wide load at
+ * 4 voices/track attempts 400 oscs against the 250-osc pool AND ~76 KB of
+ * internal heap, exhausting ram_caps_events partway (every osc's synthinfo
+ * lives there) - the 2026-08-07 incident. Degrading polyphony keeps the patch
+ * usable and the heap intact. amy_patch_oscs_per_voice() returns 0 for
+ * unknown/virtual numbers - no clamp, the loader rejects those itself. */
+static uint16_t seq_clamp_patch_voices(uint16_t patch, uint16_t num_voices)
+{
+    uint16_t opv = amy_patch_oscs_per_voice(patch);
+    if (opv == 0) return num_voices;
+    uint16_t max_voices = SEQ_TRACK_OSC_BUDGET / opv;
+    if (max_voices < 1) max_voices = 1;
+    if (num_voices > max_voices) {
+        ESP_LOGW(TAG, "patch %u: %u oscs/voice, clamping %u -> %u voices "
+                      "(budget %u oscs/track)",
+                 (unsigned)patch, (unsigned)opv, (unsigned)num_voices,
+                 (unsigned)max_voices, (unsigned)SEQ_TRACK_OSC_BUDGET);
+        return max_voices;
+    }
+    return num_voices;
+}
+
 static bool sequencer_apply_patch_kind(uint8_t synth_id, uint16_t patch,
                                        uint16_t num_voices, uint32_t synth_flags,
                                        bool filter_authored, float ks_feedback)
@@ -413,7 +436,8 @@ static bool sequencer_apply_patch_kind(uint8_t synth_id, uint16_t patch,
     }
 #endif
     voice_lfo_mark_foreign(synth_id);
-    amy_send_patch(synth_id, patch, num_voices, synth_flags);
+    amy_send_patch(synth_id, patch,
+                   seq_clamp_patch_voices(patch, num_voices), synth_flags);
     return true;
 }
 
@@ -665,7 +689,8 @@ void sequencer_core_set_drum_patch(uint8_t layer_idx, uint8_t track,
     sequencer_clear_layer_tags(layer_idx);
     sequencer_kill_synth_voices(layer->synth_id[track]);
     amy_send_patch(layer->synth_id[track], patch_number,
-                   layer->num_voices, layer->synth_flags);
+                   seq_clamp_patch_voices(patch_number, layer->num_voices),
+                   layer->synth_flags);
     sequencer_resync_layer(layer_idx);
 
     /* A drum patch is always a string, so the flush is always owed. */

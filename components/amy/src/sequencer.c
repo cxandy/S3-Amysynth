@@ -292,7 +292,13 @@ static void sequencer_process_tick(void) {
                         active_unlink(tag);
                     } else {
                         size_t len = strlen(sequences[tag].wire);
-                        wire = (char *)malloc_caps(len + 1, amy_global.config.ram_caps_events);
+                        wire = (char *)malloc_caps(len + 1, amy_global.config.ram_caps_sequencer);
+                        // LOCAL EDIT (S3-Amysynth): sequencer caps + events-
+                        // pool fallback, matching amy_add_event (api.c) - a
+                        // periodic fire must not go silent because osc state
+                        // exhausted a pool.
+                        if (wire == NULL)
+                            wire = (char *)malloc_caps(len + 1, amy_global.config.ram_caps_events);
                         if (wire != NULL) memcpy(wire, sequences[tag].wire, len + 1);
                         else amy_oom("sequencer fire");
                     }

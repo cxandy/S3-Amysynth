@@ -311,6 +311,13 @@ bool sequencer_core_get_melodic_lfo(uint8_t layer_idx, uint8_t track,
                                     seq_lfo_t *out);
 void sequencer_core_lfo_service(void);
 
+#if CONFIG_SEQ_OOM_RESYNC
+/* Self-heal service (UI task, same cadence as the LFO service): once an AMY
+ * OOM burst stops growing, re-emit every layer's schedule and re-arm the arp.
+ * See seq_core_engine.c for why dropped wire events otherwise stay silent. */
+void sequencer_core_oom_service(void);
+#endif
+
 /* LFO live preview: apply the editor's scratch to the engine per detent
  * WITHOUT storing (native tracks hear it immediately; software tracks are
  * served from the preview slot by lfo_service). Store untouched, authored

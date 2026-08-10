@@ -793,6 +793,11 @@ void app_main(void)
     amy_cfg.ram_caps_synth  = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
     amy_cfg.ram_caps_block  = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
     amy_cfg.ram_caps_fbl    = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+    /* Sequencer wire strings are cold control-plane data (read once per
+     * fire, parse is us-scale) - PSRAM-first keeps them from competing with
+     * per-osc synth state for the ~76 KB internal pool; the sites fall back
+     * to ram_caps_events if PSRAM is ever exhausted. */
+    amy_cfg.ram_caps_sequencer = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
     /* FX delay lines (~108 KB reverb + 256 KB echo) don't fit internal -
      * pinning them internal made allocation fail (and once crashed on the
      * NULL deref). PSRAM latency in the FX stage is acceptable. */

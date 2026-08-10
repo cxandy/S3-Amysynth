@@ -68,6 +68,11 @@ static void synth_ui_task(void *pvParameters)
         drone_std_core_service();
         sequencer_core_lfo_service();
         sequencer_core_progression_service();
+#if CONFIG_SEQ_OOM_RESYNC
+        /* Re-emit schedules once an AMY OOM burst settles (dropped wire
+         * events otherwise leave tracks mute); cheap counter poll otherwise. */
+        sequencer_core_oom_service();
+#endif
 #if CONFIG_SYNTH_WIRELESS
         /* Live voice: 20 Hz software LFO for patch-string (non-native)
          * patches; cheap no-op otherwise. */

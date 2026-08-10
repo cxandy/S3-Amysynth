@@ -1,0 +1,63 @@
+menu "Status LED"
+
+config AMYSYNTH_STATUS_LED
+    bool "Onboard RGB LED shows Core-1 (render) load"
+    default y
+    select FREERTOS_GENERATE_RUN_TIME_STATS
+    help
+        Drives the board's onboard addressable RGB LED (WS2812) as a
+        render-load indicator. Core-1 busy share maps to color bands:
+        green < 50%, yellow >= 50%, orange >= 75%, red >= 90%, with
+        hysteresis at the band edges. The LED is only rewritten when the
+        band changes, so steady-state cost is one load sample per period.
+
+        Selecting this forces FREERTOS_GENERATE_RUN_TIME_STATS (which in
+        turn selects FREERTOS_USE_TRACE_FACILITY): the load metric is the
+        IDLE task run-time counter delta from uxTaskGetSystemState(),
+        sampled by core_load_sample() in the diagnostics component. The
+        run-time stats clock source must stay the default
+        FREERTOS_RUN_TIME_STATS_USING_ESP_TIMER (1 MHz, shared time base
+        with the wall-clock delta).
+
+config AMYSYNTH_STATUS_LED_GPIO
+    int "LED data GPIO"
+    depends on AMYSYNTH_STATUS_LED
+    default 48
+    help
+        Data line of the onboard addressable LED. ESP32-S3-DevKitC-1
+        v1.0 boards route it to GPIO48, v1.1 boards to GPIO38.
+
+config AMYSYNTH_STATUS_LED_BRIGHTNESS
+    int "Brightness (1-255)"
+    depends on AMYSYNTH_STATUS_LED
+    range 1 255
+    default 12
+    help
+        Full-scale color values are scaled by BRIGHTNESS/255 before being
+        written to the LED. Keep low: the onboard LED is bright, and very
+        low values (< ~8) start to lose the yellow/orange distinction to
+        8-bit channel quantization.
+
+config AMYSYNTH_STATUS_LED_PERIOD_MS
+    int "Load sample period (ms)"
+    depends on AMYSYNTH_STATUS_LED
+    range 200 5000
+    default 1000
+    help
+        Interval between core-load samples. The displayed load is the mean
+        over this window (spikes shorter than the window average out; use
+        the render_stats diagnostic for per-block spike analysis).
+
+config AMYSYNTH_STATUS_LED_ALLOC_BLINK
+    bool "Blink on failed heap allocation"
+    depends on AMYSYNTH_STATUS_LED
+    default y
+    help
+        Registers heap_caps_register_failed_alloc_callback() and answers
+        any failed allocation with a short magenta blink burst before the
+        LED returns to the load color. Note the callback fires on EVERY
+        failed alloc, including the first leg of deliberate
+        internal-then-PSRAM fallback paths, so an occasional blink can be
+        a graceful degrade rather than a hard OOM.
+
+endmenu

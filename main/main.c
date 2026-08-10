@@ -27,6 +27,7 @@
 #include "diag_heap.h"
 #include "diag_report.h"
 #include "diag_mem.h"
+#include "status_led.h"
 #include "amy_profile.h"
 #include "esp_compiler.h"
 #include "soc/gpio_num.h"
@@ -678,6 +679,11 @@ static void encoder_init_task(void *pvParameters)
               NULL,
               0);
     }
+
+    // Status LED last, from this Core-0 init task (the RMT backend allocates
+    // its interrupt on the calling core - keep it off the DSP core), and
+    // before the heap baseline so its small allocations are part of it.
+    status_led_start();
 
     // One-time post-init heap baseline (deliberately not Kconfig-gated): this
     // runs last in init, so free-internal here is the steady-state figure

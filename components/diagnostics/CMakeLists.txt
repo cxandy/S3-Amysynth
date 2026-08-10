@@ -11,6 +11,7 @@ idf_component_register(SRCS
     "diag_mem.c"
     "render_stats.c"
     "rtos_stats.c"
+    "core_load.c"
     "amy_profile.c"
     PRIV_REQUIRES amy esp_hw_support esp_timer
     INCLUDE_DIRS "include"

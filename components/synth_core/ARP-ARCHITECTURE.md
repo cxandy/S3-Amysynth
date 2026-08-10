@@ -77,7 +77,7 @@ flowchart TD
     SNAP --> EMIT["sequencer_core_arp_emit_note\ntick_on = 1 + i*rate_ticks"]
     GATE --> EMIT
     EMIT --> TAGWIN["arp tag window\nSEQ_ARP_TAG_BASE 1056 .. SEQ_ARP_TAG_MAX 1119"]
-    TAGWIN --> SYNTH["AMY synth slot 63\n(sequencer_core_arp_synth)"]
+    TAGWIN --> SYNTH["AMY synth slot SEQ_ARP_SYNTH\n(sequencer_core_arp_synth)"]
 ```
 
 ---
@@ -241,15 +241,16 @@ rebuild because patch/source/wave changes reset AMY's internal glide state.
 
 | Consumer | Synth slots | Default patch | Voices |
 |---|---|---|---|
+| **Arp** | **1** | `CONFIG_SEQ_ARP_DEFAULT_PATCH` (138) | 4 |
+| Drone | 2 / 3 | build-your-own / preset | 5 / 1 |
+| Drone (free-running) | 4 / 5 | build-your-own / preset | chord / 1 |
 | Drum layer | 6-9 (one per track) | curated drum list / PCM presets | 1 |
-| Melodic layers | 11..62 (blocks of 4) | `CONFIG_SEQ_MELODIC_PATCH` | 1/row |
-| **Arp** | **63** | `CONFIG_SEQ_ARP_DEFAULT_PATCH` (138) | 4 |
-| Drone | 64 / 65 | build-your-own / preset | 5 / 1 |
+| Melodic layers | 11..`SEQ_MAX_SYNTH` (blocks of 4) | `CONFIG_SEQ_MELODIC_PATCH` | 1/row |
 
-The arp owns slot **63**, reserved above the melodic ceiling (62) so it never
-collides with a melodic layer's per-row block. `main.c` sets
-`amy_cfg.max_synths = 68` (the free-running drone's sub slot 67 is the
-highest). The arp
+The arp owns slot **1** in the static pool at the bottom of the slot map
+(`synth_slots.h`), below the melodic base (11), so it never collides with a
+melodic layer's per-row block. `main.c` derives `amy_cfg.max_synths` from
+`SYNTH_SLOT_COUNT` (63). The arp
 synth uses 4 voices to allow note overlap at fast rates.
 
 ---

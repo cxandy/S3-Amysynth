@@ -15,6 +15,7 @@
 #include "rotary_encoder.h"
 #include "synth_ui.h"
 #include "sequencer_core.h"
+#include "synth_slots.h"   /* SYNTH_SLOT_COUNT for amy_cfg.max_synths */
 #include "amy_helpers.h"   /* amy_helpers_set_render_task */
 #include "custompatches/sample_rec.h"
 #include "filter_scope.h"
@@ -825,9 +826,9 @@ void app_main(void)
      * (seq_core_config.h); sequencer_add_wire rejects tag >= max_sequencer_tags,
      * so 1730 leaves a small margin above the top tag. */
     amy_cfg.max_sequencer_tags = 1730;
-    /* Above the default-64 instrument table: stutter drone 64/65, normal
-     * drone 66/67. Keep in sync with drone_core.c / drone_std_core.c. */
-    amy_cfg.max_synths = 68;
+    /* Slot map lives in synth_slots.h: statics pack 1..10, melodic is the
+     * open-ended arena 11..SYNTH_SLOT_COUNT-1. This is the polyphony knob. */
+    amy_cfg.max_synths = SYNTH_SLOT_COUNT;
     /* Disable AMY's CPU-overload failsafe (v1.2.121+): its per-block timing
      * span wraps amy_render(), whose body holds amy_queue_lock, so time the
      * render task spends BLOCKED on the lock while the ingest pump applies

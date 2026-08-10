@@ -22,7 +22,7 @@ a mono sub tracks the chord root an octave (or more) below. Everything
 | `../synth_ui/ui_screen_drone.c` | The screen's input handling and view building. |
 | `../../display/display_drone.{c,h}` | The screen renderer (scrollable label:value list + the visualizer view). |
 | `../voice_config.c` | Shared voice layer: builds the 2-osc WAVE voice, wires the native LFO. |
-| `main/main.c` | Sets `amy_cfg.max_synths = 68`; routes drone-screen input. |
+| `main/main.c` | Sets `amy_cfg.max_synths` from `SYNTH_SLOT_COUNT`; routes drone-screen input. |
 
 The module mirrors the **arp module** pattern 1:1 (standalone engine + own synth
 slots + own screen, driven from the menu). If you understand `arp_core`, you
@@ -36,8 +36,8 @@ flowchart TD
   MODE --> SCREEN["Drone screen\n(display_drone, param list)"]
   SCREEN -->|encoder / button| GLUE["ui_screen_drone handlers"]
   GLUE --> CORE["drone_core (setters)"]
-  CORE -->|queued amy_event| MAIN["Synth 64: carrier\n(N voices = chord notes)"]
-  CORE -->|queued amy_event| SUB["Synth 65: sub\n(1 voice = root)"]
+  CORE -->|queued amy_event| MAIN["DRONE_SYNTH_MAIN: carrier\n(N voices = chord notes)"]
+  CORE -->|queued amy_event| SUB["DRONE_SYNTH_SUB: sub\n(1 voice = root)"]
   SERVICE["drone_core_service()\n(synced to global clock)"] --> SWEEP["filter cutoff sweep\n+ LFO re-sync + gate pattern"]
   SWEEP --> MAIN
   SWEEP --> SUB
@@ -223,14 +223,16 @@ amplitude, so:
 
 | Slot range | Owner |
 |---|---|
+| 1 | arp |
+| **2** | **drone main carrier** (`DRONE_SYNTH_MAIN`) |
+| **3** | **drone sub** (`DRONE_SYNTH_SUB`) |
+| 4 / 5 | free-running drone main / sub (`drone_std_core.c`) |
 | 6–9 | drum layer (one per track) |
 | 11–62 | melodic layers |
-| 63 | arp |
-| **64** | **drone main carrier** (`DRONE_SYNTH_MAIN`) |
-| **65** | **drone sub** (`DRONE_SYNTH_SUB`) |
-| 66 / 67 | free-running drone main / sub (`drone_std_core.c`) |
 
-`main/main.c` sets `amy_cfg.max_synths = 68`. AMY's instrument table is sized
+The full map lives in `synth_slots.h` (statics at the bottom, melodic arena on
+top). `main/main.c` sets `amy_cfg.max_synths = SYNTH_SLOT_COUNT` (63). AMY's
+instrument table is sized
 from config (`instruments_init(config.max_synths)`). AMY's default 250 oscs leave
 ample headroom (5-voice main × 2 oscs + sub × 2 = ~12 oscs).
 

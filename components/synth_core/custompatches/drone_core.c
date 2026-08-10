@@ -33,9 +33,8 @@
 
 static const char *TAG = "drone_core";
 
-/* ── Synth slots (above the existing 0..63 map; needs amy_cfg.max_synths>=66) ── */
-#define DRONE_SYNTH_MAIN   64
-#define DRONE_SYNTH_SUB    65
+/* ── Synth slots: DRONE_SYNTH_MAIN/SUB from synth_slots.h's static pool ── */
+#include "synth_slots.h"
 #define DRONE_OSCS_PER_VC  2     /* osc0 = carrier, osc1 = stutter LFO */
 #define DRONE_MAIN_VOICES  DRONE_CHORD_MAX_NOTES  /* one voice per chord note */
 #define DRONE_SUB_VOICES   1     /* sub is always a single tone (root)        */

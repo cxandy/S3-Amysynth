@@ -1,6 +1,7 @@
 #pragma once
 
 #include "seq_chords.h"   /* SEQ_CHORD_MAX_NOTES for the chord tag-space math */
+#include "synth_slots.h"  /* the AMY synth slot map (single source of truth) */
 
 /* ── Kconfig defaults ────────────────────────────────────────────────────── */
 #ifndef CONFIG_SEQ_QUANTIZER_DEFAULT_ENABLED
@@ -95,9 +96,8 @@
 
 /* ── Drum synth slots ────────────────────────────────────────────────────
  * Each of the 4 drum tracks owns its own synth slot, like melodic rows. Fixed
- * block 6..9, below the melodic base, so the melodic running allocator (11..62)
- * and the arp slot (63) are untouched. */
-#define SEQ_DRUM_SYNTH_BASE   6
+ * block 6..9 in the static pool (synth_slots.h), below the melodic base, so
+ * the melodic running allocator is untouched. */
 #define SEQ_DRUM_VOICES       1  /* one pitch at a time per row, as melodic */
 /* Drum tracks play real pitches, so they clamp to the same musical range as
  * melodic rows rather than a GM-drum note span. */
@@ -111,15 +111,14 @@
 /* One AMY synth PER ROW; voice count is Kconfig-driven (see
  * CONFIG_SEQ_MEL_VOICES help for the osc-cost rationale). */
 #define SEQ_MEL_VOICES        CONFIG_SEQ_MEL_VOICES
-#define SEQ_MEL_SYNTH_BASE    11    /* first melodic synth slot */
-#define SEQ_MAX_SYNTH         62    /* melodic ceiling; slot 63 reserved for arp */
+/* SEQ_MEL_SYNTH_BASE / SEQ_MAX_SYNTH come from synth_slots.h: the melodic
+ * range is the open-ended arena above the static slot pool. */
 #define SEQ_MEL_NOTE_MIN      24    /* C1 */
 #define SEQ_MEL_NOTE_MAX      96    /* C7 */
 
 /* ── Arpeggiator synth slot ──────────────────────────────────────────────
- * Dedicated AMY slot for the standalone arp, reserved above the melodic
- * ceiling so it never collides with a melodic layer's per-row block. */
-#define SEQ_ARP_SYNTH         63
+ * SEQ_ARP_SYNTH lives in synth_slots.h's static pool, below the melodic
+ * base, so it never collides with a melodic layer's per-row block. */
 #define SEQ_ARP_VOICES        4     /* allow note overlap at fast rates       */
 
 /* One-shot preview fires this many ticks after an adjustment */

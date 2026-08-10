@@ -249,16 +249,24 @@ stabbing, and 100 % is full legato.
 
 ## AMY Synth Slot Assignment
 
+The map lives in one header, `components/synth_core/include/synth_slots.h`:
+static consumers pack the bottom of the slot space, and the melodic layers are
+an open-ended arena on top.
+
 | Consumer | Synth slots | Patch | Voices |
 |---|---|---|---|
+| (sentinel) | **0** - reserved, "no such row" in row lookups | - | - |
+| Arp | **1** | `CONFIG_SEQ_ARP_DEFAULT_PATCH` | 4 |
+| Drone | **2 / 3** (carrier / sub) | build-your-own or AMY preset | 5 / 1 |
+| Drone (free-running mode) | **4 / 5** (carrier / sub) | build-your-own or AMY preset | chord size / 1 |
 | Drum layer (layer 0) | **6-9** (one per track) | per-track from the curated drum list (defaults 58/245/221/220) or per-track PCM presets in PCM mode | 1 |
-| Melodic layers | **11-62**, contiguous blocks of 4 from base 11 | `CONFIG_SEQ_MELODIC_PATCH`, shared across the layer's rows | 1 per row |
-| Arp | **63** | `CONFIG_SEQ_ARP_DEFAULT_PATCH` | 4 |
-| Drone | **64 / 65** (carrier / sub) | build-your-own or AMY preset | 5 / 1 |
-| Drone (free-running mode) | **66 / 67** (carrier / sub) | build-your-own or AMY preset | chord size / 1 |
+| Live play | **10** | live-play patch | 4 |
+| Melodic layers | **11..`SEQ_MAX_SYNTH`**, contiguous blocks of 4 from base 11 | `CONFIG_SEQ_MELODIC_PATCH`, shared across the layer's rows | 1 per row |
 
-`main.c` sets `amy_cfg.max_synths = 68`. The melodic ceiling
-(`SEQ_MAX_SYNTH = 62`) keeps layer blocks clear of the arp and drone slots.
+`main.c` derives `amy_cfg.max_synths` from `SYNTH_SLOT_COUNT` (63). The
+melodic ceiling is `SYNTH_SLOT_COUNT - 1`: nothing static sits above the
+melodic range, so growing melodic capacity is a single-constant change (the
+real limit is AMY's 250-osc pool).
 
 The drum layer is a **per-track patch layer**: each of its 4 tracks owns a
 dedicated synth slot in the fixed block 6-9 and loads its own patch. In
@@ -427,7 +435,7 @@ touched outside the queued event API.
 app_main
   ├── i2c_u8g2_init()
   ├── amy_start()              ← multicore=0, multithread=0, AMY_AUDIO_IS_NONE,
-  │                              max_synths=68, max_sequencer_tags=1730
+  │                              max_synths=SYNTH_SLOT_COUNT (63), max_sequencer_tags=1730
   ├── usb_audio_init()
   ├── synth_ui_init(u8g2)
   │     ├── amy_helpers_init()          (shared event scratch + mutex)

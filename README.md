@@ -138,9 +138,12 @@ A few design decisions worth calling out:
   sequencer tick runs once per rendered block on the audio core, slaved to the
   sample clock, so tempo cannot drift against the audio.
 - **Per-row / per-instrument synths.** Each drum track, each melodic row, the
-  arp, and the drones own their own AMY synth slots (drums 6-9, melodic rows
-  11-62, arp 63, stutter drone 64-65, free-running drone 66-67;
-  `max_synths = 68`). Because AMY routes note-on
+  arp, and the drones own their own AMY synth slots. Fixed consumers pack the
+  bottom of the slot space (arp 1, stutter drone 2-3, free-running drone 4-5,
+  drums 6-9, live play 10) and the melodic rows are an open-ended arena on top
+  (11 up to `max_synths - 1`); the whole map lives in one header,
+  `synth_slots.h`, and growing melodic polyphony is a single-constant change.
+  Because AMY routes note-on
   by `(synth, pitch)`, a shared synth would collapse two same-pitch notes into
   one voice; separate slots keep them independent.
 - **Tempo-locked from the audio clock.** The arp schedule and the drone's stutter
@@ -558,7 +561,8 @@ power cycle).
 
 ### Arpeggiator
 
-The arp runs on synth slot 63, independent of the sequencer's layers. It uses
+The arp runs on its own dedicated synth slot, independent of the sequencer's
+layers. It uses
 its own scale / root quantizer and schedules repeating AMY events that are
 always in sync with the sequencer's BPM.
 
@@ -598,7 +602,8 @@ Kconfig defaults at boot: disabled, Major scale, root E2, gate 75 %,
 
 ### Drone synth
 
-A tempo-locked stutter drone (slots 64/65: chord carrier + mono sub). Fully
+A tempo-locked stutter drone (two dedicated slots: chord carrier + mono sub).
+Fully
 independent of the sequencer grid and the chord progression; timing derives
 from the same AMY musical clock.
 

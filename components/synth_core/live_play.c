@@ -12,10 +12,10 @@
 
 static const char *TAG = "live_play";
 
-/* Slot 10 is the gap between the drum block (6..9) and the melodic base (11)
- * in the fixed slot map (seq_core_config.h). 4 voices matches the arp: chords
- * under one hand, with osc headroom even for 7-osc FM voices. */
-#define LIVE_SYNTH   10
+/* LIVE_SYNTH sits between the drum block and the melodic base in the static
+ * slot pool (synth_slots.h). 4 voices matches the arp: chords under one hand,
+ * with osc headroom even for 7-osc FM voices. */
+#include "synth_slots.h"
 #define LIVE_VOICES  4
 
 uint8_t live_play_synth_slot(void)

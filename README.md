@@ -88,6 +88,8 @@ or recorder can capture it without drivers.
   standalone output path (no firmware driver yet)
 - **Display:** SSD1306 128x64 OLED (I2C, U8g2)
 - **Input:** rotary encoder + push buttons, one ADC potentiometer
+- **Status LED:** onboard addressable RGB LED (WS2812, GPIO48) - render-load
+  indicator
 - **Audio out (active):** USB Audio Class 2.0 to host
 
 ## Software
@@ -108,12 +110,11 @@ flowchart TD
     subgraph Core1["Core 1 (audio)"]
         Timer["GPTimer ISR<br/>(render clock)"]
         Render["amy_usb_render_task"]
-        Update["amy_update()<br/>(all DSP)"]
+        Update["amy_update()<br/>(all DSP + per-block<br/>sequencer tick)"]
         Timer --> Render --> Update
     end
 
     subgraph Core0["Core 0 (everything else)"]
-        SeqPoll["AMY sequencer poll<br/>(esp_timer, 500us)"]
         UITask["synth_ui_task<br/>(arp / drone / LFO /<br/>progression + OLED)"]
         Encoder["encoder_task"]
         Buttons["button_handler_task"]
@@ -132,12 +133,14 @@ A few design decisions worth calling out:
   the render task, which calls `amy_update()` and pushes blocks to the USB ring
   buffer. This avoids AMY spawning its own audio tasks (which deadlocks in this
   configuration).
-- **Core split.** The audio DSP task is pinned to core 1; USB, the sequencer
-  tick, UI, and input live on core 0, so heavy synthesis doesn't starve the
-  USB/timer path.
+- **Core split.** The audio DSP task is pinned to core 1; USB, UI, and input
+  live on core 0, so heavy synthesis doesn't starve the USB/timer path. The
+  sequencer tick runs once per rendered block on the audio core, slaved to the
+  sample clock, so tempo cannot drift against the audio.
 - **Per-row / per-instrument synths.** Each drum track, each melodic row, the
-  arp, and the drone own their own AMY synth slots (drums 6-9, melodic rows
-  11-62, arp 63, drone 64-65; `max_synths = 66`). Because AMY routes note-on
+  arp, and the drones own their own AMY synth slots (drums 6-9, melodic rows
+  11-62, arp 63, stutter drone 64-65, free-running drone 66-67;
+  `max_synths = 68`). Because AMY routes note-on
   by `(synth, pitch)`, a shared synth would collapse two same-pitch notes into
   one voice; separate slots keep them independent.
 - **Tempo-locked from the audio clock.** The arp schedule and the drone's stutter
@@ -255,11 +258,11 @@ block cleanly rather than splicing a half-block), and the real-time path drops i
 of stalling, with a `usb_drops` diagnostic counter. See
 `components/usb_audio/usb_audio.c`.
 
-**O(active events) sequencer tick.** The 500 µs sequencer tick scans a dense
-active-tag list (O(active events), with O(1) add/remove) rather than walking the full
-tag space, keeping the per-tick cost on core 0 proportional to what is actually playing
-so it doesn't starve the audio/USB path. Arp re-emits are coalesced to at most one per
-UI frame instead of one per parameter change.
+**O(active events) sequencer tick.** The sequencer tick runs once per rendered
+block on the audio core, gated by the sample clock. Scheduled events sit in a
+linked index of occupied slots (AMY 1.2.121), so each tick scans only what is
+actually scheduled rather than the full tag space. Arp re-emits are coalesced to
+at most one per UI frame instead of one per parameter change.
 
 **One display flush per frame.** All screen renderers are fill-only; the UI task
 composites the bottom hint strip and issues a single `u8g2_SendBuffer` per redraw
@@ -282,6 +285,8 @@ The component layout:
 | `components/rotary_encoder/`, `components/my_buttons/` | input drivers |
 | `components/seq_clamp/` | header-only clamping helpers shared across the UI/engine code |
 | `components/project_store/` | project persistence: LittleFS mount, TLV container, slot files with atomic saves |
+| `components/status_led/` | onboard RGB LED driven as a render-load indicator |
+| `components/diagnostics/` | opt-in profiling hooks + the core-load sampler shared with the status LED |
 | `components/amy/` | vendored AMY engine (see [AMY-EDITS.md](AMY-EDITS.md) for local patches) |
 
 ## Diagnostics
@@ -314,6 +319,22 @@ Main loop idle... seq_tick=N tick_hook_calls=N render_blocks=N render_overruns=N
 
 These are **free-running totals, not rates** - read the *delta between two lines*, not the
 absolute value.
+
+### Always on - status LED
+
+The board's onboard RGB LED (`CONFIG_AMYSYNTH_STATUS_LED`, default on) reports
+core 1's busy share as a color band: green below 50 %, yellow from 50 %, orange
+from 75 %, red from 90 %, with hysteresis so the color holds steady when the
+load sits on a boundary. A failed heap allocation interrupts the load color
+with a short magenta blink burst.
+
+The number behind the color is the IDLE-task run-time counter delta, sampled
+once per second by a low-priority core-0 task - the render path itself carries
+no instrumentation, so watching the load cannot perturb it. The displayed value
+is a mean over the sample window; short spikes average out. Enabling the LED
+selects `FREERTOS_GENERATE_RUN_TIME_STATS`, the same facility the RTOS stats
+dump below relies on. See
+[components/status_led/README.md](components/status_led/README.md).
 
 ### `CONFIG_USB_AUDIO_DIAGNOSTICS` - ring-buffer detail
 
@@ -367,6 +388,10 @@ checkpoint compiles to nothing.
 ### Performance implications of leaving diagnostics on
 
 - **Always-on heartbeat:** negligible. A handful of counter reads plus one log line every 5 s.
+- **Status LED:** negligible on the audio path - one core-0 task wake per 100 ms, one
+  task-table snapshot per second, and an LED write only when the color band changes. Its
+  real cost is the run-time-stats facility it pulls in (see the `AMYSYNTH_RTOS_STATS` note
+  below); turn the LED off if you want that facility out of the build entirely.
 - **`USB_AUDIO_DIAGNOSTICS`:** low but non-zero. The producer/consumer track a few extra
   counters and a peak-sample scan on the audio path; fine for tuning, but it is gated off by
   default so the steady-state hot loop carries nothing in release builds.
@@ -379,7 +404,7 @@ checkpoint compiles to nothing.
 - **`AMYSYNTH_HEAP_CHECK`:** potentially large and bursty (see the watchdog caveat). Debug only.
 
 General rule: the default (release) configuration has every opt-in hook disabled and only the
-cheap heartbeat active, so shipping firmware pays effectively nothing.
+cheap heartbeat and the status LED active, so shipping firmware pays effectively nothing.
 
 ## Usage Guide
 
@@ -757,6 +782,7 @@ pitch-hold gesture does not survive the switch.
 
 ## Documentation
 
+- [RUNTIME-ARCHITECTURE.md](RUNTIME-ARCHITECTURE.md) - tasks, cores, clocks: the render loop, per-block sequencer tick, USB ring
 - [SEQUENCER-ARCHITECTURE.md](SEQUENCER-ARCHITECTURE.md) - sequencer core, layers, tags, timing
 - [ARP-ARCHITECTURE.md](components/synth_core/ARP-ARCHITECTURE.md) - the standalone arpeggiator
 - [DRONE.md](components/synth_core/custompatches/DRONE.md) - the stutter drone (voice model, chords, tempo sync)

@@ -22,7 +22,7 @@ a mono sub tracks the chord root an octave (or more) below. Everything
 | `../synth_ui/ui_screen_drone.c` | The screen's input handling and view building. |
 | `../../display/display_drone.{c,h}` | The screen renderer (scrollable label:value list + the visualizer view). |
 | `../voice_config.c` | Shared voice layer: builds the 2-osc WAVE voice, wires the native LFO. |
-| `main/main.c` | Sets `amy_cfg.max_synths = 66`; routes drone-screen input. |
+| `main/main.c` | Sets `amy_cfg.max_synths = 68`; routes drone-screen input. |
 
 The module mirrors the **arp module** pattern 1:1 (standalone engine + own synth
 slots + own screen, driven from the menu). If you understand `arp_core`, you
@@ -228,8 +228,9 @@ amplitude, so:
 | 63 | arp |
 | **64** | **drone main carrier** (`DRONE_SYNTH_MAIN`) |
 | **65** | **drone sub** (`DRONE_SYNTH_SUB`) |
+| 66 / 67 | free-running drone main / sub (`drone_std_core.c`) |
 
-`main/main.c` sets `amy_cfg.max_synths = 66`. AMY's instrument table is sized
+`main/main.c` sets `amy_cfg.max_synths = 68`. AMY's instrument table is sized
 from config (`instruments_init(config.max_synths)`). AMY's default 250 oscs leave
 ample headroom (5-voice main × 2 oscs + sub × 2 = ~12 oscs).
 

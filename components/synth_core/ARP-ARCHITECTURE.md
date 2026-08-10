@@ -167,7 +167,8 @@ Each arp step `i` uses tag `SEQ_ARP_TAG_BASE + i*2` (note-on) and `+1`
 > **AMY tag bound.** AMY's `sequencer_add_wire()` (v1.2.121+) rejects
 > `tag >= max_sequences`, fixing the historical off-by-one where a write at
 > index `max_sequences` overran `sequences[]`. To stay clear, `main.c` sets
-> `amy_cfg.max_sequencer_tags = 1280` (above the highest window at 1247).
+> `amy_cfg.max_sequencer_tags = 1730` (above the highest window - the chord
+> preview one-shots - at 1727).
 > `sequencer_core_arp_emit_note()` also defensively drops any tag
 > `> SEQ_ARP_TAG_MAX`. Keep `max_sequencer_tags`, `SEQ_ARP_TAG_BASE/COUNT`,
 > the ratchet window, and the sequencer tag formula in sync.
@@ -247,7 +248,8 @@ rebuild because patch/source/wave changes reset AMY's internal glide state.
 
 The arp owns slot **63**, reserved above the melodic ceiling (62) so it never
 collides with a melodic layer's per-row block. `main.c` sets
-`amy_cfg.max_synths = 66` (the drone's sub slot 65 is the highest). The arp
+`amy_cfg.max_synths = 68` (the free-running drone's sub slot 67 is the
+highest). The arp
 synth uses 4 voices to allow note overlap at fast rates.
 
 ---
@@ -276,11 +278,12 @@ arp_core_service();   // if dirty: arp_core_refresh(); else cheap no-op
 re-schedule), so it does **not** mark dirty. `arp_core_init()` marks dirty once
 so a boot-enabled arp emits on its first service tick.
 
-> Companion optimization in `components/amy/src/sequencer.c`: the per-tick scan
-> walks an **active-tag index** (only tags with live events) instead of
-> `0..highest_tag`. The arp used to pin `highest_tag` at 1119 permanently,
-> making every 500 µs tick scan ~1120 mostly-empty slots on Core 0. See
-> `SEQUENCER-ARCHITECTURE.md` for that change.
+> Companion behavior in `components/amy/src/sequencer.c` (upstream since AMY
+> v1.2.121, superseding an earlier local active-tag index): the per-tick scan
+> walks a threaded ascending list of occupied slots instead of `0..highest_tag`,
+> so the arp pinning a high tag no longer makes every tick scan ~1120
+> mostly-empty slots. The tick itself runs once per rendered block on the
+> core-1 render task.
 
 ---
 

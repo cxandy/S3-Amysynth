@@ -76,8 +76,8 @@ typedef struct {
     // per-step decorations (100/1/NONE = "plain" step, zero extra cost)
     uint8_t  step_prob[SEQ_TRACKS][SEQ_MAX_STEPS];      // 0..100 %
     uint8_t  step_ratchet[SEQ_TRACKS][SEQ_MAX_STEPS];   // 1..SEQ_MAX_RATCHET (4)
-    uint8_t  step_cond_type[SEQ_TRACKS][SEQ_MAX_STEPS]; // NONE / FILL / PREV
-    uint8_t  step_cond_param[SEQ_TRACKS][SEQ_MAX_STEPS];// FILL: loop divisor 2..8
+    uint8_t  step_every[SEQ_TRACKS][SEQ_MAX_STEPS];     // loop divisor, 1 = every pass
+    uint8_t  step_prev[SEQ_TRACKS][SEQ_MAX_STEPS];      // 1 = only if prev attempt fired
     // further per-step fields (note transform, micro-timing nudge, velocity
     // offset, ratchet taper) exist in the model ahead of their UI
     ...
@@ -132,7 +132,8 @@ classDiagram
         uint16_t track_patch[4]
         uint8_t step_prob[4][32]
         uint8_t step_ratchet[4][32]
-        uint8_t step_cond_type[4][32]
+        uint8_t step_every[4][32]
+        uint8_t step_prev[4][32]
     }
     class voice_params_t {
         seq_env_t env
@@ -165,6 +166,21 @@ does not get a periodic tag at all: `sequencer_core_service_tick()`
 events instead, so the probability roll and FILL/PREV conditions are decided
 fresh on every pass.
 
+```mermaid
+flowchart TD
+    Step["step enabled in a layer"] --> Q{"decorated?<br/>prob &lt; 100% / ratchets &gt; 1 / cond-trig"}
+    Q -->|no| Tag["repeating AMY sequencer event<br/>SEQUENCE_TICK / SEQUENCE_PERIOD<br/>fires autonomously every bar"]
+    Q -->|yes| Svc["sequencer_core_service_tick()<br/>per 48-PPQ tick, on the render task"]
+    Svc --> Roll["probability roll + FILL/PREV check,<br/>fresh every loop pass"]
+    Roll --> Shot["one-shot events (+ ratchet sub-hits),<br/>scheduled off the render task<br/>via the amy_ingest pump"]
+    Tag --> Fire["AMY tick engine fires -> note deltas"]
+    Shot --> Fire
+```
+
+The tick engine itself runs once per rendered audio block on the core-1 render
+task, slaved to the sample clock - see
+[RUNTIME-ARCHITECTURE.md](RUNTIME-ARCHITECTURE.md) for that clock chain.
+
 ### Tag layout
 
 `SEQUENCE_TAG` is `uint32_t`. Tags are assigned by layer / track / step
@@ -190,10 +206,12 @@ With `MAX_LAYERS=4`, `SEQ_TRACKS=4`, `SEQ_MAX_STEPS=32` the full map
 | 1024-1055 | one-shot preview events (one per layer per track) |
 | 1056-1119 | arpeggiator (`SEQ_ARP_TAG_BASE` .. `SEQ_ARP_TAG_MAX`) |
 | 1120-1247 | ratchet one-shots for decorated steps (`SEQ_RATCHET_TAG_BASE` ..) |
+| 1248-1631 | chord one-shots (`SEQ_CHORD_TAG_BASE` .. `SEQ_CHORD_TAG_MAX`) |
+| 1632-1727 | chord preview one-shots (`SEQ_CHORD_PREVIEW_TAG_BASE` ..) |
 
-`main.c` sets `amy_cfg.max_sequencer_tags = 1280`, clearing the highest used
-tag with margin (AMY's guard is `tag > max_sequences`, an off-by-one that
-allows a write *at* the limit - see ARP-ARCHITECTURE.md).
+`main.c` sets `amy_cfg.max_sequencer_tags = 1730`, clearing the highest used
+tag (1727) with margin (AMY's `sequencer_add_wire()` rejects
+`tag >= max_sequences` - see ARP-ARCHITECTURE.md).
 
 ### Period derivation
 
@@ -216,16 +234,16 @@ path.
 
 ### Gate widths
 
-Both gates are Kconfig-set fractions of one step:
+The two layer types gate differently:
 
-| Layer type | Kconfig | Default | Ticks |
-|---|---|---|---|
-| Drum | `SEQ_DRUM_GATE_NUMERATOR/DENOMINATOR` | 3/4 step | 9 |
-| Melodic | `SEQ_MELODIC_GATE_NUMERATOR/DENOMINATOR` | 11/12 step | 11 |
+| Layer type | Source | Shipped value |
+|---|---|---|
+| Drum | compile-time `SEQ_DRUM_GATE_NUMERATOR/DENOMINATOR` (Kconfig; this tree builds with 1/2) | 1/2 step = 6 ticks |
+| Melodic | runtime per-layer `gate_pct` (10..100 % of a step, NoteFX-editable); the Kconfig ratio `SEQ_MELODIC_GATE_NUMERATOR/DENOMINATOR` (11/12) only seeds its boot default (92 %) | near-legato by default |
 
 Drums honor note-offs (real patches, not one-shots), so the drum gate controls
-choke vs. ring; the near-legato melodic gate lets notes connect instead of
-stabbing.
+choke vs. ring; the near-legato melodic default lets notes connect instead of
+stabbing, and 100 % is full legato.
 
 ---
 
@@ -237,8 +255,9 @@ stabbing.
 | Melodic layers | **11-62**, contiguous blocks of 4 from base 11 | `CONFIG_SEQ_MELODIC_PATCH`, shared across the layer's rows | 1 per row |
 | Arp | **63** | `CONFIG_SEQ_ARP_DEFAULT_PATCH` | 4 |
 | Drone | **64 / 65** (carrier / sub) | build-your-own or AMY preset | 5 / 1 |
+| Drone (free-running mode) | **66 / 67** (carrier / sub) | build-your-own or AMY preset | chord size / 1 |
 
-`main.c` sets `amy_cfg.max_synths = 66`. The melodic ceiling
+`main.c` sets `amy_cfg.max_synths = 68`. The melodic ceiling
 (`SEQ_MAX_SYNTH = 62`) keeps layer blocks clear of the arp and drone slots.
 
 The drum layer is a **per-track patch layer**: each of its 4 tracks owns a
@@ -301,25 +320,48 @@ decorated-step trig path consult it.
 
 ## Button Mapping
 
-| Button | Event | Action |
+Seven logical buttons (`components/my_buttons/`), dispatched by
+`dispatch_button_event()` in `main/main.c`:
+
+| Button (GPIO) | Gesture | Action |
 |---|---|---|
-| MY_BUTTON_SHOULDER (GPIO17) | single click | Cycle active layer; resets cursor to track 0, step 0, edit mode |
-| MY_BUTTON_SHOULDER (GPIO17) | long press | Toggle play / stop (or cancel an open editor) |
-| MY_BUTTON_ENC (GPIO16) | single click | Toggle focused step (edit mode) / toggle play (non-edit mode) |
-| MY_BUTTON_ENC (GPIO16) | long press | Open ADSR graph editor (bound to selected track) |
-| MY_BUTTON_1 (GPIO18) | held + encoder | Cycle patch for selected track |
-| MY_BUTTON_2 (GPIO8) | held + encoder | Transpose base note for selected track (semitones) |
-| MY_BUTTON_3 (GPIO42) | single click | Open / close main menu overlay (cycles editor tabs while an editor is open) |
-| MY_BUTTON_3 (GPIO42) | long press | Open the Step Trig popup for the cursor step (sequencer screen); toggle EG0/EG1 while the ADSR editor is open |
-| MY_BUTTON_0 (GPIO15) |  |  |
-| MY_BUTTON_SHIFT (GPIO47) | held | Shift-key modifier for combinations |
+| MY_BUTTON_0 (17) | single click | Cycle active layer; with an editor open: commit and close it |
+| MY_BUTTON_0 (17) | long press | Toggle play / stop; with an editor open: cancel / discard it |
+| MY_BUTTON_ENC (16) | press | Sequencer: toggle the focused step. Editors: toggle select <-> adjust. Menu and mode screens: activate the focused item |
+| MY_BUTTON_SHOULDER (15) | press | Sequencer: toggle the step under the cursor (two-handed entry). ADSR editor: flip the EG1 sweep polarity |
+| MY_BUTTON_1 (18) | held + encoder | Cycle the active screen's patch (drone / arp / selected drum track / melodic) |
+| MY_BUTTON_1 (18) | press, per editor | Filter editor: toggle enabled. ADSR editor: cycle EG curve type. Progression screen: delete entry. Rename editor: save |
+| MY_BUTTON_2 (8) | held + encoder | Transpose the selected track's base note (semitones) |
+| MY_BUTTON_2 (8) | press, per screen | ADSR editor: toggle amp-edit mode. Progression screen: add entry. Track Options: delete shown layer. Rename editor: discard |
+| MY_BUTTON_3 (42) | single click | Open / close the menu overlay; with an editor open: cycle editor pages (EG0 -> EG1 -> filter -> LFO); Step Trig popup: close |
+| MY_BUTTON_SHIFT (47) | held | Chord modifier - a bare tap does nothing |
+| SHIFT + 1 | chord | Open the ADSR editor, or close-commit whichever editor is open |
+| SHIFT + 2 | chord | Toggle the Step Trig (probability / ratchet / cond-trig) popup |
+| SHIFT + 3 | chord | Toggle apply-to-whole-layer scope inside the envelope / LFO editors |
 
-**TODO: Add all controls**
+Track Options additionally maps button 1 click = add melodic layer. BPM is set
+via the menu overlay's `BPM` item, or with a bare encoder turn when
+`edit_mode=false`.
 
-BPM is set via the menu overlay's `BPM` item, or with a bare encoder turn when
-`edit_mode=false`. All button events are queued from the callback to
-`button_handler_task` (depth-16 queue in `main.c`) so no UI logic runs on the
-`esp_timer` task.
+Dispatch model: `iot_button` delivers events on the system `esp_timer` task,
+where the callback only enqueues them (depth-16 queue in `main.c`; a full queue
+drops rather than reorders); `button_handler_task` runs the routing cascade, so
+no UI logic executes in timer-callback context. Precedence, first match wins:
+
+```mermaid
+flowchart TD
+    EV["button event (button_task)"] --> P0{"SHOULDER or SHIFT?"}
+    P0 -->|yes| A0["per-view step/polarity action,<br/>or arm the SHIFT modifier"]
+    P0 -->|no| P1{"SHIFT chord (1/2/3)?"}
+    P1 -->|yes| A1["editor open/close, Step Trig,<br/>apply-scope - press latched"]
+    P1 -->|no| P2{"editor- or screen-specific<br/>override for this button?"}
+    P2 -->|yes| A2["per-editor / per-screen action<br/>(isolation guards keep play/pause live)"]
+    P2 -->|no| P3["route by synth_ui_active_view()"]
+    P3 --> A3["overlay or mode screen handler,<br/>else sequencer default"]
+```
+
+The same `synth_ui_active_view()` resolver routes the encoder, so button and
+encoder input always agree with the draw code about which screen is active.
 
 ---
 
@@ -366,9 +408,11 @@ Configured at creation (stack = words passed to `xTaskCreatePinnedToCore`):
 | `amy_render` | 22 | 1 | 8192 | Deadline-driven (one 256-sample block per GPTimer wake, 5333 µs) |
 | `seq_ui` | 5 | 0 | 8192 | 20 Hz (`vTaskDelayUntil`, 50 ms); sized for AMY patch-string parses during deferred layer adds |
 | `button_task` | 5 | 0 | 8192 | Blocks on the button event queue |
+| `amy_ingest` | 5 | 0 | 8192 | AMY event pump (`amy_helpers.c`): drains queued `amy_event`s off the render path, urgent decorated-step trig jobs (`seq_trig_pump.c`) first |
 | `encoder_task` | 5 | 0 | 8192 | 50 Hz poll |
+| `status_led` | 2 | 0 | 3072 | 10 Hz tick (blink animation); one core-load sample per second |
 | TinyUSB / UAC tasks | (component) | 0 | - | USB service, pinned to core 0 via sdkconfig |
-| `esp_timer` | 22 | 0 | - | AMY's 500 µs sequencer poll runs here |
+| `esp_timer` | 22 | 0 | - | System timer callbacks (button events originate here, then queue out); the sequencer tick does not run here - it advances per block on the core-1 render task |
 
 The `seq_ui` task owns one call path per frame: service the arp / drone /
 progression / LFO engines, resolve the active view, build its flat view
@@ -383,7 +427,7 @@ touched outside the queued event API.
 app_main
   ├── i2c_u8g2_init()
   ├── amy_start()              ← multicore=0, multithread=0, AMY_AUDIO_IS_NONE,
-  │                              max_synths=66, max_sequencer_tags=1280
+  │                              max_synths=68, max_sequencer_tags=1730
   ├── usb_audio_init()
   ├── synth_ui_init(u8g2)
   │     ├── amy_helpers_init()          (shared event scratch + mutex)

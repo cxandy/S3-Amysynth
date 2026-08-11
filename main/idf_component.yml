@@ -17,9 +17,12 @@ dependencies:
   # # For local components:
   # espressif/usb_device_uac is vendored at components/usb_device_uac
   # (LOCAL EDIT: deeper EP-IN software FIFO); do not re-add the registry dep.
-  # Its former transitive deps must be declared here directly - the component
-  # manager does not resolve a vendored component's manifest:
+  # The component manager DOES resolve the vendored copy's own manifest, so its
+  # deps (tinyusb, cmake_utilities) land in dependencies.lock regardless of
+  # this file - that manifest, plus button's private dep on cmake_utilities, is
+  # why cmake_utilities reinstalls even when removed here. The tinyusb pin
+  # below is therefore redundant with the vendored manifest's identical
+  # constraint; kept as an explicit statement of the version we build against.
   espressif/tinyusb: '^0.17.0~2'
-  espressif/cmake_utilities: '*'
   espressif/button: =*
   joltwallet/littlefs: "==1.*"

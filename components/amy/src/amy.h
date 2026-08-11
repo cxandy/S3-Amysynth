@@ -844,6 +844,13 @@ typedef struct  {
 
     // memory caps for MCUs
     uint32_t ram_caps_events;
+    // LOCAL EDIT (S3-Amysynth): caps for the per-osc synthinfo/mod_synthinfo
+    // blocks alloc_osc() grows on demand; defaults to ram_caps_events (the
+    // upstream behavior, which conflates the hot delta pool with osc state).
+    // Upstream PR candidate - a 25-osc/voice patch like the built-in piano
+    // grows the osc arena by tens of KB, and the arena never shrinks except
+    // on full reset, so small-heap targets need to steer it separately.
+    uint32_t ram_caps_oscs;
     // LOCAL EDIT (S3-Amysynth): caps for stored sequencer wire strings and
     // their serialize/fire buffers; defaults to ram_caps_events. Upstream PR
     // candidate - lets small-heap targets keep cold control-plane strings

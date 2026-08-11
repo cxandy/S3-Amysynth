@@ -70,6 +70,9 @@ amy_config_t amy_default_config() {
     c.ram_caps_sysex = MALLOC_CAP_DEFAULT;
     #endif
     c.ram_caps_sequencer = c.ram_caps_events;
+    // LOCAL EDIT (S3-Amysynth): osc-state caps default to the event pool's,
+    // preserving upstream behavior unless a target overrides (see amy.h).
+    c.ram_caps_oscs = c.ram_caps_events;
 
     c.capture_device_id = -1;
     c.playback_device_id = -1;

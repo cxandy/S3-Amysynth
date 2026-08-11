@@ -48,28 +48,71 @@ static const patch_domain_t s_drum_domain = {
  * notes[] values are per-bank ear-tuned defaults; until a bank has had its
  * tuning pass they carry the legacy role defaults (SEQ_DRUM_DEFAULT_NOTE,
  * tuned for the 808 ROM kit). Editing a kit = touching one row: swap a
- * role's preset number and/or its note here. */
+ * role's preset number, note, and/or voice-param blocks here.
+ * eg0/eg1/flt are OPTIONAL per-role voice-param defaults (point rows at
+ * named static const blocks; NULL = legacy engine defaults: the EDM
+ * envelope tables, no EG1, the hat HPF rule). They are the bank-level
+ * analog of a patch's baked-in voice character: applied whenever the
+ * track's voice params (re)configure and the row has NOT been user-
+ * authored - authored vp wins, same deferred-authority rule as melodic.
+ * The bank is derived from the track's CURRENT preset (not the display
+ * selector), so kit defaults follow cycling within a bank and survive
+ * project reload; presets outside every bank range (e.g. the runtime-
+ * recorded sample slot) fall back to legacy defaults. */
 typedef struct {
     const char *name;
     uint16_t    first, count;
     uint16_t    roles[SEQ_TRACKS];
     uint8_t     notes[SEQ_TRACKS];
+    const seq_env_t    *eg0[SEQ_TRACKS];
+    const seq_env_t    *eg1[SEQ_TRACKS];
+    const seq_filter_t *flt[SEQ_TRACKS];
 } seq_drum_bank_t;
 
 #define SEQ_GAMMA_PCM_FIRST 256u
 #define SEQ_GAMMA_PCM_COUNT 136u
 
 static const seq_drum_bank_t s_drum_banks[] = {
-    { "808",   0,   19, {   2,  12,   9,   3}, { 39, 45, 53, 82} },  /* ROM bank (gamma808)       */
-    { "909",   256, 17, { 256, 268, 260, 258}, { 39, 45, 53, 82} },  /* BD, SD, HH, CLAP          */
-    { "Linn",  273, 10, { 273, 280, 277, 279}, { 39, 45, 53, 82} },  /* Kick, Snare, HHC, RimShot */
-    { "MR12",  283, 4,  { 285, 286, 283, 284}, { 39, 45, 53, 82} },  /* Kick, Snare, HHC, HHO     */
-    { "SynFX", 287, 24, { 294, 289, 306, 302}, { 39, 45, 53, 82} },  /* BD04, Static, Click, Boink*/
-    { "Power", 311, 20, { 311, 314, 318, 315}, { 39, 45, 53, 82} },  /* RealKick, Snare, HH, Clap */
-    { "Perc",  331, 44, { 350, 351, 352, 335}, { 39, 45, 53, 82} },  /* NoiceKick, OldSnr, Shaker */
-    { "Misc",  375, 17, { 388, 381, 376, 379}, { 39, 45, 53, 82} },  /* BassRec, Silver, Shkr, Lsr*/
+    /* ROM bank (gamma808) */
+    { .name = "808",   .first = 0,   .count = 19,
+      .roles = {   2,  12,   9,   3}, .notes = { 39, 45, 53, 82} },
+    /* BD, SD, HH, CLAP */
+    { .name = "909",   .first = 256, .count = 17,
+      .roles = { 256, 268, 260, 258}, .notes = { 39, 45, 53, 82} },
+    /* Kick, Snare, HHC, RimShot */
+    { .name = "Linn",  .first = 273, .count = 10,
+      .roles = { 273, 280, 277, 279}, .notes = { 39, 45, 53, 82} },
+    /* Kick, Snare, HHC, HHO */
+    { .name = "MR12",  .first = 283, .count = 4,
+      .roles = { 285, 286, 283, 284}, .notes = { 39, 45, 53, 82} },
+    /* BD04, Static, Click, Boink */
+    { .name = "SynFX", .first = 287, .count = 24,
+      .roles = { 294, 289, 306, 302}, .notes = { 39, 45, 53, 82} },
+    /* RealKick, Snare, HH, Clap */
+    { .name = "Power", .first = 311, .count = 20,
+      .roles = { 311, 314, 318, 315}, .notes = { 39, 45, 53, 82} },
+    /* NoiceKick, OldSnr, Shaker */
+    { .name = "Perc",  .first = 331, .count = 44,
+      .roles = { 350, 351, 352, 335}, .notes = { 39, 45, 53, 82} },
+    /* BassRec, Silver, Shkr, Lsr */
+    { .name = "Misc",  .first = 375, .count = 17,
+      .roles = { 388, 381, 376, 379}, .notes = { 39, 45, 53, 82} },
 };
 #define SEQ_DRUM_BANK_COUNT ((uint8_t)(sizeof(s_drum_banks) / sizeof(s_drum_banks[0])))
+
+/* Bank owning a PCM preset number, by contiguous range; NULL when no bank
+ * claims it (runtime-recorded samples, out-of-range values). */
+static const seq_drum_bank_t *drum_bank_for_preset(uint16_t preset)
+{
+    for (uint8_t b = 0; b < SEQ_DRUM_BANK_COUNT; b++) {
+        const seq_drum_bank_t *bank = &s_drum_banks[b];
+        if (preset >= bank->first &&
+            preset < (uint16_t)(bank->first + bank->count)) {
+            return bank;
+        }
+    }
+    return NULL;
+}
 
 /* Last bank applied via the selector (display state only; the per-track
  * presets are the persisted truth and cycle freely across banks). */
@@ -135,17 +178,22 @@ static const float DRUM_PCM_REL_MS[SEQ_TRACKS] = {50.0f,  30.0f,  15.0f,  20.0f}
 
 /* ── Private helpers ─────────────────────────────────────────────────── */
 
-/* Apply one track's envelope shape and hat HPF after PCM wave/preset are set.
- * A row whose envelope the user has committed in the graph editor keeps its
- * authored shape (same deferred-authority rule as the melodic reconfigure
- * path); otherwise the EDM-tuned defaults above apply. */
+/* Apply one track's voice params after PCM wave/preset are set. Authority per
+ * block, identical to the melodic reconfigure path's deferred-authority rule:
+ * user-authored vp (committed in the graph editors) > the preset's bank
+ * defaults (seq_drum_bank_t eg0/eg1/flt, when the row authors them) > the
+ * legacy engine defaults (EDM envelope tables above, no EG1, hat HPF). */
 static void sequencer_configure_drum_pcm_track_params(uint8_t layer_idx,
                                                       uint8_t track)
 {
     const seq_layer_t *layer = &s_layers[layer_idx];
+    const seq_drum_bank_t *bank =
+        drum_bank_for_preset(drum_pcm_preset_for(layer_idx, track));
 
     if (layer->vp[track].env_authored) {
         sequencer_configure_melodic_envelope_track(layer_idx, track);
+    } else if (bank && bank->eg0[track]) {
+        sequencer_core_push_envelope(layer->synth_id[track], bank->eg0[track]);
     } else {
         amy_event *e = amy_helpers_event_begin();
         e->synth         = layer->synth_id[track];
@@ -160,7 +208,22 @@ static void sequencer_configure_drum_pcm_track_params(uint8_t layer_idx,
         amy_helpers_event_send(e);
     }
 
-    if (track == 2) {   /* hat: HPF to strip low-end rumble, add crispness */
+    /* EG1 has no legacy default: without an authored or bank shape the
+     * preset reload's osc reset leaves it cleared, which is the old
+     * behavior. */
+    if (layer->vp[track].env1_authored) {
+        sequencer_configure_melodic_envelope1_track(layer_idx, track);
+    } else if (bank && bank->eg1[track]) {
+        sequencer_core_push_envelope_eg1(layer->synth_id[track], 0,
+                                         bank->eg1[track]);
+    }
+
+    if (layer->vp[track].filter_authored) {
+        sequencer_configure_melodic_filter_track(layer_idx, track);
+    } else if (bank && bank->flt[track]) {
+        sequencer_core_push_filter(layer->synth_id[track], bank->flt[track],
+                                   false);
+    } else if (track == 2) {   /* hat: HPF strips low-end rumble, adds crispness */
         amy_event *e = amy_helpers_event_begin();
         e->synth      = layer->synth_id[track];
         e->filter_type = FILTER_HPF;

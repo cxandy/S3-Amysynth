@@ -11,7 +11,10 @@
  * with note= and the drum preset so the tuning harvest reads column-wise;
  * step state prints lazily - a pattern string per track, plus one line per
  * step only where something differs from the plain-step neutral values
- * (prob=100, ratchet=1, every<=1, note==track base, all else 0). */
+ * (prob=100, ratchet=1, every<=1, note==track base, all else 0). Voice
+ * params print lazily too: eg0/eg1/flt lines only when the row's authored
+ * flag is set (unauthored = the patch owns it, nothing to harvest), trim
+ * only when off unity. */
 
 #include "seq_core_internal.h"
 #include "sequencer_core.h"
@@ -75,6 +78,31 @@ void sequencer_core_dump_state(void)
                 DP("  T%u note=%u rep=%u mute=%u solo=%u",
                    t + 1u, L->track_base_note[t], L->repeat_rate[t],
                    (unsigned)L->mute[t], (unsigned)L->solo[t]);
+            }
+
+            const voice_params_t *vp = &L->vp[t];
+            if (vp->env_authored) {
+                DP("  T%u eg0 a=%lu d=%lu s=%u r=%lu type=%u",
+                   t + 1u, (unsigned long)vp->env.attack_ms,
+                   (unsigned long)vp->env.decay_ms, vp->env.sustain_pct,
+                   (unsigned long)vp->env.release_ms, vp->env.eg_type);
+            }
+            if (vp->env1_authored) {
+                DP("  T%u eg1 a=%lu d=%lu s=%u r=%lu type=%u",
+                   t + 1u, (unsigned long)vp->env1.attack_ms,
+                   (unsigned long)vp->env1.decay_ms, vp->env1.sustain_pct,
+                   (unsigned long)vp->env1.release_ms, vp->env1.eg_type);
+            }
+            if (vp->filter_authored) {
+                DP("  T%u flt type=%u en=%u cut=%.0f res=%.2f envamt=%.2f fb=%.2f",
+                   t + 1u, vp->filter.filter_type,
+                   (unsigned)vp->filter.enabled, (double)vp->filter.cutoff_hz,
+                   (double)vp->filter.resonance,
+                   (double)vp->filter.filter_env_amount,
+                   (double)vp->filter.feedback);
+            }
+            if (vp->amp_trim != 1.0f) {
+                DP("  T%u trim=%.2f", t + 1u, (double)vp->amp_trim);
             }
 
             char grid[SEQ_MAX_STEPS + 1];

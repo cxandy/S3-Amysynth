@@ -87,6 +87,10 @@ void        synth_ui_dev_heapbar_poll(void);
 bool        synth_ui_dev_heapbar_active(void);
 const char *synth_ui_dev_heapbar_text(void);
 uint32_t    synth_ui_dev_heapbar_sig(void);
+void        synth_ui_dev_dropbar_poll(void);
+bool        synth_ui_dev_dropbar_active(void);
+const char *synth_ui_dev_dropbar_text(void);
+uint32_t    synth_ui_dev_dropbar_sig(void);
 
 /* ─── View descriptor table (draw + hint), defined in ui_view_resolve.c ──
  * One scratch union holds whichever view struct the active screen builds:

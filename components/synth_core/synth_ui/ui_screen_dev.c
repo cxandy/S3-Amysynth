@@ -7,6 +7,7 @@
 #include "amy.h"
 #include "esp_heap_caps.h"
 #include "core_load.h"
+#include "dropout_stats.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -113,6 +114,11 @@ static char     s_heapbar_text[48];
 static uint32_t s_heapbar_sig;
 static uint8_t  s_heapbar_tick;
 
+static bool     s_dropbar_on = false;
+static char     s_dropbar_text[48];
+static uint32_t s_dropbar_sig;
+static uint8_t  s_dropbar_tick;
+
 static void heapbar_fmt(char *buf, size_t n, int arg)
 {
     (void)arg;
@@ -124,6 +130,7 @@ static void heapbar_fire(int arg)
     (void)arg;
     s_heapbar_on   = !s_heapbar_on;
     s_heapbar_tick = 0;   /* sample on the next service pass */
+    s_dropbar_on   = false;   /* the two bars share the hint strip */
 }
 
 void synth_ui_dev_heapbar_poll(void)
@@ -168,6 +175,62 @@ uint32_t synth_ui_dev_heapbar_sig(void)
     return s_heapbar_on ? s_heapbar_sig : 0;
 }
 
+/* Dropout status bar: same mechanism as the heap bar (claims the bottom hint
+ * strip on every screen, sampled at the same throttle, text feeds the render
+ * gate), showing the cumulative dropout counters so an audible gap can be
+ * attributed live to its pipeline layer (see dropout_stats.h):
+ *   Z = wire ZLPs (TinyUSB EP-IN FIFO dry - clock-beat fingerprint)
+ *   U = ring underruns (render behind realtime, chunk zero-padded)
+ *   O = render-clock overruns (blocks of realtime lost)
+ *   D = ring-full drops (host stalled draining) */
+
+static void dropbar_fmt(char *buf, size_t n, int arg)
+{
+    (void)arg;
+    snprintf(buf, n, "%s", s_dropbar_on ? "ON" : "OFF");
+}
+
+static void dropbar_fire(int arg)
+{
+    (void)arg;
+    s_dropbar_on   = !s_dropbar_on;
+    s_dropbar_tick = 0;   /* sample on the next service pass */
+    s_heapbar_on   = false;   /* the two bars share the hint strip */
+}
+
+void synth_ui_dev_dropbar_poll(void)
+{
+    if (!s_dropbar_on) return;
+    if (s_dropbar_tick == 0) {
+        dropout_stats_t d;
+        dropout_stats_get(&d);
+        snprintf(s_dropbar_text, sizeof s_dropbar_text,
+                 "Z:%lu U:%lu O:%lu D:%lu",
+                 (unsigned long)d.wire_zlp,
+                 (unsigned long)d.ring_underrun,
+                 (unsigned long)d.render_overrun,
+                 (unsigned long)d.ring_overrun);
+        s_dropbar_sig = fnv1a_bytes(FNV1A_OFFSET, s_dropbar_text,
+                                    strlen(s_dropbar_text));
+    }
+    s_dropbar_tick = (uint8_t)((s_dropbar_tick + 1) % HEAPBAR_PERIOD);
+}
+
+bool synth_ui_dev_dropbar_active(void)
+{
+    return s_dropbar_on;
+}
+
+const char *synth_ui_dev_dropbar_text(void)
+{
+    return s_dropbar_text;
+}
+
+uint32_t synth_ui_dev_dropbar_sig(void)
+{
+    return s_dropbar_on ? s_dropbar_sig : 0;
+}
+
 /* ── Pages (leaf pages first - root last, so rows can reference them) ──── */
 
 #define PCM_TRACK_ROW(n) \
@@ -188,6 +251,7 @@ static const dev_item_t s_root_items[] = {
     { .label = "Heap int",    .fmt = heap_fmt },
     { .label = "CPU c0/c1",   .fmt = cpu_fmt },
     { .label = "Status bar",  .fmt = heapbar_fmt, .fire = heapbar_fire },
+    { .label = "Drop bar",    .fmt = dropbar_fmt, .fire = dropbar_fire },
 };
 static const dev_page_t s_page_root = { "", s_root_items,
                                         sizeof s_root_items / sizeof *s_root_items };

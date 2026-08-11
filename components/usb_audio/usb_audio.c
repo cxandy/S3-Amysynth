@@ -8,6 +8,7 @@
 #include "esp_heap_caps.h"
 #include "esp_compiler.h"   // likely()/unlikely() branch hints
 #include "diag_mem.h"
+#include "dropout_stats.h"
 #include <stdatomic.h>
 #include <string.h>
 
@@ -61,8 +62,6 @@ static uint32_t s_write_calls = 0;
 static uint32_t s_write_drop_events = 0;
 static size_t s_peak_fill_samples = 0;
 static int16_t s_peak_abs_sample = 0;
-// Consumer-owned counter (written only by uac_input_cb).
-static uint32_t s_underrun_events = 0;
 #endif
 
 #if CONFIG_OUTPUT_WATCHDOG
@@ -136,11 +135,11 @@ static esp_err_t uac_input_cb(uint8_t *buf, size_t len, size_t *bytes_read, void
     size_t available_samples = (write_idx - read_idx + RING_BUFFER_SIZE) % RING_BUFFER_SIZE;
     size_t samples_to_copy = (len / 2 < available_samples) ? len / 2 : available_samples;
 
-#if CONFIG_USB_AUDIO_DIAGNOSTICS
+    // Always counted (dropout attribution must not depend on the serial-diag
+    // Kconfig gate); dropout_stats' ring_underrun writer is this consumer task.
     if (unlikely(samples_to_copy < (len / 2))) {
-        s_underrun_events++;   // consumer-owned counter
+        dropout_count_ring_underrun();
     }
-#endif
 
     // Copy with wrap-around
     size_t first = RING_BUFFER_SIZE - read_idx;
@@ -166,6 +165,29 @@ static esp_err_t uac_input_cb(uint8_t *buf, size_t len, size_t *bytes_read, void
     }
 
     return ESP_OK;
+}
+
+// Strong override of TinyUSB's weak callback (the vendored usb_device_uac
+// component leaves it unimplemented): the audio class driver calls this from
+// the TinyUSB task (Core 0) after loading each isochronous IN frame,
+// n_bytes_copied = bytes it could pull from its EP-IN software FIFO. Zero
+// means a zero-length packet goes on the wire - the host/device clock-beat
+// dropout, distinct from a ring underrun (which zero-pads a full-length
+// packet and never reaches this layer). Counting only; this path serves all
+// USB traffic, so it must stay a bare increment. Must return true: the
+// driver TU_VERIFYs the result and would abort the transfer chain on false.
+bool tud_audio_tx_done_post_load_cb(uint8_t rhport, uint16_t n_bytes_copied,
+                                    uint8_t func_id, uint8_t ep_in,
+                                    uint8_t cur_alt_setting)
+{
+    (void)rhport;
+    (void)func_id;
+    (void)ep_in;
+    (void)cur_alt_setting;
+    if (unlikely(n_bytes_copied == 0)) {
+        dropout_count_wire_zlp();
+    }
+    return true;
 }
 
 static void uac_set_mute_cb(uint32_t mute, void *ctx)
@@ -336,11 +358,17 @@ void usb_audio_diag_get_snapshot(usb_audio_diag_snapshot_t *snapshot)
     // Advisory only. Each diag counter has a single owner task, so a plain read
     // can lose/gain one update but never corrupt state.
     snapshot->fill_samples = usb_audio_fill_samples_relaxed();
+
+    // Underruns and wire ZLPs live in dropout_stats (always counted there);
+    // mirrored into the snapshot so the serial diag line stays one-stop.
+    dropout_stats_t drops;
+    dropout_stats_get(&drops);
+    snapshot->underrun_events = drops.ring_underrun;
+    snapshot->zlp_events = drops.wire_zlp;
 #if CONFIG_USB_AUDIO_DIAGNOSTICS
     snapshot->peak_fill_samples = s_peak_fill_samples;
     snapshot->write_calls = s_write_calls;
     snapshot->write_drop_events = s_write_drop_events;
-    snapshot->underrun_events = s_underrun_events;
     snapshot->peak_abs_sample = s_peak_abs_sample;
 #endif
 }
@@ -353,9 +381,10 @@ void usb_audio_diag_reset(void)
     }
 
     // Best-effort; racing a single increment is harmless for advisory diags.
+    // (dropout_stats counters are cumulative-since-boot by contract and are
+    // deliberately not reset here.)
     s_write_calls = 0;
     s_write_drop_events = 0;
-    s_underrun_events = 0;
     s_peak_fill_samples = 0;
     s_peak_abs_sample = 0;
 #else

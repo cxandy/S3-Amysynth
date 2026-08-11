@@ -25,6 +25,7 @@
 #include "esp_heap_caps.h"
 #include "render_clock.h"
 #include "render_stats.h"
+#include "dropout_stats.h"
 #include "diag_heap.h"
 #include "diag_report.h"
 #include "diag_mem.h"
@@ -57,13 +58,9 @@ static u8g2_t *s_u8g2 = NULL;
 static volatile uint32_t s_last_seq_tick = 0;
 static volatile uint32_t s_seq_tick_hook_count = 0;
 static volatile uint32_t s_render_block_count = 0;
-// Diagnostic only: render ticks that arrived while the previous block was
-// still rendering. Strict 1:1 pacing never renders the backlog; a climbing
-// value means render is falling behind realtime.
-static volatile uint32_t s_render_overruns = 0;
-// Diagnostic only: blocks dropped because the USB ring was full (host not
-// draining). Drops are all-or-nothing to keep AMY phase-aligned.
-static volatile uint32_t s_usb_drops = 0;
+// Render overruns and USB-ring drops are counted in dropout_stats
+// (diagnostics component) alongside the ring-underrun and wire-ZLP counters,
+// so one snapshot attributes any audible gap to its pipeline layer.
 // MY_BUTTON_1 held: encoder turns cycle the active screen's patch instead of
 // moving the selection.
 static volatile bool s_patch_held = false;
@@ -103,13 +100,14 @@ static void main_log_audio_diagnostics(void)
     usb_audio_diag_snapshot_t diag;
     usb_audio_diag_get_snapshot(&diag);
     ESP_LOGI(TAG,
-             "audio diag: init=%d fill=%u peak_fill=%u writes=%" PRIu32 " drops=%" PRIu32 " underruns=%" PRIu32 " peak_abs=%d",
+             "audio diag: init=%d fill=%u peak_fill=%u writes=%" PRIu32 " drops=%" PRIu32 " underruns=%" PRIu32 " zlp=%" PRIu32 " peak_abs=%d",
              diag.initialized ? 1 : 0,
              (unsigned)diag.fill_samples,
              (unsigned)diag.peak_fill_samples,
              diag.write_calls,
              diag.write_drop_events,
              diag.underrun_events,
+             diag.zlp_events,
               (int)diag.peak_abs_sample);
 }
 #endif
@@ -133,7 +131,7 @@ static void amy_usb_render_task(void *arg) {
         // absorbs jitter; it is not a catch-up queue.
         uint32_t ticks = render_clock_wait();
         if (unlikely(ticks > 1)) {
-            s_render_overruns += (ticks - 1);  // diagnostic only
+            dropout_count_render_overrun(ticks - 1);  // diagnostic only
         }
 
         render_stats_block_begin();
@@ -168,7 +166,7 @@ static void amy_usb_render_task(void *arg) {
             // is actually consuming.
             if (unlikely(usb_audio_write_stereo(block, AMY_BLOCK_SIZE) == ESP_ERR_NO_MEM)
                 && usb_audio_consumer_active()) {
-                s_usb_drops++;
+                dropout_count_ring_overrun();
             }
 #endif
         }
@@ -981,9 +979,11 @@ void app_main(void)
 #endif
     const uint32_t idle_loop_ms = diag_report_interval_ms();
     while (1) {
+        dropout_stats_t drops;
+        dropout_stats_get(&drops);
         ESP_LOGI(TAG,
                  "Main loop idle... seq_tick=%" PRIu32 " tick_hook_calls=%" PRIu32 " render_blocks=%" PRIu32 " render_overruns=%" PRIu32 " usb_drops=%" PRIu32 " render_sysclock_ms=%" PRIu32,
-                 s_last_seq_tick, s_seq_tick_hook_count, s_render_block_count, s_render_overruns, s_usb_drops,
+                 s_last_seq_tick, s_seq_tick_hook_count, s_render_block_count, drops.render_overrun, drops.ring_overrun,
                  /* computed on demand here, not per render block */ amy_sysclock());
         diag_report_all();
         vTaskDelay(pdMS_TO_TICKS(idle_loop_ms));

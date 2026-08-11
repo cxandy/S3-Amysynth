@@ -142,9 +142,10 @@ static void synth_ui_task(void *pvParameters)
         output_wd_poll();
 
 #if CONFIG_SYNTH_DEV_MENU
-        /* DEV heap status bar: throttled internal-heap sampling; its text
+        /* DEV status bars (heap, dropout): throttled sampling; their text
          * joins the signature mix below so the bar refreshes on change. */
         synth_ui_dev_heapbar_poll();
+        synth_ui_dev_dropbar_poll();
 #endif
 
         /* Trailing flush for throttled editor live-previews (amp trim), so the
@@ -173,8 +174,9 @@ static void synth_ui_task(void *pvParameters)
                     (radio_manager_connected() ? 1u : 0u)) * 0x85EBCA6Bu;
 #endif
 #if CONFIG_SYNTH_DEV_MENU
-            /* DEV heap bar participates too (0 while off). */
+            /* DEV status bars participate too (0 while off). */
             sig ^= synth_ui_dev_heapbar_sig();
+            sig ^= synth_ui_dev_dropbar_sig();
 #endif
             bool force = s_force_redraw || (view != last_view);
 
@@ -187,11 +189,15 @@ static void synth_ui_task(void *pvParameters)
                  * redraw. Sending twice (without the hint, then with) makes the
                  * strip visibly flicker on every redraw. */
 #if CONFIG_SYNTH_DEV_MENU
-                /* DEV heap bar claims the strip on every screen while on -
-                 * even where the hint normally hides - so heap headroom stays
-                 * visible under whatever load scenario is being exercised. */
+                /* A DEV status bar claims the strip on every screen while on
+                 * - even where the hint normally hides - so headroom/dropout
+                 * counts stay visible under whatever load scenario is being
+                 * exercised. The two bars are mutually exclusive (each's
+                 * toggle switches the other off). */
                 if (synth_ui_dev_heapbar_active()) {
                     display_hint_draw(s_u8g2, synth_ui_dev_heapbar_text());
+                } else if (synth_ui_dev_dropbar_active()) {
+                    display_hint_draw(s_u8g2, synth_ui_dev_dropbar_text());
                 } else
 #endif
                 if (synth_ui_hint_visible()) {

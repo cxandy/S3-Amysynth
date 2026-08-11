@@ -22,6 +22,20 @@ static i2c_master_dev_handle_t s_display_dev_handle = NULL;
 static uint32_t s_scl_speed_hz = 0;
 static uint16_t s_timeout_ms = 1000;
 static uint8_t s_device_address = 0x3C;
+/* Presence state machine. Probed at init; with no panel on the bus every
+ * transfer NACKs after a multi-ms timeout, so a headless board would burn
+ * Core-0 time and spam the log on every frame flush. When absent, transfers
+ * become silent no-ops (u8g2 keeps rendering into its buffer only) and
+ * i2c_u8g2_service() re-probes sparsely - a panel that appears or recovers
+ * is re-initialized in place, so neither a boot-time glitch nor a mid-run
+ * wedge is terminal. Demotion: I2C_U8G2_FAIL_LIMIT consecutive transfer
+ * failures flip present->absent (bounds the error spam and joins the same
+ * recovery loop). */
+#define I2C_U8G2_FAIL_LIMIT     8
+#define I2C_U8G2_RETRY_MS       5000
+static bool s_display_present = true;
+static uint8_t s_consec_fail = 0;
+static TickType_t s_next_retry = 0;
 
 static inline i2c_u8g2_handle_t *i2c_u8g2_handle_from_u8x8(u8x8_t *u8x8)
 {
@@ -81,12 +95,23 @@ static uint8_t i2c_u8g2_byte_cb(u8x8_t *u8x8, uint8_t msg, uint8_t arg_int, void
         break;
 
     case U8X8_MSG_BYTE_END_TRANSFER:
+        if (!s_display_present) {
+            break;              /* absent panel: discard, report success */
+        }
         if (buf_idx > 0 && s_display_dev_handle != NULL) {
             esp_err_t ret = i2c_master_transmit(s_display_dev_handle, buffer, buf_idx, s_timeout_ms);
             if (ret != ESP_OK) {
                 ESP_LOGE(TAG, "I2C transfer failed (%s)", esp_err_to_name(ret));
+                if (++s_consec_fail >= I2C_U8G2_FAIL_LIMIT) {
+                    s_display_present = false;
+                    s_next_retry = xTaskGetTickCount() + pdMS_TO_TICKS(I2C_U8G2_RETRY_MS);
+                    ESP_LOGW(TAG, "display unresponsive (%u consecutive failures); "
+                                  "suspending transfers, retrying every %u ms",
+                             (unsigned)s_consec_fail, (unsigned)I2C_U8G2_RETRY_MS);
+                }
                 return 0;
             }
+            s_consec_fail = 0;
         }
         break;
 
@@ -188,6 +213,18 @@ esp_err_t i2c_u8g2_init(i2c_u8g2_handle_t *handle, const i2c_u8g2_config_t *conf
     /* Brief delay to allow display to stabilize after bus init */
     vTaskDelay(pdMS_TO_TICKS(10));
 
+    /* Initial presence probe. u8g2 setup continues either way so callers can
+     * keep drawing into the buffer (and a harness can read it back); only the
+     * wire traffic is skipped. Absence is not terminal: i2c_u8g2_service()
+     * keeps re-probing sparsely. */
+    s_display_present =
+        (i2c_master_probe(s_i2c_bus_handle, config->device_address, 100) == ESP_OK);
+    if (!s_display_present) {
+        s_next_retry = xTaskGetTickCount() + pdMS_TO_TICKS(I2C_U8G2_RETRY_MS);
+        ESP_LOGW(TAG, "no display at 0x%02X; rendering to buffer only",
+                 (unsigned)config->device_address);
+    }
+
     handle->i2c_bus_handle = s_i2c_bus_handle;
 
     i2c_u8g2_setup_fn_t setup_fn = config->setup_fn;
@@ -248,6 +285,45 @@ u8g2_t *i2c_u8g2_get_u8g2(i2c_u8g2_handle_t *handle)
         return NULL;
     }
     return &handle->u8g2;
+}
+
+bool i2c_u8g2_display_present(void)
+{
+    return s_display_present;
+}
+
+bool i2c_u8g2_service(void)
+{
+    if (s_display_present || s_active_handle == NULL || s_i2c_bus_handle == NULL) {
+        return false;
+    }
+    TickType_t now = xTaskGetTickCount();
+    if ((int32_t)(now - s_next_retry) < 0) {
+        return false;
+    }
+    s_next_retry = now + pdMS_TO_TICKS(I2C_U8G2_RETRY_MS);
+
+    /* NACK on an absent panel resolves in the address phase - this is tens
+     * of microseconds, not a timeout wait. */
+    if (i2c_master_probe(s_i2c_bus_handle, s_device_address, 50) != ESP_OK) {
+        return false;
+    }
+
+    /* Panel answered: run the full init sequence - a panel that missed or
+     * lost init (absent at boot, power-cycled) has no charge pump or
+     * addressing state, so resuming raw data would show garbage. Present
+     * must flip first so the init transfers actually reach the wire; if the
+     * panel vanishes mid-init, the failure counter demotes it again. */
+    s_display_present = true;
+    s_consec_fail = 0;
+    u8g2_InitDisplay(&s_active_handle->u8g2);
+    u8g2_SetPowerSave(&s_active_handle->u8g2, 0);
+    if (!s_display_present) {
+        return false;           /* vanished mid-init; demoted again */
+    }
+    ESP_LOGI(TAG, "display attached at 0x%02X; reinitialized",
+             (unsigned)s_device_address);
+    return true;
 }
 
 esp_err_t i2c_u8g2_set_power_save(i2c_u8g2_handle_t *handle, bool enable)

@@ -7,6 +7,7 @@
 #include "custompatches/fm_voice.h"
 #include "custompatches/additive_voice.h"
 #include "custompatches/sample_rec.h"
+#include "priv_i2c_u8g2.h"   /* i2c_u8g2_service - absent-panel recovery */
 #include "display_seq.h"
 #include "display_drone.h"
 #include "display_prog.h"
@@ -58,6 +59,12 @@ static void synth_ui_task(void *pvParameters)
     /* Which top-level view was rendered last frame; a change forces a redraw. */
     ui_view_id_t last_view = UI_VIEW_SEQ;
     for (;;) {
+        /* Absent-panel recovery: no-op while the display is present, one
+         * sparse probe otherwise. A (re)attached panel comes back with blank
+         * RAM, so it forces a full redraw/flush. */
+        if (i2c_u8g2_service()) {
+            s_force_redraw = true;
+        }
         /* Coalesced arp re-emit: setters mark the arp dirty, at most one full
          * re-emit per frame lands here, collapsing fast encoder edits. */
         arp_core_service();

@@ -1,0 +1,14 @@
+menu "DEV Serial Harness"
+
+    config DEV_SERIAL_HARNESS
+        bool "Serial test harness (scripted control channel on UART0)"
+        default n
+        help
+            Compiles in the agent/script-drivable test harness: a low-priority
+            command task reading line commands from UART0 (H> prefix) to
+            inject input events, drive the transport and dump state, for the
+            headless test board (docs/plans/2026-08-11-serial-test-harness.md
+            in the overlay repo). No harness code is compiled in when off;
+            the playable firmware is unaffected.
+
+endmenu

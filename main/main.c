@@ -43,6 +43,9 @@
 #include "radio_manager.h"
 #include "live_play.h"
 #endif
+#if CONFIG_DEV_SERIAL_HARNESS
+#include "harness.h"
+#endif
 
 #ifndef CONFIG_AMYSYNTH_INPUT_DIAGNOSTICS
 #define CONFIG_AMYSYNTH_INPUT_DIAGNOSTICS 0
@@ -190,6 +193,36 @@ static void button_handler_task(void *pvParameters)
         }
     }
 }
+
+static void encoder_process_steps(long steps);
+
+#if CONFIG_DEV_SERIAL_HARNESS
+/* Harness injection hooks (see harness.h for the contract). The button hook
+ * posts to the SAME queue as the physical callback below - same message,
+ * same drop-on-full policy, same consumer task - so injected events are
+ * indistinguishable at the seam. */
+static void harness_inject_button_hook(int button_id, harness_btn_act_t act)
+{
+    if (button_id < 0 || button_id >= MY_BUTTON_MAX || s_button_queue == NULL) {
+        return;
+    }
+    button_event_t ev;
+    switch (act) {
+        case HARNESS_BTN_DOWN:  ev = BUTTON_PRESS_DOWN;      break;
+        case HARNESS_BTN_UP:    ev = BUTTON_PRESS_UP;        break;
+        case HARNESS_BTN_CLICK: ev = BUTTON_SINGLE_CLICK;    break;
+        case HARNESS_BTN_LONG:  ev = BUTTON_LONG_PRESS_START; break;
+        default: return;
+    }
+    button_msg_t msg = { .id = (my_button_id_t)button_id, .event = ev };
+    (void)xQueueSend(s_button_queue, &msg, 0);
+}
+
+static void harness_inject_encoder_hook(long steps)
+{
+    encoder_process_steps(steps);
+}
+#endif
 
 // Thin enqueue shim on the esp_timer task. Inline fallback only if the queue
 // was never created — never on a full queue, since that would reorder presses
@@ -570,6 +603,69 @@ static void dispatch_button_event(my_button_id_t button_id, button_event_t event
     }
 }
 
+/* Route accumulated encoder steps to the active view. Extracted from the
+ * poll loop so the serial harness can drive the identical chain; callers run
+ * on Core 0 at input-dispatch priority (encoder_task, or the harness command
+ * task on a board with no physical encoder - the two never legitimately run
+ * concurrently, see harness.h). */
+static void encoder_process_steps(long steps)
+{
+    /* Same precedence resolver as the buttons: the overlays
+     * (FILTER>LFO>STEPEDIT>GRAPH>MENU) capture the encoder outright;
+     * below them the mode screens dispatch by view, with the
+     * patch-hold / drum-select modifiers applied. */
+    ui_view_id_t v = synth_ui_active_view();
+    switch (v) {
+        case UI_VIEW_FILTER:   synth_ui_filter_handle_encoder(steps);   return;
+        case UI_VIEW_LFO:      synth_ui_lfo_handle_encoder(steps);      return;
+        case UI_VIEW_STEPEDIT: synth_ui_stepedit_handle_encoder(steps); return;
+        case UI_VIEW_GRAPH:    synth_ui_graph_handle_encoder(steps);    return;
+        case UI_VIEW_MENU:     synth_ui_menu_handle_encoder(steps);     return;
+        default:               break;  /* fall through to the mode-tail */
+    }
+
+    if (s_patch_held) {
+        // Patch hold+turn cycles the active screen's patch; on a drum
+        // layer that is the SELECTED track's own patch.
+        if (v == UI_VIEW_DRONE || v == UI_VIEW_DRONE_VIS) {
+            synth_ui_drone_cycle_patch((int)steps);
+        } else if (v == UI_VIEW_DRONE_STD) {
+            synth_ui_drone_std_cycle_patch((int)steps);
+        } else if (v == UI_VIEW_ARP) {
+            synth_ui_arp_cycle_patch((int)steps);
+        } else if (sequencer_core_get_layer_type(seq_get_active_layer_idx())
+                   == SEQ_LAYER_DRUM) {
+            synth_ui_cycle_drum_patch((int)steps);
+        } else {
+            synth_ui_cycle_melodic_patch((int)steps);
+        }
+    } else if (v == UI_VIEW_DRONE || v == UI_VIEW_DRONE_VIS) {
+        synth_ui_drone_handle_encoder(steps);
+    } else if (v == UI_VIEW_DRONE_STD) {
+        synth_ui_drone_std_handle_encoder(steps);
+    } else if (s_drum_select_held) {
+        // Pitch-edit hold: transpose the selected track (drum or
+        // melodic).
+        synth_ui_adjust_track_note((int)steps);
+    } else if (v == UI_VIEW_ARP) {
+        synth_ui_arp_handle_encoder(steps);
+    } else if (v == UI_VIEW_PROG) {
+        synth_ui_prog_handle_encoder((int)steps);
+    } else if (v == UI_VIEW_TRACKOPTS) {
+        synth_ui_trackopts_handle_encoder((int)steps);
+#if CONFIG_SYNTH_DEV_MENU
+    } else if (v == UI_VIEW_DEV) {
+        synth_ui_dev_handle_encoder((int)steps);
+#endif
+#if CONFIG_SYNTH_CUSTOM_FM
+    } else if (v == UI_VIEW_FM) {
+        synth_ui_fm_handle_encoder((int)steps);
+#endif
+    } else {
+        synth_ui_handle_encoder(steps);
+    }
+}
+
 static void encoder_task(void *pvParameters)
 {
     rotary_encoder_handle_t enc = (rotary_encoder_handle_t)pvParameters;
@@ -590,65 +686,11 @@ static void encoder_task(void *pvParameters)
             enc_accum += delta;
             long steps = enc_accum / 2; // require 2 raw ticks per action
             enc_accum %= 2;
-            if (steps == 0) goto next_poll;
-
-            /* Same precedence resolver as the buttons: the overlays
-             * (FILTER>LFO>STEPEDIT>GRAPH>MENU) capture the encoder outright;
-             * below them the mode screens dispatch by view, with the
-             * patch-hold / drum-select modifiers applied. */
-            ui_view_id_t v = synth_ui_active_view();
-            switch (v) {
-                case UI_VIEW_FILTER:   synth_ui_filter_handle_encoder(steps);   goto next_poll;
-                case UI_VIEW_LFO:      synth_ui_lfo_handle_encoder(steps);      goto next_poll;
-                case UI_VIEW_STEPEDIT: synth_ui_stepedit_handle_encoder(steps); goto next_poll;
-                case UI_VIEW_GRAPH:    synth_ui_graph_handle_encoder(steps);    goto next_poll;
-                case UI_VIEW_MENU:     synth_ui_menu_handle_encoder(steps);     goto next_poll;
-                default:               break;  /* fall through to the mode-tail */
-            }
-
-            if (s_patch_held) {
-                // Patch hold+turn cycles the active screen's patch; on a drum
-                // layer that is the SELECTED track's own patch.
-                if (v == UI_VIEW_DRONE || v == UI_VIEW_DRONE_VIS) {
-                    synth_ui_drone_cycle_patch((int)steps);
-                } else if (v == UI_VIEW_DRONE_STD) {
-                    synth_ui_drone_std_cycle_patch((int)steps);
-                } else if (v == UI_VIEW_ARP) {
-                    synth_ui_arp_cycle_patch((int)steps);
-                } else if (sequencer_core_get_layer_type(seq_get_active_layer_idx())
-                           == SEQ_LAYER_DRUM) {
-                    synth_ui_cycle_drum_patch((int)steps);
-                } else {
-                    synth_ui_cycle_melodic_patch((int)steps);
-                }
-            } else if (v == UI_VIEW_DRONE || v == UI_VIEW_DRONE_VIS) {
-                synth_ui_drone_handle_encoder(steps);
-            } else if (v == UI_VIEW_DRONE_STD) {
-                synth_ui_drone_std_handle_encoder(steps);
-            } else if (s_drum_select_held) {
-                // Pitch-edit hold: transpose the selected track (drum or
-                // melodic).
-                synth_ui_adjust_track_note((int)steps);
-            } else if (v == UI_VIEW_ARP) {
-                synth_ui_arp_handle_encoder(steps);
-            } else if (v == UI_VIEW_PROG) {
-                synth_ui_prog_handle_encoder((int)steps);
-            } else if (v == UI_VIEW_TRACKOPTS) {
-                synth_ui_trackopts_handle_encoder((int)steps);
-#if CONFIG_SYNTH_DEV_MENU
-            } else if (v == UI_VIEW_DEV) {
-                synth_ui_dev_handle_encoder((int)steps);
-#endif
-#if CONFIG_SYNTH_CUSTOM_FM
-            } else if (v == UI_VIEW_FM) {
-                synth_ui_fm_handle_encoder((int)steps);
-#endif
-            } else {
-                synth_ui_handle_encoder(steps);
+            if (steps != 0) {
+                encoder_process_steps(steps);
             }
         }
 
-next_poll:
         vTaskDelay(pdMS_TO_TICKS(20));  // Poll at 50Hz
     }
 }
@@ -957,6 +999,18 @@ void app_main(void)
         ESP_LOGI(TAG, "[startup] after my_buttons_init");
         my_buttons_register_cb(main_button_event_cb, NULL);
     }
+
+#if CONFIG_DEV_SERIAL_HARNESS
+    // Serial harness last among input paths: hooks need the button queue
+    // above; degrade to "harness absent" on any failure.
+    static const harness_hooks_t s_harness_hooks = {
+        .inject_button        = harness_inject_button_hook,
+        .inject_encoder_steps = harness_inject_encoder_hook,
+    };
+    if (harness_init(&s_harness_hooks) != ESP_OK) {
+        ESP_LOGW(TAG, "serial harness init failed; continuing without it");
+    }
+#endif
 
     // Defer rotary encoder init to a task to avoid early-boot conflicts.
     xTaskCreatePinnedToCore(encoder_init_task,

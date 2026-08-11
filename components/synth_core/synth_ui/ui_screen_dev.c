@@ -71,6 +71,13 @@ static void pcm_mode_adjust(int delta, int arg)
     sequencer_core_set_drum_pcm_mode(0, (uint8_t)arg, (uint8_t)m);
 }
 
+/* One-shot sequencer state dump to the console (seq_core_dump.c). */
+static void seqdump_fire(int arg)
+{
+    (void)arg;
+    sequencer_core_dump_state();
+}
+
 /* Readouts. */
 static void oom_fmt(char *buf, size_t n, int arg)
 {
@@ -252,6 +259,7 @@ static const dev_item_t s_root_items[] = {
     { .label = "CPU c0/c1",   .fmt = cpu_fmt },
     { .label = "Status bar",  .fmt = heapbar_fmt, .fire = heapbar_fire },
     { .label = "Drop bar",    .fmt = dropbar_fmt, .fire = dropbar_fire },
+    { .label = "Dump seq",    .fire = seqdump_fire },
 };
 static const dev_page_t s_page_root = { "", s_root_items,
                                         sizeof s_root_items / sizeof *s_root_items };

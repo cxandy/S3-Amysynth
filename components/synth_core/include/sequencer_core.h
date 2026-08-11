@@ -207,6 +207,14 @@ typedef enum {
 void              sequencer_core_set_drum_engine(seq_drum_engine_t engine);
 seq_drum_engine_t sequencer_core_get_drum_engine(void);
 
+/* ── Sequencer state dump (DEV menu) ──
+ * One-shot console print of every layer's track config plus step exceptions,
+ * for reading runtime-tuned values (drum pitch/preset) back off the device.
+ * Obligations: UI/menu task only (reads live layer state, which that task
+ * owns; never render path or ISR). Blocks the caller for the console write
+ * of a few dozen lines. Compiled only with CONFIG_SYNTH_DEV_MENU. */
+void sequencer_core_dump_state(void);
+
 /* ── Drum per-track PCM preset override ──
  * PCM mode defaults to SEQ_DRUM_PCM_PRESET[track]; this lets a runtime-recorded
  * sample (custompatches/sample_rec) replace one track's preset without a

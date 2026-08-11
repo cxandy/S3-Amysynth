@@ -23,7 +23,9 @@ endif()
 # reference sites are guarded by #if CONFIG_SYNTH_DEV_MENU.
 set(dev_srcs)
 if(CONFIG_SYNTH_DEV_MENU)
-    list(APPEND dev_srcs "synth_ui/ui_screen_dev.c")
+    list(APPEND dev_srcs
+        "synth_ui/ui_screen_dev.c"
+        "sequencer_core/seq_core_dump.c")
 endif()
 
 idf_component_register(SRCS "live_play.c" "amy_helpers.c" "amy_fx.c" "arp_core.c" "quantizer.c" "graph_popup_amy.c" "voice_config.c"
@@ -67,7 +69,7 @@ idf_component_register(SRCS "live_play.c" "amy_helpers.c" "amy_fx.c" "arp_core.c
                        INCLUDE_DIRS "include" "sequencer_core" "project"
                        PRIV_INCLUDE_DIRS "."
                        REQUIRES u8g2 display amy
-                       PRIV_REQUIRES seq_clamp project_store usb_audio wireless diagnostics)
+                       PRIV_REQUIRES seq_clamp project_store usb_audio wireless diagnostics esp_app_format)
 # -Wstack-usage is GCC-only; clang rejects the unknown warning option under -Werror.
 if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
     target_compile_options(${COMPONENT_LIB} PRIVATE "-Wstack-usage=1024")

@@ -55,7 +55,9 @@ static const uint16_t SEQ_DRUM_DEFAULT_PATCH[SEQ_TRACKS] = {
     220,  /* perc  - DX7 COW BELL accent                  */
 };
 
-/* Role-based default pitches: pitch IS timbre for these tuned patches. */
+/* Role-based default pitches: pitch IS timbre for these tuned patches.
+ * Layer-init only - selecting a drum bank re-seeds pitches from that bank's
+ * ear-tuned notes[] (s_drum_banks, seq_core_synth.c). */
 static const uint8_t SEQ_DRUM_DEFAULT_NOTE[SEQ_TRACKS] = {
     39,   /* kick  - Eb2, 808-KIK root      */
     45,   /* snare - A2,  808-SNR root      */

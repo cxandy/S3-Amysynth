@@ -39,29 +39,35 @@ static const patch_domain_t s_drum_domain = {
 /* ── Drum sample banks (menu "Drum Bank" selector) ──
  * One row per selectable PCM bank: the compiled-in 808 ROM bank plus the
  * gamma9001 banks streamed from the 'drums' flash partition. first/count are
- * PCM preset ranges; roles[] seeds the four tracks on selection. Preset numbers
+ * PCM preset ranges; roles[] and notes[] seed the four tracks on selection -
+ * a bank pick is a full kit change, sounds AND pitches. Preset numbers
  * mirror the vendored amy/src/pcm_gamma9001.h map (256=909BD .. 391=Narrow) -
  * re-verify after any AMY re-vendor. Banks are contiguous in preset space, so
  * per-track cycling after a seed stays inside the bank until the user walks
- * out. */
+ * out (cycled presets keep the role's note).
+ * notes[] values are per-bank ear-tuned defaults; until a bank has had its
+ * tuning pass they carry the legacy role defaults (SEQ_DRUM_DEFAULT_NOTE,
+ * tuned for the 808 ROM kit). Editing a kit = touching one row: swap a
+ * role's preset number and/or its note here. */
 typedef struct {
     const char *name;
     uint16_t    first, count;
     uint16_t    roles[SEQ_TRACKS];
+    uint8_t     notes[SEQ_TRACKS];
 } seq_drum_bank_t;
 
 #define SEQ_GAMMA_PCM_FIRST 256u
 #define SEQ_GAMMA_PCM_COUNT 136u
 
 static const seq_drum_bank_t s_drum_banks[] = {
-    { "808",   0,   19, {   2,  12,   9,   3} },  /* ROM bank (gamma808)       */
-    { "909",   256, 17, { 256, 268, 260, 258} },  /* BD, SD, HH, CLAP          */
-    { "Linn",  273, 10, { 273, 280, 277, 279} },  /* Kick, Snare, HHC, RimShot */
-    { "MR12",  283, 4,  { 285, 286, 283, 284} },  /* Kick, Snare, HHC, HHO     */
-    { "SynFX", 287, 24, { 294, 289, 306, 302} },  /* BD04, Static, Click, Boink*/
-    { "Power", 311, 20, { 311, 314, 318, 315} },  /* RealKick, Snare, HH, Clap */
-    { "Perc",  331, 44, { 350, 351, 352, 335} },  /* NoiceKick, OldSnr, Shaker */
-    { "Misc",  375, 17, { 388, 381, 376, 379} },  /* BassRec, Silver, Shkr, Lsr*/
+    { "808",   0,   19, {   2,  12,   9,   3}, { 39, 45, 53, 82} },  /* ROM bank (gamma808)       */
+    { "909",   256, 17, { 256, 268, 260, 258}, { 39, 45, 53, 82} },  /* BD, SD, HH, CLAP          */
+    { "Linn",  273, 10, { 273, 280, 277, 279}, { 39, 45, 53, 82} },  /* Kick, Snare, HHC, RimShot */
+    { "MR12",  283, 4,  { 285, 286, 283, 284}, { 39, 45, 53, 82} },  /* Kick, Snare, HHC, HHO     */
+    { "SynFX", 287, 24, { 294, 289, 306, 302}, { 39, 45, 53, 82} },  /* BD04, Static, Click, Boink*/
+    { "Power", 311, 20, { 311, 314, 318, 315}, { 39, 45, 53, 82} },  /* RealKick, Snare, HH, Clap */
+    { "Perc",  331, 44, { 350, 351, 352, 335}, { 39, 45, 53, 82} },  /* NoiceKick, OldSnr, Shaker */
+    { "Misc",  375, 17, { 388, 381, 376, 379}, { 39, 45, 53, 82} },  /* BassRec, Silver, Shkr, Lsr*/
 };
 #define SEQ_DRUM_BANK_COUNT ((uint8_t)(sizeof(s_drum_banks) / sizeof(s_drum_banks[0])))
 
@@ -905,13 +911,20 @@ void sequencer_core_set_drum_source(uint8_t idx)
     s_drum_bank = bank;
     const seq_drum_bank_t *b = &s_drum_banks[bank];
 
-    /* Seed every drum layer's tracks with the bank's role defaults.
-     * set_drum_pcm_preset live-reloads each osc when PCM is already active;
-     * the engine switch below covers the Synth->PCM case. */
+    /* Seed every drum layer's tracks with the bank's role defaults - preset
+     * AND pitch (the bank's notes[] are ear-tuned per kit; keeping the old
+     * track pitch across a kit change mispitches samples whose useful range
+     * differs, e.g. bass drums seeded inaudibly low). set_drum_pcm_preset
+     * live-reloads each osc when PCM is already active; the engine switch
+     * below covers the Synth->PCM case. set_track_midi_note is the full
+     * user-edit path (clamp, step rewrite, live re-emit, preview), so a bank
+     * pick also auditions the new kit at its seeded pitches. Preset first:
+     * the note preview must sound the new sample. */
     for (uint8_t i = 0; i < s_num_layers; i++) {
         if (s_layers[i].type != SEQ_LAYER_DRUM) continue;
         for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
             sequencer_core_set_drum_pcm_preset(i, t, b->roles[t]);
+            sequencer_core_set_track_midi_note(i, t, b->notes[t]);
         }
     }
     sequencer_core_set_drum_engine(SEQ_DRUM_PCM);

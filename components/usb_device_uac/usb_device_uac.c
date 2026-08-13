@@ -57,7 +57,6 @@ typedef struct {
     uint32_t current_sample_rate;                                // Current resolution, update on format change
     TaskHandle_t spk_task_handle;
     size_t spk_bytes_per_ms;
-    size_t mic_bytes_per_ms;
     bool spk_active;
     bool mic_active;
 } uac_device_t;
@@ -349,7 +348,6 @@ bool tud_audio_set_itf_cb(uint8_t rhport, tusb_control_request_t const *p_reques
     if (s_uac_device->mic_itf_num == itf && alt != 0) {
         s_uac_device->mic_resolution = mic_resolutions_per_format[alt - 1];
         s_uac_device->mic_active = true;
-        s_uac_device->mic_bytes_per_ms = s_uac_device->current_sample_rate / 1000 * MIC_CHANNEL_NUM * s_uac_device->mic_resolution / 8;
         // LOCAL EDIT (S3-Amysynth): prefill the EP-IN FIFO to its flow-control
         // setpoint (half depth) at stream start. TinyUSB's EP_IN_FLOW_CONTROL
         // sizes packets to steer the fill toward depth/2, but corrections are
@@ -456,16 +454,25 @@ esp_err_t uac_device_get_pull_stats(uint32_t out[4], int64_t *t_us)
 // races, escalating to ~15/s for ~0.5 s at every tick-vs-SOF phase
 // crossing (~29 s beat), where the EP FIFO collapsed below one packet and
 // shipped audible zero-length packets. Pulling in the consume context
-// removes the second clock from the supply path entirely; the residual
-// device-vs-host rate offset lands in the application's own buffer, which
-// input_cb already zero-pads and accounts for.
+// removes the second clock from the supply path entirely.
+//
+// The pull is sized by EP FIFO room, not a fixed nominal chunk, and
+// input_cb returns only the audio it actually has (short reads are
+// normal, not underruns). This makes the endpoint a true asynchronous
+// source: available audio rides the EP FIFO high, TinyUSB's EP-IN flow
+// control converts the fill level into 47/48/49-frame packets (legal
+// small/large virtual frame packets, ~+-2000 ppm of rate authority), and
+// the wire carries the device's real sample rate with no host-visible
+// change. No producer/consumer clock-rate offset is ever spliced out or
+// accumulated - at any offset magnitude, on any board, with any host. A
+// zero-length packet remains possible only when the device genuinely has
+// no audio to send.
 bool tud_audio_tx_done_pre_load_cb(uint8_t rhport, uint8_t itf, uint8_t ep_in, uint8_t cur_alt_setting)
 {
     (void)rhport;
     (void)itf;
     (void)ep_in;
     (void)cur_alt_setting;
-    size_t bytes_require = MIC_INTERVAL_MS * s_uac_device->mic_bytes_per_ms;
 
 #if CONFIG_AMYSYNTH_DROPOUT_TS
     s_pull_preload++;
@@ -476,8 +483,9 @@ bool tud_audio_tx_done_pre_load_cb(uint8_t rhport, uint8_t itf, uint8_t ep_in, u
     }
 
     tu_fifo_t *sw_in_fifo = tud_audio_get_ep_in_ff();
-    uint16_t fifo_remained = tu_fifo_remaining(sw_in_fifo);
-    if (fifo_remained < bytes_require) {
+    uint16_t room = tu_fifo_remaining(sw_in_fifo);
+    room -= room % CFG_TUD_AUDIO_FUNC_1_FORMAT_1_FRAME_SZ_RX;   /* whole frames only */
+    if (room == 0) {
 #if CONFIG_AMYSYNTH_DROPOUT_TS
         s_pull_skip_room++;
 #endif
@@ -485,7 +493,7 @@ bool tud_audio_tx_done_pre_load_cb(uint8_t rhport, uint8_t itf, uint8_t ep_in, u
     }
 
     size_t bytes_read = 0;
-    esp_err_t ret = s_uac_device->user_cfg.input_cb((uint8_t *)s_uac_device->mic_buf, bytes_require,
+    esp_err_t ret = s_uac_device->user_cfg.input_cb((uint8_t *)s_uac_device->mic_buf, room,
                                                     &bytes_read, s_uac_device->user_cfg.cb_ctx);
     if (ret == ESP_OK && bytes_read > 0) {
         tud_audio_write((void *)s_uac_device->mic_buf, bytes_read);

@@ -23,6 +23,7 @@
 #include "sequencer_core.h"
 #include "dropout_stats.h"
 #include "render_stats.h"
+#include "usb_device_uac.h"
 
 static const char *TAG = "harness";
 
@@ -162,6 +163,21 @@ static void handle_line(char *line)
     else if (strcmp(line, "sys.build") == 0) cmd_sys_build();
     else if (strcmp(line, "st.heap") == 0)   cmd_st_heap();
     else if (strcmp(line, "st.drop") == 0)   cmd_st_drop();
+    else if (strcmp(line, "st.uacpull") == 0) {
+#if CONFIG_AMYSYNTH_DROPOUT_TS
+        uint32_t c[4];
+        int64_t t_us;
+        if (uac_device_get_pull_stats(c, &t_us) == ESP_OK) {
+            REPLY("ok t_us=%lld preload=%" PRIu32 " skip_room=%" PRIu32
+                  " pull=%" PRIu32 " bytes=%" PRIu32,
+                  (long long)t_us, c[0], c[1], c[2], c[3]);
+        } else {
+            REPLY("err pull stats unavailable");
+        }
+#else
+        REPLY("err dropout ts not compiled in");
+#endif
+    }
     else if (strcmp(line, "st.dropts") == 0) {
 #if CONFIG_AMYSYNTH_DROPOUT_TS
         cmd_st_dropts();

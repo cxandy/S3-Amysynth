@@ -46,6 +46,24 @@ typedef struct  {
  */
 esp_err_t uac_device_init(uac_device_config_t *config);
 
+/**
+ * @brief LOCAL EDIT (S3-Amysynth): mic pull-cadence diagnostics.
+ *
+ * Snapshot of the EP-IN supply path counters, for attributing a consumption
+ * deficit to its layer (frames that never reached the pre-load callback vs
+ * FIFO-room gate skips vs executed pulls).
+ *
+ * Obligations: callable from any task; out and t_us non-NULL.
+ * Guarantees: with CONFIG_AMYSYNTH_DROPOUT_TS compiled in, fills
+ * out[0..3] = {pre-load callback invocations, FIFO-room gate skips,
+ * executed pulls, bytes pulled} cumulative since boot, *t_us = esp_timer
+ * microseconds at the read, and returns ESP_OK. Counters have a single
+ * writer (TinyUSB task); aligned 32-bit reads never tear, so rates
+ * computed between two snapshots are exact to +-1 event. Without the
+ * config flag: returns ESP_ERR_NOT_SUPPORTED and writes nothing.
+ */
+esp_err_t uac_device_get_pull_stats(uint32_t out[4], int64_t *t_us);
+
 #ifdef __cplusplus
 }
 #endif

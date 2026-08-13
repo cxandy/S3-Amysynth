@@ -417,6 +417,36 @@ bool tud_audio_rx_done_post_read_cb(uint8_t rhport, uint16_t n_bytes_received, u
     return true;
 }
 
+#if CONFIG_AMYSYNTH_DROPOUT_TS
+// LOCAL EDIT (S3-Amysynth): pull-cadence counters (see
+// uac_device_get_pull_stats() contract in the header). Single writer:
+// TinyUSB task, bare increments on the per-frame path.
+static volatile uint32_t s_pull_preload;    // pre-load callback invocations
+static volatile uint32_t s_pull_skip_room;  // FIFO-room gate skips
+static volatile uint32_t s_pull_count;      // executed pulls
+static volatile uint32_t s_pull_bytes;      // bytes pulled
+
+esp_err_t uac_device_get_pull_stats(uint32_t out[4], int64_t *t_us)
+{
+    if (out == NULL || t_us == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    out[0] = s_pull_preload;
+    out[1] = s_pull_skip_room;
+    out[2] = s_pull_count;
+    out[3] = s_pull_bytes;
+    *t_us = esp_timer_get_time();
+    return ESP_OK;
+}
+#else
+esp_err_t uac_device_get_pull_stats(uint32_t out[4], int64_t *t_us)
+{
+    (void)out;
+    (void)t_us;
+    return ESP_ERR_NOT_SUPPORTED;
+}
+#endif
+
 // LOCAL EDIT (S3-Amysynth): the mic chunk is pulled HERE, in TinyUSB-task
 // context - the host SOF clock domain - instead of being produced by a
 // FreeRTOS-tick-clocked task and handed over through a one-slot mailbox.
@@ -437,6 +467,10 @@ bool tud_audio_tx_done_pre_load_cb(uint8_t rhport, uint8_t itf, uint8_t ep_in, u
     (void)cur_alt_setting;
     size_t bytes_require = MIC_INTERVAL_MS * s_uac_device->mic_bytes_per_ms;
 
+#if CONFIG_AMYSYNTH_DROPOUT_TS
+    s_pull_preload++;
+#endif
+
     if (!s_uac_device->mic_active || s_uac_device->user_cfg.input_cb == NULL) {
         return true;
     }
@@ -444,6 +478,9 @@ bool tud_audio_tx_done_pre_load_cb(uint8_t rhport, uint8_t itf, uint8_t ep_in, u
     tu_fifo_t *sw_in_fifo = tud_audio_get_ep_in_ff();
     uint16_t fifo_remained = tu_fifo_remaining(sw_in_fifo);
     if (fifo_remained < bytes_require) {
+#if CONFIG_AMYSYNTH_DROPOUT_TS
+        s_pull_skip_room++;
+#endif
         return true;
     }
 
@@ -452,6 +489,10 @@ bool tud_audio_tx_done_pre_load_cb(uint8_t rhport, uint8_t itf, uint8_t ep_in, u
                                                     &bytes_read, s_uac_device->user_cfg.cb_ctx);
     if (ret == ESP_OK && bytes_read > 0) {
         tud_audio_write((void *)s_uac_device->mic_buf, bytes_read);
+#if CONFIG_AMYSYNTH_DROPOUT_TS
+        s_pull_count++;
+        s_pull_bytes += (uint32_t)bytes_read;
+#endif
     }
 
     return true;

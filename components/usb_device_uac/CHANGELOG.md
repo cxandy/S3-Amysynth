@@ -1,5 +1,14 @@
 # ChangeLog
 
+## v1.3.1 (2026-5-25)
+
+* Fix TinyUSB RHPort high-speed configuration for ESP32-S31: use RHPORT0 instead of RHPORT1 (RHPORT1 is only for ESP32-P4).
+
+## v1.3.0 (2026-5-15)
+
+* Add configurable bit resolution: 16-bit, 24-in-24 (packed), 24-in-32, and 32-bit.
+* Support ESP32-S31 and ESP32-H4
+
 ## v1.2.3 (2026-3-5)
 
 * Fix Windows multi-channel UAC enumeration (Code 10) by changing EP size padding in `tusb_config_uac.h` from fixed `+4` to frame-aligned `+FRAME_SZ`.

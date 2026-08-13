@@ -14,7 +14,10 @@ idf_component_register(
     INCLUDE_DIRS "src"
     REQUIRES esp_timer esp_driver_uart esp_driver_i2s esp_driver_i2c esp_driver_gpio espressif__tinyusb
 )
-
+option(AMYSYNTH_AMY_O3 "Compile the amy component at -O3" OFF)
+if(AMYSYNTH_AMY_O3)
+    target_compile_options(${COMPONENT_LIB} PRIVATE -O3)
+endif()
 # Profiling mode (Kconfig: AMY_PROFILE_MODE). FULL maps to AMY's upstream
 # AMY_DEBUG (all tags). COARSE is a local addition that compiles only the outer
 # render-stage tags (see AMY-EDITS.md). OFF defines neither and the macros are

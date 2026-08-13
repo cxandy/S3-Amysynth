@@ -25,7 +25,7 @@ option(AMYSYNTH_LTO "Compile the hot components with GCC LTO" ON)
 # "one"/"none" compile the whole program as a single ltrans unit, widening
 # cross-TU inlining scope at the cost of link time. A/B via
 # -DAMYSYNTH_LTO_PARTITION=one + full clean; ELF codegen diff is the judge.
-set(AMYSYNTH_LTO_PARTITION "max" CACHE STRING "GCC -flto-partition mode (max|one|none|balanced)")
+set(AMYSYNTH_LTO_PARTITION "one" CACHE STRING "GCC -flto-partition mode (max|one|none|balanced)")
 
 # -ffat-lto-objects keeps full native code alongside the LTO IR so plain
 # ar/nm/objdump (and asmdiff object mode) keep working on the archives.

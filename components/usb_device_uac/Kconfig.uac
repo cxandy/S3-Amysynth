@@ -64,6 +64,23 @@ menu "USB Device UAC"
         help
             MIC: The interval of writing data to UAC device, in ms. Batch fetching data helps reduce latency at the slave end. And make MIC FIFO to accommodate data of size n milliseconds.
 
+    # LOCAL EDIT (S3-Amysynth): the MIC EP-IN software FIFO depth was
+    # hardwired to (UAC_MIC_INTERVAL_MS + 1) packets - too shallow for
+    # TinyUSB's EP-IN flow control (see tusb_config_uac.h). Expose it.
+    config UAC_MIC_FIFO_DEPTH_MS
+        int "MIC EP-IN software FIFO depth (ms)"
+        default 10
+        range 4 64
+        depends on UAC_MIC_CHANNEL_NUM != 0
+        help
+            Depth of the TinyUSB endpoint-IN software FIFO in milliseconds of
+            audio. TinyUSB's flow control steers the fill level toward HALF
+            this depth; the room-sized supply keeps it near full, so the
+            depth bounds both the stream-open bridge and the jitter margin.
+            Constraints: TinyUSB flow control needs at least 4 packets
+            (4 ms). Larger = more robust, more latent; smaller = tighter,
+            riskier.
+
     config UAC_SPK_NEW_PLAY_INTERVAL
         int "UAC SPK new play interval(ms)"
         default 100

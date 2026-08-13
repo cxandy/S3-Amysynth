@@ -51,7 +51,18 @@ extern "C" {
 // MIC IN EP (device-to-host = TX): keep EP size aligned to one complete audio frame.
 #define CFG_TUD_AUDIO_FUNC_1_FORMAT_1_EP_SZ_IN    ((CFG_TUD_AUDIO_FUNC_1_MAX_SAMPLE_RATE / 1000 * CFG_TUD_AUDIO_FUNC_1_FORMAT_1_FRAME_SZ_TX) + CFG_TUD_AUDIO_FUNC_1_FORMAT_1_FRAME_SZ_TX)
 
-#define CFG_TUD_AUDIO_FUNC_1_EP_IN_SW_BUF_SZ      CFG_TUD_AUDIO_FUNC_1_FORMAT_1_EP_SZ_IN * (MIC_INTERVAL_MS + 1)
+// LOCAL EDIT (S3-Amysynth): the EP-IN software FIFO depth is a tunable
+// (CONFIG_UAC_MIC_FIFO_DEPTH_MS, Kconfig.uac) instead of the original
+// hardwired (MIC_INTERVAL_MS + 1) packets. The original sizing violates
+// TinyUSB's EP-IN flow-control precondition ("FIFO size of at least
+// 4*Navg") at small intervals and leaves no jitter margin for the
+// room-sized supply task.
+#ifdef CONFIG_UAC_MIC_FIFO_DEPTH_MS
+#define UAC_MIC_FIFO_DEPTH_MS   CONFIG_UAC_MIC_FIFO_DEPTH_MS
+#else
+#define UAC_MIC_FIFO_DEPTH_MS   10
+#endif
+#define CFG_TUD_AUDIO_FUNC_1_EP_IN_SW_BUF_SZ      CFG_TUD_AUDIO_FUNC_1_FORMAT_1_EP_SZ_IN * UAC_MIC_FIFO_DEPTH_MS
 #define CFG_TUD_AUDIO_FUNC_1_EP_IN_SZ_MAX         CFG_TUD_AUDIO_FUNC_1_FORMAT_1_EP_SZ_IN  // Maximum EP IN size for all AS alternate settings used
 
 // EP and buffer size - for isochronous EP´s, the buffer and EP size are equal (different sizes would not make sense)

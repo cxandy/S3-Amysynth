@@ -46,6 +46,26 @@ typedef struct  {
  */
 esp_err_t uac_device_init(uac_device_config_t *config);
 
+/**
+ * @brief LOCAL EDIT (S3-Amysynth): mic supply-path diagnostics.
+ *
+ * Snapshot of the EP-IN supply counters, for attributing a consumption
+ * deficit to its layer.
+ *
+ * Obligations: callable from any task; out and t_us non-NULL.
+ * Guarantees: with CONFIG_AMYSYNTH_DROPOUT_TS compiled in, fills
+ * out[0..3] = {ISO IN service intervals completed (incremented in the
+ * transfer ISR - rate vs 1000/s measures missed service intervals),
+ * mic-task cycles skipped for lack of whole-frame FIFO room, executed
+ * input_cb pulls, bytes pulled} cumulative since boot, *t_us = esp_timer
+ * microseconds at the read, and returns ESP_OK. Each counter has a single
+ * writer (out[0]: USB ISR; out[1..3]: usb_mic_task); aligned 32-bit reads
+ * never tear, so rates computed between two snapshots are exact to +-1
+ * event. Without the config flag: returns ESP_ERR_NOT_SUPPORTED and
+ * writes nothing.
+ */
+esp_err_t uac_device_get_pull_stats(uint32_t out[4], int64_t *t_us);
+
 #ifdef __cplusplus
 }
 #endif

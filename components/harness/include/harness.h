@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include "sdkconfig.h"
 #include "esp_err.h"
 
 #ifdef __cplusplus
@@ -52,8 +53,18 @@ typedef struct {
  * pass a pointer to static storage). Not render-path or ISR safe.
  * Guarantees: on failure returns an error with nothing running and no UART
  * driver installed - the rest of the firmware is unaffected (degrade =
- * harness absent, never fatal). */
+ * harness absent, never fatal). With CONFIG_DEV_SERIAL_HARNESS off, returns
+ * ESP_OK having done nothing: "harness absent" is the success case there, so
+ * callers need no #if of their own and the hooks they pass fold away. */
+#if CONFIG_DEV_SERIAL_HARNESS
 esp_err_t harness_init(const harness_hooks_t *hooks);
+#else
+static inline esp_err_t harness_init(const harness_hooks_t *hooks)
+{
+    (void)hooks;
+    return ESP_OK;
+}
+#endif
 
 #ifdef __cplusplus
 }

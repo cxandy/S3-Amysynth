@@ -43,9 +43,7 @@
 #include "radio_manager.h"
 #include "live_play.h"
 #endif
-#if CONFIG_DEV_SERIAL_HARNESS
 #include "harness.h"
-#endif
 
 #ifndef CONFIG_AMYSYNTH_INPUT_DIAGNOSTICS
 #define CONFIG_AMYSYNTH_INPUT_DIAGNOSTICS 0
@@ -196,7 +194,6 @@ static void button_handler_task(void *pvParameters)
 
 static void encoder_process_steps(long steps);
 
-#if CONFIG_DEV_SERIAL_HARNESS
 /* Harness injection hooks (see harness.h for the contract). The button hook
  * posts to the SAME queue as the physical callback below - same message,
  * same drop-on-full policy, same consumer task - so injected events are
@@ -222,7 +219,6 @@ static void harness_inject_encoder_hook(long steps)
 {
     encoder_process_steps(steps);
 }
-#endif
 
 // Thin enqueue shim on the esp_timer task. Inline fallback only if the queue
 // was never created — never on a full queue, since that would reorder presses
@@ -1007,9 +1003,9 @@ void app_main(void)
         my_buttons_register_cb(main_button_event_cb, NULL);
     }
 
-#if CONFIG_DEV_SERIAL_HARNESS
     // Serial harness last among input paths: hooks need the button queue
-    // above; degrade to "harness absent" on any failure.
+    // above; degrade to "harness absent" on any failure. Compiles to nothing
+    // when the harness is off (harness_init is a no-op stub there).
     static const harness_hooks_t s_harness_hooks = {
         .inject_button        = harness_inject_button_hook,
         .inject_encoder_steps = harness_inject_encoder_hook,
@@ -1017,7 +1013,6 @@ void app_main(void)
     if (harness_init(&s_harness_hooks) != ESP_OK) {
         ESP_LOGW(TAG, "serial harness init failed; continuing without it");
     }
-#endif
 
     // Defer rotary encoder init to a task to avoid early-boot conflicts.
     xTaskCreatePinnedToCore(encoder_init_task,

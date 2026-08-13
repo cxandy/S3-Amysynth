@@ -15,9 +15,11 @@ extern "C" {
  *                   frame was loaded -> a zero-length packet went on the wire
  *                   (host/device clock-beat fingerprint; the ring below it
  *                   may be perfectly healthy).
- *   ring_underrun   The UAC pull found fewer samples in the SPSC ring than
- *                   one 10 ms chunk; the shortfall was zero-padded (render
- *                   not keeping up with realtime).
+ *   ring_underrun   RETIRED (no writer) since the async-source pull: the
+ *                   UAC pull hands back only the audio the SPSC ring has,
+ *                   and short reads are the normal rate-tracking mechanism,
+ *                   not a fault. True starvation now surfaces as wire_zlp.
+ *                   Field kept so existing readers compile and report 0.
  *   ring_overrun    A rendered block was dropped whole because the ring was
  *                   full while a host was consuming (host stalled draining).
  *   render_overrun  Render-clock ticks that fired while the previous block
@@ -33,16 +35,18 @@ extern "C" {
  *                   re-vendor that brings a tick-clocked mic task back must
  *                   also bring the increment back.
  *
- * Reading the pattern: ring_underrun/render_overrun climbing with wire_zlp
- * flat = local overload (zero-padded silence, full-length USB packets).
- * wire_zlp climbing alone = genuine UAC/clock-beat issue.
+ * Reading the pattern (async-source era): wire_zlp = the device had no
+ * audio for a full EP FIFO's worth of frames - render stalled, or a real
+ * stream gap. render_overrun climbing alongside it = render-side overload.
+ * ring_overrun climbing = host stalled draining while render kept
+ * producing.
  *
  * Contract:
- *  - Each counter has exactly ONE writer task (wire_zlp + ring_underrun:
- *    TinyUSB task - the SOF-domain pull runs input_cb there; ring_overrun +
- *    render_overrun: render task; chunk_drop: currently no writer, see
- *    above). A new call site for an increment must keep that single-writer
- *    rule or the lock-free counters tear.
+ *  - Each counter has exactly ONE writer task (wire_zlp: TinyUSB task;
+ *    ring_overrun + render_overrun: render task; ring_underrun +
+ *    chunk_drop: currently no writer, see above). A new call site for an
+ *    increment must keep that single-writer rule or the lock-free
+ *    counters tear.
  *  - Increments are a bare counter add: safe on the render path, but still
  *    task-context only - not ISR-safe by contract.
  *  - dropout_stats_get() is advisory: callable from any task, may lose a

@@ -111,8 +111,7 @@ static esp_err_t uac_input_cb(uint8_t *buf, size_t len, size_t *bytes_read, void
     (void)cb_ctx;
 
     if (!s_initialized) {
-        memset(buf, 0, len);
-        *bytes_read = len;
+        *bytes_read = 0;
         return ESP_OK;
     }
 
@@ -135,12 +134,6 @@ static esp_err_t uac_input_cb(uint8_t *buf, size_t len, size_t *bytes_read, void
     size_t available_samples = (write_idx - read_idx + RING_BUFFER_SIZE) % RING_BUFFER_SIZE;
     size_t samples_to_copy = (len / 2 < available_samples) ? len / 2 : available_samples;
 
-    // Always counted (dropout attribution must not depend on the serial-diag
-    // Kconfig gate); dropout_stats' ring_underrun writer is this consumer task.
-    if (unlikely(samples_to_copy < (len / 2))) {
-        dropout_count_ring_underrun();
-    }
-
     // Copy with wrap-around
     size_t first = RING_BUFFER_SIZE - read_idx;
     if (first > samples_to_copy) first = samples_to_copy;
@@ -156,13 +149,12 @@ static esp_err_t uac_input_cb(uint8_t *buf, size_t len, size_t *bytes_read, void
     atomic_store_explicit(&s_read_idx,
                           (read_idx + samples_to_copy) % RING_BUFFER_SIZE,
                           memory_order_release);
+    // Short returns are the contract, not a fault: the SOF-context pull
+    // sizes requests by EP FIFO room, and handing back only real audio is
+    // what lets the flow controller's packet sizing track the render rate
+    // (async source). Zero-padding here would pin the EP FIFO full and
+    // insert silence at the correction rate.
     *bytes_read = samples_to_copy * 2;   // bytes
-
-    // Zero-pad on underrun (prevents pops)
-    if (*bytes_read < len) {
-        memset(buf + *bytes_read, 0, len - *bytes_read);
-        *bytes_read = len;
-    }
 
     return ESP_OK;
 }
@@ -171,10 +163,11 @@ static esp_err_t uac_input_cb(uint8_t *buf, size_t len, size_t *bytes_read, void
 // component leaves it unimplemented): the audio class driver calls this from
 // the TinyUSB task (Core 0) after loading each isochronous IN frame,
 // n_bytes_copied = bytes it could pull from its EP-IN software FIFO. Zero
-// means a zero-length packet goes on the wire - the host/device clock-beat
-// dropout, distinct from a ring underrun (which zero-pads a full-length
-// packet and never reaches this layer). Counting only; this path serves all
-// USB traffic, so it must stay a bare increment. Must return true: the
+// means a zero-length packet goes on the wire. Under the async-source pull
+// that happens only when the device genuinely had no audio across a full
+// EP FIFO's worth of frames - true starvation (render stalled or stream
+// gap), no longer a clock-beat artifact. Counting only; this path serves
+// all USB traffic, so it must stay a bare increment. Must return true: the
 // driver TU_VERIFYs the result and would abort the transfer chain on false.
 bool tud_audio_tx_done_post_load_cb(uint8_t rhport, uint16_t n_bytes_copied,
                                     uint8_t func_id, uint8_t ep_in,

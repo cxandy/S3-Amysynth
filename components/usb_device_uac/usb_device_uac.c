@@ -348,19 +348,20 @@ bool tud_audio_set_itf_cb(uint8_t rhport, tusb_control_request_t const *p_reques
     if (s_uac_device->mic_itf_num == itf && alt != 0) {
         s_uac_device->mic_resolution = mic_resolutions_per_format[alt - 1];
         s_uac_device->mic_active = true;
-        // LOCAL EDIT (S3-Amysynth): prefill the EP-IN FIFO to its flow-control
-        // setpoint (half depth) at stream start. TinyUSB's EP_IN_FLOW_CONTROL
-        // sizes packets to steer the fill toward depth/2, but corrections are
-        // capped at one +-1-frame packet per 11 frames (~0.4%), so climbing
-        // from empty takes seconds - and any frame that catches the FIFO
-        // below one packet during the climb ships a zero-length packet, an
-        // audible 1 ms hole. Starting at the setpoint skips the climb; the
-        // cost is half a FIFO of silence once per stream open. Mirrors the
+        // LOCAL EDIT (S3-Amysynth): prefill the EP-IN FIFO with silence to
+        // near-full at stream start (one packet short). The application
+        // ring is empty at open (gap flush) and its first audio can be a
+        // full render block away; flow-control corrections are capped at one
+        // +-1-frame packet per 11 frames (~0.4%), so climbing from empty
+        // takes seconds and any frame that catches the FIFO below one
+        // packet ships a zero-length packet, an audible 1 ms hole. Starting
+        // near full bridges the first-block gap; the controller then drains
+        // to its setpoint silently via large packets. Mirrors the
         // buffered-start the component already does for the speaker path.
         tu_fifo_t *in_ff = tud_audio_get_ep_in_ff();
         if (in_ff != NULL) {
             static const uint8_t zeros[64] = {0};
-            uint16_t want = tu_fifo_depth(in_ff) / 2;
+            uint16_t want = tu_fifo_depth(in_ff) - CFG_TUD_AUDIO_FUNC_1_FORMAT_1_EP_SZ_IN;
             while (want > 0) {
                 uint16_t chunk = (want > sizeof(zeros)) ? (uint16_t)sizeof(zeros) : want;
                 if (tud_audio_write(zeros, chunk) != chunk) break;

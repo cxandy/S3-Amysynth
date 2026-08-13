@@ -23,15 +23,25 @@ extern "C" {
  *   render_overrun  Render-clock ticks that fired while the previous block
  *                   was still rendering; strict 1:1 pacing never renders the
  *                   backlog, so each one is a block of realtime lost.
+ *   chunk_drop      A produced 1 ms mic chunk was overwritten before the USB
+ *                   frame callback consumed it - the lossy single-slot
+ *                   handoff usb_device_uac used to have between its
+ *                   tick-clocked mic task and the SOF-clocked frame
+ *                   callback. The handoff was removed (SOF-domain pull, no
+ *                   second clock in the supply path), so this MUST read 0;
+ *                   the field stays as the failure class's record, and any
+ *                   re-vendor that brings a tick-clocked mic task back must
+ *                   also bring the increment back.
  *
  * Reading the pattern: ring_underrun/render_overrun climbing with wire_zlp
  * flat = local overload (zero-padded silence, full-length USB packets).
  * wire_zlp climbing alone = genuine UAC/clock-beat issue.
  *
  * Contract:
- *  - Each counter has exactly ONE writer task (wire_zlp: TinyUSB task,
- *    ring_underrun: usb_mic_task, ring_overrun + render_overrun: render
- *    task). A new call site for an increment must keep that single-writer
+ *  - Each counter has exactly ONE writer task (wire_zlp + ring_underrun:
+ *    TinyUSB task - the SOF-domain pull runs input_cb there; ring_overrun +
+ *    render_overrun: render task; chunk_drop: currently no writer, see
+ *    above). A new call site for an increment must keep that single-writer
  *    rule or the lock-free counters tear.
  *  - Increments are a bare counter add: safe on the render path, but still
  *    task-context only - not ISR-safe by contract.
@@ -44,12 +54,14 @@ typedef struct {
     uint32_t ring_underrun;
     uint32_t ring_overrun;
     uint32_t render_overrun;
+    uint32_t chunk_drop;
 } dropout_stats_t;
 
 void dropout_count_wire_zlp(void);
 void dropout_count_ring_underrun(void);
 void dropout_count_ring_overrun(void);
 void dropout_count_render_overrun(uint32_t missed_ticks);
+void dropout_count_chunk_drop(void);
 
 void dropout_stats_get(dropout_stats_t *out);
 

@@ -23,6 +23,13 @@ dependencies:
   # why cmake_utilities reinstalls even when removed here. The tinyusb pin
   # below is therefore redundant with the vendored manifest's identical
   # constraint; kept as an explicit statement of the version we build against.
+  # 0.17.0~2 tracks TinyUSB 0.17.0 and so still carries the inverted EP-IN
+  # flow-control FIFO guard (norminal <= depth*4; fixed upstream in
+  # hathach/tinyusb#3809, merged 2026-08-05). Harmless at our 6 ms FIFO
+  # depth, but on any version bump verify audiod_tx_packet_size() carries
+  # the corrected guard (nominal*4 <= depth) before trusting small-FIFO
+  # configs. Managed components are hash-checked - never patch them in
+  # place; that is why usb_device_uac is vendored.
   espressif/tinyusb: '^0.17.0~2'
   espressif/button: =*
   joltwallet/littlefs: "==1.*"

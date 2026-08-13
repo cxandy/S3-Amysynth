@@ -13,6 +13,7 @@ static volatile uint32_t s_wire_zlp;
 static volatile uint32_t s_ring_underrun;
 static volatile uint32_t s_ring_overrun;
 static volatile uint32_t s_render_overrun;
+static volatile uint32_t s_chunk_drop;
 
 #if CONFIG_AMYSYNTH_DROPOUT_TS
 /* Written only by the wire_zlp writer (TinyUSB task). volatile on the slot
@@ -48,6 +49,11 @@ void dropout_count_render_overrun(uint32_t missed_ticks)
     s_render_overrun += missed_ticks;
 }
 
+void dropout_count_chunk_drop(void)
+{
+    s_chunk_drop++;
+}
+
 void dropout_stats_get(dropout_stats_t *out)
 {
     if (out == NULL) {
@@ -57,6 +63,7 @@ void dropout_stats_get(dropout_stats_t *out)
     out->ring_underrun  = s_ring_underrun;
     out->ring_overrun   = s_ring_overrun;
     out->render_overrun = s_render_overrun;
+    out->chunk_drop     = s_chunk_drop;
 }
 
 #if CONFIG_AMYSYNTH_DROPOUT_TS

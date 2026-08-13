@@ -1,6 +1,6 @@
 dependencies:
   espressif/button:
-    component_hash: fccb18c37f1cfe0797b74a53a44d3f400f5fd01f4993b40052dfb7f401915089
+    component_hash: ad64de1d1b8aa139564810a8519b2f1ac275a560a512479ee94c1b6983469d4b
     dependencies:
     - name: espressif/cmake_utilities
       registry_url: https://components.espressif.com
@@ -12,7 +12,7 @@ dependencies:
     source:
       registry_url: https://components.espressif.com/
       type: service
-    version: 4.1.5
+    version: 4.2.0
   espressif/cmake_utilities:
     component_hash: 05165f30922b422b4b90c08845e6d449329b97370fbd06309803d8cb539d79e3
     dependencies:
@@ -34,7 +34,7 @@ dependencies:
       type: service
     version: 3.0.3
   espressif/tinyusb:
-    component_hash: 7f73a4159dc95325ceaa4ade5e88734c4e1f5124746a3765cf61dc6157d78798
+    component_hash: a40b7f67df6ac254a4afd96c6401cc56f2059ae747d6d7e66b568bca53ad0edc
     dependencies:
     - name: idf
       require: private
@@ -46,13 +46,15 @@ dependencies:
     - esp32s2
     - esp32s3
     - esp32p4
-    version: 0.17.0~2
+    - esp32h4
+    - esp32s31
+    version: 0.19.0~3
   idf:
     source:
       type: idf
     version: 6.0.0
   joltwallet/littlefs:
-    component_hash: fab83a8a57de01b05441557d78e9d10c755413a1836af4b2762b539add0c14b1
+    component_hash: 3af20a3d75c49db9dc2286fd50862c34055c9f578419ad1f2bf7ed3ed01391fe
     dependencies:
     - name: idf
       require: private
@@ -60,7 +62,7 @@ dependencies:
     source:
       registry_url: https://components.espressif.com/
       type: service
-    version: 1.22.2
+    version: 1.22.3
 direct_dependencies:
 - espressif/button
 - espressif/cmake_utilities
@@ -68,6 +70,6 @@ direct_dependencies:
 - espressif/tinyusb
 - idf
 - joltwallet/littlefs
-manifest_hash: e54d77b614aa6082434023c1449e934558ea4effe5ef0c532802c98a29b87b28
+manifest_hash: f98fa392ee28fd3c10cba3cbedc824f7be66adea1c02ab10f2253c02d1d85935
 target: esp32s3
 version: 3.0.0

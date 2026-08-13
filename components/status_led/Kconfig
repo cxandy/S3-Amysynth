@@ -3,7 +3,6 @@ menu "Status LED"
 config AMYSYNTH_STATUS_LED
     bool "Onboard RGB LED shows Core-1 (render) load"
     default y
-    select FREERTOS_GENERATE_RUN_TIME_STATS
     help
         Drives the board's onboard addressable RGB LED (WS2812) as a
         render-load indicator. Core-1 busy share maps to color bands:
@@ -11,13 +10,13 @@ config AMYSYNTH_STATUS_LED
         hysteresis at the band edges. The LED is only rewritten when the
         band changes, so steady-state cost is one load sample per period.
 
-        Selecting this forces FREERTOS_GENERATE_RUN_TIME_STATS (which in
-        turn selects FREERTOS_USE_TRACE_FACILITY): the load metric is the
-        IDLE task run-time counter delta from uxTaskGetSystemState(),
-        sampled by core_load_sample() in the diagnostics component. The
-        run-time stats clock source must stay the default
-        FREERTOS_RUN_TIME_STATS_USING_ESP_TIMER (1 MHz, shared time base
-        with the wall-clock delta).
+        The load metric is core_load_sample() in the diagnostics
+        component: idle-hook invocation counting, one counter increment
+        per idle-loop pass - no kernel critical sections. (Its
+        uxTaskGetSystemState() predecessor masked interrupts for the task
+        walk and caused 1-2 ms USB audio holes on the 1 s sample grid;
+        see core_load.h. This option no longer selects any FreeRTOS
+        stats machinery.)
 
 config AMYSYNTH_STATUS_LED_GPIO
     int "LED data GPIO"

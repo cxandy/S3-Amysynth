@@ -1,30 +1,38 @@
 #pragma once
-// Per-core busy-percentage sampler over the FreeRTOS run-time counters.
-// Extracted from the rtos_stats diagnostic dump so lightweight consumers
-// (status LED) can read core load without pulling in the full task-table
-// report. Load is derived from the IDLE0/IDLE1 run-time counters, so it is
-// the full per-core busy share (tasks + ISR time attributed to them), not
-// just one task's slice.
+// Per-core busy-percentage sampler from idle-hook invocation counting.
+// Each core's IDLE task calls a registered hook every idle-loop iteration;
+// counting invocations per wall-clock window yields an idle rate, and busy
+// is that rate measured against the highest rate ever observed on the core
+// (a self-calibrating "fully idle" reference). The hook body is one counter
+// increment - no locks, no kernel API, no critical sections. ISR time is
+// captured naturally: interrupts steal cycles from the idle loop, lowering
+// the observed rate.
 //
-// Obligations: call from a single task only (static delta state, no
-// locking); never from an ISR. Needs CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS
-// (which selects the trace facility); without it the stub below always
-// returns false. Keep the call interval >= ~100 ms so scheduler noise
-// averages out, and well under the run-time counter wrap (~71 min with the
-// esp_timer clock source).
+// This replaced a uxTaskGetSystemState()-based sampler deliberately: that
+// call walks every TCB inside the kernel critical section with interrupts
+// masked on the calling core, and its occasional multi-ms walks under cache
+// pressure blocked the USB interrupt's isochronous endpoint re-arm -
+// audible as 1-2 ms holes in the UAC stream on the sampler's exact 1 s
+// grid (root-caused 2026-08-13; see UAC-EDITS.md). Any future
+// reimplementation must not take kernel critical sections on a periodic
+// grid.
+//
+// Obligations: call core_load_sample() from a single task only (static
+// delta state, no locking); never from an ISR. Keep the call interval
+// >= ~100 ms so idle-rate noise averages out.
 //
 // Guarantees: returns true with busy_pct[core] = 0..100, the average busy
-// share of each core since the previous successful call. Returns false with
-// busy_pct untouched on the first call (baseline capture) or when the
-// snapshot fails; the next successful call then averages over the whole gap.
-// Wrap-safe across one counter wrap between calls.
+// share of each core since the previous successful call - band-indicator
+// grade (roughly +-10-20%), biased LOW until the core has had at least one
+// mostly-idle window since boot to calibrate against. Returns false with
+// busy_pct untouched on the first call (baseline capture + hook
+// registration) or if hook registration fails; the next successful call
+// averages over the whole gap. Wrap-safe across one counter wrap.
 #include <stdint.h>
 #include <stdbool.h>
 #include "sdkconfig.h"
 
 #define CORE_LOAD_NUM_CORES CONFIG_FREERTOS_NUMBER_OF_CORES
-
-#if CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS
 
 bool core_load_sample(uint8_t busy_pct[CORE_LOAD_NUM_CORES]);
 
@@ -38,19 +46,3 @@ bool core_load_sample(uint8_t busy_pct[CORE_LOAD_NUM_CORES]);
 // produced its first result (or when no sampler runs at all, e.g.
 // CONFIG_AMYSYNTH_STATUS_LED off).
 bool core_load_last(uint8_t busy_pct[CORE_LOAD_NUM_CORES]);
-
-#else
-
-static inline bool core_load_sample(uint8_t busy_pct[CORE_LOAD_NUM_CORES])
-{
-    (void)busy_pct;
-    return false;
-}
-
-static inline bool core_load_last(uint8_t busy_pct[CORE_LOAD_NUM_CORES])
-{
-    (void)busy_pct;
-    return false;
-}
-
-#endif

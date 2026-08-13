@@ -21,6 +21,12 @@ CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 # DSP render task, which is pinned to Core 1.
 CONFIG_UAC_TINYUSB_TASK_CORE=0
 CONFIG_UAC_MIC_TASK_CORE=0
+# Async-source mic pull: the EP-IN FIFO absorbs whole 5.33 ms render
+# blocks, so its flow-control setpoint (depth/2) must exceed one block
+# plus one packet or the fill trough between blocks grazes zero-length
+# packets. Measured sweep: 0.28 ZLP/s at 6 ms, 0.06/s at 8 ms, zero at
+# 10 and 12 ms. 10 ms = 5 ms setpoint = one-frame jitter margin.
+CONFIG_UAC_MIC_FIFO_DEPTH_MS=10
 #
 # TEMP DEBUG: comprehensive heap poisoning to catch heap corruption at its source
 #

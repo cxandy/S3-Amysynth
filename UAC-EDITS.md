@@ -113,10 +113,16 @@ task skips, executed pulls, bytes pulled} - compiled in only under
 
 The service-interval counter increments in a minimal
 `tud_audio_tx_done_isr` override (hard ISR context - counter increment
-only, nothing else may go in that function). Its rate against a 1000/s
-wall-clock expectation is the missed-service-interval instrument: the
-0.17 base read 999.2565/s (the re-arm race); this base must read
-~1000.000/s. Permanent local edit; never an upstream candidate.
+only, nothing else may go in that function). Interpretation (measured
+2026-08-13): the rate reads ~999.25/s on both 0.17 and 0.19 - the
+~0.75/s deficit is the flow-control large-packet correction cadence
+(SOF ~750 ppm slow vs device clock on the bench host), not a per-miss
+counter. Corrections are the vulnerable events: 0.17 turned ~100% of
+them into 1 ms holes during beat epochs, 0.19 survives ~92%
+(capture-verified 85 -> 9 holes per 120 s; residual events are 2-frame
+displacements, suspected masked-IRQ/cache-off windows). Judge stream
+health by capture morphology; use this rate as the correction-cadence
+reference. Permanent local edit; never an upstream candidate.
 
 ## Dropped / superseded
 
@@ -138,7 +144,9 @@ On any usb_device_uac re-vendor or tinyusb version bump:
    [hathach/tinyusb#3809](https://github.com/hathach/tinyusb/pull/3809));
    snapshots through 0.19.0~3 predate it.
 4. Update the tinyusb pin note in `main/idf_component.yml`.
-5. Acceptance: frame-service rate ~1000.000/s via
-   `uac_device_get_pull_stats`, plus a capture-morphology check for ~1 ms
-   inserted-silence holes (host silence insertion is DITHERED - strict
-   consecutive-zero scans are blind; use a near-zero template scan).
+5. Acceptance: capture-morphology check for ~1-2 ms inserted-silence
+   holes (host silence insertion is DITHERED - strict consecutive-zero
+   scans are blind; use the near-zero template scan in
+   docs/tools-src). 0.19 baseline on the bench host: <=0.1 holes/s, no
+   metronomic ~1 s trains; the frame-service rate (~999.25/s there) is
+   the correction-cadence reference, not a pass/fail number.

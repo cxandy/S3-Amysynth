@@ -461,10 +461,16 @@ esp_err_t uac_device_get_pull_stats(uint32_t out[4], int64_t *t_us)
 // LOCAL EDIT (S3-Amysynth): frame-service counter. This override runs in
 // HARD ISR context (usbd dispatches audio xfer completions before
 // deferring to the task) - counter increments only, nothing else may go
-// here. Rate vs a 1000/s wall-clock expectation measures missed ISO
-// service intervals: the tinyusb 0.17 tud_task re-arm path read
-// 999.2565/s here (~0.74 missed frames/s, audible as 1 ms host-inserted
-// silence); the 0.19 in-ISR re-arm must read ~1000.000/s.
+// here. Interpretation (measured 2026-08-13, test board + Windows host):
+// the rate reads ~999.25/s on BOTH tinyusb 0.17 and 0.19 - the ~0.75/s
+// deficit is the flow-control large-packet correction cadence (SOF ~750
+// ppm slow vs the device clock, plausibly host spread-spectrum), NOT a
+// per-miss counter. The correction event is the vulnerable moment:
+// 0.17's task-context re-arm turned ~100% of corrections into 1 ms
+// host-inserted-silence holes during beat epochs; 0.19's in-ISR re-arm
+// survives ~92% (capture-verified 85 -> 9 holes/120 s). Judge stream
+// health by capture morphology (docs/tools-src analyzer), using this
+// rate only as the correction-cadence reference.
 bool tud_audio_tx_done_isr(uint8_t rhport, uint16_t n_bytes_sent, uint8_t func_id, uint8_t ep_in, uint8_t cur_alt_setting)
 {
     (void)rhport; (void)n_bytes_sent; (void)func_id; (void)ep_in; (void)cur_alt_setting;

@@ -68,4 +68,18 @@ config AMYSYNTH_RENDER_STATS_SPIKE_PCT
         Blocks at or above this percentage of the block budget are counted
         as spikes in the periodic report.
 
+comment "Dropout timing"
+
+config AMYSYNTH_DROPOUT_TS
+    bool "Timestamp wire-ZLP events into a diagnostic ring"
+    default n
+    help
+        Records an esp_timer microsecond timestamp for every wire_zlp
+        increment (dropout_stats) into a small DRAM ring holding the most
+        recent 128 events, readable via dropout_ts_snapshot() and the serial
+        harness st.dropts command. Event-level timing distinguishes
+        contiguous stall bursts (one ZLP per 1 ms USB frame) from sparse
+        clock-beat drain, which per-second counter polling cannot resolve.
+        When disabled (default) the ring and the stamping compile to nothing.
+
 endmenu

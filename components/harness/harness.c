@@ -77,6 +77,20 @@ static void cmd_st_drop(void)
           d.wire_zlp, d.ring_underrun, d.ring_overrun, d.render_overrun);
 }
 
+#if CONFIG_AMYSYNTH_DROPOUT_TS
+static void cmd_st_dropts(void)
+{
+    /* Harness task only, so a static bounce buffer beats 1 KB of stack. */
+    static int64_t ts[DROPOUT_TS_RING];
+    uint32_t seq;
+    uint32_t n = dropout_ts_snapshot(ts, &seq);
+    for (uint32_t i = 0; i < n; i++) {
+        printf("DROPTS %" PRIu32 " %lld\n", seq - n + i, (long long)ts[i]);
+    }
+    REPLY("ok seq=%" PRIu32 " n=%" PRIu32 " ring=%d", seq, n, DROPOUT_TS_RING);
+}
+#endif
+
 static void cmd_in_btn(char *args)
 {
     if (s_hooks == NULL || s_hooks->inject_button == NULL) {
@@ -146,6 +160,13 @@ static void handle_line(char *line)
     else if (strcmp(line, "sys.build") == 0) cmd_sys_build();
     else if (strcmp(line, "st.heap") == 0)   cmd_st_heap();
     else if (strcmp(line, "st.drop") == 0)   cmd_st_drop();
+    else if (strcmp(line, "st.dropts") == 0) {
+#if CONFIG_AMYSYNTH_DROPOUT_TS
+        cmd_st_dropts();
+#else
+        REPLY("err dropout ts not compiled in");
+#endif
+    }
     else if (strcmp(line, "st.render") == 0) {
 #if CONFIG_AMYSYNTH_RENDER_STATS
         render_stats_report();              /* prints its own block */

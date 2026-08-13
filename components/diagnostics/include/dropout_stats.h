@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include "sdkconfig.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -51,6 +52,28 @@ void dropout_count_ring_overrun(void);
 void dropout_count_render_overrun(uint32_t missed_ticks);
 
 void dropout_stats_get(dropout_stats_t *out);
+
+#if CONFIG_AMYSYNTH_DROPOUT_TS
+/* Optional wire-ZLP event timestamps: every dropout_count_wire_zlp() also
+ * records esp_timer microseconds into a ring of the most recent
+ * DROPOUT_TS_RING events, so host tooling can resolve burst microstructure
+ * (contiguous ~1 ms-spaced events = data-supply stall; sparse events =
+ * clock-beat drain) instead of inferring from counter deltas.
+ *
+ * Contract:
+ *  - Stamping inherits wire_zlp's single-writer rule (TinyUSB task) and
+ *    task-context-only restriction.
+ *  - dropout_ts_snapshot(): callable from any task. Copies the newest
+ *    min(total, DROPOUT_TS_RING) timestamps oldest-first into out[] and
+ *    returns that count; *seq_out (may be NULL) = total events since boot,
+ *    monotonic, so hosts dedup across polls. Retries while the writer
+ *    advances mid-copy, so returned slots are never torn; events
+ *    overwritten between polls are lost - ring depth bounds the loss and
+ *    seq exposes it.
+ */
+#define DROPOUT_TS_RING 128
+uint32_t dropout_ts_snapshot(int64_t out[DROPOUT_TS_RING], uint32_t *seq_out);
+#endif
 
 #ifdef __cplusplus
 }

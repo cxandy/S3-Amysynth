@@ -83,19 +83,13 @@ typedef struct {
 static const seq_env_t s_808_kick_eg0 =
     { .attack_ms = 2, .decay_ms = 18, .sustain_pct = 68,
       .release_ms = 168, .eg_type = ENVELOPE_DX7 };
-/* EG1 drives the cutoff downsweep: decays fully to 0 in ~30 ms, so every
- * hit retriggers from the same (zero) state and the sweep is identical
- * per step - a sustained or long-release EG1 here makes the transient
- * depend on hit spacing (retrigger resumes from the current level). */
 static const seq_env_t s_808_kick_eg1 =
-    { .attack_ms = 2, .decay_ms = 30, .sustain_pct = 0,
-      .release_ms = 50, .eg_type = ENVELOPE_DX7 };
-/* Onset ~1.1 kHz (cutoff + 2 oct, click passes), body falls to the 279 Hz
- * thump floor as EG1 decays. */
+    { .attack_ms = 2, .decay_ms = 19, .sustain_pct = 100,
+      .release_ms = 249, .eg_type = ENVELOPE_DX7 };
 static const seq_filter_t s_808_kick_flt =
     { .filter_type = SEQ_FILTER_LPF24, .cutoff_hz = 279.0f,
       .resonance = 1.75f, .enabled = true,
-      .filter_env_amount = 2.0f, .feedback = 0.0f };
+      .filter_env_amount = -2.0f, .feedback = 0.0f };
 /* 808 hat: HPF strips low-end rumble, adds crispness. Formerly a hardcoded
  * every-bank track-2 rule; now 808 bank data like any other tuning block, so
  * untuned banks play their hats as sampled. */

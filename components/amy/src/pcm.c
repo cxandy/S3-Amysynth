@@ -224,6 +224,20 @@ bool pcm_loop_config_allowed(uint16_t osc, uint16_t mode, uint16_t preset_number
 // How far forward to search for a zero crossing
 #define PCM_MAX_ZERO_SEARCH_LEN 512
 
+// LOCAL EDIT: retrig-behavior gate. 0 (default) = fade-restart: ramp the old
+// tail to zero over a FIXED PCM_RETRIG_FADE_FRAMES span, then splice to the
+// new note - click-free with constant onset latency. 1 = upstream behavior:
+// defer the restart to the next zero crossing, which costs a VARIABLE
+// 0..PCM_MAX_ZERO_SEARCH_LEN-frame latency per hit (audible as an
+// inconsistent transient on steady retrigs into a long low-frequency tail,
+// e.g. a bass-drum four-on-floor).
+#ifndef AMY_PCM_RETRIG_ZERO_CROSS
+#define AMY_PCM_RETRIG_ZERO_CROSS 0
+#endif
+// Old-tail fade length in sample-table frames; 64 pairs with the >>6 in the
+// per-sample gain (render_pcm).
+#define PCM_RETRIG_FADE_FRAMES 64
+
 int pcm_find_next_zero_crossing(uint16_t osc, uint32_t base_index) {
     // Find next zero or zero crossing beyond base_index in PCM under osc.
     int index = -1;
@@ -306,10 +320,21 @@ void pcm_note_on(uint16_t osc) {
             phase = 0; // s16.15 index into the table; as if a PHASOR into a 16 bit sample table.
         }
         if (synth[osc]->status == SYNTH_AUDIBLE && preset->type != AMY_PCM_TYPE_FILE) {
-            // Restarting a currently-playing (non-file) PCM, delay reonset to next zero crossing to avoid click.
             uint32_t base_index = INT_OF_P(synth[osc]->phase, PCM_INDEX_BITS);
+#if AMY_PCM_RETRIG_ZERO_CROSS
+            // Restarting a currently-playing (non-file) PCM, delay reonset to next zero crossing to avoid click.
             msynth[osc]->loopend = pcm_find_next_zero_crossing(osc, base_index);
-            msynth[osc]->loopstart = INT_OF_P(phase, PCM_INDEX_BITS);;
+#else
+            // LOCAL EDIT: fade-restart - play PCM_RETRIG_FADE_FRAMES more of
+            // the old tail under a linear ramp to zero (applied in render_pcm),
+            // then splice. Constant latency where the zero-cross defer's is
+            // tail-phase-dependent; see the gate comment above.
+            uint32_t fade_end = base_index + PCM_RETRIG_FADE_FRAMES;
+            if (preset->length && fade_end >= preset->length)
+                fade_end = preset->length - 1;
+            msynth[osc]->loopend = fade_end;
+#endif
+            msynth[osc]->loopstart = INT_OF_P(phase, PCM_INDEX_BITS);
             msynth[osc]->state = PCM_LOOP_ONCE_INTERNAL;
             msynth[osc]->next_state = synth[osc]->mode;
             //fprintf(stderr, "time %.3f osc %d RESTART amp %.3f last_amp %.3f\n", amy_global.time, osc, msynth[osc]->amp, msynth[osc]->last_amp);
@@ -472,6 +497,17 @@ SAMPLE render_pcm(SAMPLE* buf, uint16_t osc) {
                 c = (next_index < sample_length) ? table[next_index] : b;
             }
             SAMPLE sample = L2S(b) + MUL4_SS(L2S(c - b), frac);
+#if !AMY_PCM_RETRIG_ZERO_CROSS
+            // LOCAL EDIT: retrig fade - gain ramps 1 -> 0 across the fade span
+            // armed in pcm_note_on. After the splice the state has already
+            // advanced to next_state, so new-note samples pass unscaled.
+            if (preset->type != AMY_PCM_TYPE_FILE
+                && msynth[osc]->state == PCM_LOOP_ONCE_INTERNAL) {
+                uint32_t rem = msynth[osc]->loopend - base_index;
+                if (rem > PCM_RETRIG_FADE_FRAMES) rem = PCM_RETRIG_FADE_FRAMES;
+                sample = MUL4_SS(sample, (SAMPLE)(int32_t)rem * SHIFTR(F2S(1.0f), 6));
+            }
+#endif
             SAMPLE value = buf[i] + MUL4_SS(amp, sample);
             buf[i] = value;   
             if (value < 0) value = -value;

@@ -69,6 +69,34 @@ flowchart TD
 
 ## Active local edits
 
+### `pcm.c` — retrig fade-restart (gated; replaces the zero-cross defer by default)
+
+Upstream's retrig-into-active-PCM path (#1070) defers the new onset to the
+next zero crossing of the old tail - a VARIABLE 0..512-frame latency that
+depends on the tail's phase at the retrig instant. On a steady bass-drum
+pattern whose sample outlasts the step spacing, every hit retrigs mid-tail
+and the onset lands with per-hit-varying delay: host-measured 27 ms of
+onset wander across 16 hits at 560 ms spacing (gamma9001 909 BD, note 39),
+audible as an inconsistent kick transient. Deep pitches are the worst case
+twice over: longer tails keep the osc active, and the LF cycle exceeds the
+512-frame search window so the fallback splices at the window's quietest
+sample instead of a true zero.
+
+The edit replaces the defer with a **fade-restart**: play `PCM_RETRIG_FADE_FRAMES`
+(64) more frames of the old tail under a linear ramp to zero (applied in
+`render_pcm`), then splice to the new note - same `PCM_LOOP_ONCE_INTERNAL`
+machinery, same click-free splice, but CONSTANT latency. Host A/B: onset
+spread 27.4 ms -> 5.4 ms (= pure block quantization, identical to an
+idle-start control); no click-energy regression.
+
+Gate: `AMY_PCM_RETRIG_ZERO_CROSS` (pcm.c) - define to 1 to restore the
+upstream defer verbatim (host-verified to reproduce the pre-edit behavior
+exactly). Upstream candidate: evidence prepared for the #1070 thread.
+
+**Rollback:** build with `-DAMY_PCM_RETRIG_ZERO_CROSS=1`, or drop the three
+`LOCAL EDIT` blocks in `pcm.c` (gate defines, `pcm_note_on` retrig branch,
+`render_pcm` gain ramp).
+
 ### `algorithms.c` / `amy.c` — ESP32-S3 PIE (SIMD), upstream inline version
 
 **Merged upstream as [#893](https://github.com/shorepine/amy/pull/893)** (inline

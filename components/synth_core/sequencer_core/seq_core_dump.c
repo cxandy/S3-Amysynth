@@ -68,11 +68,17 @@ void sequencer_core_dump_state(void)
         for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
             /* Track line: pitch and timbre first (the harvest columns). */
             if (drum) {
+                /* PCM preset/mode via the core getters: the seq_layer_t
+                 * fields of the same name are UI mirrors refreshed on the
+                 * UI's copy only - on this side they hold stale zeros until
+                 * a project load writes them. */
+                uint16_t pcm = sequencer_core_get_drum_pcm_preset(li, t);
+                uint8_t pcm_mode = sequencer_core_get_drum_pcm_mode(li, t);
                 DP("  T%u note=%u patch=%u pcm=%u mode=%u(%s) rep=%u"
                    " mute=%u solo=%u",
                    t + 1u, L->track_base_note[t], L->track_patch[t],
-                   L->track_pcm_preset[t], L->track_pcm_mode[t],
-                   pcm_mode_name(L->track_pcm_mode[t]), L->repeat_rate[t],
+                   pcm, pcm_mode, pcm_mode_name(pcm_mode),
+                   L->repeat_rate[t],
                    (unsigned)L->mute[t], (unsigned)L->solo[t]);
             } else {
                 DP("  T%u note=%u rep=%u mute=%u solo=%u",

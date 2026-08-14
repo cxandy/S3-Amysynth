@@ -122,6 +122,7 @@ void sequencer_core_dump_state(void)
                 if (!L->grid[t][s]) continue;
                 bool off_note = (L->step_note[t][s] != L->track_base_note[t]);
                 bool dec = off_note ||
+                           L->step_pitch_ofs[t][s] ||
                            L->step_prob[t][s] != 100 ||
                            L->step_ratchet[t][s] != 1 ||
                            L->step_every[t][s] > 1 ||
@@ -139,6 +140,7 @@ void sequencer_core_dump_state(void)
                 #define AP(...) \
                     n += snprintf(line + n, sizeof line - (size_t)n, __VA_ARGS__)
                 if (off_note)                    AP(" note=%u", L->step_note[t][s]);
+                if (L->step_pitch_ofs[t][s])     AP(" pofs=%+d", L->step_pitch_ofs[t][s]);
                 if (L->step_prob[t][s] != 100)   AP(" prob=%u", L->step_prob[t][s]);
                 if (L->step_ratchet[t][s] != 1)  AP(" rat=%u", L->step_ratchet[t][s]);
                 if (L->step_ratchet_taper[t][s]) AP(" taper=%d", L->step_ratchet_taper[t][s]);

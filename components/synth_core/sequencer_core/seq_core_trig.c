@@ -255,6 +255,15 @@ void trig_schedule_ratchets(uint8_t layer_idx, const seq_layer_t *layer,
                      : sequencer_resolve_track_note(layer, (uint8_t)tn);
         }
     }
+    /* Per-step pitch offset, applied last so the transform's re-snap above
+     * cannot quantize it away: chromatic semitones on single notes and chord
+     * tones alike (block transpose preserves the chord's intervals).
+     * TODO: revisit quantizer interplay - bypassed by design for now. */
+    int8_t pofs = layer->step_pitch_ofs[track][step];
+    if (pofs != 0) {
+        for (uint8_t i = 0; i < ntones; i++)
+            tones[i] = (uint8_t)SEQ_CLAMP_INT((int)tones[i] + (int)pofs, 0, 127);
+    }
     uint8_t synth = layer->synth_id[track];
 
     /* PCM drums get no scheduled note-off - same rule and rationale as the
@@ -391,6 +400,37 @@ uint8_t sequencer_core_get_step_ratchet(uint8_t layer_idx, uint8_t track, uint8_
     const seq_layer_t *layer = &s_layers[layer_idx];
     if (track >= layer->num_tracks || step >= layer->num_steps) return 1;
     return layer->step_ratchet[track][step];
+}
+
+void sequencer_core_set_step_pitch_ofs(uint8_t layer_idx, uint8_t track, uint8_t step,
+                                       int8_t ofs)
+{
+    if (layer_idx >= s_num_layers) return;
+    seq_layer_t *layer = &s_layers[layer_idx];
+    if (track >= layer->num_tracks || step >= layer->num_steps) return;
+    ofs = (int8_t)SEQ_CLAMP_INT(ofs, -SEQ_STEP_PITCH_OFS_MAX, SEQ_STEP_PITCH_OFS_MAX);
+    if (layer->step_pitch_ofs[track][step] == ofs) return;
+    layer->step_pitch_ofs[track][step] = ofs;
+    sequencer_emit_step(layer_idx, track, step);
+    /* The re-emit rewrote the pending off tag at the NEW pitch; a melodic
+     * note already sounding at the old pitch would never match it (offs
+     * match by note number since AMY v1.2.121) and ring on - kill, same as
+     * the track pitch scroll. Drum tracks are 1-voice instruments whose
+     * offs skip note matching, and PCM drums schedule no offs at all. */
+    if (layer->type == SEQ_LAYER_MELODIC) {
+        amy_event *kill = amy_helpers_event_begin();
+        kill->synth    = layer->synth_id[track];
+        kill->velocity = 0.0f;
+        amy_helpers_event_send(kill);
+    }
+}
+
+int8_t sequencer_core_get_step_pitch_ofs(uint8_t layer_idx, uint8_t track, uint8_t step)
+{
+    if (layer_idx >= s_num_layers) return 0;
+    const seq_layer_t *layer = &s_layers[layer_idx];
+    if (track >= layer->num_tracks || step >= layer->num_steps) return 0;
+    return layer->step_pitch_ofs[track][step];
 }
 
 void sequencer_core_set_step_every(uint8_t layer_idx, uint8_t track, uint8_t step,

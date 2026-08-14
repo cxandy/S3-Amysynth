@@ -50,6 +50,15 @@ typedef enum {
  *          last evaluation, so any miss breaks the chain. */
 #define SEQ_STEP_EVERY_MAX 4
 
+/* ── Per-step pitch offset ──
+ * Chromatic semitones added to the step's stored pitch at emit time, on both
+ * the plain periodic path and the decorated one-shot path (chord tones
+ * transpose as a block - the intervals are the feature). Offset-relative by
+ * design: track pitch edits and drum bank changes rewrite step_note only, so
+ * an authored offset survives them untouched. Deliberately NOT re-quantized
+ * (TODO: revisit quantizer interplay). */
+#define SEQ_STEP_PITCH_OFS_MAX 24
+
 /* ── Per-step note transform ──
  * NONE is the zeroed default: the authored pitch, on the plain periodic-tag
  * path. Any other mode offsets the pitch per fire and so forces the step onto
@@ -215,6 +224,10 @@ typedef struct {
     uint8_t  num_tracks;                             /* = SEQ_TRACKS           */
     bool     grid[SEQ_TRACKS][SEQ_MAX_STEPS];        /* step on/off state      */
     uint8_t  step_note[SEQ_TRACKS][SEQ_MAX_STEPS];   /* per-step MIDI pitch    */
+    int8_t   step_pitch_ofs[SEQ_TRACKS][SEQ_MAX_STEPS]; /* semitones from step_note,
+                                            +-SEQ_STEP_PITCH_OFS_MAX, 0 = neutral
+                                            (memset default). Applied at emit;
+                                            never written by pitch/bank rewrites. */
     uint8_t  track_base_note[SEQ_TRACKS];            /* current base note      */
     voice_params_t vp[SEQ_TRACKS];       /* per-row voice parameters (EG0, EG1,
                                             filter, LFO, authored flags, output

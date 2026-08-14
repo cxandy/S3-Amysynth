@@ -299,7 +299,17 @@ void sequencer_emit_step(uint8_t layer_idx, uint8_t track, uint8_t step)
     /* Drum and melodic layers alike have one synth slot per track. */
     uint8_t synth = layer->synth_id[track];
 
-    amy_helpers_note_send(synth, layer->step_note[track][step], note_velocity,
+    /* Per-step pitch offset, chromatic on top of the resolved step pitch
+     * (TODO: revisit quantizer interplay - bypassed by design for now). The
+     * plain path never carries a chord sentinel (chords force the decorated
+     * path), so plain arithmetic is safe. On and off use the same value:
+     * offs match by note number since AMY v1.2.121. */
+    uint8_t note = layer->step_note[track][step];
+    int8_t pofs = layer->step_pitch_ofs[track][step];
+    if (pofs != 0)
+        note = (uint8_t)SEQ_CLAMP_INT((int)note + (int)pofs, 0, 127);
+
+    amy_helpers_note_send(synth, note, note_velocity,
                         tag_on, tick_on, period);
     /* PCM drums get no scheduled note-off: pcm_note_off() is a hard phase-jump
      * to the sample end, so the gate would truncate even the natural tail. The
@@ -312,7 +322,7 @@ void sequencer_emit_step(uint8_t layer_idx, uint8_t track, uint8_t step)
     if (layer->type == SEQ_LAYER_DRUM && s_drum_engine == SEQ_DRUM_PCM) {
         sequencer_emit_clear_tag(tag_off);
     } else {
-        amy_helpers_note_send(synth, layer->step_note[track][step], 0.0f,
+        amy_helpers_note_send(synth, note, 0.0f,
                             tag_off, tick_off, period);
     }
 }

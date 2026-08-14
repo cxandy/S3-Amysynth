@@ -5,14 +5,14 @@
 #include "seq_clamp.h"
 
 /* ════════════════════════════════════════════════════════════════════════
- *  Step Trig editor — per-step probability / ratchet / conditional trig
+ *  Step Trig editor — per-step pitch offset / probability / ratchet / cond
  * ════════════════════════════════════════════════════════════════════════
  * Reuses the sequencer grid's cursor (active_layer_idx / selected_track /
  * selected_step) rather than a parallel one: the user navigates to a step as
  * usual, then opens this popup (MY_BUTTON_2 long-press, main.c). */
 
 static bool    s_se_active  = false;
-static uint8_t s_se_field   = SE_FIELD_PROB;
+static uint8_t s_se_field   = SE_FIELD_PITCH;
 /* Select/adjust phases, same workflow as trackopts and the LFO editor: turn
  * navigates fields, click enters adjust mode (inverted row), turn changes the
  * value, click confirms back to navigation. Prev is a boolean and follows the
@@ -41,7 +41,7 @@ void synth_ui_stepedit_open(void)
         return;
     }
     s_se_active  = true;
-    s_se_field   = SE_FIELD_PROB;
+    s_se_field   = SE_FIELD_PITCH;
     s_se_editing = false;
     s_force_redraw = true;
 }
@@ -86,6 +86,12 @@ bool synth_ui_stepedit_handle_encoder(long delta)
     int d = (int)delta;
 
     switch (s_se_field) {
+        case SE_FIELD_PITCH: {
+            int v = (int)sequencer_core_get_step_pitch_ofs(li, t, s) + d;
+            v = SEQ_CLAMP_INT(v, -SEQ_STEP_PITCH_OFS_MAX, SEQ_STEP_PITCH_OFS_MAX);
+            sequencer_core_set_step_pitch_ofs(li, t, s, (int8_t)v);
+            break;
+        }
         case SE_FIELD_PROB: {
             int v = (int)sequencer_core_get_step_prob(li, t, s) + d * 5;
             sequencer_core_set_step_prob(li, t, s, SEQ_CLAMP_U8(v, 0, 100));
@@ -118,6 +124,7 @@ void stepedit_build_view(stepedit_view_t *out)
     out->layer_idx    = li;
     out->track_idx    = t;
     out->step_idx     = s;
+    out->pitch_ofs    = sequencer_core_get_step_pitch_ofs(li, t, s);
     out->prob         = sequencer_core_get_step_prob(li, t, s);
     out->ratchet      = sequencer_core_get_step_ratchet(li, t, s);
     out->every        = sequencer_core_get_step_every(li, t, s);

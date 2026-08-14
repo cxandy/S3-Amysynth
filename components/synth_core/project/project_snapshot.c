@@ -327,7 +327,7 @@ static void apply_glob(const staged_glob_t *g)
 
 static void ser_layer(tlv_writer_t *w, const seq_layer_t *L)
 {
-    size_t h = tlv_begin_section(w, TAG_LAYR, 10); /* v2: LFO target bitmask;
+    size_t h = tlv_begin_section(w, TAG_LAYR, 11); /* v2: LFO target bitmask;
                                                     * v3: +gate_pct, +portamento_ms;
                                                     * v4: +groove_pct;
                                                     * v5: LFO +wob_rate/+wob_depth;
@@ -337,7 +337,8 @@ static void ser_layer(tlv_writer_t *w, const seq_layer_t *L)
                                                     * v9: step cond enum+param ->
                                                     *     independent every+prev
                                                     *     (same two array slots);
-                                                    * v10: +track_pcm_mode      */
+                                                    * v10: +track_pcm_mode;
+                                                    * v11: +step_pitch_ofs      */
     tlv_put_u8(w, (uint8_t)L->type);
     tlv_put_u8(w, L->num_steps);
     tlv_put_u16(w, L->patch);
@@ -359,6 +360,7 @@ static void ser_layer(tlv_writer_t *w, const seq_layer_t *L)
     }
     tlv_put_bytes(w, L->grid,               sizeof L->grid);
     tlv_put_bytes(w, L->step_note,          sizeof L->step_note);
+    tlv_put_bytes(w, L->step_pitch_ofs,     sizeof L->step_pitch_ofs);   /* v11+ */
     tlv_put_bytes(w, L->step_prob,          sizeof L->step_prob);
     tlv_put_bytes(w, L->step_ratchet,       sizeof L->step_ratchet);
     tlv_put_bytes(w, L->step_every,         sizeof L->step_every);
@@ -432,6 +434,11 @@ static bool parse_layer(tlv_reader_t *b, seq_layer_t *L, uint8_t ver)
 
     if (!tlv_get_bytes(b, L->grid,               sizeof L->grid))               return false;
     if (!tlv_get_bytes(b, L->step_note,          sizeof L->step_note))          return false;
+    if (ver >= 11) {
+        if (!tlv_get_bytes(b, L->step_pitch_ofs, sizeof L->step_pitch_ofs))     return false;
+    } else {
+        memset(L->step_pitch_ofs, 0, sizeof L->step_pitch_ofs);  /* pre-v11: neutral */
+    }
     if (!tlv_get_bytes(b, L->step_prob,          sizeof L->step_prob))          return false;
     if (!tlv_get_bytes(b, L->step_ratchet,       sizeof L->step_ratchet))       return false;
     /* v9 stores every+prev directly; v<=8 stored a cond enum (0 NONE / 1 FILL
@@ -937,7 +944,7 @@ bool project_snapshot_load(uint8_t slot)
         case TAG_LAYR:
             /* Ceiling must track ser_layer()'s version or the firmware
              * rejects its own files. */
-            if (ver < 1 || ver > 10 || staged_layer_count >= MAX_LAYERS) { ok = false; break; }
+            if (ver < 1 || ver > 11 || staged_layer_count >= MAX_LAYERS) { ok = false; break; }
             ok = parse_layer(&body, &staged_layers[staged_layer_count], ver);
             if (ok) staged_layer_count++;
             break;

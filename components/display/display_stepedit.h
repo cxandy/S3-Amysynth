@@ -15,7 +15,8 @@ extern "C" {
  *
  *   STEP L1 T2 S05
  *   ───────────────
- *  >Prob    : 75%
+ *  >Pitch   : +3
+ *   Prob    : 75%
  *   Ratchet : 2
  *   Every   : 2
  *   Prev    : OFF
@@ -28,10 +29,11 @@ extern "C" {
  * every loop. */
 
 typedef enum {
-    SE_FIELD_PROB    = 0,
-    SE_FIELD_RATCHET = 1,
-    SE_FIELD_EVERY   = 2,
-    SE_FIELD_PREV    = 3,
+    SE_FIELD_PITCH   = 0,
+    SE_FIELD_PROB    = 1,
+    SE_FIELD_RATCHET = 2,
+    SE_FIELD_EVERY   = 3,
+    SE_FIELD_PREV    = 4,
     SE_FIELD_COUNT,
 } stepedit_field_t;
 
@@ -39,6 +41,7 @@ typedef struct {
     uint8_t layer_idx;    /* 0-based; rendered as 1-based */
     uint8_t track_idx;    /* 0-based; rendered as 1-based */
     uint8_t step_idx;     /* 0-based; rendered as 1-based */
+    int8_t  pitch_ofs;    /* -SEQ_STEP_PITCH_OFS_MAX..+, semitones, 0 neutral */
     uint8_t prob;         /* 0..100 */
     uint8_t ratchet;      /* 1..SEQ_MAX_RATCHET */
     uint8_t every;        /* 1..SEQ_STEP_EVERY_MAX; 1 = every loop */

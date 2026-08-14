@@ -1,10 +1,11 @@
 #include "display_stepedit.h"
 #include <stdio.h>
 
-/* Yellow header (rows 0..15) carries the STEP title; the up-to-4 fixed fields
- * fill the blue region starting at y=24 so no row crosses the 16px seam. */
+/* Yellow header (rows 0..15) carries the STEP title; the 5 fixed fields fill
+ * the blue region starting at y=24 so no row crosses the 16px seam. 9 px row
+ * pitch fits all five baselines (24..60) with descent room inside 64. */
 #define SE_TITLE_Y   8
-#define SE_ROW_H     10
+#define SE_ROW_H     9
 #define SE_FIRST_ROW 24
 
 /* Mirrors display_trackopts.c's to_draw_row select/adjust phases: triangle
@@ -48,6 +49,14 @@ void display_stepedit_draw_frame(u8g2_t *u8g2, const stepedit_view_t *view)
 
     uint8_t y = SE_FIRST_ROW;
     char val[8];
+
+    /* Signed with explicit +, bare 0 when neutral. */
+    if (view->pitch_ofs != 0)
+        snprintf(val, sizeof(val), "%+d", (int)view->pitch_ofs);
+    else
+        snprintf(val, sizeof(val), "0");
+    se_draw_row(u8g2, y, "Pitch", val, view->field_cursor == SE_FIELD_PITCH, view->editing);
+    y = (uint8_t)(y + SE_ROW_H);
 
     snprintf(val, sizeof(val), "%u%%", (unsigned)view->prob);
     se_draw_row(u8g2, y, "Prob", val, view->field_cursor == SE_FIELD_PROB, view->editing);

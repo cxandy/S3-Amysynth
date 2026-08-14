@@ -415,6 +415,16 @@ void sequencer_core_audition_chord(uint8_t layer_idx, uint8_t track,
  * that step through sequencer_core_service_tick()'s one-shot per-loop
  * scheduling instead (engine in seq_core_trig.c). Setters clamp and re-emit the
  * step immediately; getters return the "plain" default when out of range. */
+/* Per-step pitch offset in chromatic semitones from the step's stored pitch,
+ * clamped to +-SEQ_STEP_PITCH_OFS_MAX; 0 is neutral (plain path unaffected).
+ * Relative by design: survives track pitch edits and drum bank changes.
+ * Deliberately not re-quantized (TODO: revisit quantizer interplay). The
+ * setter re-emits the step and kills a melodic track's ringing note (the
+ * rewritten off tag would no longer match the sounding pitch). */
+void    sequencer_core_set_step_pitch_ofs(uint8_t layer_idx, uint8_t track,
+                                          uint8_t step, int8_t ofs);
+int8_t  sequencer_core_get_step_pitch_ofs(uint8_t layer_idx, uint8_t track,
+                                          uint8_t step);
 void    sequencer_core_set_step_prob(uint8_t layer_idx, uint8_t track,
                                      uint8_t step, uint8_t prob_pct);
 uint8_t sequencer_core_get_step_prob(uint8_t layer_idx, uint8_t track,

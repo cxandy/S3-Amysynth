@@ -1899,7 +1899,12 @@ uint32_t lfo_view_signature(void)
     else
 #endif
     if (seq_state.ui_mode == UI_MODE_ARP)
-        native = sequencer_core_lfo_native_layout(arp_get_patch(), NULL, NULL);
+        /* The arp encodes wave-vs-patch in its source enum, not in the patch
+         * number (arp_get_patch() keeps the PATCH-mode selection even while
+         * WAVE mode plays). WAVE always builds the native carrier+wobble oscs
+         * (arp_core.c voice layout); PATCH always runs the software stepper,
+         * whatever the stored patch number is. */
+        native = (arp_get_source() == ARP_SRC_WAVE);
     else if (seq_state.ui_mode == UI_MODE_DRONE_STD)
         native = true;   /* drone_std always drives the native applier */
     else

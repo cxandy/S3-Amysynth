@@ -158,7 +158,17 @@ void amy_received_program_change(uint8_t channel, uint8_t program) {
     if (bank_number < 0) {
         // If the bank hasn't been set, stay within the block of 128 of the current patch
         // (so e.g. DX7 voices remain DX7).
-        bank_number = (instrument_get_patch_number(e.synth) & 0xFF80) >> 7;
+        int synth_patch = instrument_get_patch_number(e.synth);
+        // ...but only if there IS a current patch. A synth built from a
+        // patch_string carries no patch number (the auto-assigned one is an
+        // allocator artifact, released as soon as it is loaded), and a synth
+        // that doesn't exist reports -1. Both used to be masked and shifted
+        // into a nonsense bank -- 511 for the unset sentinel -- which put the
+        // program change hundreds of patches past anything defined, so a bare
+        // PC on such a channel did nothing at all. Default to bank 0 (Juno).
+        uint16_t synth_patch_u16 = (uint16_t)synth_patch;
+        if (synth_patch < 0 || AMY_IS_UNSET(synth_patch_u16))  synth_patch = 0;
+        bank_number = (synth_patch & 0xFF80) >> 7;
         // Banks 0 (Juno, patches 0-127) and 1 (DX7, 128-255) are full 128-patch
         // banks, and bank 3 (384+) is the Gamma9001 drum kit bank -- a synth
         // sitting on a drum kit patch should stay in the kit bank so a bare PC
@@ -251,7 +261,7 @@ void amy_event_midi_message_received(uint8_t * data, uint32_t len, uint8_t sysex
             // midi_message_handler_to_queue keeps its time parameter -- patches.c drives
             // it with a real e->time for the wave=AMY_MIDI osc. Live MIDI has no time
             // of its own: it plays when it arrives.
-            midi_message_handler_to_queue(data, len, AMY_UNSET_VALUE((uint32_t)0), NULL, NULL);
+            midi_message_handler_to_queue(status, channel, data + 1, (uint16_t)(len - 1), AMY_UNSET_VALUE((uint32_t)0), NULL, NULL);
         }
     }
 
@@ -399,9 +409,13 @@ void convert_midi_bytes_to_messages(uint8_t * data, size_t len, uint8_t usb) {
             if(byte == 0xF7) {
                 sysex_flag = 0;
                 parse_sysex();
-            } else {
+            } else if(sysex_len < MAX_SYSEX_BYTES - 1) {
                 sysex_buffer[sysex_len++] = byte;
             }
+            // else: sysex payload has overflowed sysex_buffer (MAX_SYSEX_BYTES) --
+            // drop the extra byte rather than writing past the allocation. The
+            // "- 1" keeps room for the NUL terminator parse_sysex() writes at
+            // sysex_buffer[sysex_len].
         } else {
             if(byte & 0x80) { // new status byte
                 // System Real-Time messages (0xF8-0xFF) may be interleaved

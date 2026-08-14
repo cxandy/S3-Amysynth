@@ -12,6 +12,13 @@
 uint32_t max_num_memory_patches = 0;
 struct delta **memory_patch_deltas = NULL;
 uint16_t *memory_patch_oscs = NULL;
+// Nonzero when the slot's number was invented by patches_store_patch
+// rather than chosen by the caller. Only auto-assigned slots may be
+// recycled (reused on a re-store to the same instrument, freed when
+// that instrument is released): an explicitly numbered patch may be
+// loaded again later by anyone who knows the number, so it is never
+// freed behind the caller's back.
+uint8_t *memory_patch_auto = NULL;
 uint16_t next_user_patch_index = 0;
 uint16_t * osc_to_voice = NULL;
 uint16_t *voice_to_base_osc = NULL;
@@ -19,6 +26,7 @@ uint16_t *voice_to_base_osc = NULL;
 void patches_deinit() {
     memory_patch_deltas = NULL;
     memory_patch_oscs = NULL;
+    memory_patch_auto = NULL;
     osc_to_voice = NULL;
     voice_to_base_osc = NULL;
 }
@@ -29,14 +37,17 @@ void patches_init(int max_memory_patches) {
             max_num_memory_patches * sizeof(struct delta *)
 	    + max_num_memory_patches * sizeof(uint16_t)
             + AMY_OSCS * sizeof(uint16_t)
-            + amy_global.config.max_voices * sizeof(uint16_t),
+            + amy_global.config.max_voices * sizeof(uint16_t)
+            + max_num_memory_patches * sizeof(uint8_t),
 	    amy_global.config.ram_caps_synth
     );
     memory_patch_deltas = (struct delta **)alloc_base;
     memory_patch_oscs = (uint16_t *)(memory_patch_deltas + max_num_memory_patches);
     osc_to_voice = (uint16_t *)(memory_patch_oscs + max_num_memory_patches);
     voice_to_base_osc = (uint16_t *)(osc_to_voice + AMY_OSCS);
+    memory_patch_auto = (uint8_t *)(voice_to_base_osc + amy_global.config.max_voices);
     bzero(memory_patch_deltas, max_num_memory_patches * sizeof(struct delta *));
+    bzero(memory_patch_auto, max_num_memory_patches * sizeof(uint8_t));
     patches_reset();
 }
 
@@ -52,6 +63,7 @@ void patches_reset_patch(int patch_number) {
     if (memory_patch_deltas[patch_index] != NULL)  delta_release_list(memory_patch_deltas[patch_index]);
     memory_patch_deltas[patch_index] = NULL;
     memory_patch_oscs[patch_index] = 0;
+    memory_patch_auto[patch_index] = 0;
 }
 
 void patches_reset() {
@@ -180,7 +192,8 @@ void add_deltas_to_queue_with_baseosc(struct delta *d, int base_osc, struct delt
     while(d) {
         d_offset = *d;
         d_offset.osc += base_osc;
-        if (d_offset.param == CHAINED_OSC || d_offset.param == MOD_SOURCE || d_offset.param == RESET_OSC
+        if (d_offset.param == CHAINED_OSC || d_offset.param == RESET_OSC
+            || (d_offset.param >= MOD_SOURCE_START && d_offset.param < MOD_SOURCE_END)
             || (d_offset.param >= ALGO_SOURCE_START && d_offset.param < ALGO_SOURCE_START + MAX_ALGO_OPS))
             if (!(AMY_IS_UNSET((int16_t)d_offset.data.i) || AMY_IS_UNSET((uint16_t)d_offset.data.i)))  // CHAINED_OSC is uint16_t, but ALGO_SOURCE is int16_t.
                 d_offset.data.i += base_osc;
@@ -276,24 +289,6 @@ void snprintfloat3dp(char *s, size_t max_len, float val) {
         } \
     }     \
 }
-#define _EPRINT_F_SEQ(FIELD, NAME, LEN, WIRECODE) {      \
-    int last_set = -1; \
-    for (int i = 0; i < LEN; ++i) {    \
-        if (AMY_IS_SET(e->FIELD[i])) last_set = i; \
-    }                                              \
-    if (last_set >= 0) { \
-        snprintf(s, len - (size_t)(s - s_entry), "%s", wirecode ? WIRECODE : " " NAME ": ");       \
-        s += strlen(s);  \
-        for (int i = 0; i <= last_set; ++i) { \
-            if (i > 0) { snprintf(s, len - (size_t)(s - s_entry), ","); s += strlen(s); }        \
-            if (AMY_IS_SET(e->FIELD[i])) { \
-                snprintfloat3dp(s, len - (size_t)(s - s_entry), e->FIELD[i]); \
-                s += strlen(s); \
-            } \
-        } \
-    }     \
-}
-
 #define _EPRINT_BP(TFIELD, VFIELD, NAME, WIRECODE) {         \
     int last_set = -1;                              \
     for (int i = 0; i < MAX_BPS; ++i) {             \
@@ -377,7 +372,7 @@ int sprint_event(amy_event *e, char *s, size_t len, bool wirecode) {
     _EPRINT_F(resonance, "resonance", "R");
     _EPRINT_I(portamento_ms, "portamento_ms", "m");
     _EPRINT_I(chained_osc, "chained_osc", "c");
-    _EPRINT_I(mod_source, "mod_source", "L");
+    _EPRINT_I_SEQ(mod_source, "mod_source", NUM_MOD_SOURCES, "L");
     _EPRINT_I(algorithm, "algorithm", "o");
     _EPRINT_I(filter_type, "filter_type", "G");
     _EPRINT_I_SEQ(bp_is_set, "bp_is_set", MAX_BREAKPOINT_SETS, "??");
@@ -403,7 +398,7 @@ int sprint_event(amy_event *e, char *s, size_t len, bool wirecode) {
     _EPRINT_I(reset_osc, "reset_osc", "S");
     // Global effects
     _EPRINT_I(bus, "bus", "y");
-    _EPRINT_F_SEQ(volume, "volume", AMY_NUM_BUSES, "V");
+    _EPRINT_F(volume, "volume", "V");
     _EPRINT_VALS_5(e->eq_l, e->eq_m, e->eq_h, AMY_UNSET_FLOAT, AMY_UNSET_FLOAT, "eq_{l,m,h}", "x");
     _EPRINT_VALS_5(e->echo_level, e->echo_delay_ms, e->echo_max_delay_ms, e->echo_feedback, e->echo_filter_coef, "echo_{level,delay,max,fb,filt}", "M");
     _EPRINT_VALS_5(e->chorus_level, e->chorus_max_delay, e->chorus_lfo_freq, e->chorus_depth, AMY_UNSET_FLOAT, "chorus_{level,delay,lfo,depth}", "k");
@@ -444,8 +439,7 @@ void fprintf_event_stderr(amy_event *e) {
 bool event_addresses_bus(amy_event *e) {
     // Global effects
     //is_empty &= AMY_IS_UNSET(e->bus);
-    for (int b = 0; b < AMY_NUM_BUSES; ++b)
-        _RET_TRUE_IF_SET(volume[b]);
+    _RET_TRUE_IF_SET(volume);
     _RET_TRUE_IF_5_F_SET(eq_l, eq_m, eq_h, eq_h, eq_h);
     _RET_TRUE_IF_5_F_SET(echo_level, echo_delay_ms, echo_max_delay_ms, echo_feedback, echo_filter_coef);
     _RET_TRUE_IF_5_F_SET(chorus_level, chorus_max_delay, chorus_lfo_freq, chorus_depth, chorus_depth);
@@ -490,7 +484,7 @@ bool event_addresses_oscs(amy_event *e) {
     _RET_TRUE_IF_SET(resonance);
     _RET_TRUE_IF_SET(portamento_ms);
     _RET_TRUE_IF_SET(chained_osc);
-    _RET_TRUE_IF_SET(mod_source);
+    _RET_TRUE_IF_SET_SEQ(mod_source, NUM_MOD_SOURCES);
     _RET_TRUE_IF_SET(algorithm);
     _RET_TRUE_IF_SET(filter_type);
     _RET_TRUE_IF_SET_SEQ(bp_is_set, MAX_BREAKPOINT_SETS);
@@ -559,7 +553,6 @@ struct delta *deltas_to_event(struct delta *queue, struct amy_event *event) {
       _CASE_I(portamento_ms, PORTAMENTO)
       _CASE_I(chained_osc, CHAINED_OSC)
       _CASE_I(reset_osc, RESET_OSC)
-      _CASE_I(mod_source, MOD_SOURCE)
       _CASE_I(note_source_channel, NOTE_SOURCE_CHANNEL)
       _CASE_I(filter_type, FILTER_TYPE)
       _CASE_I(algorithm, ALGORITHM)
@@ -583,19 +576,22 @@ struct delta *deltas_to_event(struct delta *queue, struct amy_event *event) {
       _CASE_I(eg_type[1], EG1_TYPE)
       _CASE_F(velocity, VELOCITY)
       _CASE_I(bus, BUS)
+      // A VOLUME delta names its bus in osc, like the other bus-directed
+      // params, so it comes back as "this bus, one volume".
+      case VOLUME: event->bus = queue->osc; event->volume = queue->data.f; break;
     default:  // blocks, not handled by case
       _TEST_COEFS(amp_coefs, AMP)
       _TEST_FREQ_COEFS(freq_coefs, FREQ)
       _TEST_FREQ_COEFS(filter_freq_coefs, FILTER_FREQ)
       _TEST_COEFS(duty_coefs, DUTY)
       _TEST_COEFS(pan_coefs, PAN)
-      for (int bus = 0; bus < AMY_NUM_BUSES; ++bus) {
-          if ((int)queue->param == (int)VOLUME_BASE + bus)
-              event->volume[bus] = queue->data.f;
-      }
       for (int i = 0; i < MAX_ALGO_OPS; ++i) {
           if ((int)queue->param == (int)ALGO_SOURCE_START + i)
               event->algo_source[i] = queue->data.i;
+      }
+      for (int i = 0; i < NUM_MOD_SOURCES; ++i) {
+          if ((int)queue->param == (int)MOD_SOURCE_START + i)
+              event->mod_source[i] = queue->data.i;
       }
       for (int i = 0; i < MAX_BREAKPOINT_SETS; ++i) {
           for (int j = 0; j < MAX_BREAKPOINTS; ++j) {
@@ -688,6 +684,14 @@ void set_event_for_osc(int base_osc, int rel_osc, struct amy_event *event) {
     // We assume event has already been cleared.
     // We do not set the osc field of the event.
     int osc = base_osc + rel_osc;
+    // synth[] entries are NULL until ensure_osc_allocd() allocates them, and a
+    // voice can own oscs that were never touched -- a synth configured with
+    // oscs_per_voice= and no patch reserves the oscs without allocating any of
+    // them.  Reading such an osc's config is not an error: it is at its
+    // defaults, so there is nothing to emit.  Dereferencing it, which is what
+    // this did, segfaulted amy_get_synth_commands()/amy_dump_state() for every
+    // such synth.
+    if (osc < 0 || osc >= AMY_OSCS || synth[osc] == NULL)  return;
     // Generate the reference "empty synth".
     struct synthinfo empty_synth;
     // We need to have space for the breakpoints.
@@ -716,7 +720,7 @@ void set_event_for_osc(int base_osc, int rel_osc, struct amy_event *event) {
     EVENT_FROM_OSC(resonance);
     EVENT_FROM_OSC_MAPPED(portamento_alpha, portamento_ms, alpha_to_portamento_ms);
     EVENT_FROM_OSC_BASEOSC(chained_osc);
-    EVENT_FROM_OSC_BASEOSC(mod_source);
+    EVENT_FROM_OSC_ARRAY_BASEOSC(mod_source, NUM_MOD_SOURCES);
     EVENT_FROM_OSC(algorithm);
     EVENT_FROM_OSC(filter_type);
     EVENT_FROM_OSC_ARRAY_BASEOSC(algo_source, MAX_ALGO_OPS);
@@ -731,12 +735,11 @@ float lin_to_db(float lin) {
     return 20.0f * log10f(lin);
 }
 
-void set_event_for_bus_fx(amy_event *event, uint8_t bus, global_state_t *state) {
+void set_event_for_bus_fx(amy_event *event, uint16_t bus, global_state_t *state) {
     // Always emit all FX fields so saved patches are fully self-describing.
     // Set the bus
     event->bus = bus;
-    // Volume for this bus alone, confusingly sits in slot 0 because bus=X volume=Y writes volume[X] = Y.
-    event->volume[0] = state->volume[bus];
+    event->volume = state->volume[bus];
     // EQ
     event->eq_l = lin_to_db(S2F(state->bus[bus]->eq.eq[0]));
     event->eq_m = lin_to_db(S2F(state->bus[bus]->eq.eq[1]));
@@ -783,7 +786,7 @@ void *yield_synth_events(uint8_t instr_num, struct amy_event *event, bool includ
         return NULL;  // instrument not allocated.
     }
     uint32_t flags = instrument_get_flags(instr_num);
-    uint8_t bus = instrument_get_bus(instr_num);
+    uint16_t bus = instrument_get_bus(instr_num);
     uint16_t voice = voices[0];
     uint16_t base_osc = voice_to_base_osc[voice];
     int num_oscs = num_oscs_for_voice(voice);
@@ -867,7 +870,7 @@ void *yield_bus_commands(char *s, size_t len, void *state) {
         state_val = 0;
     } else {
         // Return a wire command to set up a bus.
-        uint8_t bus = state_val;
+        uint16_t bus = state_val;
         amy_event e = amy_default_event();
         set_event_for_bus_fx(&e, bus, &amy_global);
         sprint_event(&e, s, len, /* wirecode= */ true);
@@ -892,6 +895,13 @@ void parse_patch_string_to_queue(char *message, int base_osc, struct delta **que
         }
         pos = yield_event_from_message(message, &e, pos);
         if (pos > 0) {
+            // A patch's global FX phrase (a Juno patch's trailing
+            // "x...k1..." -- 127 of the ROM Juno patches carry one) is
+            // bus-directed but has no synth attached, so its params fell
+            // to the default bus 0.  Give it the synth being loaded and
+            // the bus resolves from the synth, exactly as if the synth
+            // had sent it itself.
+            if (event_addresses_bus(&e))  e.synth = synth;
             if (event_addresses_oscs(&e) || is_first_voice)
                 amy_event_to_deltas_queue(&e, base_osc, queue);
         }
@@ -908,10 +918,22 @@ void patches_store_patch(amy_event *e, char * patch_string) {
     // amy patch string. Either pull patch_number from e, or allocate a new one and write it to e.
     // Patch is stored in ram.
     //fprintf(stderr, "store_patch: synth %d patch_num %d patch '%s'\n", e->synth, e->patch, patch_string);
-    if (!AMY_IS_SET(e->patch_number)) {
-        // We need to allocate a new number.
-        e->patch_number = next_user_patch_index + _PATCHES_FIRST_USER_PATCH;
-        // next_user_patch_index is updated as needed at the bottom of the function (so it can reflect user-defined numbers too).
+    bool auto_assigned = !AMY_IS_SET(e->patch_number);
+    if (auto_assigned) {
+        // We need a number, and it only has to live long enough to carry this
+        // patch_string into patches_load_patch, which frees the slot as soon as
+        // it has loaded it. So: take any free slot (never used, or handed back
+        // by an earlier load), else refuse — the deliberately out-of-range
+        // number falls to the range check below, which prints and drops the
+        // store.
+        for (uint32_t i = 0; i < max_num_memory_patches; ++i) {
+            if (memory_patch_deltas[i] == NULL && memory_patch_oscs[i] == 0) {
+                e->patch_number = i + _PATCHES_FIRST_USER_PATCH;
+                break;
+            }
+        }
+        if (!AMY_IS_SET(e->patch_number))
+            e->patch_number = _PATCHES_FIRST_USER_PATCH + max_num_memory_patches;
         //fprintf(stderr, "store_patch: auto-assigning patch number %d for '%s'\n", e->patch_number, patch_string);
     }
     int patch_index = (int)e->patch_number - _PATCHES_FIRST_USER_PATCH;
@@ -920,9 +942,18 @@ void patches_store_patch(amy_event *e, char * patch_string) {
                 (int32_t)(patch_index + _PATCHES_FIRST_USER_PATCH),
                 (int32_t)_PATCHES_FIRST_USER_PATCH,
                 (int32_t)(_PATCHES_FIRST_USER_PATCH + (int32_t)max_num_memory_patches));
+        // Don't leave the rejected (possibly auto-assigned) number in the
+        // event, or the rest of event handling would try to load it.
+        AMY_UNSET(e->patch_number);
         return;
     }
     if (patch_index >= next_user_patch_index)  next_user_patch_index = patch_index + 1;
+    // A re-store REPLACES the slot's contents. parse_patch_string_to_queue
+    // appends to whatever list is standing, so without this a second store
+    // to the same number merged two patches into one slot.
+    if (memory_patch_deltas[patch_index] != NULL || memory_patch_oscs[patch_index])
+        patches_reset_patch(e->patch_number);
+    memory_patch_auto[patch_index] = auto_assigned ? 1 : 0;
     // Store the patch as deltas and find out how many oscs this message uses
     parse_patch_string_to_queue(patch_string, 0, &memory_patch_deltas[patch_index], e->synth, e->time, true);
     update_num_oscs_for_patch_number(patch_index + _PATCHES_FIRST_USER_PATCH);
@@ -1023,6 +1054,14 @@ uint8_t patches_voices_for_event(amy_event *e, uint16_t voices[]) {
     // Convert an event that may specify a synth into a number of specific voices.
     uint8_t num_voices = 0;
     uint32_t synth_flags = 0;
+    // The synth may have been CONSUMED earlier in this event's processing:
+    // releasing an instrument (num_voices=0) unsets e->synth precisely so
+    // the rest of the event is not forwarded to it
+    // (patches_voices_for_load_synth). Without this guard the unset
+    // sentinel (255) reached instrument_get_num_voices below and printed
+    // "instrument_number 255 is out of range" once per released synth —
+    // and on a device stderr is a blocking UART line in the audio path.
+    if (AMY_IS_UNSET(e->synth)) return 0;
     // We have an instrument specified - decide which of its voices are actually to be used.
         if (AMY_IS_SET(e->pedal)) {
         // Pedal events are a special case
@@ -1096,21 +1135,22 @@ void patches_event_has_voices(amy_event *e, struct delta **queue) {
     if (synth_flags & SYNTH_FLAGS_NOTES_VIA_MIDI
         && AMY_IS_SET(e->midi_note)
         && (e->note_source_channel != e->synth)) {
-        // Route note-on event via MIDI to invoke midi_note_cmds
-        uint8_t bytes[3];
-        // Note: nonzero synth_flags means e->synth was set.
-        bytes[0] = 0x90 + (0x0F & (e->synth - 1));
-        bytes[1] = 0x7F & (uint8_t)(e->midi_note);
+        // Route note-on event via MIDI to invoke midi_note_cmds.  We pass the synth
+        // number straight through as the channel rather than packing it into a MIDI
+        // status byte, so synths above 16 reach their own mappings.
+        uint8_t data[2];
+        data[0] = 0x7F & (uint8_t)(e->midi_note);
         uint8_t velocity = 255;   // fake-note-on magic value.
         if (AMY_IS_SET(e->velocity)) velocity = (uint8_t) MIN(127, 127.1f * e->velocity);
-        bytes[2] = velocity;
-        //fprintf(stderr, "time %.3f synth %d flags %d note %.1f vel %.3f: MIDI cmd 0x%02x 0x%02x 0x%02x\n", amy_global.time, instrument, synth_flags, e->midi_note, e->velocity, bytes[0], bytes[1], bytes[2]);
+        data[1] = velocity;
+        //fprintf(stderr, "time %.3f synth %d flags %d note %.1f vel %.3f: MIDI cmd 0x90 chan %d 0x%02x 0x%02x\n", amy_global.time, synth, synth_flags, e->midi_note, e->velocity, e->synth, data[0], data[1]);
         // Remove the note and vel that we've put in the MIDI event, but keep any other event flags.
         AMY_UNSET(e->midi_note);
         AMY_UNSET(e->velocity);
         // Pass the target queue through: if this event is being stored (e.g. into
         // a patch), its deltas must land in that queue, not play now.
-        midi_message_handler_to_queue(bytes, 3, e->time, e, queue);
+        // Note: nonzero synth_flags means e->synth was set.
+        midi_message_handler_to_queue(0x90, e->synth, data, 2, e->time, e, queue);
     } else {
         uint16_t voices[MAX_VOICES_PER_INSTRUMENT];
         uint8_t num_voices = patches_voices_for_event(e, voices);
@@ -1166,6 +1206,22 @@ void schedule_osc_reset(uint32_t time, uint16_t osc, struct delta **queue) {
     add_delta_to_queue(&d, queue);
 }
 
+// Like schedule_osc_reset, but the executed delta also returns the osc's
+// storage to the heap. Only for oscs whose *ownership* is ending: release
+// already discards the state (the reset wiped it in place), so freeing is
+// behaviorally identical -- an unallocated osc reads as defaults, and the
+// next touch re-allocates lazily -- it just gives the memory back.
+static void schedule_osc_free(uint32_t time, uint16_t osc) {
+    struct delta d = {
+        .time = time,
+        .osc = 0,
+        .param = RESET_OSC,
+        .data.i = (uint32_t)osc | RESET_FREE_OSC,
+        .next = NULL,
+    };
+    add_delta_to_queue(&d, &amy_global.delta_queue);
+}
+
 void release_voice_oscs(int32_t voice, uint32_t time) {
     if(AMY_IS_SET(voice_to_base_osc[voice])) {
         //fprintf(stderr, "Already set voice %d, removing it\n", voice);
@@ -1174,18 +1230,52 @@ void release_voice_oscs(int32_t voice, uint32_t time) {
             if(osc_to_voice[i]==voice) {
                 //fprintf(stderr, "Already set voice %d osc %d, removing it\n", voices[v], i);
                 AMY_UNSET(osc_to_voice[i]);
-                // Make sure the osc is cleared.
-                schedule_osc_reset(time, i, NULL);
+                // Ownership ends here: clear the osc and return its storage.
+                schedule_osc_free(time, i);
             }
         }
         AMY_UNSET(voice_to_base_osc[voice]);
     }
 }
 
+uint16_t snapshot_voice_config(uint8_t instr_num, struct delta **queue, uint32_t time) {
+    // Capture the CURRENT per-osc config of an instrument's first voice into a
+    // base-osc-relative delta list, in the same form as a stored patch, so it
+    // can be replayed into any voice with add_deltas_to_queue_with_baseosc().
+    // Returns the number of oscs captured (0 if there was nothing to capture);
+    // the caller owns the list and must delta_release_list() it.
+    // Note and velocity are deliberately not part of an osc's config (see
+    // set_event_for_osc), so snapshotting a voice that is mid-note captures the
+    // sound, not the note being played.
+    uint16_t voices[MAX_VOICES_PER_INSTRUMENT];
+    int num_voices = instrument_get_num_voices(instr_num, voices);
+    if (num_voices < 1)  return 0;
+    uint16_t voice = voices[0];
+    if (AMY_IS_UNSET(voice_to_base_osc[voice]))  return 0;
+    uint16_t base_osc = voice_to_base_osc[voice];
+    int num_oscs = num_oscs_for_voice(voice);
+    for (int rel_osc = 0; rel_osc < num_oscs; ++rel_osc) {
+        amy_event e;
+        amy_clear_event(&e);
+        e.time = time;
+        e.osc = rel_osc;
+        set_event_for_osc(base_osc, rel_osc, &e);
+        amy_event_to_deltas_queue(&e, 0, queue);
+    }
+    return (uint16_t)num_oscs;
+}
+
 uint8_t patches_voices_for_load_synth(amy_event *e, uint16_t voices[]) {
     // When load_patch specifies a synth, convert that into voices.
     // e->synth is assumed to be set.
     uint16_t requested_voices = e->num_voices;
+    // The voices[] array (and instrument_init, which aborts) can only take
+    // MAX_VOICES_PER_INSTRUMENT; the wire can ask for anything.
+    if (AMY_IS_SET(requested_voices) && requested_voices > MAX_VOICES_PER_INSTRUMENT) {
+        fprintf(stderr, "synth %" PRId32 ": num_voices %" PRIu16 " clamped to %d\n",
+                (int32_t)e->synth, requested_voices, MAX_VOICES_PER_INSTRUMENT);
+        requested_voices = MAX_VOICES_PER_INSTRUMENT;
+    }
     // If the instrument is alread initialized, copy the voice numbers.
     int num_voices = instrument_get_num_voices(e->synth, voices);
     //fprintf(stderr, "patches_voices_for_load: e->num_voices %d num_voices %d\n", e->num_voices, num_voices);
@@ -1221,6 +1311,10 @@ uint8_t patches_voices_for_load_synth(amy_event *e, uint16_t voices[]) {
             // Clear all the midi mappings.
             int type = MIDI_MAP_TYPE_ANY;
             midi_clear_channel_mappings(e->synth, type);
+            // No memory patch to free here: an auto-assigned slot is released
+            // by patches_load_patch as soon as it has been loaded, so an
+            // instrument never holds one, and a patch the caller numbered
+            // explicitly is never freed behind their back.
             // Delete the instrument
             instrument_release(e->synth);
             // Delete the instrument number so we don't forward the 'rest' of the event to it.
@@ -1243,11 +1337,52 @@ void patches_load_patch(amy_event *e) {
     // (also called if instrument & num_voices even if no patch specified, to change #voices).
     // This means to set/reset the voices and load the messages (from ROM or memory) and set them.
     peek_stack("load_patch");
+    // A RE-PATCH KEEPS THE INSTRUMENT'S BUS. Loading a patch rebuilds the
+    // voices' oscs (reset to bus 0) and re-registers the instrument, so a
+    // patch change that didn't re-state the bus dropped the synth out of
+    // its own mix and onto the default bus, into everybody else's FX.
+    // Inheriting the standing bus here makes the rest of the pipeline
+    // (instrument_add_new below, the per-osc BUS deltas fanned out by
+    // patches_event_has_voices) re-route exactly as an explicit bus would.
+    if (AMY_IS_UNSET(e->bus) && instrument_number_exists(e->synth, NULL)) {
+        int prev_bus = instrument_get_bus(e->synth);
+        if (prev_bus > 0) e->bus = (uint16_t)prev_bus;
+    }
     uint16_t voices[MAX_VOICES_PER_INSTRUMENT];
     uint8_t num_voices = 0;
     uint16_t oscs_per_voice = 0;
     uint16_t patch_number = e->patch_number;   // Need to match type of e->patch_number so AMY_IS_UNSET(patch_number) will work.
     //fprintf(stderr, "load_patch synth %d patch_number %d num_voices %d oscs_per_voice %d\n", e->synth, e->patch_number, e->num_voices, e->oscs_per_voice);
+    // CLONE ON GROW. Changing num_voices on a synth that already has voices
+    // rebuilds every voice, and the only config to rebuild them from used to be
+    // the synth's stored patch -- so growing a synth silently threw away every
+    // edit made since the patch was loaded, and reverted voice 0 to the pristine
+    // patch. Snapshot the live voice instead, BEFORE the reallocation below
+    // resets its oscs, and use that as the source for all the new voices. A
+    // synth that was configured osc-by-osc (or with oscs_per_voice= and no patch
+    // at all) can now grow too; before, it had no usable patch to reload and the
+    // whole event was dropped.
+    struct delta *clone_deltas = NULL;
+    uint16_t clone_oscs_per_voice = 0;
+    // num_voices=0 is a deletion: nothing will ever replay the snapshot, so
+    // don't spend delta-pool churn capturing one.
+    if (AMY_IS_UNSET(patch_number) && AMY_IS_UNSET(e->oscs_per_voice)
+        && (AMY_IS_UNSET(e->num_voices) || e->num_voices > 0)
+        && AMY_IS_SET(e->synth) && instrument_number_exists(e->synth, NULL))
+        clone_oscs_per_voice = snapshot_voice_config(e->synth, &clone_deltas, e->time);
+    // An AUTO-ASSIGNED memory patch is a courier, not a patch. Its number was
+    // invented by patches_store_patch so a patch_string could be handed to this
+    // load; the caller never saw it and can never ask for it again. So it is
+    // consumed here: the number is not stored on the instrument (the voices
+    // themselves are the synth's config now that growth clones them), and the
+    // slot goes back to the pool on the way out, whether this load worked or
+    // not.
+    bool auto_patch = false;
+    if (AMY_IS_SET(patch_number)) {
+        int patch_index = (int)patch_number - _PATCHES_FIRST_USER_PATCH;
+        auto_patch = (patch_index >= 0 && patch_index < (int)max_num_memory_patches
+                      && memory_patch_auto[patch_index]);
+    }
     num_voices = patches_voices_for_load_synth(e, voices);
     if (num_voices == 0) {
         if (AMY_IS_UNSET(e->num_voices)) {
@@ -1255,7 +1390,7 @@ void patches_load_patch(amy_event *e) {
             fprintf(stderr, "synth %" PRId32 ": no voices selected, ignored (e->num_voices %" PRId32 "...)\n",
                     (int32_t)e->synth, (int32_t)e->num_voices);
         }
-        return;
+        goto done;
     } else {
         // Reset every osc belonging to each voice so stale state doesn't persist
         // before we reallocate and reinitialize them below.
@@ -1280,6 +1415,14 @@ void patches_load_patch(amy_event *e) {
             fprintf(stderr, "WARN: synth %" PRId32 ": oscs_per_voice %" PRIu16 " made me ignore patch number %" PRIu16 "\n",
                     (int32_t)e->synth, e->oscs_per_voice, patch_number);
         }
+    } else if (clone_oscs_per_voice > 0) {
+        // Reshaping a live synth: every voice comes from the snapshot of the
+        // existing voice taken above, not from the stored patch. The synth keeps
+        // whatever patch number it had (nothing here changes it) -- it is no
+        // longer what defines the sound.
+        oscs_per_voice = clone_oscs_per_voice;
+        deltas = clone_deltas;
+        patch_number = instrument_get_patch_number(e->synth);
     } else {
         if (AMY_IS_UNSET(patch_number))
             patch_number = instrument_get_patch_number(e->synth);
@@ -1290,13 +1433,27 @@ void patches_load_patch(amy_event *e) {
             if (patch_number >= _PATCHES_NUM_BUILTIN || patch_commands[patch_number] == NULL) {
                 fprintf(stderr, "patch_number %" PRIu16 " is not a defined built-in patch (synth %" PRId32 "), ignored\n",
                         patch_number, (int32_t)e->synth);
-                return;
+                goto done;
             }
             message = (char*)patch_commands[patch_number];
             oscs_per_voice = patch_oscs[patch_number];
         } else {
-            // User-defined patch
+            // User-defined patch.  patch_number can be out of range here (an
+            // unset instrument patch reads back as UNSET/0xffff, and a wire
+            // message can name any number), so bounds-check before indexing.
             int32_t patch_index = patch_number - _PATCHES_FIRST_USER_PATCH;
+            // Range-check before indexing. patches_store_patch refuses a
+            // number past the pool, but the event still carries it and
+            // arrives here — and indexing the tables with it read past
+            // their ends and walked a garbage delta pointer (a segfault
+            // on the desktop, a Guru Meditation on the device).
+            if (patch_index >= (int32_t)max_num_memory_patches) {
+                fprintf(stderr, "load patch_number %" PRIu16 " is out of range (%" PRId32 " .. %" PRId32 ") (synth %" PRId32 "), ignored\n",
+                        patch_number, (int32_t)_PATCHES_FIRST_USER_PATCH,
+                        (int32_t)(_PATCHES_FIRST_USER_PATCH + (int32_t)max_num_memory_patches - 1),
+                        (int32_t)e->synth);
+                goto done;
+            }
             oscs_per_voice = memory_patch_oscs[patch_index];
             if(oscs_per_voice > 0){
                 deltas = memory_patch_deltas[patch_index];
@@ -1304,7 +1461,7 @@ void patches_load_patch(amy_event *e) {
                 fprintf(stderr, "patch_number %" PRIu16 " has %" PRIu16 " num_deltas %" PRIi32 " (synth %" PRId32 " num_voices %" PRId32 "), ignored\n",
                         patch_number, oscs_per_voice, delta_list_len(memory_patch_deltas[patch_index]),
                         (int32_t)e->synth, (int32_t)e->num_voices);
-                return;
+                goto done;
             }
         }
     }
@@ -1360,9 +1517,13 @@ void patches_load_patch(amy_event *e) {
     if (AMY_IS_SET(e->synth)) {
         uint32_t flags = 0;
         if (AMY_IS_SET(e->synth_flags)) flags = e->synth_flags;
-        uint8_t bus = 0;
+        uint16_t bus = 0;
         if (AMY_IS_SET(e->bus)) bus = e->bus;
-        instrument_add_new(e->synth, num_voices, voices, patch_number, oscs_per_voice, bus, flags);
+        // An auto-assigned number is an allocator artifact, so the instrument
+        // records no patch at all rather than a number nobody can use.
+        uint16_t stored_patch_number = patch_number;
+        if (auto_patch)  AMY_UNSET(stored_patch_number);
+        instrument_add_new(e->synth, num_voices, voices, stored_patch_number, oscs_per_voice, bus, flags);
     }
     // Now actually initialize the newly-allocated osc blocks with the patch
     bool is_first_voice = true;  // flag for once-only messages.
@@ -1377,4 +1538,10 @@ void patches_load_patch(amy_event *e) {
             is_first_voice = false;
         }
     }
+done:
+    // add_deltas_to_queue_with_baseosc copies, so the snapshot is ours to free.
+    if (clone_deltas)  delta_release_list(clone_deltas);
+    // Likewise the courier slot: its deltas have been copied into the queue (or
+    // this load failed), and nothing can ask for it by number, so hand it back.
+    if (auto_patch)  patches_reset_patch(e->patch_number);
 }

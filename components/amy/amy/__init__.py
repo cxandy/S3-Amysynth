@@ -104,9 +104,6 @@ def get_input_buffer():
 # END GENERATED - scripts/gen_amy_c_api.py
 
 
-# If set, inserts func as time for every call to send(). Will not override an explicitly set time
-insert_time = None
-
 # If set, calls this instead of amy.send()
 override_send = None
 
@@ -163,10 +160,11 @@ def parse_ctrl_coefs(coefs):
 
     ControlCoefficients determine how amplitude, frequency, filter frequency, PWM duty, and pan
     are calculated from underlying parameters on the fly.  For each control input, they specify
-    nine coefficients which are multiplied by (0) a constant value of 1, (1) the log-frequency from
+    ten coefficients which are multiplied by (0) a constant value of 1, (1) the log-frequency from
     the note-on command, (2) the velocity from the note-on command, (3) Envelope Generator 0's value,
-    (4) Envelope Generator 1's value, (5) the modulating oscillator input, (6) the global pitch
-    bend value, (7) external input 0, and (8) external input 1.  The sum of these scaled values is used as the control input. (Amplitude is a special
+    (4) Envelope Generator 1's value, (5) the first modulating oscillator input, (6) the global pitch
+    bend value, (7) external input 0, (8) external input 1, and (9) the second modulating oscillator
+    input.  The sum of these scaled values is used as the control input. (Amplitude is a special
     case where the individual values are *multiplied* rather than added, and values whose coefficients
     are zero are skipped).
 
@@ -175,11 +173,15 @@ def parse_ctrl_coefs(coefs):
     will add EG1 modulation to pitch but not change its base value etc.  As a special case, a single value
     (e.g. "f440") will change the constant offset for a parameter but leave its other modulations in place.
 
+    Prefer the dict form below to positional vectors.  New control inputs get appended to keep the
+    existing positions stable, which is why the second modulator is coefficient 9 rather than sitting
+    beside the first at 6 -- an ordering you have to remember with a vector and never with a dict.
+
     The Python API accepts multiple kinds of input:
      * A scalar numeric value: freq=440
      * A list of values in the format accepted by the wire protocol: freq=',,,,0.01'.
-     * A Python list of values, where None can be used to indicate "unspecified": freq=[None, None, None, None, 0.01].  Where the list is shorter than the expected 7 values, the remainder are treated as None (analogous to the wire-protocol string).
-     * A Python dict providing values for some subset of the coefficients.  The only acceptable keys are 'const', 'note', 'vel', 'eg0', 'eg1', 'mod', 'bend', 'ext0', and 'ext1'.
+     * A Python list (or tuple) of values, where None can be used to indicate "unspecified": freq=[None, None, None, None, 0.01].  Where the list is shorter than the expected 10 values, the remainder are treated as None (analogous to the wire-protocol string).
+     * A Python dict providing values for some subset of the coefficients.  The only acceptable keys are 'const', 'note', 'vel', 'eg0', 'eg1', 'mod0', 'mod1', 'bend', 'ext0', and 'ext1'.  'mod' is accepted as an alias for 'mod0'.
     """
     # Pass through ready-formed strings, and convert single values to single value strings
     if isinstance(coefs, str):
@@ -187,33 +189,38 @@ def parse_ctrl_coefs(coefs):
     if isinstance(coefs, int) or isinstance(coefs, float):
         return trunc(coefs)
     # Convert a dict into a list of values.
-    dict_fields = ['const', 'note', 'vel', 'eg0', 'eg1', 'mod', 'bend', 'ext0', 'ext1']
+    # Wire order, which is not a nice order: 'mod1' is appended rather than
+    # sitting next to 'mod0' so that no existing coef changes position.
+    dict_fields = ['const', 'note', 'vel', 'eg0', 'eg1', 'mod0', 'bend', 'ext0', 'ext1', 'mod1']
+    # 'mod' predates the second modulator, and named what is now 'mod0'.
+    dict_aliases = {'mod': 'mod0'}
     if isinstance(coefs, dict):
         coef_list = [None] * len(dict_fields)
         for key, value in coefs.items():
+            key = dict_aliases.get(key, key)
             if key not in dict_fields:
                 raise ValueError('\'%s\' is not a recognized CtrlCoef field %s' % (key, str(dict_fields)))
             coef_list[dict_fields.index(key)] = value
         coefs = coef_list
+    if isinstance(coefs, tuple):
+        coefs = list(coefs)
     assert isinstance(coefs, list)
     coefs = trim_trailing(coefs, lambda x: x is not None)
 
-    def to_str(x):
-        if x is None:
-            return ''
-        return str(x)
+    return ','.join([elem_to_str(x) for x in coefs])
 
-    return ','.join([to_str(x) for x in coefs])
+def elem_to_str(x):
+    """One list/coef element for the wire: None is '', floats are trunc'd
+    to the same canonical form a scalar coef gets, everything else str()."""
+    if x is None:
+        return ''
+    if isinstance(x, float):
+        return trunc(x)
+    return str(x)
 
 def parse_list_or_comma_string(obj):
-
-    def str_none_is_empty(s):
-        if s is None:
-            return ""
-        return str(s)
-
     if isinstance(obj, (list, tuple)):
-        return ','.join(map(str_none_is_empty, obj))
+        return ','.join(map(elem_to_str, obj))
     return str(obj)
 
 def str_of_int(arg):
@@ -225,23 +232,25 @@ def str_of_int(arg):
 
 
 _KW_MAP_LIST = [   # Order matters because patch_string must come last.
-    ('osc', 'vI'), ('wave', 'wI'), ('note', 'nF'), ('vel', 'lF'), ('amp', 'aC'), ('freq', 'fC'), ('duty', 'dC'), 
-    ('feedback', 'bF'), ('time', 'tI'),  ('reset', 'SI'), ('phase', 'PF'), ('pan', 'QC'), ('client', 'gI'), 
-    ('volume', 'VL'), ('pitch_bend', 'sF'), ('filter_freq', 'FC'), ('resonance', 'RF'),
+    # 'ticks' must come first: 'H' is recognized only as first char in wire message.
+    ('ticks', 'HL'),
+    ('osc', 'vI'), ('wave', 'wI'), ('note', 'nF'), ('vel', 'lF'), ('amp', 'aC'), ('freq', 'fC'), ('duty', 'dC'),
+    ('feedback', 'bF'), ('reset', 'SI'), ('phase', 'PF'), ('pan', 'QC'), ('client', 'gI'),
+    ('volume', 'VF'), ('pitch_bend', 'sF'), ('filter_freq', 'FC'), ('resonance', 'RF'),
     ('bp0', 'AL'), ('bp1', 'BL'),
     ('eg0', 'AL'), ('eg1', 'BL'),  # Aliases for bp0 and bp1
     ('eg0_type', 'TI'), ('eg1_type', 'XI'), ('debug', 'DI'), ('chained_osc', 'cI'),
-    ('mod_source', 'LI'),  ('eq', 'xL'), ('filter_type', 'GI'), ('ratio', 'IF'), ('latency_ms', 'NI'),
-    ('algo_source', 'OL'), ('load_sample', 'zL'), ('transfer_file', 'zTL'), ('disk_sample', 'zFL'), 
+    ('mod_source', 'LL'),  ('eq', 'xL'), ('filter_type', 'GI'), ('ratio', 'IF'), ('latency_ms', 'NI'),
+    ('algo_source', 'OL'), ('load_sample', 'zL'), ('transfer_file', 'zTL'), ('disk_sample', 'zFL'),
     ('algorithm', 'oI'), ('chorus', 'kL'), ('reverb', 'hL'), ('echo', 'ML'), ('patch', 'KI'),
-    ('external_channel', 'WI'), ('portamento', 'mI'), ('sequence', 'HL'), ('tempo', 'jF'), ('sequencer_run', 'zYI'),
+    ('external_channel', 'WI'), ('portamento', 'mI'), ('tempo', 'jF'), ('sequencer_run', 'zYI'),
     ('external_midi_sync', 'zCI'),
     ('synth', 'iI'), ('pedal', 'ipI'), ('synth_flags', 'ifI'), ('num_voices', 'ivI'), ('oscs_per_voice', 'inI'),
     ('synth_level', 'iVF'),
     ('to_synth', 'itI'), ('grab_midi_notes', 'imI'),  ('note_source_channel', 'iMI'), ('synth_delay', 'idI'),
     ('preset', 'pI'), ('num_partials', 'pI'), # note aliasing
     ('start_sample', 'zSL'), ('stop_sample', 'zOI'),
-    ('bus', 'yI'),
+    ('bus', 'yI'), ('mode', 'wwI'),
     ('midi_cc', 'icL'), ('midi_note_cmd', 'ioL'), ('cv_trigger', 'igL'),
     ('patch_string', 'uS'),  # patch_string MUST be last because we can't identify when it ends except by end-of-message.
 ]
@@ -277,9 +286,6 @@ def message(**kwargs):
             if 'wave' not in kwargs or kwargs['wave'] != BYO_PARTIALS:
                 raise ValueError('\'num_partials\' must be used with \'wave\'=BYO_PARTIALS.')
 
-    if(insert_time is not None and 'time' not in kwargs):
-        kwargs['time'] = insert_time()
-
     # Validity check all the passed args.
     prioritized_keys = []
     for key, arg in kwargs.items():
@@ -287,8 +293,8 @@ def message(**kwargs):
             raise ValueError('Unknown keyword ' + key)
         priority = _KW_PRIORITY[key]
         if arg is None:
-            # Ignore time=None or sequence=None
-            if key != 'time' and key != 'sequence':
+            # Ignore ticks=None
+            if key != 'ticks':
                 raise ValueError('No arg for key ' + key)
         else:
             prioritized_keys.append((priority, key))
@@ -401,22 +407,17 @@ def restart(default_synths=0):
     _amy.stop()
     _amy.start(default_synths)
 
-def inject_midi(a, b, c, d=None):
-    if d is None:
-        _amy.inject_midi(a, b, c)
-    else:
-        _amy.inject_midi(a, b, c, d)
-
 def inject_midi_bytes(data, usb=0):
     # Feed a raw MIDI byte stream (list/tuple/bytes of ints) through AMY's
-    # byte-stream parser, exercising running status and real-time interleaving --
-    # unlike inject_midi(), which injects a single pre-formed message.
+    # byte-stream parser, exercising running status and real-time interleaving
+    # just as real MIDI input does. There is no scheduling argument: live MIDI
+    # has no time of its own, it plays when it arrives.
     _amy.inject_midi_bytes(data, usb)
 
-def unload_sample(patch=0):
-    s= "%d,%d" % (patch, 0)
+def unload_sample(preset=0):
+    s= "%d,%d" % (preset, 0)
     send(load_sample=s)
-    print("Patch %d unloaded from RAM" % (patch))
+    print("Preset %d unloaded from RAM" % (preset))
 
 # For AMYBoard and other AMYs that can get messages over MIDI sysex
 # AMYboard is the name of the default AMYboard USB over MIDI device. 
@@ -455,11 +456,34 @@ except ImportError:
         return ubinascii.b2a_base64(b)[:-1]
 
 def start_sample(preset=0, source=SAMPLE_FROM_OUTPUT,  max_frames=0, midinote=60, loopstart=0, loopend=0):
-    s = "%d,%d,%d,%d,%d,%d" % (preset, source, max_frames, midinote, loopstart, loopend)
+    # midinote may be fractional, e.g. a sample tuned 4 cents sharp of C4 is 60.04
+    s = "%d,%d,%d,%g,%d,%d" % (preset, source, max_frames, midinote, loopstart, loopend)
     send(start_sample=s)
 
 def stop_sample():
     send(stop_sample=1)
+
+def _send_transfer_chunk(message):
+    """Send one chunk of an AUDIO or FILE transfer's payload.
+
+    When AMY is linked in-process, this goes via the sysex-marked path
+    (amy_send_wire_from_sysex) so amy_add_message_with_sysex_flag() can
+    unambiguously identify it as transfer payload rather than risk
+    misinterpreting -- or having misinterpreted -- a regular wire command
+    as such, regardless of what else might be calling amy.send()
+    concurrently (e.g. a sketch's own loop() on hardware during a live
+    transfer). _send_wire_from_sysex resolves to the local AMY on every
+    backend (CPython c_amy, linked MicroPython, web), so the flag is never
+    dropped just because the platform reaches AMY differently.
+
+    override_send means the user has redirected AMY somewhere else
+    entirely -- another board over MIDI sysex or i2c -- so chunks follow
+    the same route as the rest of the transfer and get their sysex marking
+    from the transport at the far end."""
+    if override_send is not None:
+        override_send(message)
+    else:
+        _send_wire_from_sysex(message)
 
 def load_sample_bytes(b, stereo=False, preset=0, midinote=60, loopstart=0, loopend=0, sr=AMY_SAMPLE_RATE):
     # takes in a python bytes obj instead of filename
@@ -468,13 +492,13 @@ def load_sample_bytes(b, stereo=False, preset=0, midinote=60, loopstart=0, loope
         # just choose first channel
         b = bytes([b[j] for i in range(0,len(b),4) for j in (i,i+1)])
     n_frames = len(b)/2
-    s = "%d,%d,%d,%d,%d,%d" % (preset, n_frames, sr, midinote, loopstart, loopend)
+    s = "%d,%d,%d,%g,%d,%d" % (preset, n_frames, sr, midinote, loopstart, loopend)
     send(load_sample=s)
     last_f = 0
     for i in range(ceil(n_frames/94)):
         frames_bytes = b[last_f:last_f+188]
         message = b64(frames_bytes)
-        send_raw(message.decode('ascii'))
+        _send_transfer_chunk(message.decode('ascii'))
         last_f = last_f + 188
 
 def disk_sample(wavfilename, preset=0, midinote=60):
@@ -500,19 +524,11 @@ def transfer_file(source_filename, dest_filename=None):
 
     # Now generate the base64 encoded segments, 188 bytes at a time
     # why 188? that generates 252 bytes of base64 text. amy's max message size is currently 255.
-    # Use the _from_sysex variant so the chunks are routed to
-    # parse_transfer_message via the amy_parsing_from_sysex flag. Internal
-    # amy.send() calls from other contexts (e.g. a sketch's loop() on
-    # AMYboard hardware running during a live transfer) use the regular
-    # path and won't be mis-interpreted as transfer data.
     w = open(source_filename, 'rb')
     for i in range(ceil(file_size/188)):
         file_bytes = w.read(188)
         message = b64(file_bytes)
-        if override_send is not None:
-            override_send(message.decode('ascii'))
-        else:
-            _amy.send_wire_from_sysex(message.decode('ascii'))
+        _send_transfer_chunk(message.decode('ascii'))
     w.close()
 
 def load_sample(wavfilename, preset=0, midinote=0, loopstart=0, loopend=0):
@@ -534,7 +550,7 @@ def load_sample(wavfilename, preset=0, midinote=0, loopstart=0, loopend=0):
             midinote=60
 
     # Tell AMY we're sending over a sample
-    s = "%d,%d,%d,%d,%d,%d" % (preset, w.getnframes(), w.getframerate(), midinote, loopstart, loopend)
+    s = "%d,%d,%d,%g,%d,%d" % (preset, w.getnframes(), w.getframerate(), midinote, loopstart, loopend)
     send(load_sample=s)
     # Now generate the base64 encoded segments, 188 bytes / 94 frames at a time
     # why 188? that generates 252 bytes of base64 text. amy's max message size is currently 255.
@@ -544,8 +560,8 @@ def load_sample(wavfilename, preset=0, midinote=0, loopstart=0, loopend=0):
             # de-interleave and just choose the first channel
             frames_bytes = bytes([frames_bytes[j] for i in range(0,len(frames_bytes),4) for j in (i,i+1)])
         message = b64(frames_bytes)
-        send_raw(message.decode('ascii'))
-    print("Loaded sample over wire protocol. Preset #%d. %d bytes, %d frames, midinote %d" % (preset, w.getnframes()*2, w.getnframes(), midinote))
+        _send_transfer_chunk(message.decode('ascii'))
+    print("Loaded sample over wire protocol. Preset #%d. %d bytes, %d frames, midinote %g" % (preset, w.getnframes()*2, w.getnframes(), midinote))
 
 
 """
@@ -556,7 +572,10 @@ def reset(osc=None, **kwargs):
     if(osc is not None):
         send(reset=osc, **kwargs)
     else:
-        send(reset=RESET_ALL_OSCS, **kwargs) 
+        # Also clear the sequencer: anonymous ticks= entries (2- or 1-value
+        # forms) have no tag, so a plain amy.reset() is the only way to get
+        # rid of one once it's scheduled.
+        send(reset=RESET_ALL_OSCS | RESET_SEQUENCER, **kwargs)
 
 
 

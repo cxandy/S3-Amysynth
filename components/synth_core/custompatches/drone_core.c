@@ -281,7 +281,7 @@ static void drone_configure_wave_synth(uint8_t synth, uint8_t voices, uint16_t w
     e->synth                  = synth;
     e->osc                    = 0;
     e->amp_coefs[COEF_MOD]    = m;
-    e->mod_source             = 1;       /* osc1 of this voice (base-osc rel) */
+    e->mod_source[0]          = 1;       /* osc1 of this voice (base-osc rel) */
     e->filter_type            = FILTER_LPF24;
     e->filter_freq_coefs[COEF_CONST] = s_d.sweep_hi;
     e->resonance              = s_d.resonance;

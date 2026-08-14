@@ -120,7 +120,7 @@ void amy_fx_set_master_volume(float v)
     s_master_volume = v;
     /* Direct write to amy_global.volume[]: an aligned float store, atomic on
      * Xtensa. Called from synth_ui_task, never the render body. */
-    for (int b = 0; b < AMY_NUM_BUSES; b++) {
+    for (int b = 0; b < amy_global.config.max_buses; b++) {
         amy_global.volume[b] = v;
     }
 }

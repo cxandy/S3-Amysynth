@@ -150,7 +150,7 @@ void voice_apply_native_lfo_topo(uint8_t synth, const seq_lfo_t *lfo,
             e = amy_helpers_event_begin();
             e->synth      = synth;
             e->osc        = o;
-            e->mod_source = carrier_osc;
+            e->mod_source[0] = carrier_osc;
             e->filter_freq_coefs[COEF_MOD] = 0.0f;
             e->amp_coefs[COEF_MOD]         = 0.0f;
             e->freq_coefs[COEF_MOD]        = 0.0f;
@@ -197,7 +197,7 @@ void voice_apply_native_lfo_topo(uint8_t synth, const seq_lfo_t *lfo,
                                   ? powf(10.0f, -3.0f * wcoef) : 1.0f;
         e->amp_coefs[COEF_VEL]    = 0.0f;
         e->amp_coefs[COEF_EG0]    = 0.0f;
-        e->mod_source             = wobble_osc;
+        e->mod_source[0]          = wobble_osc;
         e->amp_coefs[COEF_MOD]    = wob_depth_live ? wcoef : 0.0f;
         e->freq_coefs[COEF_MOD]   = wob_rate_live
                                   ? w * VOICE_WOB_DEPTH_RATE : 0.0f;

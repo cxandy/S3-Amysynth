@@ -279,6 +279,17 @@ static void parse_event_breakpoints(char *message, uint32_t *times_ms, float *va
     }
 }
 
+// helper to parse the list of modulating oscs ("L3", or "L3,4" for both slots)
+void parse_mod_source(char *message, uint16_t *vals) {
+    int num_parsed = parse_list_uint16_t(message, vals, NUM_MOD_SOURCES,
+                                         AMY_UNSET_VALUE(vals[0]));
+    // Slots this message didn't mention keep whatever they already had, so
+    // clear them in the *event* (an unset event field is "don't change").
+    for (int i = num_parsed; i < NUM_MOD_SOURCES; ++i) {
+        AMY_UNSET(vals[i]);
+    }
+}
+
 // helper to parse the list of source oscs for an algorithm
 void parse_algo_source(char *message, int16_t *vals) {
     int num_parsed = parse_list_int16_t(message, vals, MAX_ALGO_OPS,
@@ -337,6 +348,10 @@ int midi_mapping_from_message(char *message, char cmd, int instr_num, int skip_c
     // ic255 clears all MIDI CC mappings for this synth (short form, no extra fields needed).
     size_t pos = 0;
     size_t mlen = strlen(message);
+    // An empty payload ("ic"/"io" at end of message) would return -1 below,
+    // which exactly cancels the outer parser's advance and wedges it in an
+    // infinite loop on the same 'i'.
+    if (mlen == 0) return 0;
     while (pos < mlen) {
         // Break the mapping on ZZs (for K257).
         size_t sub_mlen, next_pos;
@@ -461,6 +476,24 @@ int amy_parse_synth_layer_message(char *message, amy_event *e) {
     return skip_chars;
 }
 
+// Parse a sample-load parameter list ('z'/'zS' messages): comma-separated
+// unsigned integers, except the midinote field which may be fractional (e.g.
+// a sample tuned 4 cents sharp of C4 is "60.04"). parse_list_uint32_t cannot
+// parse these lists: its leading charset scan treats the list as ending at
+// the first '.', which would silently zero every field after a fractional
+// midinote. Absent fields parse as 0.
+static void parse_sample_load_params(char *message, uint32_t *vals, int num_vals,
+                                     int midinote_field, float *midinote) {
+    *midinote = 0;
+    uint16_t c = 0;
+    for (int f = 0; f < num_vals; ++f) {
+        vals[f] = (uint32_t)strtoul(message + c, NULL, 10);
+        if (f == midinote_field) *midinote = atoff(message + c);
+        while (message[c] != ',' && message[c] != 0 && c < MAX_MESSAGE_LEN) c++;
+        if (message[c] == ',') c++;
+    }
+}
+
 // Parser for transfer-layer ('z') prefix. Returns how much of a message to skip
 uint16_t amy_parse_transfer_layer_message(char *message) {
 
@@ -468,12 +501,13 @@ uint16_t amy_parse_transfer_layer_message(char *message) {
         // z: Signal to start loading sample. 
         // Params: preset number, length(frames), samplerate, midinote, loopstart, loopend. 
         uint32_t sm[6]; // preset, length, SR, midinote, loop_start, loopend
-        parse_list_uint32_t(message, sm, 6, 0);
+        float midinote;
+        parse_sample_load_params(message, sm, 6, 3, &midinote);
         if(sm[1]==0) { // remove preset
             pcm_unload_preset(sm[0]);
         } else {
             amy_execute_deltas();
-            int16_t * ram = pcm_load(sm[0], sm[1], sm[2], 1, sm[3], sm[4], sm[5]);
+            int16_t * ram = pcm_load(sm[0], sm[1], sm[2], 1, midinote, sm[4], sm[5]);
             start_receiving_transfer(sm[1]*2, (uint8_t*)ram);
         }
         return 0;
@@ -519,8 +553,9 @@ uint16_t amy_parse_transfer_layer_message(char *message) {
         // zS: sample from BUS[1] to a memorypcm patch. 
         // Params: Preset number,  bus, max length in frames,midinote,loopstart,loopend
         uint32_t sm[6]; // preset, bus, max frames, midinote, loop_start, loopend
-        parse_list_uint32_t(message, sm, 6, 0);
-        int16_t * ram = pcm_load(sm[0], sm[2], AMY_SAMPLE_RATE, 2, sm[3], sm[4], sm[5]);
+        float midinote;
+        parse_sample_load_params(message, sm, 6, 3, &midinote);
+        int16_t * ram = pcm_load(sm[0], sm[2], AMY_SAMPLE_RATE, 2, midinote, sm[4], sm[5]);
         start_receiving_sample(sm[2], sm[1], ram);
         return 1;
     }
@@ -726,7 +761,7 @@ int amy_parse_message(char * message, amy_event *e) {
             break;
             case 'K': e->patch_number = atoi(arg); break;
             case 'l': e->velocity=atoff(arg); break;
-            case 'L': e->mod_source=atoi(arg); break;
+            case 'L': parse_mod_source(arg, e->mod_source); break;
             case 'm': e->portamento_ms=atoi(arg); break;
             case 'M': if (AMY_HAS_ECHO) {
                 float echo_params[5];
@@ -775,7 +810,7 @@ int amy_parse_message(char * message, amy_event *e) {
             case 'u': patches_store_patch(e, arg); pos = strlen(message) - 1; break;  // patches_store_patch processes the patch as all the rest of the message and maybe sets patch.
             /* U used by Alles for sync */
             case 'v': e->osc=((atoi(arg)) % (AMY_OSCS+1));  break; // allow osc wraparound
-            case 'V': parse_list_float(arg, e->volume, AMY_NUM_BUSES, AMY_UNSET_VALUE(e->volume[0])); break;
+            case 'V': e->volume = atoff(arg); break;
             case 'w': if (arg[0] == 'w') {  // 'ww' is wave submode.
                     e->mode=atoi(arg + 1);
                     ++pos;

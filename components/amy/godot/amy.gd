@@ -43,6 +43,8 @@ const FILTER_LPF: int = 1
 const FILTER_BPF: int = 2
 const FILTER_HPF: int = 3
 const FILTER_LPF24: int = 4
+const FILTER_NOTCH: int = 5
+const FILTER_PHASER: int = 6
 
 # ============================================================
 #  Envelope types
@@ -73,6 +75,8 @@ const ENVELOPE_TRUE_EXPONENTIAL: int = 3
 @export var audio_in: bool = false
 ## Maximum number of oscillators.
 @export var max_oscs: int = 180
+## Number of FX buses. No upper limit beyond available memory.
+@export var max_buses: int = 4
 ## Maximum number of voices.
 @export var max_voices: int = 64
 ## Maximum number of synths.
@@ -112,6 +116,7 @@ func _init_native() -> void:
 	_synth.set("startup_bleep", startup_bleep)
 	_synth.set("audio_in", audio_in)
 	_synth.set("max_oscs", max_oscs)
+	_synth.set("max_buses", max_buses)
 	_synth.set("max_voices", max_voices)
 	_synth.set("max_synths", max_synths)
 
@@ -248,12 +253,30 @@ func _format_list(val: Variant) -> String:
 	return str(val)
 
 ## Format a control coefficient value.
-## Can be a number (treated as const), a string, or an array.
+## Can be a number (treated as const), a string, an array, or a dictionary
+## keyed by COEF_FIELDS name, e.g. {"const": 220, "mod0": 0.1}.
 func _format_ctrl(val: Variant) -> String:
 	if val is float or val is int:
 		return _trunc(float(val))
 	if val is String:
 		return str(val)
+	if val is Dictionary:
+		var vals: Array = []
+		vals.resize(COEF_FIELDS.size())
+		for key: Variant in val:
+			var name: String = COEF_ALIASES.get(str(key), str(key))
+			var idx: int = COEF_FIELDS.find(name)
+			if idx < 0:
+				push_error("Unknown ctrl_coef field: %s. Valid: %s" % [key, ", ".join(COEF_FIELDS)])
+				return ""
+			vals[idx] = val[key]
+		# Trailing unset coefs can just be left off the wire string.
+		while vals.size() > 0 and vals[vals.size() - 1] == null:
+			vals.resize(vals.size() - 1)
+		var coefs: PackedStringArray = PackedStringArray()
+		for item: Variant in vals:
+			coefs.append("" if item == null else _trunc(float(item)))
+		return ",".join(coefs)
 	if val is Array:
 		var parts: PackedStringArray = PackedStringArray()
 		for item: Variant in val:
@@ -269,6 +292,7 @@ func _format_ctrl(val: Variant) -> String:
 # ============================================================
 # BEGIN GENERATED - scripts/gen_amy_gd_api.py
 var _KW_MAP: Dictionary = {
+	"ticks":               ["H", "L"],
 	"osc":                 ["v", "I"],
 	"wave":                ["w", "I"],
 	"note":                ["n", "F"],
@@ -277,12 +301,11 @@ var _KW_MAP: Dictionary = {
 	"freq":                ["f", "C"],
 	"duty":                ["d", "C"],
 	"feedback":            ["b", "F"],
-	"time":                ["t", "I"],
 	"reset":               ["S", "I"],
 	"phase":               ["P", "F"],
 	"pan":                 ["Q", "C"],
 	"client":              ["g", "I"],
-	"volume":              ["V", "L"],
+	"volume":              ["V", "F"],
 	"pitch_bend":          ["s", "F"],
 	"filter_freq":         ["F", "C"],
 	"resonance":           ["R", "F"],
@@ -294,7 +317,7 @@ var _KW_MAP: Dictionary = {
 	"eg1_type":            ["X", "I"],
 	"debug":               ["D", "I"],
 	"chained_osc":         ["c", "I"],
-	"mod_source":          ["L", "I"],
+	"mod_source":          ["L", "L"],
 	"eq":                  ["x", "L"],
 	"filter_type":         ["G", "I"],
 	"ratio":               ["I", "F"],
@@ -310,7 +333,6 @@ var _KW_MAP: Dictionary = {
 	"patch":               ["K", "I"],
 	"external_channel":    ["W", "I"],
 	"portamento":          ["m", "I"],
-	"sequence":            ["H", "L"],
 	"tempo":               ["j", "F"],
 	"sequencer_run":       ["zY", "I"],
 	"external_midi_sync":  ["zC", "I"],
@@ -329,6 +351,7 @@ var _KW_MAP: Dictionary = {
 	"start_sample":        ["zS", "L"],
 	"stop_sample":         ["zO", "I"],
 	"bus":                 ["y", "I"],
+	"mode":                ["ww", "I"],
 	"midi_cc":             ["ic", "L"],
 	"midi_note_cmd":       ["io", "L"],
 	"cv_trigger":          ["ig", "L"],
@@ -336,15 +359,15 @@ var _KW_MAP: Dictionary = {
 }
 
 var _KW_PRIORITY: Dictionary = {
-	"osc": 0,
-	"wave": 1,
-	"note": 2,
-	"vel": 3,
-	"amp": 4,
-	"freq": 5,
-	"duty": 6,
-	"feedback": 7,
-	"time": 8,
+	"ticks": 0,
+	"osc": 1,
+	"wave": 2,
+	"note": 3,
+	"vel": 4,
+	"amp": 5,
+	"freq": 6,
+	"duty": 7,
+	"feedback": 8,
 	"reset": 9,
 	"phase": 10,
 	"pan": 11,
@@ -377,30 +400,38 @@ var _KW_PRIORITY: Dictionary = {
 	"patch": 38,
 	"external_channel": 39,
 	"portamento": 40,
-	"sequence": 41,
-	"tempo": 42,
-	"sequencer_run": 43,
-	"external_midi_sync": 44,
-	"synth": 45,
-	"pedal": 46,
-	"synth_flags": 47,
-	"num_voices": 48,
-	"oscs_per_voice": 49,
-	"synth_level": 50,
-	"to_synth": 51,
-	"grab_midi_notes": 52,
-	"note_source_channel": 53,
-	"synth_delay": 54,
-	"preset": 55,
-	"num_partials": 56,
-	"start_sample": 57,
-	"stop_sample": 58,
-	"bus": 59,
+	"tempo": 41,
+	"sequencer_run": 42,
+	"external_midi_sync": 43,
+	"synth": 44,
+	"pedal": 45,
+	"synth_flags": 46,
+	"num_voices": 47,
+	"oscs_per_voice": 48,
+	"synth_level": 49,
+	"to_synth": 50,
+	"grab_midi_notes": 51,
+	"note_source_channel": 52,
+	"synth_delay": 53,
+	"preset": 54,
+	"num_partials": 55,
+	"start_sample": 56,
+	"stop_sample": 57,
+	"bus": 58,
+	"mode": 59,
 	"midi_cc": 60,
 	"midi_note_cmd": 61,
 	"cv_trigger": 62,
 	"patch_string": 63,
 }
+
+## The control coefficient inputs, in wire order.  Prefer naming these in a
+## Dictionary over writing a positional Array: anything past the modulators
+## shifts position whenever a new control input is added.
+const COEF_FIELDS: PackedStringArray = ["const", "note", "vel", "eg0", "eg1", "mod0", "bend", "ext0", "ext1", "mod1"]
+
+## Superseded coef names, kept working: {old: new}.
+const COEF_ALIASES: Dictionary = {"mod": "mod0"}
 # END GENERATED
 
 # ============================================================

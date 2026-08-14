@@ -1,9 +1,21 @@
 # AMY Local Edits
 
 Edits applied on top of the upstream `shorepine/amy` submodule.
-Upstream commit: `85a7025` (v1.2.121, vendored 2026-08-07; previous bases
-v1.2.104 `fd09bd2`, v1.2.31 `1e23c70`). The submodule tracks upstream `main`
+Upstream commit: `55e044d` (v1.2.145, vendored 2026-08-14) plus two of our
+own PRs vendored ahead of their merge - see "Pending upstream" below.
+Previous bases: v1.2.121 `85a7025`, v1.2.104 `fd09bd2`, v1.2.31 `1e23c70`. The submodule tracks upstream `main`
 (`.gitmodules` `branch = main`; refresh with `git submodule update --remote amy`).
+
+## Pending upstream (vendored ahead of merge, 2026-08-14)
+
+Two of our PRs are part of this vendor base before upstream has merged
+them. They carry NO `LOCAL EDIT` markers (written upstream-native); if a
+PR is rejected, re-mark its diff as a LOCAL EDIT here instead.
+
+| PR | What |
+|----|------|
+| [#1106](https://github.com/shorepine/amy/pull/1106) | Free a released voice's oscs (`RESET_FREE_OSC`); describe-paths (patch store, voice snapshot) no longer allocate oscs; deletion takes no snapshot. |
+| [#1107](https://github.com/shorepine/amy/pull/1107) | `ram_caps_oscs` config field: per-osc state arena caps, defaults to `ram_caps_events`. Replaces the former af10219 LOCAL EDIT; `main/main.c` sets it to PSRAM explicitly. |
 
 All edits are marked `// LOCAL EDIT` in the source. ESP32-S3-specific edits are
 permanent (upstream has no concept of IRAM/DRAM placement or FreeRTOS task

@@ -46,6 +46,7 @@ amy_config_t amy_default_config() {
     c.ks_oscs = 1;
 
     c.max_oscs = 250;
+    c.max_buses = AMY_DEFAULT_NUM_BUSES;
     c.max_sequencer_tags = 256;
     c.max_voices = 64;
     c.max_synths = 64;
@@ -68,10 +69,11 @@ amy_config_t amy_default_config() {
     c.ram_caps_delay = MALLOC_CAP_DEFAULT;
     c.ram_caps_sample = MALLOC_CAP_DEFAULT;
     c.ram_caps_sysex = MALLOC_CAP_DEFAULT;
-    #endif
+    #endif    
+    // LOCAL EDIT (S3-Amysynth): sequencer wire-string caps, same
+    // follow-the-events pattern as ram_caps_oscs below (see amy.h).
     c.ram_caps_sequencer = c.ram_caps_events;
-    // LOCAL EDIT (S3-Amysynth): osc-state caps default to the event pool's,
-    // preserving upstream behavior unless a target overrides (see amy.h).
+    // Per-osc synth state follows the event pool unless a target overrides.
     c.ram_caps_oscs = c.ram_caps_events;
 
     c.capture_device_id = -1;
@@ -132,8 +134,7 @@ void amy_clear_event(amy_event *e) {
     AMY_UNSET(e->feedback);
     AMY_UNSET(e->velocity);
     AMY_UNSET(e->midi_note);
-    for (int bus = 0; bus < AMY_NUM_BUSES; ++bus)
-        AMY_UNSET(e->volume[bus]);
+    AMY_UNSET(e->volume);
     AMY_UNSET(e->pitch_bend);
     AMY_UNSET(e->tempo);
     AMY_UNSET(e->latency_ms);
@@ -149,7 +150,7 @@ void amy_clear_event(amy_event *e) {
     AMY_UNSET(e->portamento_ms);
     AMY_UNSET(e->filter_type);
     AMY_UNSET(e->chained_osc);
-    AMY_UNSET(e->mod_source);
+    for (int i = 0; i < NUM_MOD_SOURCES; ++i) AMY_UNSET(e->mod_source[i]);
     AMY_UNSET(e->algorithm);
     AMY_UNSET(e->bp_is_set[0]);
     AMY_UNSET(e->bp_is_set[1]);
@@ -537,7 +538,15 @@ extern void miniaudio_start();
 extern void miniaudio_stop();
 #endif
 
+// Tracks whether the allocations made by amy_start() are still live, so that
+// amy_stop() is idempotent: calling it twice in a row (e.g. a rejected live()
+// followed by another live(), or amy.stop() twice from Python) would otherwise
+// double-free the bus, filter, and osc arrays, which the deinit paths free
+// without NULLing.
+static int amy_started = 0;  // Must be int; uint8_t or bool causes bootloop (?).
+
 void amy_start(amy_config_t c) {
+    amy_started = 1;
     global_init(c);
     amy_profiles_init();
     transfer_init();
@@ -558,6 +567,8 @@ void amy_start(amy_config_t c) {
 }
 
 void amy_stop() {
+    if (!amy_started) return;
+    amy_started = 0;
 #if !defined(ESP_PLATFORM) && !defined(PICO_ON_DEVICE) && !defined(ARDUINO) && !defined(AMY_NO_MINIAUDIO)
     if (amy_global.config.audio == AMY_AUDIO_IS_MINIAUDIO)
         miniaudio_stop();

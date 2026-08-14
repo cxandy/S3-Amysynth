@@ -17,7 +17,7 @@ var AMY_KW_MAP = {
   phase: {wire: "P", type: "F"},
   pan: {wire: "Q", type: "C"},
   client: {wire: "g", type: "I"},
-  volume: {wire: "V", type: "L"},
+  volume: {wire: "V", type: "F"},
   pitch_bend: {wire: "s", type: "F"},
   filter_freq: {wire: "F", type: "C"},
   resonance: {wire: "R", type: "F"},
@@ -29,7 +29,7 @@ var AMY_KW_MAP = {
   eg1_type: {wire: "X", type: "I"},
   debug: {wire: "D", type: "I"},
   chained_osc: {wire: "c", type: "I"},
-  mod_source: {wire: "L", type: "I"},
+  mod_source: {wire: "L", type: "L"},
   eq: {wire: "x", type: "L"},
   filter_type: {wire: "G", type: "I"},
   ratio: {wire: "I", type: "F"},
@@ -137,7 +137,10 @@ var AMY_KW_PRIORITY = {
   patch_string: 63
 };
 
-var AMY_COEF_FIELDS = ["const", "note", "vel", "eg0", "eg1", "mod", "bend", "ext0", "ext1"];
+var AMY_COEF_FIELDS = ["const", "note", "vel", "eg0", "eg1", "mod0", "bend", "ext0", "ext1", "mod1"];
+
+// Superseded coef names, kept working: {old: new}.
+var AMY_COEF_ALIASES = {mod: "mod0"};
 
 // --- type handlers (mirror Python's str_of_int, trunc, parse_list_or_comma_string, parse_ctrl_coefs) ---
 
@@ -183,7 +186,8 @@ function _parse_ctrl_coefs(coefs) {
     var list = new Array(AMY_COEF_FIELDS.length).fill(null);
     for (var key in coefs) {
       if (!coefs.hasOwnProperty(key)) continue;
-      var idx = AMY_COEF_FIELDS.indexOf(key);
+      var name = AMY_COEF_ALIASES.hasOwnProperty(key) ? AMY_COEF_ALIASES[key] : key;
+      var idx = AMY_COEF_FIELDS.indexOf(name);
       if (idx < 0) throw new Error("Unknown ctrl_coef field: " + key + ". Valid: " + AMY_COEF_FIELDS.join(", "));
       list[idx] = coefs[key];
     }
@@ -281,7 +285,7 @@ var AMY = {
   PCM_FILE_BUFFER_MULT: 8,
   SAMPLE_FROM_OUTPUT: 1,
   SAMPLE_FROM_AUDIO_IN: 2,
-  AMY_NUM_BUSES: 4,
+  AMY_DEFAULT_NUM_BUSES: 4,
   AMY_DEFAULT_BUS: 0,
   AMY_MAX_CV_IN: 2,
   AMY_MAX_CORES: 2,
@@ -326,7 +330,8 @@ var AMY = {
   ZERO_LOGFREQ_IN_HZ: 440.0,
   ZERO_MIDI_NOTE: 69,
   MIN_FILTER_LOGFREQ: -2.75,
-  NUM_COMBO_COEFS: 9,
+  NUM_MOD_SOURCES: 2,
+  NUM_COMBO_COEFS: 10,
   MAX_MESSAGE_LEN: 1024,
   MAX_PARAM_LEN: 256,
   FILTER_NONE: 0,
@@ -366,6 +371,7 @@ var AMY = {
   PCM_LOOP: 2,
   PCM_LOOP_STOP: 3,
   PCM_LOOP_FOREVER: 4,
+  PCM_LOOP_ONCE_INTERNAL: 5,
   SYNTH_OFF: 0,
   SYNTH_AUDIBLE: 1,
   SYNTH_INAUDIBLE: 2,
@@ -392,6 +398,7 @@ var AMY = {
   SYNTH_FLAGS_NOTES_VIA_MIDI: 1,
   SYNTH_FLAGS_IGNORE_NOTE_OFFS: 2,
   SYNTH_FLAGS_NEGATE_PEDAL: 4,
+  SYNTH_FLAGS_NO_NOTE_WARNINGS: 8,
   AMY_OK: 0,
   AMY_AUDIO_IS_NONE: 0,
   AMY_AUDIO_IS_I2S: 1,

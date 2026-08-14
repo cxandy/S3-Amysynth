@@ -135,8 +135,15 @@ extern uint32_t amy_gamma9001_pcm_bytes(void);
 #define SAMPLE_FROM_OUTPUT 1
 #define SAMPLE_FROM_AUDIO_IN 2
 
-// Each bus has separate FX (EQ, chorus, reverb, echo)
-#define AMY_NUM_BUSES 4
+// Each bus has separate FX (EQ, chorus, reverb, echo).  How many buses AMY
+// actually runs is a runtime setting, amy_config.max_buses, so a host can
+// trade RAM for buses without rebuilding.
+//
+// There is no compile-time ceiling.  Everything indexed by bus is allocated
+// from max_buses at amy_start, and a bus-directed parameter carries its bus
+// in the delta's uint16_t osc field (see amy_event_to_deltas_queue), so the
+// only limits are RAM and what that field holds.
+#define AMY_DEFAULT_NUM_BUSES 4
 #define AMY_DEFAULT_BUS 0
 
 // How many external CV inputs to contemplate.
@@ -279,18 +286,30 @@ typedef int16_t output_sample_type;
 #define ZERO_MIDI_NOTE 69  // 60
 #define MIN_FILTER_LOGFREQ -2.75f  // -2.0  // LPF cutoff cannot go below w = 0.01 rad/samp in filters.c = 72 Hz, so clip it here at ~65 Hz.
 
-#define NUM_COMBO_COEFS 9  // 9 control-mixing params: const, note, velocity, env1, env2, mod, pitchbend, ext0, ext1
+// How many modulating oscillators each osc can have.  Each one gets its own
+// ctrl_input column (COEF_MOD0, COEF_MOD1), so this and NUM_COMBO_COEFS move
+// together.
+#define NUM_MOD_SOURCES 2
+
+#define NUM_COMBO_COEFS 10  // 10 control-mixing params: const, note, velocity, env1, env2, mod0, pitchbend, ext0, ext1, mod1
 enum coefs{
     COEF_CONST = 0,
     COEF_NOTE = 1,
     COEF_VEL = 2,
     COEF_EG0 = 3,
     COEF_EG1 = 4,
-    COEF_MOD = 5,
+    COEF_MOD0 = 5,
     COEF_BEND = 6,
     COEF_EXT0 = 7,
     COEF_EXT1 = 8,
+    // The second mod source is appended rather than slotted in next to the
+    // first, so that every coef index before it keeps its value: a stored patch
+    // string is a positional list, so inserting a column mid-way would silently
+    // re-read every saved "bend" as a modulator depth.
+    COEF_MOD1 = 9,
 };
+// Before there were two mod sources there was just COEF_MOD; it names the first.
+#define COEF_MOD COEF_MOD0
 
 #define MAX_MESSAGE_LEN 1024
 #define MAX_PARAM_LEN 256
@@ -334,6 +353,7 @@ enum coefs{
 #define PCM_LOOP 2
 #define PCM_LOOP_STOP 3
 #define PCM_LOOP_FOREVER 4
+#define PCM_LOOP_ONCE_INTERNAL 5  // Special internal state for retriggering wav files at zero crossing
 
 #define AMY_WAVE_IS_PCM(w) ((w) == PCM || (w) == PCM_LEFT || (w) == PCM_RIGHT)
 
@@ -368,11 +388,13 @@ enum coefs{
 #define RESET_SYNTHS 262144  // Non-scheduled release of all synths, voices, oscs prior to load_patch
 #define RESET_PATCH 524288  // Clear one patch if patch_number provided, otherwise clear all patches.
 #define RESET_QUEUE 1048576 // resets the amy queue
+#define RESET_FREE_OSC 2097152  // Or'd with an osc number: free the osc's storage instead of resetting in place.
 
 // Bits for synth_flags=
 #define SYNTH_FLAGS_NOTES_VIA_MIDI 1    // Note-on/off events are routed through the MIDI interface (to pick up MIDI note cmds)
 #define SYNTH_FLAGS_IGNORE_NOTE_OFFS 2  // Note offs are ignored (for drums with long decays)
 #define SYNTH_FLAGS_NEGATE_PEDAL 4      // Flip interpretation of MIDI pedals
+#define SYNTH_FLAGS_NO_NOTE_WARNINGS 8  // Don't print note-on/off warnings (unmatched note-off etc). For hosts where a sequencer joining mid-bar makes them by design, and stderr is a slow UART in the audio path.
 
 #define true 1
 #define false 0
@@ -400,21 +422,29 @@ typedef int amy_err_t;
 
 enum params{
     WAVE, PRESET, MIDI_NOTE,              // 0, 1, 2
-    AMP,                                 // 3..11
-    DUTY=AMP + NUM_COMBO_COEFS,          // 12..20
-    FEEDBACK=DUTY + NUM_COMBO_COEFS,     // 21
-    FREQ,                                // 22..30
-    VELOCITY=FREQ + NUM_COMBO_COEFS,     // 31
-    PHASE, DETUNE, PITCH_BEND,           // 32, 33, 34
-    PAN,                                 // 35..43
-    FILTER_FREQ=PAN + NUM_COMBO_COEFS,   // 44..52
-    RATIO=FILTER_FREQ + NUM_COMBO_COEFS, // 53
-    RESONANCE, PORTAMENTO, CHAINED_OSC,  // 54, 55, 56
-    MOD_SOURCE, FILTER_TYPE,             // 57, 58
-    EQ_L, EQ_M, EQ_H,                    // 59, 60, 61
-    ALGORITHM, LATENCY, TEMPO,           // 62, 63, 64
-    VOLUME_BASE,                         // 65..68
-    VOLUME_END=VOLUME_BASE + AMY_NUM_BUSES, // 69
+    AMP,                                 // 3..12
+    DUTY=AMP + NUM_COMBO_COEFS,          // 13..22
+    FEEDBACK=DUTY + NUM_COMBO_COEFS,     // 23
+    FREQ,                                // 24..33
+    VELOCITY=FREQ + NUM_COMBO_COEFS,     // 34
+    PHASE, DETUNE, PITCH_BEND,           // 35, 36, 37
+    PAN,                                 // 38..47
+    FILTER_FREQ=PAN + NUM_COMBO_COEFS,   // 48..57
+    RATIO=FILTER_FREQ + NUM_COMBO_COEFS, // 58
+    RESONANCE, PORTAMENTO, CHAINED_OSC,  // 59, 60, 61
+    // One id per mod source, indexed as MOD_SOURCE_START + slot, exactly like
+    // ALGO_SOURCE_START below.  MOD_SOURCE names slot 0, for the code (and the
+    // callers) that only ever mean the first one.
+    MOD_SOURCE_START,                    // 62..63
+    MOD_SOURCE_END = MOD_SOURCE_START + NUM_MOD_SOURCES,  // 64
+    FILTER_TYPE = MOD_SOURCE_END,        // 64
+    EQ_L, EQ_M, EQ_H,                    // 65, 66, 67
+    ALGORITHM, LATENCY, TEMPO,           // 68, 69, 70
+    // One id, not one per bus: like every other bus-directed param (EQ_*,
+    // ECHO_*, REVERB_*), a VOLUME delta names its bus in delta.osc.  It used
+    // to be VOLUME_BASE..VOLUME_BASE+n, which is what capped the bus count --
+    // the ids would have run into MODE below.  72..98 are now free.
+    VOLUME,                              // 71
     MODE=99,                             // 99
     ALGO_SOURCE_START=100,               // 100..105
     ALGO_SOURCE_END=100+MAX_ALGO_OPS,    // 106
@@ -440,6 +470,8 @@ enum params{
     BUS,
     NO_PARAM                    // 210
 };
+// Before there were two mod sources there was just MOD_SOURCE; it names slot 0.
+#define MOD_SOURCE MOD_SOURCE_START
 
 ///////////////////////////////////////
 // Profiler setup
@@ -601,7 +633,7 @@ typedef struct amy_event {
     float feedback;
     float velocity;
     float trigger_phase;
-    float volume[AMY_NUM_BUSES];  // event_only
+    float volume;  // event_only; the mixdown volume of `bus` (default bus 0)
     float pitch_bend;  // event_only
     float tempo;  // event_only
     uint16_t latency_ms;  // event_only
@@ -609,7 +641,7 @@ typedef struct amy_event {
     float resonance;
     uint16_t portamento_ms;  // synth is alpha
     uint16_t chained_osc;
-    uint16_t mod_source;
+    uint16_t mod_source[NUM_MOD_SOURCES];
     uint8_t algorithm;
     uint8_t filter_type;
     float eq_l;  // not in synth
@@ -639,7 +671,7 @@ typedef struct amy_event {
     uint8_t note_source_channel;  // .. to mark the channel of events that come from MIDI so we don't send them back out again.
     uint32_t reset_osc;
     // Global effects
-    uint8_t bus;  // Which bus this osc ends up on / Prefix for global FX params
+    uint16_t bus;  // Which bus this osc ends up on / Prefix for global FX params
     float echo_level;
     float echo_delay_ms;
     float echo_max_delay_ms;
@@ -659,7 +691,7 @@ typedef struct amy_event {
 struct synthinfo {
     uint16_t osc; // self-reference
     // Configuration (can be fixed during oscillation)
-    uint8_t bus;  // Which bus this osc ends up on
+    uint16_t bus;  // Which bus this osc ends up on
     uint16_t wave;
     uint16_t mode;   // sub-mode within wave
     int16_t preset;  // Negative preset is voice count for build-your-own PARTIALS
@@ -678,7 +710,7 @@ struct synthinfo {
     float resonance;
     uint8_t filter_type;
     uint16_t chained_osc;
-    uint16_t mod_source;
+    uint16_t mod_source[NUM_MOD_SOURCES];
     uint8_t algorithm;
     int16_t algo_source[MAX_ALGO_OPS];  // int16 not uint because -1 specified to indicate no osc 
     uint8_t eg_type[MAX_BREAKPOINT_SETS];  // one of the ENVELOPE_ values
@@ -692,11 +724,6 @@ struct synthinfo {
     uint8_t status;  // not in event
     uint8_t role;  // not in event
     PHASOR phase;  // not in event
-    // LOCAL EDIT (S3-Amysynth): PCM retrigger declick (see pcm.c PCM_DECLICK_SHIFT)
-    SAMPLE pcm_last_out;  // not in event: last value this osc contributed
-    SAMPLE pcm_declick;   // not in event: decaying step compensator
-    float step;  // not in event
-    float substep;  // not in event
     uint32_t render_clock;
     uint32_t note_on_clock;
     uint32_t note_off_clock;
@@ -724,7 +751,10 @@ struct mod_synthinfo {
     float last_filter_logfreq;  // filter freq history for smoothing.
     float resonance;
     float feedback;
-    uint16_t state;    // Used for PCM looping state.
+    uint16_t state;      // Used for PCM looping state.
+    uint16_t next_state; // Used for PCM looping state.
+    uint32_t loopstart;  // Used for PCM looping.
+    uint32_t loopend;    // Used for PCM looping.
 };
 
 
@@ -787,6 +817,11 @@ typedef struct  {
 
     // variables
     uint16_t max_oscs;
+    // How many FX buses to run.  Each costs a few KB of
+    // always-allocated mix buffers even when idle, plus whatever its FX
+    // allocate once they're switched on (a couple of hundred KB for a bus
+    // running echo and reverb), so this is worth turning down on small parts.
+    uint16_t max_buses;
     uint8_t ks_oscs;
     uint32_t max_sequencer_tags;
     uint32_t max_voices;
@@ -803,7 +838,7 @@ typedef struct  {
     // AMY_NCHANS sequential (non-interleaved) channel blocks of len SAMPLEs each.
     // Fires for each bus from 0 up to the highest bus activated so far (which
     // can grow dynamically as buses are touched).
-    void (*amy_external_bus_postprocess_hook)(uint8_t bus, SAMPLE *buf, uint16_t len);
+    void (*amy_external_bus_postprocess_hook)(uint16_t bus, SAMPLE *buf, uint16_t len);
     float (*amy_external_coef_hook)(uint16_t channel);
     void (*amy_external_block_done_hook)(void);
     void (*amy_external_midi_input_hook)(uint8_t *bytes, uint16_t len, uint8_t is_sysex);
@@ -844,13 +879,7 @@ typedef struct  {
 
     // memory caps for MCUs
     uint32_t ram_caps_events;
-    // LOCAL EDIT (S3-Amysynth): caps for the per-osc synthinfo/mod_synthinfo
-    // blocks alloc_osc() grows on demand; defaults to ram_caps_events (the
-    // upstream behavior, which conflates the hot delta pool with osc state).
-    // Upstream PR candidate - a 25-osc/voice patch like the built-in piano
-    // grows the osc arena by tens of KB, and the arena never shrinks except
-    // on full reset, so small-heap targets need to steer it separately.
-    uint32_t ram_caps_oscs;
+    uint32_t ram_caps_oscs;  // per-osc synth state; defaults to ram_caps_events
     // LOCAL EDIT (S3-Amysynth): caps for stored sequencer wire strings and
     // their serialize/fire buffers; defaults to ram_caps_events. Upstream PR
     // candidate - lets small-heap targets keep cold control-plane strings
@@ -925,7 +954,7 @@ typedef struct global_state {
     amy_config_t config;
     uint8_t running;
     uint8_t i2s_is_in_background;  // Flag not to handle I2S in amy_update.
-    float volume[AMY_NUM_BUSES];  // Volume controls mix of buses into final output.
+    float *volume;  // Per-bus mix into the final output; max_buses entries.
     float pitch_bend;  // Legacy global pitch bend, will be subsumed per-synth (instrument).
     
     uint16_t delta_qsize;
@@ -937,7 +966,7 @@ typedef struct global_state {
     float time;
     uint8_t debug_flag;
     // How many buses do we actually have to process?
-    uint8_t highest_bus;
+    uint16_t highest_bus;
     SAMPLE hpf_state;
     
     // Transfer
@@ -954,10 +983,10 @@ typedef struct global_state {
     uint32_t us_per_tick;
 
     // Buses
-    bus_state_t *bus[AMY_NUM_BUSES];
+    bus_state_t **bus;  // max_buses entries, allocated at amy_start.
 
-    // Final output mix
-    float bus_gain[AMY_NUM_BUSES];
+    // Per-bus output gain, recomputed each block from volume[]; max_buses entries.
+    SAMPLE *volume_scale;
 
     // Smoothed microseconds per render execution.
     uint32_t render_us;
@@ -1020,9 +1049,14 @@ void * malloc_caps_block(uint32_t size, uint32_t flags);
 // zero() through this; see the definition at the end of algorithms.c.
 void amy_block_zero_blocks(SAMPLE *p, int nblocks);
 void amy_oom(const char *fmt, ...);
-void config_reverb(uint8_t bus, float level, float liveness, float damping, float xover_hz);
-void config_chorus(uint8_t bus, float level, uint16_t max_delay, float lfo_freq, float depth);
-void config_echo(uint8_t bus, float level, float delay_ms, float max_delay_ms, float feedback, float filter_coef);
+// Bus numbers arrive unchecked from the API and the wire protocol ('y9' is
+// just an atoi), and every one of them ends up subscripting amy_global.bus[]
+// or fbl[], so they have to be range-checked before they're stored anywhere.
+// Returns the bus, or AMY_DEFAULT_BUS (with a complaint) if it's out of range.
+uint16_t amy_validate_bus(int bus);
+void config_reverb(uint16_t bus, float level, float liveness, float damping, float xover_hz);
+void config_chorus(uint16_t bus, float level, uint16_t max_delay, float lfo_freq, float depth);
+void config_echo(uint16_t bus, float level, float delay_ms, float max_delay_ms, float feedback, float filter_coef);
 void osc_note_on(uint16_t osc, float initial_freq);
 void chorus_note_on(float initial_freq);
 
@@ -1144,12 +1178,17 @@ extern void midi_mappings_deinit();
 extern void midi_clear_channel_mappings(int channel, int type);
 extern bool midi_mappings_exist_for_channel(int channel);
 extern void substitute_midi_special_values(char *dest, const char *src, int channel, int code, float value);
+// Entry point for raw MIDI bytes: unpacks byte 0 and hands off below.
 extern void midi_msg_handler(uint8_t * bytes, uint16_t len, uint8_t is_sysex_unused, uint32_t time);
+// The functions below take the MIDI status byte already decoded -- `status` is the
+// status nibble (0x80/0x90/0xB0...) and `channel` the 1-based channel -- with `data`
+// pointing at the `len` data bytes that follow.  Callers unpack byte 0 themselves,
+// which lets patches.c pass a synth number larger than the 16 a status byte can hold.
 // As midi_message_handler, but any events produced by the mapping are converted to deltas
 // on `queue` instead of being played, unless queue is NULL or the global delta queue.
-extern void midi_message_handler_to_queue(uint8_t * bytes, uint16_t len, uint32_t time, amy_event *base_event, struct delta **queue);
+extern void midi_message_handler_to_queue(uint8_t status, uint16_t channel, uint8_t * data, uint16_t len, uint32_t time, amy_event *base_event, struct delta **queue);
 // Generator function for midi_message_handler.  Returns series of modified events while state is returned non-NULL.
-extern void *yield_midi_message_handler_events(uint8_t * bytes, uint16_t len, uint32_t time, amy_event *event, void *state);
+extern void *yield_midi_message_handler_events(uint8_t status, uint16_t channel, uint8_t * data, uint16_t len, uint32_t time, amy_event *event, void *state);
 
 extern float cv_inputs[AMY_MAX_CV_IN];
 #ifdef __EMSCRIPTEN__
@@ -1218,7 +1257,7 @@ extern void fprintf_event_stderr(amy_event *e);
 extern void *yield_synth_events(uint8_t synth, struct amy_event *event, bool include_fx, void *state);
 extern void *yield_synth_commands(uint8_t synth, char *s, size_t len, bool include_fx, void *state);
 extern void *yield_bus_commands(char *s, size_t len, void *state);
-extern void set_event_for_bus_fx(amy_event *event, uint8_t bus, global_state_t *state);
+extern void set_event_for_bus_fx(amy_event *event, uint16_t bus, global_state_t *state);
 extern int size_of_amy_event(void);
 extern bool event_addresses_bus(amy_event *e);
 extern bool event_addresses_synth(amy_event *e);
@@ -1238,7 +1277,7 @@ extern int instruments_max_instruments();
 extern void instruments_init(int num_instruments);
 extern void instruments_deinit();
 extern void instruments_reset();
-extern void instrument_add_new(int instrument_number, int num_voices, uint16_t *amy_voices, uint16_t patch_number, uint16_t oscs_per_voice, uint8_t bus, uint32_t flags);
+extern void instrument_add_new(int instrument_number, int num_voices, uint16_t *amy_voices, uint16_t patch_number, uint16_t oscs_per_voice, uint16_t bus, uint32_t flags);
 extern void instrument_release(int instrument_number);
 extern void instrument_change_number(int old_instrument_number, int new_instrument_number);
 // "no voice" sentinel. Must stay outside the range of a real voice index:
@@ -1266,7 +1305,7 @@ extern float instrument_get_level(int instrument_number);
 extern void instrument_set_level(int instrument_number, float level);
 // Per-render lookup: the level of the instrument owning this (amy) voice, 1.0 if none.
 extern float instrument_level_for_voice(uint16_t voice);
-extern void instrument_set_bus(int instrument_number, uint8_t bus);
+extern void instrument_set_bus(int instrument_number, uint16_t bus);
 extern uint16_t instrument_noteon_delay_ms(int instrument_number);
 extern void instrument_set_noteon_delay_ms(int instrument_number, uint16_t noteon_delay_ms);
 extern bool instrument_grab_midi_notes(int instrument_number);
@@ -1302,7 +1341,7 @@ extern void partial_note_on(uint16_t osc);
 extern void partial_note_off(uint16_t osc);
 extern void algo_note_on(uint16_t osc, float freq);
 extern void algo_note_off(uint16_t osc);
-extern void ks_note_on(uint16_t osc); 
+extern void ks_note_on(uint16_t osc, float freq);
 extern void ks_note_off(uint16_t osc);
 extern void sine_mod_trigger(uint16_t osc);
 extern void saw_down_mod_trigger(uint16_t osc);
@@ -1311,7 +1350,7 @@ extern void triangle_mod_trigger(uint16_t osc);
 extern void pulse_mod_trigger(uint16_t osc);
 extern void pcm_mod_trigger(uint16_t osc);
 extern void custom_mod_trigger(uint16_t osc);
-extern int16_t * pcm_load(uint16_t preset_number, uint32_t length, uint32_t samplerate, uint8_t channels, uint8_t midinote, uint32_t loopstart, uint32_t loopend);
+extern int16_t * pcm_load(uint16_t preset_number, uint32_t length, uint32_t samplerate, uint8_t channels, float midinote, uint32_t loopstart, uint32_t loopend);
 extern const int16_t *pcm_get_sample_ram_for_preset(uint16_t preset_number, uint32_t *length);
 extern int pcm_load_file();
 // Guard against configuring a PCM loop on a file-backed (streamed) preset,
@@ -1324,12 +1363,12 @@ extern void pcm_unload_preset(uint16_t preset_number);
 extern void pcm_unload_all_presets();
 
 // filters
-extern void filters_init(uint8_t bus);
-extern void filters_deinit(uint8_t bus);
+extern void filters_init(uint16_t bus);
+extern void filters_deinit(uint16_t bus);
 extern SAMPLE filter_process(SAMPLE * block, uint16_t osc, SAMPLE max_value);
-extern void parametric_eq_process(uint8_t bus, SAMPLE *block);
+extern void parametric_eq_process(uint16_t bus, SAMPLE *block);
 extern void reset_filter(uint16_t osc);
-extern void reset_parametric(uint8_t bus);
+extern void reset_parametric(uint16_t bus);
 extern float dsps_sqrtf_f32_ansi(float f);
 extern int8_t dsps_biquad_gen_lpf_f32(SAMPLE *coeffs, float f, float qFactor);
 extern int8_t dsps_biquad_f32_ansi(const SAMPLE *input, SAMPLE *output, int len, SAMPLE *coef, SAMPLE *w);
@@ -1357,7 +1396,7 @@ extern SAMPLE scan_max(SAMPLE* block, int len);
 
 // envelopes
 extern SAMPLE compute_breakpoint_scale(uint16_t osc, uint8_t bp_set, uint16_t sample_offset);
-extern SAMPLE compute_mod_scale(uint16_t osc);
+extern SAMPLE compute_mod_scale(uint16_t osc, uint16_t which_source);
 extern SAMPLE compute_mod_value(uint16_t mod_osc);
 extern void retrigger_mod_source(uint16_t osc);
 

@@ -46,8 +46,8 @@ static const patch_domain_t s_drum_domain = {
  * per-track cycling after a seed stays inside the bank until the user walks
  * out (cycled presets keep the role's note).
  * notes[] values are per-bank ear-tuned defaults; until a bank has had its
- * tuning pass they carry the legacy role defaults (SEQ_DRUM_DEFAULT_NOTE,
- * tuned for the 808 ROM kit). Editing a kit = touching one row: swap a
+ * tuning pass they carry the legacy role defaults (39/45/53/82, the
+ * pre-tuning 808 pitches). Editing a kit = touching one row: swap a
  * role's preset number, note, and/or voice-param blocks here.
  * eg0/eg1/flt are OPTIONAL per-role voice-param defaults (point rows at
  * named static const blocks; NULL = the transparent defaults: sample-
@@ -165,29 +165,22 @@ static inline bool drum_gamma_available(void)
 #endif
 }
 
-/* Built-in PCM sample indices, one per track (kick, snare, closed-hat, clap).
- * The ROM bank and its preset numbering follow CONFIG_AMY_PCM_GAMMA808:
- * amy/src/pcm_gamma808.h pcm_map[] vs the tiny set in amy/src/pcm_tiny.h. */
-#if CONFIG_AMY_PCM_GAMMA808
-static const int16_t SEQ_DRUM_PCM_PRESET[SEQ_TRACKS] = {
-    2,    /* track 0: [2] TR-808 Bass Drum 3 (punchy) */
-    12,   /* track 1: [12] TR-808 Snare 1     */
-    9,    /* track 2: [9] TR-808 HiHat Closed */
-    3,    /* track 3: [3] TR-808 Clap         */
-};
-#else
-static const int16_t SEQ_DRUM_PCM_PRESET[SEQ_TRACKS] = {
-    1,    /* track 0: [1] 808-KIK 4-D    */
-    2,    /* track 1: [2] 808-SNR 4-D    */
-    6,    /* track 2: [6] 808-C-HAT1-D   */
-    9,    /* track 3: [9] 808-DRYCLP-D   */
-};
-#endif
+/* Boot-default kit = bank 0 (the 808 ROM bank). Layer init and the lazy
+ * preset seed below both read the bank row directly, so the ear-tuned
+ * roles[]/notes[] have a single source and boot sounds identical to an
+ * explicit "808" pick in the Drum Bank menu. (Replaces the former
+ * SEQ_DRUM_PCM_PRESET / SEQ_DRUM_DEFAULT_NOTE mirrors, which kept serving
+ * the pre-tuning kit at boot. Bank preset numbering assumes
+ * CONFIG_AMY_PCM_GAMMA808, as the table comment above notes.) */
+uint8_t sequencer_drum_default_note(uint8_t track)
+{
+    return s_drum_banks[0].notes[track];
+}
 
-/* Per-layer, per-track PCM preset override, lazily defaulted to
- * SEQ_DRUM_PCM_PRESET. sequencer_core_set_drum_pcm_preset() is the only writer,
- * letting a runtime-recorded sample (custompatches/sample_rec) take over one
- * track's slot without a shared-struct field. */
+/* Per-layer, per-track PCM preset override, lazily defaulted to the boot
+ * bank's role presets. sequencer_core_set_drum_pcm_preset() is the only
+ * writer, letting a runtime-recorded sample (custompatches/sample_rec) take
+ * over one track's slot without a shared-struct field. */
 static uint16_t s_drum_pcm_preset[MAX_LAYERS][SEQ_TRACKS];
 static bool     s_drum_pcm_preset_init[MAX_LAYERS];
 
@@ -200,7 +193,7 @@ static uint16_t drum_pcm_preset_for(uint8_t layer_idx, uint8_t track)
 {
     if (!s_drum_pcm_preset_init[layer_idx]) {
         for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
-            s_drum_pcm_preset[layer_idx][t] = (uint16_t)SEQ_DRUM_PCM_PRESET[t];
+            s_drum_pcm_preset[layer_idx][t] = s_drum_banks[0].roles[t];
         }
         s_drum_pcm_preset_init[layer_idx] = true;
     }

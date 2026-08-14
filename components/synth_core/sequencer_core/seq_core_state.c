@@ -55,16 +55,6 @@ static const uint16_t SEQ_DRUM_DEFAULT_PATCH[SEQ_TRACKS] = {
     220,  /* perc  - DX7 COW BELL accent                  */
 };
 
-/* Role-based default pitches: pitch IS timbre for these tuned patches.
- * Layer-init only - selecting a drum bank re-seeds pitches from that bank's
- * ear-tuned notes[] (s_drum_banks, seq_core_synth.c). */
-static const uint8_t SEQ_DRUM_DEFAULT_NOTE[SEQ_TRACKS] = {
-    39,   /* kick  - Eb2, 808-KIK root      */
-    45,   /* snare - A2,  808-SNR root      */
-    53,   /* hat   - F3,  808-C-HAT root    */
-    82,   /* clap  - Bb5, 808-DRYCLP root-12 */
-};
-
 void sequencer_core_init(void)
 {
     amy_helpers_init();
@@ -155,13 +145,16 @@ uint8_t sequencer_core_add_layer(seq_layer_type_t type, uint8_t num_steps)
         layer->synth_flags = 0;
         layer->num_voices  = SEQ_DRUM_VOICES;
         /* Role-based pitches: pitch IS timbre for these tuned patches, and also
-         * tunes the samples in PCM mode (render_pcm shifts by midi_note). */
+         * tunes the samples in PCM mode (render_pcm shifts by midi_note).
+         * Seeded from the boot bank's ear-tuned notes[], the same source the
+         * bank selector re-seeds from. */
         for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
-            s_track_source_note[idx][t] = SEQ_DRUM_DEFAULT_NOTE[t];
-            s_track_prev_plain[idx][t]  = SEQ_DRUM_DEFAULT_NOTE[t];
-            layer->track_base_note[t] = SEQ_DRUM_DEFAULT_NOTE[t];
+            uint8_t n = sequencer_drum_default_note(t);
+            s_track_source_note[idx][t] = n;
+            s_track_prev_plain[idx][t]  = n;
+            layer->track_base_note[t] = n;
             for (uint8_t s = 0; s < SEQ_MAX_STEPS; s++) {
-                layer->step_note[t][s] = SEQ_DRUM_DEFAULT_NOTE[t];
+                layer->step_note[t][s] = n;
             }
         }
     } else {

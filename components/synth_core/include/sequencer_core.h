@@ -216,7 +216,7 @@ seq_drum_engine_t sequencer_core_get_drum_engine(void);
 void sequencer_core_dump_state(void);
 
 /* ── Drum per-track PCM preset override ──
- * PCM mode defaults to SEQ_DRUM_PCM_PRESET[track]; this lets a runtime-recorded
+ * PCM mode defaults to the boot bank's role preset; this lets a runtime-recorded
  * sample (custompatches/sample_rec) replace one track's preset without a
  * shared-struct field. Live-reloads the track's osc when PCM is already active,
  * otherwise takes effect on the next set_drum_engine(SEQ_DRUM_PCM). No-op for

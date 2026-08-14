@@ -121,6 +121,9 @@ extern uint8_t        s_track_prev_plain[][SEQ_TRACKS];
 
 /* Owned by seq_core_synth.c */
 extern seq_drum_engine_t s_drum_engine;
+/* Boot-default drum pitch for a track: the boot bank's (808 ROM) ear-tuned
+ * notes[]. Single source with the bank selector's re-seed path. */
+uint8_t sequencer_drum_default_note(uint8_t track);
 /* Per-track voice count last pushed to each melodic row's synth; shifted by
  * delete_layer alongside s_track_source_note. */
 extern uint8_t        s_voices_applied[][SEQ_TRACKS];

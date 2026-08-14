@@ -50,11 +50,15 @@ static const patch_domain_t s_drum_domain = {
  * tuned for the 808 ROM kit). Editing a kit = touching one row: swap a
  * role's preset number, note, and/or voice-param blocks here.
  * eg0/eg1/flt are OPTIONAL per-role voice-param defaults (point rows at
- * named static const blocks; NULL = legacy engine defaults: the EDM
- * envelope tables, no EG1, the hat HPF rule). They are the bank-level
- * analog of a patch's baked-in voice character: applied whenever the
- * track's voice params (re)configure and the row has NOT been user-
- * authored - authored vp wins, same deferred-authority rule as melodic.
+ * named static const blocks; NULL = the transparent defaults: sample-
+ * natural envelope, no EG1, no filter). Rows the user has NOT authored
+ * get their editable vp model SEEDED from these on every (re)configure,
+ * then the vp is pushed through the same appliers the graph editors use -
+ * so the editors open on the curve that is actually sounding, and a first
+ * touch tweaks from reality instead of a zeroed model. Authored vp wins
+ * and is never re-seeded, same deferred-authority rule as melodic (where
+ * the unauthored model stays zeroed because a patch string's baked
+ * envelope is unreadable; drum defaults are our own data).
  * The bank is derived from the track's CURRENT preset (not the display
  * selector), so kit defaults follow cycling within a bank and survive
  * project reload; presets outside every bank range (e.g. the runtime-
@@ -86,13 +90,28 @@ static const seq_filter_t s_808_kick_flt =
     { .filter_type = SEQ_FILTER_LPF24, .cutoff_hz = 279.0f,
       .resonance = 1.75f, .enabled = true,
       .filter_env_amount = -2.0f, .feedback = 0.0f };
+/* 808 hat: HPF strips low-end rumble, adds crispness. Formerly a hardcoded
+ * every-bank track-2 rule; now 808 bank data like any other tuning block, so
+ * untuned banks play their hats as sampled. */
+static const seq_filter_t s_808_hat_flt =
+    { .filter_type = SEQ_FILTER_HPF, .cutoff_hz = 3000.0f,
+      .resonance = 0.5f, .enabled = true,
+      .filter_env_amount = 0.0f, .feedback = 0.0f };
+
+/* Transparent envelope: seeds unauthored rows whose bank authors no eg0. The
+ * sample's own shape plays (sustain 100%, no decay); the release only matters
+ * for looped PCM modes, where it is the note-off fade - one-shot PCM ignores
+ * note-off entirely (pcm.c), so there this is audibly "no envelope". */
+static const seq_env_t s_drum_env_transparent =
+    { .attack_ms = VOICE_ENV_ATTACK_MIN_MS, .decay_ms = 0, .sustain_pct = 100,
+      .release_ms = 250, .eg_type = ENVELOPE_LINEAR };
 
 static const seq_drum_bank_t s_drum_banks[] = {
     /* ROM bank (gamma808) - ear-tuned */
     { .name = "808",   .first = 0,   .count = 19,
       .roles = {   0,  14,  10,   3}, .notes = { 56, 31, 71, 62},
       .eg0 = { &s_808_kick_eg0 }, .eg1 = { &s_808_kick_eg1 },
-      .flt = { &s_808_kick_flt } },
+      .flt = { &s_808_kick_flt, NULL, &s_808_hat_flt } },
     /* BD1, Snare 3, HH Open, Clap */
     { .name = "909",   .first = 256, .count = 17,
       .roles = { 256, 268, 260, 258}, .notes = { 39, 45, 53, 82} },
@@ -188,66 +207,48 @@ static uint16_t drum_pcm_preset_for(uint8_t layer_idx, uint8_t track)
     return s_drum_pcm_preset[layer_idx][track];
 }
 
-/* EDM-tuned envelope parameters for PCM drum tracks (one-shot decay, sustain=0). */
-static const float DRUM_PCM_ATK_MS[SEQ_TRACKS] = {2.0f,  1.0f,  1.0f,  1.0f};
-static const float DRUM_PCM_DEC_MS[SEQ_TRACKS] = {600.0f, 200.0f, 100.0f, 150.0f};
-static const float DRUM_PCM_REL_MS[SEQ_TRACKS] = {50.0f,  30.0f,  15.0f,  20.0f};
-
 /* ── Private helpers ─────────────────────────────────────────────────── */
 
-/* Apply one track's voice params after PCM wave/preset are set. Authority per
- * block, identical to the melodic reconfigure path's deferred-authority rule:
- * user-authored vp (committed in the graph editors) > the preset's bank
- * defaults (seq_drum_bank_t eg0/eg1/flt, when the row authors them) > the
- * legacy engine defaults (EDM envelope tables above, no EG1, hat HPF). */
+/* Apply one track's voice params after PCM wave/preset are set.
+ *
+ * Seed-then-push: unauthored blocks of the row's editable vp model are first
+ * seeded from the bank's tuning blocks (or the transparent defaults when the
+ * bank authors none), then the whole model is pushed through the same
+ * appliers the graph editors use. One store sounds AND displays; bank blocks
+ * get full apply fidelity (COEF_EG1 filter-env routing plus the EG1
+ * breakpoint guarantee in melodic_filter_apply). Authored blocks are never
+ * re-seeded, so user edits survive kit changes - the melodic deferred-
+ * authority rule, minus the zeroed unauthored model melodic is stuck with. */
 static void sequencer_configure_drum_pcm_track_params(uint8_t layer_idx,
                                                       uint8_t track)
 {
-    const seq_layer_t *layer = &s_layers[layer_idx];
+    seq_layer_t *layer = &s_layers[layer_idx];
+    voice_params_t *vp = &layer->vp[track];
     const seq_drum_bank_t *bank =
         drum_bank_for_preset(drum_pcm_preset_for(layer_idx, track));
 
-    if (layer->vp[track].env_authored) {
-        sequencer_configure_melodic_envelope_track(layer_idx, track);
-    } else if (bank && bank->eg0[track]) {
-        sequencer_core_push_envelope(layer->synth_id[track], bank->eg0[track]);
-    } else {
-        amy_event *e = amy_helpers_event_begin();
-        e->synth         = layer->synth_id[track];
-        e->bp_is_set[0]  = 1;
-        e->eg_type[0]    = ENVELOPE_LINEAR;
-        e->eg0_times[0]  = DRUM_PCM_ATK_MS[track];
-        e->eg0_values[0] = 1.0f;
-        e->eg0_times[1]  = DRUM_PCM_DEC_MS[track];
-        e->eg0_values[1] = 0.0f;   /* one-shot: no sustain, sample shapes the body */
-        e->eg0_times[2]  = DRUM_PCM_REL_MS[track];
-        e->eg0_values[2] = 0.0f;
-        amy_helpers_event_send(e);
+    if (!vp->env_authored) {
+        vp->env = (bank && bank->eg0[track]) ? *bank->eg0[track]
+                                             : s_drum_env_transparent;
+    }
+    if (!vp->env1_authored) {
+        vp->env1 = (bank && bank->eg1[track]) ? *bank->eg1[track]
+                                              : (seq_env_t){0};
+    }
+    if (!vp->filter_authored) {
+        vp->filter = (bank && bank->flt[track]) ? *bank->flt[track]
+                                                : (seq_filter_t){0};  /* bypass */
     }
 
-    /* EG1 has no legacy default: without an authored or bank shape the
-     * preset reload's osc reset leaves it cleared, which is the old
-     * behavior. */
-    if (layer->vp[track].env1_authored) {
+    sequencer_configure_melodic_envelope_track(layer_idx, track);
+    /* EG1 is pushed only when a shape exists (authored or bank-seeded): with
+     * neither, the preset reload's osc reset leaves it cleared, and
+     * melodic_filter_apply supplies the breakpoint guarantee if an authored
+     * filter env later needs one. */
+    if (vp->env1_authored || (bank && bank->eg1[track])) {
         sequencer_configure_melodic_envelope1_track(layer_idx, track);
-    } else if (bank && bank->eg1[track]) {
-        sequencer_core_push_envelope_eg1(layer->synth_id[track], 0,
-                                         bank->eg1[track]);
     }
-
-    if (layer->vp[track].filter_authored) {
-        sequencer_configure_melodic_filter_track(layer_idx, track);
-    } else if (bank && bank->flt[track]) {
-        sequencer_core_push_filter(layer->synth_id[track], bank->flt[track],
-                                   false);
-    } else if (track == 2) {   /* hat: HPF strips low-end rumble, adds crispness */
-        amy_event *e = amy_helpers_event_begin();
-        e->synth      = layer->synth_id[track];
-        e->filter_type = FILTER_HPF;
-        e->filter_freq_coefs[COEF_CONST] = 3000.0f;
-        e->resonance  = 0.5f;
-        amy_helpers_event_send(e);
-    }
+    sequencer_configure_melodic_filter_track(layer_idx, track);
 }
 
 /* Apply per-track envelope shape and hat HPF after PCM wave/preset are set. */
@@ -876,7 +877,8 @@ void sequencer_core_set_drum_pcm_preset(uint8_t layer_idx, uint8_t track,
             e->mode = s_drum_pcm_mode[layer_idx][track];
         amy_helpers_event_send(e);
 
-        /* The reset also cleared the envelope and hat HPF - re-apply. */
+        /* The reset also cleared the envelope and filter - re-seed and
+         * re-apply the row's voice params. */
         sequencer_configure_drum_pcm_track_params(layer_idx, track);
     }
     ESP_LOGI(TAG, "drum L%u T%u PCM preset -> %u",

@@ -72,11 +72,28 @@ typedef struct {
 #define SEQ_GAMMA_PCM_FIRST 256u
 #define SEQ_GAMMA_PCM_COUNT 136u
 
+/* Ear-tuned voice-param blocks referenced by bank rows below (a tuning
+ * pass adds a named block per role that needs one; NULL slots keep the
+ * legacy engine defaults). */
+/* 808 kick (BD1): DX7-curve punch envelope, EG1-driven LPF24 downsweep. */
+static const seq_env_t s_808_kick_eg0 =
+    { .attack_ms = 2, .decay_ms = 18, .sustain_pct = 68,
+      .release_ms = 168, .eg_type = ENVELOPE_DX7 };
+static const seq_env_t s_808_kick_eg1 =
+    { .attack_ms = 2, .decay_ms = 19, .sustain_pct = 100,
+      .release_ms = 249, .eg_type = ENVELOPE_DX7 };
+static const seq_filter_t s_808_kick_flt =
+    { .filter_type = SEQ_FILTER_LPF24, .cutoff_hz = 279.0f,
+      .resonance = 1.75f, .enabled = true,
+      .filter_env_amount = -2.0f, .feedback = 0.0f };
+
 static const seq_drum_bank_t s_drum_banks[] = {
-    /* ROM bank (gamma808) */
+    /* ROM bank (gamma808) - ear-tuned */
     { .name = "808",   .first = 0,   .count = 19,
-      .roles = {   2,  12,   9,   3}, .notes = { 39, 45, 53, 82} },
-    /* BD, SD, HH, CLAP */
+      .roles = {   0,  14,  10,   3}, .notes = { 56, 31, 71, 62},
+      .eg0 = { &s_808_kick_eg0 }, .eg1 = { &s_808_kick_eg1 },
+      .flt = { &s_808_kick_flt } },
+    /* BD1, Snare 3, HH Open, Clap */
     { .name = "909",   .first = 256, .count = 17,
       .roles = { 256, 268, 260, 258}, .notes = { 39, 45, 53, 82} },
     /* Kick, Snare, HHC, RimShot */

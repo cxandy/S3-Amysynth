@@ -1119,11 +1119,20 @@ AMY_IRAM_ATTR SAMPLE dist_process(SAMPLE * block, uint16_t osc) {
         uint16_t count = ps->dist_hold_count;
         uint16_t rate = (uint16_t)ps->dist_rate;
         int bits = (int)ps->dist_bits;
+        // Keep `bits` magnitude bits below full scale (1.0), rounding to
+        // nearest rather than truncating: truncation biases every sample down
+        // by up to a full step, which is a DC offset of half a step (-0.5 FS
+        // at bits=1).  That offset is identical in every voice, so it sums
+        // coherently across polyphony and is integrated by the echo feedback
+        // loop (DC gain 1/(1 - feedback)) until it pins the master clipper.
+        // Rounding costs one add and centers the codes instead.
 #ifdef AMY_USE_FIXEDPOINT
-        // Keep `bits` magnitude bits below full scale (1.0); truncation
-        // toward -inf, the usual crusher behavior.
         SAMPLE qmask = (SAMPLE)~0;
-        if (bits <= S_FRAC_BITS) qmask = ~((1 << (S_FRAC_BITS + 1 - bits)) - 1);
+        SAMPLE qhalf = 0;
+        if (bits <= S_FRAC_BITS) {
+            qmask = ~((1 << (S_FRAC_BITS + 1 - bits)) - 1);
+            qhalf = 1 << (S_FRAC_BITS - bits);   // half a quantization step
+        }
 #else
         float qscale = 0;  // 0 = no quantization
         float qinv = 0;
@@ -1137,9 +1146,9 @@ AMY_IRAM_ATTR SAMPLE dist_process(SAMPLE * block, uint16_t osc) {
             if (count == 0) {
                 SAMPLE v = MUL6A_SS(x, drive);
 #ifdef AMY_USE_FIXEDPOINT
-                v &= qmask;
+                v = (v + qhalf) & qmask;
 #else
-                if (qscale != 0)  v = floorf(v * qscale) * qinv;
+                if (qscale != 0)  v = floorf(v * qscale + 0.5f) * qinv;
 #endif
                 hold = v;
                 count = rate;

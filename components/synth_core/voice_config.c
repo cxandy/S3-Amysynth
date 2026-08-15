@@ -131,15 +131,12 @@ void voice_build_wave(const voice_wave_cfg_t *cfg)
     e->amp_coefs[COEF_EG0]   = 1.0f;
     amy_helpers_event_send(e);
 
-    /* Every wave build inherits the current global distortion set, so mode
-     * toggles and patch cycles cannot resurrect a stale per-osc state. */
+    /* Every wave build inherits the current distortion set (no stale state). */
     voice_apply_dist(cfg->synth);
 }
 
 /* ── WAVE-voice distortion ───────────────────────────────────────────────
- * One set per domain (arp / drone / melodic). Defaults: OFF, with audible
- * non-neutral secondary params so the first TYPE flip in the DEV menu is
- * immediately hearable. */
+ * Defaults: OFF, with secondary params audible so the first TYPE flip is heard. */
 #define VOICE_DIST_DEFAULTS { .type = 0, .drive = 2, .bits = 8, .rate = 8, .mix = 100 }
 
 static voice_dist_t s_dist[VOICE_DIST_DOMAIN_COUNT] = {

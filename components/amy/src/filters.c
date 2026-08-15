@@ -1051,20 +1051,12 @@ void reset_parametric(uint16_t bus) {
 }
 
 
-// Per-osc distortion stage (synth[].dist_type / DIST_*), run by
-// render_osc_wave() on the osc's mono block after rendering, before the
-// filter.  Everything is stateless per sample except DIST_CRUSH's sample-rate
-// reducer, whose two words of state live in synthinfo.  Params arrive
-// range-clamped from play_delta(), so the loops don't re-check.  The type
-// switch stays outside the loops and the loop bodies are call-free so each
-// can take the zero-overhead-loop form on Xtensa.
-// Returns the abs max of what it wrote: folding can amplify a quiet input
-// (e.g. a release tail), so callers must not reuse the pre-distortion max.
-// The pre-gain uses MUL6A_SS (the (sample, scale) form, good to [-64, 64)),
-// not MUL4_SS: drive reaches 16, so drive * x leaves MUL4_SS's [-16, 16)
-// range as soon as the osc buffer touches full scale, and the product wraps
-// sign - a full-scale peak turning into a full-scale trough. MUL6A_SS also
-// keeps two more bits of the sample, so the clean path is quieter too.
+// Per-osc distortion (synth[].dist_type), applied post-render, pre-filter.
+// Params arrive range-clamped from play_delta(); loop bodies are call-free
+// so they take the Xtensa zero-overhead-loop form.  Returns the abs max of
+// what it wrote (folding can amplify a quiet input, so the pre-distortion
+// max must not be reused).  Pre-gain needs MUL6A_SS: drive * x overflows
+// MUL4_SS's [-16, 16) range and wraps sign.
 AMY_IRAM_ATTR SAMPLE dist_process(SAMPLE * block, uint16_t osc) {
     struct synthinfo *ps = synth[osc];
     SAMPLE drive = F2S(ps->dist_drive);
@@ -1078,8 +1070,7 @@ AMY_IRAM_ATTR SAMPLE dist_process(SAMPLE * block, uint16_t osc) {
             SAMPLE v = MUL6A_SS(x, drive);
             if (v > F2S(1.0f)) v = F2S(1.0f);
             if (v < F2S(-1.0f)) v = F2S(-1.0f);
-            // Cubic soft knee y = v - v^3/3: unity small-signal gain, so
-            // drive is the only gain, saturating to 2/3 at the rails.
+            // Cubic soft knee y = v - v^3/3: unity small-signal gain, 2/3 at the rails.
             SAMPLE y = MUL4_SS(v, F2S(1.0f) - MUL4_SS(MUL4_SS(v, v), F2S(0.33333334f)));
             y = MUL4_SS(dry, x) + MUL4_SS(mix, y);
             block[i] = y;
@@ -1091,12 +1082,10 @@ AMY_IRAM_ATTR SAMPLE dist_process(SAMPLE * block, uint16_t osc) {
         for (uint16_t i = 0; i < AMY_BLOCK_SIZE; ++i) {
             SAMPLE x = block[i];
             SAMPLE v = MUL6A_SS(x, drive);
-            // Triangle wavefolder: y = 1 - |((v + 1) mod 4) - 2| is the
-            // identity on [-1, 1] and reflects beyond, without the
-            // data-dependent iteration of the naive reflect loop.
+            // Triangle wavefolder: y = 1 - |((v + 1) mod 4) - 2|, identity on [-1, 1].
             SAMPLE y;
 #ifdef AMY_USE_FIXEDPOINT
-            // Two's-complement AND with (4.0 - 1ulp) is a nonnegative mod-4.
+            // AND is a nonnegative mod-4 in two's complement.
             SAMPLE w = (v + F2S(1.0f)) & ((4 << S_FRAC_BITS) - 1);
             y = w - F2S(2.0f);
             if (y < 0) y = -y;
@@ -1113,19 +1102,13 @@ AMY_IRAM_ATTR SAMPLE dist_process(SAMPLE * block, uint16_t osc) {
         }
         break;
     case DIST_CRUSH: {
-        // Bit-depth reduction and sample-rate reduction together, the classic
-        // sampler pairing: quantization grit plus aliased ring.
+        // Bit-depth + sample-rate reduction.
         SAMPLE hold = ps->dist_hold;
         uint16_t count = ps->dist_hold_count;
         uint16_t rate = (uint16_t)ps->dist_rate;
         int bits = (int)ps->dist_bits;
-        // Keep `bits` magnitude bits below full scale (1.0), rounding to
-        // nearest rather than truncating: truncation biases every sample down
-        // by up to a full step, which is a DC offset of half a step (-0.5 FS
-        // at bits=1).  That offset is identical in every voice, so it sums
-        // coherently across polyphony and is integrated by the echo feedback
-        // loop (DC gain 1/(1 - feedback)) until it pins the master clipper.
-        // Rounding costs one add and centers the codes instead.
+        // Quantize to `bits` magnitude bits, rounding to nearest: truncation
+        // is a half-step DC offset that the echo feedback loop integrates.
 #ifdef AMY_USE_FIXEDPOINT
         SAMPLE qmask = (SAMPLE)~0;
         SAMPLE qhalf = 0;
@@ -1163,9 +1146,7 @@ AMY_IRAM_ATTR SAMPLE dist_process(SAMPLE * block, uint16_t osc) {
         ps->dist_hold_count = count;
         break;
     }
-    default:
-        // Unreachable: DIST_OFF is filtered by the caller and play_delta
-        // rejects unknown types.  Keep the return contract anyway.
+    default:  // unreachable; keep the return contract anyway
         amax = scan_max(block, AMY_BLOCK_SIZE);
         break;
     }

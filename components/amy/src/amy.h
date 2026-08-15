@@ -321,7 +321,7 @@ enum coefs{
 #define FILTER_LPF24 4
 #define FILTER_NOTCH 5
 #define FILTER_PHASER 6
-// synth[].dist_type values (per-osc distortion, applied before the filter)
+// synth[].dist_type values
 #define DIST_OFF 0
 #define DIST_CLIP 1
 #define DIST_FOLD 2
@@ -653,7 +653,7 @@ typedef struct amy_event {
     uint16_t mod_source[NUM_MOD_SOURCES];
     uint8_t algorithm;
     uint8_t filter_type;
-    // Per-osc distortion stage ('C' wire message, a list of floats like chorus 'k').
+    // Per-osc distortion ('C' wire message).
     float dist_type;
     float dist_drive;
     float dist_bits;
@@ -724,10 +724,10 @@ struct synthinfo {
     float portamento_alpha;
     float resonance;
     uint8_t filter_type;
-    // Per-osc distortion stage, applied after rendering, before the filter.
+    // Per-osc distortion, applied pre-filter.
     uint8_t dist_type;    // One of the DIST_ values.
-    float dist_drive;     // Pre-gain, 1..16; the timbre knob (fold depth for DIST_FOLD).
-    float dist_bits;      // DIST_CRUSH bit depth, 1..23; >= 24 disables quantization.
+    float dist_drive;     // Pre-gain, 0..16 (fold depth for DIST_FOLD).
+    float dist_bits;      // DIST_CRUSH bit depth; >= 24 disables quantization.
     float dist_rate;      // DIST_CRUSH sample-hold length in samples; 1 disables.
     float dist_mix;       // Wet/dry, 0..1.
     uint16_t chained_osc;
@@ -756,7 +756,7 @@ struct synthinfo {
     SAMPLE filter_delay[2 * FILT_NUM_DELAYS];
     // The block-floating-point shift of the filter delay values.
     int last_filt_norm_bits;
-    // For DIST_CRUSH's sample-rate reducer: held sample and samples left to hold it.
+    // DIST_CRUSH sample-rate reducer: held sample, samples left to hold it.
     SAMPLE dist_hold;
     uint16_t dist_hold_count;
 };

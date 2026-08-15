@@ -1508,14 +1508,13 @@ void play_delta(struct delta *d) {
     DELTA_TO_SYNTH_F(RESONANCE, resonance)
     DELTA_TO_SYNTH_I(FILTER_TYPE, filter_type)
     if (d->param == DIST_TYPE) {
-        // Reject unknown types, and restart the rate reducer so a type change
-        // can't replay a stale held sample.
+        // Restart the rate reducer so a type change can't replay a stale held sample.
         int type = (int)d->data.f;
         synth[d->osc]->dist_type = (type >= DIST_OFF && type <= DIST_CRUSH) ? type : DIST_OFF;
         synth[d->osc]->dist_hold = 0;
         synth[d->osc]->dist_hold_count = 0;
     }
-    // Clamp here so dist_process never has to range-check per block.
+    // Clamp here so dist_process doesn't range-check per block.
     if (d->param == DIST_DRIVE) {
         float drive = d->data.f;
         if (drive < 0) drive = 0;
@@ -2051,12 +2050,9 @@ SAMPLE render_osc_wave(uint16_t osc, uint8_t core, SAMPLE* buf) {
             if(synth[osc]->wave == CUSTOM) max_val = render_custom(buf, osc);
         }
         if (synth[osc]->wave != SILENT) {
-            // apply distortion to osc if set, before the filter so the filter
-            // (and its envelope sweep) shapes the added harmonics.
+            // apply distortion to osc if set, pre-filter; returns its own max
+            // (folding can amplify a quiet release tail).
             if (synth[osc]->dist_type != DIST_OFF) {
-                // dist_process returns its own output max: folding can amplify
-                // a quiet release tail, so the pre-distortion max would
-                // terminate oscs that are still audible.
                 max_val = dist_process(buf, osc);
             }
             // apply filter to osc if set

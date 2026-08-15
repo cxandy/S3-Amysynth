@@ -79,14 +79,8 @@ static void pcm_mode_adjust(int delta, int arg)
 }
 
 /* ── WAVE-voice distortion (backing state lives in voice_config) ─────────
- * One TYPE/DRIVE/BITS/RATE/MIX set per domain (arp / drone / melodic), each
- * on its own subpage, so the three subsystems can be shaped independently.
- * Rebuilds re-apply the owning set automatically (voice_build_wave); the push
- * below covers targets that are already built and audible, so edits are heard
- * live. PATCH-mode targets are skipped.
- *
- * One fmt/adjust pair serves all 15 rows: `arg` packs domain and param, since
- * dev_item_t carries a single int (DIST_ARG / DIST_ARG_DOMAIN / DIST_ARG_P). */
+ * One param set per domain (arp / drone / melodic), each on its own subpage.
+ * One fmt/adjust pair serves all 15 rows: `arg` packs domain and param. */
 static const char *DIST_TYPE_NAMES[] = { "OFF", "CLIP", "FOLD", "CRUSH" };
 #define DIST_TYPE_COUNT 4
 
@@ -96,8 +90,8 @@ enum { DIST_P_TYPE, DIST_P_DRIVE, DIST_P_BITS, DIST_P_RATE, DIST_P_MIX };
 #define DIST_ARG_DOMAIN(arg)  ((voice_dist_domain_t)((arg) >> 4))
 #define DIST_ARG_P(arg)       ((arg) & 0xF)
 
-/* Live push for one domain only - a domain in PATCH mode has no WAVE voices
- * to receive the params (the next wave rebuild inherits them anyway). */
+/* Live push to a domain's built WAVE targets; PATCH-mode targets have none
+ * (the next wave rebuild inherits the set anyway). */
 static void dist_push_domain(voice_dist_domain_t domain)
 {
     switch (domain) {
@@ -340,8 +334,7 @@ static const dev_item_t s_pcm_items[] = {
 static const dev_page_t s_page_pcm = { "PCM MODE L1", s_pcm_items,
                                        sizeof s_pcm_items / sizeof *s_pcm_items };
 
-/* One five-row page per distortion domain; the rows differ only in the domain
- * packed into `arg`, so the page bodies are macro-generated. */
+/* One five-row page per distortion domain. */
 #define DIST_ROW(name, dom, param)                     \
     { .label = name, .fmt = dist_fmt,                  \
       .adjust = dist_adjust, .arg = DIST_ARG(dom, param) }
@@ -364,8 +357,7 @@ static const dev_page_t s_page_dist_drn = { "DIST DRONE", s_dist_drn_items,
 static const dev_page_t s_page_dist_mel = { "DIST MELODIC", s_dist_mel_items,
                                             sizeof s_dist_mel_items / sizeof *s_dist_mel_items };
 
-/* Index page: each row carries its domain's current TYPE, so the state of all
- * three is readable without entering them. */
+/* Index page: each row previews its domain's current TYPE. */
 static const dev_item_t s_dist_items[] = {
     { .label = "Arp",     .sub = &s_page_dist_arp, .fmt = dist_fmt,
       .arg = DIST_ARG(VOICE_DIST_ARP, DIST_P_TYPE) },

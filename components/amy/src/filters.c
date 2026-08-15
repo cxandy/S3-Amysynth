@@ -1049,3 +1049,111 @@ void reset_parametric(uint16_t bus) {
         }
     }
 }
+
+
+// Per-osc distortion stage (synth[].dist_type / DIST_*), run by
+// render_osc_wave() on the osc's mono block after rendering, before the
+// filter.  Everything is stateless per sample except DIST_CRUSH's sample-rate
+// reducer, whose two words of state live in synthinfo.  Params arrive
+// range-clamped from play_delta(), so the loops don't re-check.  The type
+// switch stays outside the loops and the loop bodies are call-free so each
+// can take the zero-overhead-loop form on Xtensa.
+// Returns the abs max of what it wrote: folding can amplify a quiet input
+// (e.g. a release tail), so callers must not reuse the pre-distortion max.
+AMY_IRAM_ATTR SAMPLE dist_process(SAMPLE * block, uint16_t osc) {
+    struct synthinfo *ps = synth[osc];
+    SAMPLE drive = F2S(ps->dist_drive);
+    SAMPLE mix = F2S(ps->dist_mix);
+    SAMPLE dry = F2S(1.0f) - mix;
+    SAMPLE amax = 0;
+    switch (ps->dist_type) {
+    case DIST_CLIP:
+        for (uint16_t i = 0; i < AMY_BLOCK_SIZE; ++i) {
+            SAMPLE x = block[i];
+            SAMPLE v = MUL4_SS(drive, x);
+            if (v > F2S(1.0f)) v = F2S(1.0f);
+            if (v < F2S(-1.0f)) v = F2S(-1.0f);
+            // Cubic soft knee y = v - v^3/3: unity small-signal gain, so
+            // drive is the only gain, saturating to 2/3 at the rails.
+            SAMPLE y = MUL4_SS(v, F2S(1.0f) - MUL4_SS(MUL4_SS(v, v), F2S(0.33333334f)));
+            y = MUL4_SS(dry, x) + MUL4_SS(mix, y);
+            block[i] = y;
+            if (y < 0) y = -y;
+            if (y > amax) amax = y;
+        }
+        break;
+    case DIST_FOLD:
+        for (uint16_t i = 0; i < AMY_BLOCK_SIZE; ++i) {
+            SAMPLE x = block[i];
+            SAMPLE v = MUL4_SS(drive, x);
+            // Triangle wavefolder: y = 1 - |((v + 1) mod 4) - 2| is the
+            // identity on [-1, 1] and reflects beyond, without the
+            // data-dependent iteration of the naive reflect loop.
+            SAMPLE y;
+#ifdef AMY_USE_FIXEDPOINT
+            // Two's-complement AND with (4.0 - 1ulp) is a nonnegative mod-4.
+            SAMPLE w = (v + F2S(1.0f)) & ((4 << S_FRAC_BITS) - 1);
+            y = w - F2S(2.0f);
+            if (y < 0) y = -y;
+            y = F2S(1.0f) - y;
+#else
+            SAMPLE w = v + 1.0f;
+            w -= 4.0f * floorf(w * 0.25f);
+            y = 1.0f - fabsf(w - 2.0f);
+#endif
+            y = MUL4_SS(dry, x) + MUL4_SS(mix, y);
+            block[i] = y;
+            if (y < 0) y = -y;
+            if (y > amax) amax = y;
+        }
+        break;
+    case DIST_CRUSH: {
+        // Bit-depth reduction and sample-rate reduction together, the classic
+        // sampler pairing: quantization grit plus aliased ring.
+        SAMPLE hold = ps->dist_hold;
+        uint16_t count = ps->dist_hold_count;
+        uint16_t rate = (uint16_t)ps->dist_rate;
+        int bits = (int)ps->dist_bits;
+#ifdef AMY_USE_FIXEDPOINT
+        // Keep `bits` magnitude bits below full scale (1.0); truncation
+        // toward -inf, the usual crusher behavior.
+        SAMPLE qmask = (SAMPLE)~0;
+        if (bits <= S_FRAC_BITS) qmask = ~((1 << (S_FRAC_BITS + 1 - bits)) - 1);
+#else
+        float qscale = 0;  // 0 = no quantization
+        float qinv = 0;
+        if (bits <= 23) {
+            qscale = (float)(1 << (bits - 1));
+            qinv = 1.0f / qscale;
+        }
+#endif
+        for (uint16_t i = 0; i < AMY_BLOCK_SIZE; ++i) {
+            SAMPLE x = block[i];
+            if (count == 0) {
+                SAMPLE v = MUL4_SS(drive, x);
+#ifdef AMY_USE_FIXEDPOINT
+                v &= qmask;
+#else
+                if (qscale != 0)  v = floorf(v * qscale) * qinv;
+#endif
+                hold = v;
+                count = rate;
+            }
+            --count;
+            SAMPLE y = MUL4_SS(dry, x) + MUL4_SS(mix, hold);
+            block[i] = y;
+            if (y < 0) y = -y;
+            if (y > amax) amax = y;
+        }
+        ps->dist_hold = hold;
+        ps->dist_hold_count = count;
+        break;
+    }
+    default:
+        // Unreachable: DIST_OFF is filtered by the caller and play_delta
+        // rejects unknown types.  Keep the return contract anyway.
+        amax = scan_max(block, AMY_BLOCK_SIZE);
+        break;
+    }
+    return amax;
+}

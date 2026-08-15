@@ -321,6 +321,11 @@ enum coefs{
 #define FILTER_LPF24 4
 #define FILTER_NOTCH 5
 #define FILTER_PHASER 6
+// synth[].dist_type values (per-osc distortion, applied before the filter)
+#define DIST_OFF 0
+#define DIST_CLIP 1
+#define DIST_FOLD 2
+#define DIST_CRUSH 3
 // synth[].wave values
 #define SINE 0
 #define PULSE 1
@@ -443,8 +448,12 @@ enum params{
     // One id, not one per bus: like every other bus-directed param (EQ_*,
     // ECHO_*, REVERB_*), a VOLUME delta names its bus in delta.osc.  It used
     // to be VOLUME_BASE..VOLUME_BASE+n, which is what capped the bus count --
-    // the ids would have run into MODE below.  72..98 are now free.
+    // the ids would have run into MODE below.  77..98 are now free.
     VOLUME,                              // 71
+    // Per-osc distortion stage (see dist_process).
+    DIST_TYPE,                           // 72
+    DIST_DRIVE, DIST_BITS,               // 73, 74
+    DIST_RATE, DIST_MIX,                 // 75, 76
     MODE=99,                             // 99
     ALGO_SOURCE_START=100,               // 100..105
     ALGO_SOURCE_END=100+MAX_ALGO_OPS,    // 106
@@ -644,6 +653,12 @@ typedef struct amy_event {
     uint16_t mod_source[NUM_MOD_SOURCES];
     uint8_t algorithm;
     uint8_t filter_type;
+    // Per-osc distortion stage ('C' wire message, a list of floats like chorus 'k').
+    float dist_type;
+    float dist_drive;
+    float dist_bits;
+    float dist_rate;
+    float dist_mix;
     float eq_l;  // not in synth
     float eq_m;  // not in synth
     float eq_h;  // not in synth
@@ -709,6 +724,12 @@ struct synthinfo {
     float portamento_alpha;
     float resonance;
     uint8_t filter_type;
+    // Per-osc distortion stage, applied after rendering, before the filter.
+    uint8_t dist_type;    // One of the DIST_ values.
+    float dist_drive;     // Pre-gain, 1..16; the timbre knob (fold depth for DIST_FOLD).
+    float dist_bits;      // DIST_CRUSH bit depth, 1..23; >= 24 disables quantization.
+    float dist_rate;      // DIST_CRUSH sample-hold length in samples; 1 disables.
+    float dist_mix;       // Wet/dry, 0..1.
     uint16_t chained_osc;
     uint16_t mod_source[NUM_MOD_SOURCES];
     uint8_t algorithm;
@@ -735,6 +756,9 @@ struct synthinfo {
     SAMPLE filter_delay[2 * FILT_NUM_DELAYS];
     // The block-floating-point shift of the filter delay values.
     int last_filt_norm_bits;
+    // For DIST_CRUSH's sample-rate reducer: held sample and samples left to hold it.
+    SAMPLE dist_hold;
+    uint16_t dist_hold_count;
 };
 
 // synthinfo, but only the things that mods/env can change. one per osc
@@ -1366,6 +1390,7 @@ extern void pcm_unload_all_presets();
 extern void filters_init(uint16_t bus);
 extern void filters_deinit(uint16_t bus);
 extern SAMPLE filter_process(SAMPLE * block, uint16_t osc, SAMPLE max_value);
+extern SAMPLE dist_process(SAMPLE * block, uint16_t osc);
 extern void parametric_eq_process(uint16_t bus, SAMPLE *block);
 extern void reset_filter(uint16_t osc);
 extern void reset_parametric(uint16_t bus);

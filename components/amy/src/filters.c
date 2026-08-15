@@ -1060,6 +1060,11 @@ void reset_parametric(uint16_t bus) {
 // can take the zero-overhead-loop form on Xtensa.
 // Returns the abs max of what it wrote: folding can amplify a quiet input
 // (e.g. a release tail), so callers must not reuse the pre-distortion max.
+// The pre-gain uses MUL6A_SS (the (sample, scale) form, good to [-64, 64)),
+// not MUL4_SS: drive reaches 16, so drive * x leaves MUL4_SS's [-16, 16)
+// range as soon as the osc buffer touches full scale, and the product wraps
+// sign - a full-scale peak turning into a full-scale trough. MUL6A_SS also
+// keeps two more bits of the sample, so the clean path is quieter too.
 AMY_IRAM_ATTR SAMPLE dist_process(SAMPLE * block, uint16_t osc) {
     struct synthinfo *ps = synth[osc];
     SAMPLE drive = F2S(ps->dist_drive);
@@ -1070,7 +1075,7 @@ AMY_IRAM_ATTR SAMPLE dist_process(SAMPLE * block, uint16_t osc) {
     case DIST_CLIP:
         for (uint16_t i = 0; i < AMY_BLOCK_SIZE; ++i) {
             SAMPLE x = block[i];
-            SAMPLE v = MUL4_SS(drive, x);
+            SAMPLE v = MUL6A_SS(x, drive);
             if (v > F2S(1.0f)) v = F2S(1.0f);
             if (v < F2S(-1.0f)) v = F2S(-1.0f);
             // Cubic soft knee y = v - v^3/3: unity small-signal gain, so
@@ -1085,7 +1090,7 @@ AMY_IRAM_ATTR SAMPLE dist_process(SAMPLE * block, uint16_t osc) {
     case DIST_FOLD:
         for (uint16_t i = 0; i < AMY_BLOCK_SIZE; ++i) {
             SAMPLE x = block[i];
-            SAMPLE v = MUL4_SS(drive, x);
+            SAMPLE v = MUL6A_SS(x, drive);
             // Triangle wavefolder: y = 1 - |((v + 1) mod 4) - 2| is the
             // identity on [-1, 1] and reflects beyond, without the
             // data-dependent iteration of the naive reflect loop.
@@ -1130,7 +1135,7 @@ AMY_IRAM_ATTR SAMPLE dist_process(SAMPLE * block, uint16_t osc) {
         for (uint16_t i = 0; i < AMY_BLOCK_SIZE; ++i) {
             SAMPLE x = block[i];
             if (count == 0) {
-                SAMPLE v = MUL4_SS(drive, x);
+                SAMPLE v = MUL6A_SS(x, drive);
 #ifdef AMY_USE_FIXEDPOINT
                 v &= qmask;
 #else

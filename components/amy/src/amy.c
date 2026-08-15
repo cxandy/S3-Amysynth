@@ -1508,9 +1508,10 @@ void play_delta(struct delta *d) {
     DELTA_TO_SYNTH_F(RESONANCE, resonance)
     DELTA_TO_SYNTH_I(FILTER_TYPE, filter_type)
     if (d->param == DIST_TYPE) {
+        // Range-check as float before the cast (huge values are UB to cast).
         // Restart the rate reducer so a type change can't replay a stale held sample.
-        int type = (int)d->data.f;
-        synth[d->osc]->dist_type = (type >= DIST_OFF && type <= DIST_CRUSH) ? type : DIST_OFF;
+        float type = d->data.f;
+        synth[d->osc]->dist_type = (type >= DIST_OFF && type <= DIST_CRUSH) ? (uint8_t)type : DIST_OFF;
         synth[d->osc]->dist_hold = 0;
         synth[d->osc]->dist_hold_count = 0;
     }
@@ -1524,6 +1525,7 @@ void play_delta(struct delta *d) {
     if (d->param == DIST_BITS) {
         float bits = d->data.f;
         if (bits < 1.0f) bits = 1.0f;
+        if (bits > 24.0f) bits = 24.0f;  // > S_FRAC_BITS: quantization off
         synth[d->osc]->dist_bits = bits;
     }
     if (d->param == DIST_RATE) {

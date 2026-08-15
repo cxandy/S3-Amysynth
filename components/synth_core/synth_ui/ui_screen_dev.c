@@ -4,6 +4,12 @@
 #include "synth_ui/synth_ui_internal.h"
 #include "synth_ui.h"
 #include "sequencer_core.h"
+#include "voice_config.h"
+#include "arp_core.h"
+#include "custompatches/drone_core.h"
+#include "custompatches/drone_std_core.h"
+#include "synth_slots.h"
+#include "seq_clamp.h"
 #include "amy.h"
 #include "esp_heap_caps.h"
 #include "core_load.h"
@@ -69,6 +75,66 @@ static void pcm_mode_adjust(int delta, int arg)
     m %= PCM_MODE_COUNT;
     if (m < 0) m += PCM_MODE_COUNT;
     sequencer_core_set_drum_pcm_mode(0, (uint8_t)arg, (uint8_t)m);
+}
+
+/* ── WAVE-voice distortion (MVP; backing state lives in voice_config) ────
+ * One global TYPE/DRIVE/BITS/RATE/MIX set for AMY's per-osc distortion,
+ * applied to every WAVE-mode target. Rebuilds re-apply it automatically
+ * (voice_build_wave); the push below covers targets that are already built
+ * and audible, so edits are heard live. PATCH-mode targets are skipped. */
+static const char *DIST_TYPE_NAMES[] = { "OFF", "CLIP", "FOLD", "CRUSH" };
+#define DIST_TYPE_COUNT 4
+
+enum { DIST_P_TYPE, DIST_P_DRIVE, DIST_P_BITS, DIST_P_RATE, DIST_P_MIX };
+
+static void dist_push_targets(void)
+{
+    if (arp_get_source() == ARP_SRC_WAVE)
+        voice_apply_dist(sequencer_core_arp_synth());
+    if (drone_get_source() == DRONE_SRC_WAVE) {
+        voice_apply_dist(DRONE_SYNTH_MAIN);
+        voice_apply_dist(DRONE_SYNTH_SUB);
+    }
+    if (drone_std_get_source() == DRONE_SRC_WAVE) {
+        voice_apply_dist(DRONE_STD_SYNTH_MAIN);
+        voice_apply_dist(DRONE_STD_SYNTH_SUB);
+    }
+    sequencer_core_apply_wave_dist();
+}
+
+static void dist_fmt(char *buf, size_t n, int arg)
+{
+    const voice_dist_t *d = voice_dist_get();
+    switch (arg) {
+    case DIST_P_TYPE:
+        snprintf(buf, n, "%s",
+                 DIST_TYPE_NAMES[d->type < DIST_TYPE_COUNT ? d->type : 0]);
+        break;
+    case DIST_P_DRIVE: snprintf(buf, n, "%u",   (unsigned)d->drive); break;
+    case DIST_P_BITS:  snprintf(buf, n, "%u",   (unsigned)d->bits);  break;
+    case DIST_P_RATE:  snprintf(buf, n, "%ux",  (unsigned)d->rate);  break;
+    case DIST_P_MIX:   snprintf(buf, n, "%u%%", (unsigned)d->mix);   break;
+    }
+}
+
+static void dist_adjust(int delta, int arg)
+{
+    voice_dist_t d = *voice_dist_get();
+    switch (arg) {
+    case DIST_P_TYPE: {
+        int t = (int)d.type + delta;
+        t %= DIST_TYPE_COUNT;
+        if (t < 0) t += DIST_TYPE_COUNT;
+        d.type = (uint8_t)t;
+        break;
+    }
+    case DIST_P_DRIVE: d.drive = SEQ_CLAMP_U8((int)d.drive + delta, 1, 16); break;
+    case DIST_P_BITS:  d.bits  = SEQ_CLAMP_U8((int)d.bits + delta, 1, 16);  break;
+    case DIST_P_RATE:  d.rate  = SEQ_CLAMP_U8((int)d.rate + delta, 1, 64);  break;
+    case DIST_P_MIX:   d.mix   = SEQ_CLAMP_U8((int)d.mix + 5 * delta, 0, 100); break;
+    }
+    voice_dist_set(&d);
+    dist_push_targets();
 }
 
 /* One-shot sequencer state dump to the console (seq_core_dump.c). */
@@ -252,7 +318,21 @@ static const dev_item_t s_pcm_items[] = {
 static const dev_page_t s_page_pcm = { "PCM MODE L1", s_pcm_items,
                                        sizeof s_pcm_items / sizeof *s_pcm_items };
 
+#define DIST_ROW(name, param) \
+    { .label = name, .fmt = dist_fmt, .adjust = dist_adjust, .arg = (param) }
+
+static const dev_item_t s_dist_items[] = {
+    DIST_ROW("Type",  DIST_P_TYPE),
+    DIST_ROW("Drive", DIST_P_DRIVE),
+    DIST_ROW("Bits",  DIST_P_BITS),
+    DIST_ROW("Rate",  DIST_P_RATE),
+    DIST_ROW("Mix",   DIST_P_MIX),
+};
+static const dev_page_t s_page_dist = { "DIST (WAVE)", s_dist_items,
+                                        sizeof s_dist_items / sizeof *s_dist_items };
+
 static const dev_item_t s_root_items[] = {
+    { .label = "Distortion",  .sub = &s_page_dist },
     { .label = "PCM Mode L1", .sub = &s_page_pcm },
     { .label = "AMY OOM",     .fmt = oom_fmt },
     { .label = "Heap int",    .fmt = heap_fmt },

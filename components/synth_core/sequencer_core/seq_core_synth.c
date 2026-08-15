@@ -620,6 +620,19 @@ void sequencer_configure_synth(uint8_t layer_idx)
     sequencer_core_push_melodic_portamento(layer_idx);
 }
 
+/* ── Public API — WAVE-voice distortion fan-out ─────────────────────── */
+
+void sequencer_core_apply_wave_dist(void)
+{
+    for (uint8_t i = 0; i < s_num_layers; i++) {
+        const seq_layer_t *layer = &s_layers[i];
+        if (layer->type != SEQ_LAYER_MELODIC) continue;
+        if (!sequencer_core_is_wave_patch(layer->patch)) continue;
+        for (uint8_t t = 0; t < SEQ_TRACKS; t++)
+            voice_apply_dist(layer->synth_id[t]);
+    }
+}
+
 /* ── Public API — melodic patch ─────────────────────────────────────── */
 
 /* Reconfigure a layer's synths with its scheduled events paused.

@@ -2,6 +2,7 @@
 #include "amy.h"            /* wave constants, COEF_* indices */
 #include "amy_helpers.h"    /* shared scratch-event begin/send */
 #include "sequencer_core.h" /* sequencer_core_ks_feedback_from_q */
+#include "seq_clamp.h"
 #include <math.h>           /* powf: wobble downward-only center offset */
 #include <string.h>
 
@@ -127,6 +128,45 @@ void voice_build_wave(const voice_wave_cfg_t *cfg)
     e->amp_coefs[COEF_CONST] = cfg->osc0_amp_const;
     e->amp_coefs[COEF_VEL]   = cfg->osc0_amp_vel;
     e->amp_coefs[COEF_EG0]   = 1.0f;
+    amy_helpers_event_send(e);
+
+    /* Every wave build inherits the current global distortion set, so mode
+     * toggles and patch cycles cannot resurrect a stale per-osc state. */
+    voice_apply_dist(cfg->synth);
+}
+
+/* ── WAVE-voice distortion (MVP) ─────────────────────────────────────────
+ * Defaults: OFF, with audible non-neutral secondary params so the first
+ * TYPE flip in the DEV menu is immediately hearable. */
+static voice_dist_t s_dist = {
+    .type = 0, .drive = 2, .bits = 8, .rate = 8, .mix = 100,
+};
+
+const voice_dist_t *voice_dist_get(void)
+{
+    return &s_dist;
+}
+
+void voice_dist_set(const voice_dist_t *d)
+{
+    if (!d) return;
+    s_dist.type  = (uint8_t)(d->type > 3u ? 0u : d->type);  /* unknown type -> OFF */
+    s_dist.drive = SEQ_CLAMP_U8(d->drive, 1u, 16u);
+    s_dist.bits  = SEQ_CLAMP_U8(d->bits, 1u, 16u);
+    s_dist.rate  = SEQ_CLAMP_U8(d->rate, 1u, 64u);
+    s_dist.mix   = SEQ_CLAMP_U8(d->mix, 0u, 100u);
+}
+
+void voice_apply_dist(uint8_t synth)
+{
+    amy_event *e = amy_helpers_event_begin();
+    e->synth      = synth;
+    e->osc        = 0;
+    e->dist_type  = (float)s_dist.type;
+    e->dist_drive = (float)s_dist.drive;
+    e->dist_bits  = (float)s_dist.bits;
+    e->dist_rate  = (float)s_dist.rate;
+    e->dist_mix   = (float)s_dist.mix / 100.0f;
     amy_helpers_event_send(e);
 }
 

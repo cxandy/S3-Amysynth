@@ -151,6 +151,33 @@ typedef struct {
 /* Core-0 / UI-task only; pushes through amy_helpers (never amy_queue_lock). */
 void voice_build_wave(const voice_wave_cfg_t *cfg);
 
+/* ── WAVE-voice distortion (MVP: one global set, DEV-menu controlled) ─────
+ * One shared param set for AMY's per-osc distortion stage (DIST_*), applied
+ * to osc0 of every WAVE-mode target: arp, both drones, melodic wave tracks.
+ * voice_build_wave() re-applies it on every rebuild, so mode toggles and
+ * patch changes inherit the current set; live edits additionally push to the
+ * already-built targets (ui_screen_dev.c owns that fan-out). PATCH-mode
+ * targets never receive these params. */
+typedef struct {
+    uint8_t type;   /* AMY DIST_* value: 0 OFF, 1 CLIP, 2 FOLD, 3 CRUSH */
+    uint8_t drive;  /* 1..16 pre-gain (fold depth for FOLD) */
+    uint8_t bits;   /* 1..16 CRUSH bit depth */
+    uint8_t rate;   /* 1..64 CRUSH sample-hold length in samples */
+    uint8_t mix;    /* 0..100 wet % */
+} voice_dist_t;
+
+/* Current global set (never NULL). */
+const voice_dist_t *voice_dist_get(void);
+
+/* Clamp to the documented ranges and store. Does NOT push - callers decide
+ * which targets are live (see voice_apply_dist). */
+void voice_dist_set(const voice_dist_t *d);
+
+/* Push the current set to one synth's voices (osc0). Idempotent; with
+ * type OFF this actively disables a previously-distorted synth.
+ * Core-0 / UI-task only; pushes through amy_helpers. */
+void voice_apply_dist(uint8_t synth);
+
 /* ── Lazy LFO-sibling materialization ────────────────────────────────────
  * voice_build_wave() reserves the osc1 (LFO carrier) and osc2 (wobble) INDEX
  * slots in the pool shape, but AMY allocates an osc's ~532 B struct only when

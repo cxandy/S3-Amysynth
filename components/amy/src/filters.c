@@ -1128,6 +1128,10 @@ AMY_IRAM_ATTR SAMPLE dist_process(SAMPLE * block, uint16_t osc) {
             SAMPLE x = block[i];
             if (count == 0) {
                 SAMPLE v = MUL6A_SS(x, drive);
+                // Saturate before quantizing: keeps hold on the CLIP/FOLD
+                // level scale and mix * hold inside MUL4_SS's [-16, 16).
+                if (v > F2S(1.0f)) v = F2S(1.0f);
+                if (v < F2S(-1.0f)) v = F2S(-1.0f);
 #ifdef AMY_USE_FIXEDPOINT
                 v = (v + qhalf) & qmask;
 #else

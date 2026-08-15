@@ -31,6 +31,7 @@
  *                                                          turn adjusts
  *    action    { .label="X", .fire=... }                   click: fire
  *    submenu   { .label="X", .sub=&page }                  click: enter
+ *              (+ .fmt previews state on the row: "VALUE >")
  *  `arg` is passed to every callback so one handler serves N rows.
  *  Adding a submenu = one dev_item_t[] + one dev_page_t + one submenu row.
  *
@@ -77,35 +78,55 @@ static void pcm_mode_adjust(int delta, int arg)
     sequencer_core_set_drum_pcm_mode(0, (uint8_t)arg, (uint8_t)m);
 }
 
-/* ── WAVE-voice distortion (MVP; backing state lives in voice_config) ────
- * One global TYPE/DRIVE/BITS/RATE/MIX set for AMY's per-osc distortion,
- * applied to every WAVE-mode target. Rebuilds re-apply it automatically
- * (voice_build_wave); the push below covers targets that are already built
- * and audible, so edits are heard live. PATCH-mode targets are skipped. */
+/* ── WAVE-voice distortion (backing state lives in voice_config) ─────────
+ * One TYPE/DRIVE/BITS/RATE/MIX set per domain (arp / drone / melodic), each
+ * on its own subpage, so the three subsystems can be shaped independently.
+ * Rebuilds re-apply the owning set automatically (voice_build_wave); the push
+ * below covers targets that are already built and audible, so edits are heard
+ * live. PATCH-mode targets are skipped.
+ *
+ * One fmt/adjust pair serves all 15 rows: `arg` packs domain and param, since
+ * dev_item_t carries a single int (DIST_ARG / DIST_ARG_DOMAIN / DIST_ARG_P). */
 static const char *DIST_TYPE_NAMES[] = { "OFF", "CLIP", "FOLD", "CRUSH" };
 #define DIST_TYPE_COUNT 4
 
 enum { DIST_P_TYPE, DIST_P_DRIVE, DIST_P_BITS, DIST_P_RATE, DIST_P_MIX };
 
-static void dist_push_targets(void)
+#define DIST_ARG(dom, param)  (((int)(dom) << 4) | (int)(param))
+#define DIST_ARG_DOMAIN(arg)  ((voice_dist_domain_t)((arg) >> 4))
+#define DIST_ARG_P(arg)       ((arg) & 0xF)
+
+/* Live push for one domain only - a domain in PATCH mode has no WAVE voices
+ * to receive the params (the next wave rebuild inherits them anyway). */
+static void dist_push_domain(voice_dist_domain_t domain)
 {
-    if (arp_get_source() == ARP_SRC_WAVE)
-        voice_apply_dist(sequencer_core_arp_synth());
-    if (drone_get_source() == DRONE_SRC_WAVE) {
-        voice_apply_dist(DRONE_SYNTH_MAIN);
-        voice_apply_dist(DRONE_SYNTH_SUB);
+    switch (domain) {
+    case VOICE_DIST_ARP:
+        if (arp_get_source() == ARP_SRC_WAVE)
+            voice_apply_dist(sequencer_core_arp_synth());
+        break;
+    case VOICE_DIST_DRONE:
+        if (drone_get_source() == DRONE_SRC_WAVE) {
+            voice_apply_dist(DRONE_SYNTH_MAIN);
+            voice_apply_dist(DRONE_SYNTH_SUB);
+        }
+        if (drone_std_get_source() == DRONE_SRC_WAVE) {
+            voice_apply_dist(DRONE_STD_SYNTH_MAIN);
+            voice_apply_dist(DRONE_STD_SYNTH_SUB);
+        }
+        break;
+    case VOICE_DIST_MELODIC:
+        sequencer_core_apply_wave_dist();
+        break;
+    default:
+        break;
     }
-    if (drone_std_get_source() == DRONE_SRC_WAVE) {
-        voice_apply_dist(DRONE_STD_SYNTH_MAIN);
-        voice_apply_dist(DRONE_STD_SYNTH_SUB);
-    }
-    sequencer_core_apply_wave_dist();
 }
 
 static void dist_fmt(char *buf, size_t n, int arg)
 {
-    const voice_dist_t *d = voice_dist_get();
-    switch (arg) {
+    const voice_dist_t *d = voice_dist_get(DIST_ARG_DOMAIN(arg));
+    switch (DIST_ARG_P(arg)) {
     case DIST_P_TYPE:
         snprintf(buf, n, "%s",
                  DIST_TYPE_NAMES[d->type < DIST_TYPE_COUNT ? d->type : 0]);
@@ -119,8 +140,9 @@ static void dist_fmt(char *buf, size_t n, int arg)
 
 static void dist_adjust(int delta, int arg)
 {
-    voice_dist_t d = *voice_dist_get();
-    switch (arg) {
+    voice_dist_domain_t domain = DIST_ARG_DOMAIN(arg);
+    voice_dist_t d = *voice_dist_get(domain);
+    switch (DIST_ARG_P(arg)) {
     case DIST_P_TYPE: {
         int t = (int)d.type + delta;
         t %= DIST_TYPE_COUNT;
@@ -133,8 +155,8 @@ static void dist_adjust(int delta, int arg)
     case DIST_P_RATE:  d.rate  = SEQ_CLAMP_U8((int)d.rate + delta, 1, 64);  break;
     case DIST_P_MIX:   d.mix   = SEQ_CLAMP_U8((int)d.mix + 5 * delta, 0, 100); break;
     }
-    voice_dist_set(&d);
-    dist_push_targets();
+    voice_dist_set(domain, &d);
+    dist_push_domain(domain);
 }
 
 /* One-shot sequencer state dump to the console (seq_core_dump.c). */
@@ -318,15 +340,39 @@ static const dev_item_t s_pcm_items[] = {
 static const dev_page_t s_page_pcm = { "PCM MODE L1", s_pcm_items,
                                        sizeof s_pcm_items / sizeof *s_pcm_items };
 
-#define DIST_ROW(name, param) \
-    { .label = name, .fmt = dist_fmt, .adjust = dist_adjust, .arg = (param) }
+/* One five-row page per distortion domain; the rows differ only in the domain
+ * packed into `arg`, so the page bodies are macro-generated. */
+#define DIST_ROW(name, dom, param)                     \
+    { .label = name, .fmt = dist_fmt,                  \
+      .adjust = dist_adjust, .arg = DIST_ARG(dom, param) }
 
+#define DIST_PAGE_ITEMS(dom)          \
+    DIST_ROW("Type",  dom, DIST_P_TYPE),  \
+    DIST_ROW("Drive", dom, DIST_P_DRIVE), \
+    DIST_ROW("Bits",  dom, DIST_P_BITS),  \
+    DIST_ROW("Rate",  dom, DIST_P_RATE),  \
+    DIST_ROW("Mix",   dom, DIST_P_MIX)
+
+static const dev_item_t s_dist_arp_items[]  = { DIST_PAGE_ITEMS(VOICE_DIST_ARP) };
+static const dev_item_t s_dist_drn_items[]  = { DIST_PAGE_ITEMS(VOICE_DIST_DRONE) };
+static const dev_item_t s_dist_mel_items[]  = { DIST_PAGE_ITEMS(VOICE_DIST_MELODIC) };
+
+static const dev_page_t s_page_dist_arp = { "DIST ARP", s_dist_arp_items,
+                                            sizeof s_dist_arp_items / sizeof *s_dist_arp_items };
+static const dev_page_t s_page_dist_drn = { "DIST DRONE", s_dist_drn_items,
+                                            sizeof s_dist_drn_items / sizeof *s_dist_drn_items };
+static const dev_page_t s_page_dist_mel = { "DIST MELODIC", s_dist_mel_items,
+                                            sizeof s_dist_mel_items / sizeof *s_dist_mel_items };
+
+/* Index page: each row carries its domain's current TYPE, so the state of all
+ * three is readable without entering them. */
 static const dev_item_t s_dist_items[] = {
-    DIST_ROW("Type",  DIST_P_TYPE),
-    DIST_ROW("Drive", DIST_P_DRIVE),
-    DIST_ROW("Bits",  DIST_P_BITS),
-    DIST_ROW("Rate",  DIST_P_RATE),
-    DIST_ROW("Mix",   DIST_P_MIX),
+    { .label = "Arp",     .sub = &s_page_dist_arp, .fmt = dist_fmt,
+      .arg = DIST_ARG(VOICE_DIST_ARP, DIST_P_TYPE) },
+    { .label = "Drone",   .sub = &s_page_dist_drn, .fmt = dist_fmt,
+      .arg = DIST_ARG(VOICE_DIST_DRONE, DIST_P_TYPE) },
+    { .label = "Melodic", .sub = &s_page_dist_mel, .fmt = dist_fmt,
+      .arg = DIST_ARG(VOICE_DIST_MELODIC, DIST_P_TYPE) },
 };
 static const dev_page_t s_page_dist = { "DIST (WAVE)", s_dist_items,
                                         sizeof s_dist_items / sizeof *s_dist_items };
@@ -433,7 +479,14 @@ uint32_t dev_view_signature(dev_view_t *out)
     for (uint8_t i = 1; i < n; i++) {
         const dev_item_t *it = &pg->items[i - 1];
         snprintf(out->rows[i].label, DEV_LABEL_LEN, "%s", it->label);
-        if (it->sub)      snprintf(out->rows[i].value, DEV_VALUE_LEN, ">");
+        if (it->sub && it->fmt) {
+            /* Submenu that also previews state: "<value> >". */
+            char v[DEV_VALUE_LEN];
+            it->fmt(v, sizeof v, it->arg);
+            snprintf(out->rows[i].value, DEV_VALUE_LEN, "%.*s >",
+                     DEV_VALUE_LEN - 3, v);
+        }
+        else if (it->sub) snprintf(out->rows[i].value, DEV_VALUE_LEN, ">");
         else if (it->fmt) it->fmt(out->rows[i].value, DEV_VALUE_LEN, it->arg);
         else              out->rows[i].value[0] = '\0';
     }

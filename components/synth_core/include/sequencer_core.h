@@ -479,9 +479,10 @@ void sequencer_core_push_envelope(uint8_t synth, const seq_env_t *env);
  * only the timing - whatever coef is wired to COEF_EG1 is what moves. */
 void sequencer_core_push_envelope_eg1(uint8_t synth, uint8_t osc, const seq_env_t *env);
 
-/* Re-push the global WAVE-voice distortion set (voice_dist_get) to every
- * melodic track currently on a wave patch. Arp/drone fan-out stays with the
- * caller (they own their own mode state). Core-0 / UI-task only. */
+/* Re-push the MELODIC distortion set (VOICE_DIST_MELODIC) to every melodic
+ * track currently on a wave patch. Arp/drone own their own domains and their
+ * own mode state, so their fan-out stays with the caller.
+ * Core-0 / UI-task only. */
 void sequencer_core_apply_wave_dist(void);
 
 /* ── Arpeggiator support ──────────────────────────────────────────────────

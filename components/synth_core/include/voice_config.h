@@ -151,13 +151,24 @@ typedef struct {
 /* Core-0 / UI-task only; pushes through amy_helpers (never amy_queue_lock). */
 void voice_build_wave(const voice_wave_cfg_t *cfg);
 
-/* ── WAVE-voice distortion (MVP: one global set, DEV-menu controlled) ─────
- * One shared param set for AMY's per-osc distortion stage (DIST_*), applied
- * to osc0 of every WAVE-mode target: arp, both drones, melodic wave tracks.
- * voice_build_wave() re-applies it on every rebuild, so mode toggles and
- * patch changes inherit the current set; live edits additionally push to the
- * already-built targets (ui_screen_dev.c owns that fan-out). PATCH-mode
- * targets never receive these params. */
+/* ── WAVE-voice distortion (DEV-menu controlled, one set per domain) ──────
+ * Param set for AMY's per-osc distortion stage (DIST_*), applied to osc0 of
+ * WAVE-mode targets. Three independent sets, so the arp can be crushed while
+ * a melodic layer folds: the owning DOMAIN is derived from the synth slot
+ * (voice_dist_domain_of), never passed by callers - the slot map is already
+ * the single source of truth for who is who.
+ *
+ * voice_build_wave() re-applies the owning domain's set on every rebuild, so
+ * mode toggles and patch changes inherit it; live edits additionally push to
+ * the already-built targets (ui_screen_dev.c owns that fan-out). PATCH-mode
+ * targets and non-WAVE slots (drums, live play) never receive these params. */
+typedef enum {
+    VOICE_DIST_ARP = 0,     /* SEQ_ARP_SYNTH                                 */
+    VOICE_DIST_DRONE,       /* both drones: DRONE_SYNTH_* + DRONE_STD_SYNTH_* */
+    VOICE_DIST_MELODIC,     /* every melodic slot (>= SEQ_MEL_SYNTH_BASE)    */
+    VOICE_DIST_DOMAIN_COUNT
+} voice_dist_domain_t;
+
 typedef struct {
     uint8_t type;   /* AMY DIST_* value: 0 OFF, 1 CLIP, 2 FOLD, 3 CRUSH */
     uint8_t drive;  /* 1..16 pre-gain (fold depth for FOLD) */
@@ -166,16 +177,21 @@ typedef struct {
     uint8_t mix;    /* 0..100 wet % */
 } voice_dist_t;
 
-/* Current global set (never NULL). */
-const voice_dist_t *voice_dist_get(void);
+/* Which set governs a slot, or VOICE_DIST_DOMAIN_COUNT for slots the stage
+ * does not reach (0, drums 6-9, live play 10). */
+voice_dist_domain_t voice_dist_domain_of(uint8_t synth);
+
+/* Current set for a domain. Never NULL; an out-of-range domain yields the
+ * ARP set rather than a NULL deref (DEV-menu callers pass literals). */
+const voice_dist_t *voice_dist_get(voice_dist_domain_t domain);
 
 /* Clamp to the documented ranges and store. Does NOT push - callers decide
- * which targets are live (see voice_apply_dist). */
-void voice_dist_set(const voice_dist_t *d);
+ * which targets are live (see voice_apply_dist). Out-of-range domain: no-op. */
+void voice_dist_set(voice_dist_domain_t domain, const voice_dist_t *d);
 
-/* Push the current set to one synth's voices (osc0). Idempotent; with
- * type OFF this actively disables a previously-distorted synth.
- * Core-0 / UI-task only; pushes through amy_helpers. */
+/* Push the set owning this slot to its voices (osc0). Idempotent; with type
+ * OFF this actively disables a previously-distorted synth. Slots outside every
+ * domain are a no-op. Core-0 / UI-task only; pushes through amy_helpers. */
 void voice_apply_dist(uint8_t synth);
 
 /* ── Lazy LFO-sibling materialization ────────────────────────────────────

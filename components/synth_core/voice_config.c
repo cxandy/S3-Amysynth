@@ -2,6 +2,7 @@
 #include "amy.h"            /* wave constants, COEF_* indices */
 #include "amy_helpers.h"    /* shared scratch-event begin/send */
 #include "sequencer_core.h" /* sequencer_core_ks_feedback_from_q */
+#include "synth_slots.h"    /* slot map: distortion domain of a synth id */
 #include "seq_clamp.h"
 #include <math.h>           /* powf: wobble downward-only center offset */
 #include <string.h>
@@ -135,38 +136,59 @@ void voice_build_wave(const voice_wave_cfg_t *cfg)
     voice_apply_dist(cfg->synth);
 }
 
-/* ── WAVE-voice distortion (MVP) ─────────────────────────────────────────
- * Defaults: OFF, with audible non-neutral secondary params so the first
- * TYPE flip in the DEV menu is immediately hearable. */
-static voice_dist_t s_dist = {
-    .type = 0, .drive = 2, .bits = 8, .rate = 8, .mix = 100,
+/* ── WAVE-voice distortion ───────────────────────────────────────────────
+ * One set per domain (arp / drone / melodic). Defaults: OFF, with audible
+ * non-neutral secondary params so the first TYPE flip in the DEV menu is
+ * immediately hearable. */
+#define VOICE_DIST_DEFAULTS { .type = 0, .drive = 2, .bits = 8, .rate = 8, .mix = 100 }
+
+static voice_dist_t s_dist[VOICE_DIST_DOMAIN_COUNT] = {
+    [VOICE_DIST_ARP]     = VOICE_DIST_DEFAULTS,
+    [VOICE_DIST_DRONE]   = VOICE_DIST_DEFAULTS,
+    [VOICE_DIST_MELODIC] = VOICE_DIST_DEFAULTS,
 };
 
-const voice_dist_t *voice_dist_get(void)
+voice_dist_domain_t voice_dist_domain_of(uint8_t synth)
 {
-    return &s_dist;
+    if (synth == SEQ_ARP_SYNTH)              return VOICE_DIST_ARP;
+    if (synth >= DRONE_SYNTH_MAIN &&
+        synth <= DRONE_STD_SYNTH_SUB)        return VOICE_DIST_DRONE;
+    if (synth >= SEQ_MEL_SYNTH_BASE &&
+        synth <= SEQ_MAX_SYNTH)              return VOICE_DIST_MELODIC;
+    return VOICE_DIST_DOMAIN_COUNT;          /* drums, live play, sentinel */
 }
 
-void voice_dist_set(const voice_dist_t *d)
+const voice_dist_t *voice_dist_get(voice_dist_domain_t domain)
 {
-    if (!d) return;
-    s_dist.type  = (uint8_t)(d->type > 3u ? 0u : d->type);  /* unknown type -> OFF */
-    s_dist.drive = SEQ_CLAMP_U8(d->drive, 1u, 16u);
-    s_dist.bits  = SEQ_CLAMP_U8(d->bits, 1u, 16u);
-    s_dist.rate  = SEQ_CLAMP_U8(d->rate, 1u, 64u);
-    s_dist.mix   = SEQ_CLAMP_U8(d->mix, 0u, 100u);
+    if (domain >= VOICE_DIST_DOMAIN_COUNT) domain = VOICE_DIST_ARP;
+    return &s_dist[domain];
+}
+
+void voice_dist_set(voice_dist_domain_t domain, const voice_dist_t *d)
+{
+    if (!d || domain >= VOICE_DIST_DOMAIN_COUNT) return;
+    voice_dist_t *s = &s_dist[domain];
+    s->type  = (uint8_t)(d->type > 3u ? 0u : d->type);  /* unknown type -> OFF */
+    s->drive = SEQ_CLAMP_U8(d->drive, 1u, 16u);
+    s->bits  = SEQ_CLAMP_U8(d->bits, 1u, 16u);
+    s->rate  = SEQ_CLAMP_U8(d->rate, 1u, 64u);
+    s->mix   = SEQ_CLAMP_U8(d->mix, 0u, 100u);
 }
 
 void voice_apply_dist(uint8_t synth)
 {
+    voice_dist_domain_t domain = voice_dist_domain_of(synth);
+    if (domain >= VOICE_DIST_DOMAIN_COUNT) return;
+    const voice_dist_t *d = &s_dist[domain];
+
     amy_event *e = amy_helpers_event_begin();
     e->synth      = synth;
     e->osc        = 0;
-    e->dist_type  = (float)s_dist.type;
-    e->dist_drive = (float)s_dist.drive;
-    e->dist_bits  = (float)s_dist.bits;
-    e->dist_rate  = (float)s_dist.rate;
-    e->dist_mix   = (float)s_dist.mix / 100.0f;
+    e->dist_type  = (float)d->type;
+    e->dist_drive = (float)d->drive;
+    e->dist_bits  = (float)d->bits;
+    e->dist_rate  = (float)d->rate;
+    e->dist_mix   = (float)d->mix / 100.0f;
     amy_helpers_event_send(e);
 }
 

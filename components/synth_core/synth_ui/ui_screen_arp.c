@@ -1,10 +1,8 @@
 #include "synth_ui/synth_ui_internal.h"
 #include "synth_ui.h"
 #include "arp_core.h"
-#include "custompatches/drone_core.h"
 #include "patch_names.h"
 #include "seq_clamp.h"
-#include "amy.h"
 #include <string.h>
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -47,12 +45,6 @@ void arp_build_view(arp_view_t *out)
     }
     out->cursor  = s_arp_cursor;
     out->editing = s_arp_editing;
-
-    /* Source / wave (F-UI). */
-    bool wave_mode     = (arp_get_source() == ARP_SRC_WAVE);
-    out->wave_mode     = wave_mode;
-    out->source_str    = wave_mode ? "WAVE" : "PTCH";
-    out->wave_str      = drone_wave_name(arp_get_wave());
     out->portamento_ms = arp_get_portamento_ms();
 
     /* Patch indicator mirrors the sequencer view: number always, name banner
@@ -74,12 +66,9 @@ uint32_t arp_view_signature(arp_view_t *out)
     h = fnv1a_bytes(h, &out->editing, sizeof(out->editing));
     h = fnv1a_bytes(h, &out->patch, sizeof(out->patch));
     h = fnv1a_bytes(h, &out->patch_select, sizeof(out->patch_select));
-    h = fnv1a_bytes(h, &out->wave_mode, sizeof(out->wave_mode));
     h = fnv1a_bytes(h, &out->portamento_ms, sizeof(out->portamento_ms));
     h = fnv1a_bytes(h, out->rate_str, 4);
     h = fnv1a_bytes(h, out->mode_str, 4);
-    if (out->source_str) h = fnv1a_bytes(h, out->source_str, 4);
-    if (out->wave_str)   h = fnv1a_bytes(h, out->wave_str,   4);
     for (uint8_t i = 0; i < ARP_VIEW_SLOTS; i++) {
         h = fnv1a_bytes(h, &out->slot_active[i], sizeof(out->slot_active[i]));
         h = fnv1a_bytes(h, &out->slot_rest[i],   sizeof(out->slot_rest[i]));
@@ -115,26 +104,6 @@ static void arp_edit_value(uint8_t cursor, int delta)
             arp_set_gate_pct((uint8_t)SEQ_CLAMP_INT(
                 (int)arp_get_gate_pct() + dir * 5, 10, 100));
             break;
-        case ARP_CUR_SOURCE:
-            if (dir != 0)
-                arp_set_source(arp_get_source() == ARP_SRC_WAVE
-                               ? ARP_SRC_PATCH : ARP_SRC_WAVE);
-            break;
-        case ARP_CUR_WAVE: {
-            /* Arp keeps NOISE and KS; drone excludes them (see DROW_WAVE). */
-            static const uint16_t s_arp_waves[] = {
-                SAW_DOWN, SAW_UP, PULSE, TRIANGLE, SINE, NOISE, KS
-            };
-            const int wn = (int)(sizeof(s_arp_waves) / sizeof(s_arp_waves[0]));
-            int idx = 0;
-            uint16_t cur_wave = arp_get_wave();
-            for (int i = 0; i < wn; i++) {
-                if (s_arp_waves[i] == cur_wave) { idx = i; break; }
-            }
-            idx = (idx + dir + wn) % wn;
-            arp_set_wave(s_arp_waves[idx]);
-            break;
-        }
         case ARP_CUR_PORTA:
             /* 1ms/detent: fine control for short, snappy glides. */
             arp_set_portamento_ms((uint16_t)SEQ_CLAMP_INT(
@@ -177,10 +146,6 @@ void synth_ui_arp_handle_encoder(long delta)
     } else {
         int c = (int)s_arp_cursor + (int)delta;
         c = SEQ_CLAMP_INT(c, 0, ARP_CUR_COUNT - 1);
-        /* Skip the WAVE cursor when source is PATCH — it has no effect there. */
-        if (c == ARP_CUR_WAVE && arp_get_source() == ARP_SRC_PATCH) {
-            c = (delta > 0) ? ARP_CUR_PORTA : ARP_CUR_SOURCE;
-        }
         s_arp_cursor = (uint8_t)c;
     }
     s_force_redraw = true;

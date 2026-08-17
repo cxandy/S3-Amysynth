@@ -1305,15 +1305,14 @@ static bool filter_tgt_is_arp(void)
 
 /* True when the target plays a feedback wave (KS): the editor then exposes the
  * extra FB cursor (slot 2) for string feedback 0..1. Q stays editable - AMY
- * runs the biquad on KS oscs like any other wave. Covers the melodic KS patch
- * and both arp routes to KS; the drones exclude KS from their cycles. */
+ * runs the biquad on KS oscs like any other wave. Covers the melodic and arp
+ * KS patch; the drones exclude KS from their cycles. */
 static bool filter_target_is_feedback(void)
 {
     /* Live voice is always a patch; KS feedback is not one of its cursors. */
     if (filter_tgt_is_live()) return false;
     if (filter_tgt_is_arp()) {
-        return (arp_get_source() == ARP_SRC_WAVE  && arp_get_wave()  == KS)
-            || (arp_get_source() == ARP_SRC_PATCH && arp_get_patch() == SEQ_PATCH_KS);
+        return arp_get_patch() == SEQ_PATCH_KS;
     }
     if (filter_tgt_is_drone() || filter_tgt_is_drone_std()) {
         return false;
@@ -1899,12 +1898,8 @@ uint32_t lfo_view_signature(void)
     else
 #endif
     if (seq_state.ui_mode == UI_MODE_ARP)
-        /* The arp encodes wave-vs-patch in its source enum, not in the patch
-         * number (arp_get_patch() keeps the PATCH-mode selection even while
-         * WAVE mode plays). WAVE always builds the native carrier+wobble oscs
-         * (arp_core.c voice layout); PATCH always runs the software stepper,
-         * whatever the stored patch number is. */
-        native = (arp_get_source() == ARP_SRC_WAVE);
+        /* Same predicate as the arp's own LFO routing (arp_rebuild). */
+        native = sequencer_core_lfo_native_layout(arp_get_patch(), NULL, NULL);
     else if (seq_state.ui_mode == UI_MODE_DRONE_STD)
         native = true;   /* drone_std always drives the native applier */
     else

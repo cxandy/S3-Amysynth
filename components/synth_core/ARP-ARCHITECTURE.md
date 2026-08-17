@@ -47,8 +47,8 @@ encoder / buttons ─▶ synth_ui/ ─▶ arp_core.c ─▶ sequencer_core/ ─�
 
 | Layer | File | Responsibility |
 |---|---|---|
-| Arp model | `components/synth_core/arp_core.c` | Owns arp state (enabled, dir, octaves, rate, gate, scale, root, patch, source/wave, glide, 8 note slots + the shared voice params). Computes the note sequence and (re)emits it. |
-| Voice layer | `components/synth_core/voice_config.c` | Shared with the melodic rows and drone: builds the 2-osc WAVE voice and wires the native AMY LFO. |
+| Arp model | `components/synth_core/arp_core.c` | Owns arp state (enabled, dir, octaves, rate, gate, scale, root, patch, glide, 8 note slots + the shared voice params). Computes the note sequence and (re)emits it. |
+| Voice layer | `components/synth_core/voice_config.c` | Shared with the melodic rows and drone: builds raw-wave voices and wires the native AMY LFO. |
 | AMY bridge | `components/synth_core/sequencer_core/` | `sequencer_core_arp_*` helpers: configure the arp synth, emit/clear arp tags through the shared event buffer + mutex. Owns the arp tag window. |
 | UI / input | `components/synth_core/synth_ui/ui_screen_arp.c` | Arp screen cursor/edit state, builds the flat `arp_view_t`, dispatches encoder/button to `arp_*` setters, coalesces refreshes (`arp_core_service`). |
 | Display | `components/display/display_arp.c` | Pure render of `arp_view_t` → U8g2. No arp logic. |
@@ -97,12 +97,11 @@ typedef struct {
                                       // ARP_REST (-2) = rest (SLOT mode)
     uint8_t    scale_index;           // arp's OWN quantizer scale
     uint8_t    root_note;             // arp's OWN quantizer root
-    uint16_t   patch;                 // arp's OWN AMY patch (PATCH source)
-    arp_source_t source;              // ARP_SRC_PATCH (default) | ARP_SRC_WAVE
-    uint16_t   wave;                  // AMY waveform when source==WAVE
+    uint16_t   patch;                 // arp's OWN patch, full melodic catalog
+                                      // (0..SEQ_PATCH_FULL_MAX)
     voice_params_t vp;                // shared voice params: EG0/EG1 envelopes,
-                                      // filter, native LFO (WAVE mode only),
-                                      // amp trim — each deferred-authority
+                                      // filter, LFO, amp trim — each
+                                      // deferred-authority
     uint16_t   portamento_ms;         // glide between pitches, 0 = off
 } arp_state_t;
 ```
@@ -123,8 +122,8 @@ seeds a note at the arp root.
 
 Flat, render-only snapshot built fresh each frame. The renderer is pure — it
 never calls back into `arp_core`. Cursor index space:
-`0=ENABLE, 1=MODE, 2=OCT, 3=RATE, 4=GATE, 5=SOURCE, 6=WAVE, 7=GLIDE,
-8..15 = slots 0..7` (WAVE is skipped in PATCH mode).
+`0=ENABLE, 1=MODE, 2=OCT, 3=RATE, 4=GATE, 5=GLIDE, 6..13 = slots 0..7`
+(the patch changes via the hold+turn gesture, not a cursor).
 
 ### Compile-time limits
 
@@ -216,24 +215,20 @@ flowchart LR
 
 ---
 
-## Sources: PATCH vs WAVE
+## Sound selection
 
-`arp_set_source()` switches the arp synth between two voice models:
-
-- **PATCH** (default): a normal AMY preset owns the oscillators. The stored
-  LFO settings are retained but inactive (a patch's oscillator topology is
-  its own).
-- **WAVE**: a build-your-own 2-osc voice assembled by the shared
-  `voice_build_wave()` (osc0 = carrier with the chosen waveform, osc1 =
-  tempo-synced native AMY LFO wired by `voice_apply_native_lfo()`,
-  `mod_source = 1`). This is the same voice model the drone and melodic WAVE
-  patches use, so the LFO editor's targets (filter / amp / pitch / pan /
-  wavetable scan) behave identically. Waves: SAW, SAW-UP, PULSE, TRIANGLE,
-  SINE, NOISE, KS.
+One flat patch number walks the full melodic catalog
+(`sequencer_core_arp_configure()` runs the same kind dispatch as the melodic
+rows): Juno/DX7/piano string patches, raw waves (`SEQ_PATCH_WAVE_BASE`), bass
+presets, wavetable banks, FM and additive voices. Raw-wave and bass patches
+reserve a native LFO carrier pair (`sequencer_core_lfo_native_layout()` — the
+same voice model the drone and melodic wave patches use, so the LFO editor's
+targets behave identically); every other patch runs the 20 Hz software LFO
+stepper, as on melodic rows.
 
 **Portamento** is AMY-native: `arp_set_portamento_ms()` sends one
 `portamento_ms` event to the arp synth (0–2000 ms). It is re-pushed on every
-rebuild because patch/source/wave changes reset AMY's internal glide state.
+rebuild because patch changes reset AMY's internal glide state.
 
 ---
 
@@ -319,13 +314,13 @@ void     arp_set_portamento_ms(uint16_t ms); // 0..ARP_PORTAMENTO_MAX_MS (2000)
 ```
 
 > This list is illustrative, not exhaustive — `arp_core.h` also exposes
-> source/wave, ADSR (EG0/EG1), filter, LFO, and amp-trim setters/getters.
+> ADSR (EG0/EG1), filter, LFO, and amp-trim setters/getters.
 > Treat `arp_core.h` as the source of truth.
 
 ### `sequencer_core.h` (AMY bridge)
 
 ```c
-uint8_t  sequencer_core_arp_synth(void);   // 63
+uint8_t  sequencer_core_arp_synth(void);   // 1 (SEQ_ARP_SYNTH)
 uint8_t  sequencer_core_arp_voices(void);  // 4
 uint32_t sequencer_core_arp_tag_base(void);// 1056
 uint8_t  sequencer_core_clamp_melodic_note(int32_t);
@@ -395,7 +390,7 @@ RATE:1/16     GATE:75%          P138     y=20  (macro row 2, patch right-aligned
 
 - **Macro row 1:** ARP enable, direction, octave span.
 - **Macro row 2:** rate, gate %, and the **patch number** ("P138") right-aligned.
-  The source/wave/glide readout shares the right-hand slot — see `display_arp.c`.
+  The glide readout shares the right-hand slot — see `display_arp.c`.
 - **Patch name banner:** while patch-select is held, the patch's human name is
   drawn in a centered, cleared+framed box over the slot grid — mirroring
   the sequencer view. Only when `CONFIG_SEQ_PATCH_SHOW_NAMES` compiles the name

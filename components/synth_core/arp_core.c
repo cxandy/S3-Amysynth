@@ -2,7 +2,7 @@
 #include "sequencer_core.h"
 #include "custompatches/fm_voice.h"  /* s_fm_voice + fm_voice_push_live (FM_CUSTOM) */
 #include "custompatches/additive_voice.h"  /* s_additive_voice + push_live (ADDITIVE_CUSTOM) */
-#include "amy_helpers.h"   /* amy_helpers_event_begin/send — for WAVE mode osc config */
+#include "amy_helpers.h"   /* amy_helpers_event_begin/send */
 #include "voice_config.h"  /* canonical LFO depth scalars + shared wave map */
 #include "seq_core_config.h" /* SEQ_LFO_SW_MAX_HZ (software-stepper rate cap) */
 #include "quantizer.h"
@@ -32,12 +32,8 @@
 #define CONFIG_SEQ_ARP_DEFAULT_PATCH 138  /* DX7 E.Piano, matches melodic default */
 #endif
 
-/* Default WAVE-mode waveform: bright and harmonically rich, matching the
- * drone's default. */
-#define ARP_DEFAULT_WAVE SAW_DOWN
-
-/* Octaves of EG1 filter-cutoff sweep in WAVE mode once the arp filter is
- * authored+enabled. Fixed: the arp exposes EG1 *timing*, not its depth. */
+/* Octaves of EG1 filter-cutoff sweep once the arp filter is authored+enabled.
+ * Fixed: the arp exposes EG1 *timing*, not its depth. */
 #define ARP_FILTER_EG1_DEPTH_OCT 3.0f
 
 static const char *TAG = "arp_core";
@@ -79,13 +75,11 @@ typedef struct {
     bool       follow_quant;  /* snap to the global scale quantizer instead of
                                  scale_index/root_note above (see arp_snap);
                                  default OFF via the init memset */
-    uint16_t     patch;
-    arp_source_t source;         /* WAVE or PATCH (default PATCH)               */
-    uint16_t     wave;           /* AMY waveform used when source==ARP_SRC_WAVE */
-    voice_params_t vp;           /* shared voice params: env, EG1, filter, native
-                                    LFO (WAVE mode only), each with its
-                                    deferred-authority flag, plus amp_trim scaled
-                                    into note velocity at emit time. */
+    uint16_t     patch;          /* full melodic catalog, 0..SEQ_PATCH_FULL_MAX */
+    voice_params_t vp;           /* shared voice params: env, EG1, filter, LFO,
+                                    each with its deferred-authority flag, plus
+                                    amp_trim scaled into note velocity at emit
+                                    time. */
     uint16_t     portamento_ms;  /* glide time, 0=off. The memset default matches
                                     AMY's own reset value, so no explicit init. */
 } arp_state_t;
@@ -198,7 +192,7 @@ static void arp_apply_filter(const seq_filter_t *f)
     }
     /* KS string decay from the authored feedback field; 0 = never authored,
      * keep AMY's build-time 0.9 default. */
-    if (s_arp.wave == KS && f->feedback > 0.0f) {
+    if (s_arp.patch == SEQ_PATCH_KS && f->feedback > 0.0f) {
         e->feedback = SEQ_CLAMP_F32(f->feedback, 0.0f, 1.0f);
     }
     amy_helpers_event_send(e);
@@ -209,43 +203,6 @@ static void arp_apply_filter(const seq_filter_t *f)
     }
 }
 
-/* ── Source configuration helpers ────────────────────────────────────── */
-
-/* Configure the arp's AMY synth slot as a bare oscillator (WAVE mode).
- * osc0 follows the emitted MIDI note, amplitude velocity-scaled + EG0-gated so
- * the shared ADSR editor works as in PATCH mode; osc1 is the native LFO
- * carrier. The caller must push an EG0 envelope afterwards (arp_rebuild always
- * does in WAVE mode, so even the default env applies). */
-static void arp_configure_wave_synth(void)
-{
-    uint8_t synth  = sequencer_core_arp_synth();
-    uint8_t voices = sequencer_core_arp_voices();
-
-    /* osc1 (LFO carrier) and osc2 (wobble) are always allocated even when no
-     * LFO is authored - it avoids a pool reset when the LFO is toggled later. */
-    voice_wave_cfg_t cfg = {
-        .synth                = synth,
-        .num_voices           = voices,
-        .oscs_per_voice       = 3,   /* osc1 = LFO carrier, osc2 = wobble mod */
-        .wave                 = s_arp.wave,
-        .osc0_amp_const       = 1.0f,
-        .osc0_amp_vel         = 1.0f,
-        .ks_feedback_authored = s_arp.vp.filter_authored,
-        .ks_feedback          = s_arp.vp.filter.feedback,
-        .wt_preset            = -1,
-    };
-    voice_build_wave(&cfg);
-
-    /* The EG1->cutoff sweep is wired by arp_apply_filter() when arp_rebuild()
-     * re-imposes the authored filter; nothing to do here. */
-
-    /* Native LFO routing (shared applier): active => osc0 mod coupling +
-     * osc1 carrier; inactive => coupling cleared, carrier dormant. */
-    bool lfo_on = s_arp.vp.lfo_authored && s_arp.vp.lfo.enabled;
-    voice_apply_native_lfo(synth, lfo_on ? &s_arp.vp.lfo : NULL,
-                           sequencer_core_get_bpm());
-}
-
 /* Recompute and push the LFO carrier frequency at the current BPM. Called by
  * sequencer_core_set_bpm() after s_bpm updates. Must NOT be called from the
  * render body - amy_queue_lock is held there; set_bpm() runs on the UI task. */
@@ -253,11 +210,11 @@ void arp_core_refresh_lfo_freq(void)
 {
     if (!s_arp.vp.lfo_authored || !s_arp.vp.lfo.enabled)
         return;
-    /* WAVE source always has the wave-build carrier at osc1; PATCH source
-     * only when the patch reserves a pair (wave numbers / bass presets). */
-    uint8_t carrier = 1;
-    if (s_arp.source != ARP_SRC_WAVE &&
-        !sequencer_core_lfo_native_layout(s_arp.patch, &carrier, NULL))
+    /* Only patches with a reserved carrier pair (wave numbers / wavetables /
+     * bass presets) run the native LFO; the software stepper tracks BPM
+     * per-step on its own. */
+    uint8_t carrier;
+    if (!sequencer_core_lfo_native_layout(s_arp.patch, &carrier, NULL))
         return;
 
     amy_event *e = amy_helpers_event_begin();
@@ -287,7 +244,7 @@ static void arp_push_portamento(void)
     amy_helpers_event_send(e);
 }
 
-/* (Re)build the arp synth slot for the current source and params, then
+/* (Re)build the arp synth slot for the current patch and params, then
  * re-impose any authored ADSR / filter. Mirrors drone_rebuild().
  *
  * Scheduled events are cleared FIRST and re-emitted afterwards (arp_mark_dirty
@@ -302,45 +259,37 @@ static void arp_rebuild(void)
     arp_core_clear_all();
     arp_kill_voices();
 
-    if (s_arp.source == ARP_SRC_WAVE) {
-        arp_configure_wave_synth();
-        /* WAVE mode has no patch envelope; always push the arp's env (authored
-         * or default) so EG0 breakpoints are valid and notes decay. Applies
-         * verbatim to KS/NOISE too - no forced onset floor. */
+    sequencer_core_arp_configure(s_arp.patch, sequencer_core_arp_voices(),
+                                 s_arp.vp.filter_authored, s_arp.vp.filter.feedback);
+    /* Raw wave/wavetable patches have no built-in EG0; always push the
+     * envelope so notes decay. Juno/DX7 strings and bass/FM presets carry
+     * their own envelope as part of their character: only override when
+     * the user authored one. */
+    if (sequencer_core_is_wave_patch(s_arp.patch) || s_arp.vp.env_authored) {
         sequencer_core_push_envelope(sequencer_core_arp_synth(), &s_arp.vp.env);
-    } else {
-        sequencer_core_arp_configure(s_arp.patch, sequencer_core_arp_voices(),
-                                     s_arp.vp.filter_authored, s_arp.vp.filter.feedback);
-        /* Raw wave/wavetable patches have no built-in EG0; always push the
-         * envelope so notes decay. Juno/DX7 strings and bass/FM presets carry
-         * their own envelope as part of their character: only override when
-         * the user authored one. */
-        if (sequencer_core_is_wave_patch(s_arp.patch) || s_arp.vp.env_authored) {
-            sequencer_core_push_envelope(sequencer_core_arp_synth(), &s_arp.vp.env);
-        }
-        /* Patches with a reserved carrier pair (wave numbers, bass presets)
-         * take the native LFO here; the software stepper excludes them. */
-        uint8_t carrier, coupled;
-        if (sequencer_core_lfo_native_layout(s_arp.patch, &carrier, &coupled)) {
-            bool lfo_on = s_arp.vp.lfo_authored && s_arp.vp.lfo.enabled;
-            voice_apply_native_lfo_topo(sequencer_core_arp_synth(),
-                                        lfo_on ? &s_arp.vp.lfo : NULL,
-                                        sequencer_core_get_bpm(),
-                                        carrier, coupled);
-        }
     }
-    /* Filter re-apply is source-agnostic; arp_apply_filter also pushes the EG1
-     * breakpoints whenever it wires the sweep coef. */
+    /* Patches with a reserved carrier pair (wave numbers, bass presets)
+     * take the native LFO here; the software stepper excludes them. */
+    uint8_t carrier, coupled;
+    if (sequencer_core_lfo_native_layout(s_arp.patch, &carrier, &coupled)) {
+        bool lfo_on = s_arp.vp.lfo_authored && s_arp.vp.lfo.enabled;
+        voice_apply_native_lfo_topo(sequencer_core_arp_synth(),
+                                    lfo_on ? &s_arp.vp.lfo : NULL,
+                                    sequencer_core_get_bpm(),
+                                    carrier, coupled);
+    }
+    /* arp_apply_filter also pushes the EG1 breakpoints whenever it wires the
+     * sweep coef. */
     if (s_arp.vp.filter_authored) {
         arp_apply_filter(&s_arp.vp.filter);
     }
-    /* EG1: push only when authored. Otherwise a PATCH-mode instrument that
-     * routes its own bp1 keeps its patch-string values. */
+    /* EG1: push only when authored. Otherwise an instrument that routes its
+     * own bp1 keeps its patch-string values. */
     if (s_arp.vp.env1_authored) {
         sequencer_core_push_envelope_eg1(sequencer_core_arp_synth(), 0, &s_arp.vp.env1);
     }
     /* Any reconfigure above resets AMY's per-osc portamento_alpha to 0 -
-     * reassert regardless of source. */
+     * reassert. */
     arp_push_portamento();
 
     /* Re-emit the schedule cleared at the top (coalesced onto the next
@@ -366,8 +315,6 @@ void arp_core_init(void)
     s_arp.scale_index = CONFIG_SEQ_ARP_DEFAULT_SCALE;
     s_arp.root_note   = CONFIG_SEQ_ARP_DEFAULT_ROOT_NOTE;
     s_arp.patch       = CONFIG_SEQ_ARP_DEFAULT_PATCH;
-    s_arp.source      = ARP_SRC_PATCH;
-    s_arp.wave        = ARP_DEFAULT_WAVE;
     /* Default ADSR mirrors the melodic compile-time defaults; unauthored until
      * the user commits in the graph editor (the patch's own env wins). */
     s_arp.vp.env.attack_ms   = 4;    /* tiny curve, prevents a digital click */
@@ -569,18 +516,14 @@ void arp_set_patch(uint16_t patch_number)
     patch_number = SEQ_CLAMP_U16(patch_number, 0, SEQ_PATCH_FULL_MAX);
     if (s_arp.patch == patch_number) return;
     s_arp.patch = patch_number;
-    /* WAVE mode stores the number but leaves the synth slot alone; it applies
-     * when the source switches back to ARP_SRC_PATCH. */
-    if (s_arp.source == ARP_SRC_PATCH) {
-        arp_rebuild();
-    }
+    arp_rebuild();
     /* Patch reconfig does not change scheduling; no re-emit needed. */
 }
 
 void arp_core_fm_voice_changed(void)
 {
 #if CONFIG_SYNTH_CUSTOM_FM
-    if (s_arp.source == ARP_SRC_PATCH && s_arp.patch == SEQ_PATCH_FM_CUSTOM) {
+    if (s_arp.patch == SEQ_PATCH_FM_CUSTOM) {
         fm_voice_push_live(sequencer_core_arp_synth(), &s_fm_voice);
     }
 #endif
@@ -589,7 +532,7 @@ void arp_core_fm_voice_changed(void)
 void arp_core_additive_voice_changed(void)
 {
 #if CONFIG_SYNTH_ADDITIVE
-    if (s_arp.source == ARP_SRC_PATCH && s_arp.patch == SEQ_PATCH_ADDITIVE_CUSTOM) {
+    if (s_arp.patch == SEQ_PATCH_ADDITIVE_CUSTOM) {
         additive_voice_push_live(sequencer_core_arp_synth(), &s_additive_voice);
     }
 #endif
@@ -679,12 +622,16 @@ void arp_set_lfo(const seq_lfo_t *lfo)
 {
     if (!lfo) return;
     s_arp.vp.lfo = *lfo;
-    /* Only author + rebuild in WAVE mode: patches own their osc layout, so
-     * PATCH mode just stores the config. Setting lfo_authored here would
-     * ghost-activate the LFO on a later switch to WAVE. */
-    if (s_arp.source == ARP_SRC_WAVE) {
-        s_arp.vp.lfo_authored = true;
-        arp_rebuild();
+    s_arp.vp.lfo_authored = true;
+    /* Native carrier patches take the edit immediately via the shared applier
+     * (mirrors the melodic editor path); software-stepper patches read
+     * s_arp.vp.lfo live each frame, nothing to push. */
+    uint8_t carrier, coupled;
+    if (sequencer_core_lfo_native_layout(s_arp.patch, &carrier, &coupled)) {
+        voice_apply_native_lfo_topo(sequencer_core_arp_synth(),
+                                    lfo->enabled ? &s_arp.vp.lfo : NULL,
+                                    sequencer_core_get_bpm(),
+                                    carrier, coupled);
     }
     ESP_LOGI(TAG, "arp LFO -> en=%d wave=%u rate=%u depth=%u tgt=0x%02x",
              lfo->enabled, (unsigned)lfo->wave, (unsigned)lfo->rate,
@@ -706,25 +653,6 @@ void arp_set_slot(uint8_t idx, int16_t chromatic_note)
     arp_mark_dirty();
 }
 
-void arp_set_source(arp_source_t src)
-{
-    if (src != ARP_SRC_WAVE && src != ARP_SRC_PATCH) return;
-    if (s_arp.source == src) return;
-    s_arp.source = src;
-    arp_rebuild();
-    ESP_LOGI(TAG, "arp source -> %s", src == ARP_SRC_WAVE ? "WAVE" : "PATCH");
-}
-
-void arp_set_wave(uint16_t amy_wave)
-{
-    if (s_arp.wave == amy_wave) return;
-    s_arp.wave = amy_wave;
-    /* Reconfigure the slot immediately only when WAVE mode is active. */
-    if (s_arp.source == ARP_SRC_WAVE) {
-        arp_rebuild();
-    }
-}
-
 /* Public dirty-mark: lets the transport request a coalesced re-emit on resume,
  * since emission is gated on the sequencer playing and nothing re-arms the
  * schedule while paused. */
@@ -733,10 +661,10 @@ void arp_core_mark_dirty(void)
     arp_mark_dirty();
 }
 
-/* ── PATCH-mode software LFO fallback ────────────────────────────────────
- * WAVE mode gets the AMY-native voice-local LFO (voice_apply_native_lfo). A
- * patch owns its whole osc layout, so PATCH mode runs the same 20 Hz software
- * stepper as non-wave melodic tracks (canonical impl:
+/* ── Software LFO fallback ───────────────────────────────────────────────
+ * Patches with a reserved carrier pair get the AMY-native voice-local LFO
+ * (arp_rebuild). Every other patch owns its whole osc layout, so it runs the
+ * same 20 Hz software stepper as non-wave melodic tracks (canonical impl:
  * sequencer_core_lfo_service), modulating each checked target's COEF_CONST
  * rail. WOBBLE has no software analog and is ignored, as on melodic patch
  * tracks. */
@@ -776,10 +704,10 @@ static float arp_swlfo_eval(lfo_wave_t wave, float ph)
 static void arp_swlfo_service(void)
 {
     const seq_lfo_t *lfo = &s_arp.vp.lfo;
-    /* PATCH source, and only patches with NO reserved carrier pair - wave
-     * numbers and bass presets are served natively by arp_rebuild, so stepping
-     * them here would double-modulate. */
-    bool want = s_arp.enabled && s_arp.source == ARP_SRC_PATCH &&
+    /* Only patches with NO reserved carrier pair - wave numbers and bass
+     * presets are served natively by arp_rebuild, so stepping them here would
+     * double-modulate. */
+    bool want = s_arp.enabled &&
                 !sequencer_core_lfo_native_layout(s_arp.patch, NULL, NULL) &&
                 lfo->enabled && lfo->targets != 0;
 
@@ -867,8 +795,6 @@ uint8_t      arp_get_scale(void)      { return s_arp.scale_index; }
 uint8_t      arp_get_root_note(void)  { return s_arp.root_note; }
 bool         arp_get_follow_quant(void) { return s_arp.follow_quant; }
 uint16_t     arp_get_patch(void)      { return s_arp.patch; }
-arp_source_t arp_get_source(void)     { return s_arp.source; }
-uint16_t     arp_get_wave(void)       { return s_arp.wave; }
 
 const char *arp_rate_name(arp_rate_t rate)
 {

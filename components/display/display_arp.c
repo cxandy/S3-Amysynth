@@ -50,39 +50,23 @@ void display_arp_draw_frame(u8g2_t *u8g2, const arp_view_t *view)
         draw_field(u8g2, rx, 8, buf, view->cursor == ARP_CUR_RATE, view->editing);
     }
 
-    /* ── Macro row 2 (blue): GATE | SOURCE/WAVE-or-PATCH | GLIDE ──
-     * Cursor order 4..7 left-to-right. Baseline 25 clears the 16px yellow/blue
+    /* ── Macro row 2 (blue): GATE | PATCH | GLIDE ──
+     * Cursor order 4..5 left-to-right. Baseline 25 clears the 16px yellow/blue
      * seam so text and cursor frames stay in the blue region. */
     snprintf(buf, sizeof(buf), "GATE:%u%%", (unsigned)view->gate_pct);
     draw_field(u8g2, 2, 25, buf, view->cursor == ARP_CUR_GATE, view->editing);
 
-    /* Sound source / waveform / patch indicator. Prefix implies the state
-     * (W: = wave engine, P = patch program); on the SOURCE cursor it reads
-     * SRC:W / SRC:P instead. The WAVE cursor (wave mode only) lands on this
-     * same field to change the waveform, showing distinct text. */
+    /* Patch indicator: number always, framed during the hold+turn gesture
+     * (full name banners over the slot grid), as on the sequencer view. */
     {
         const uint8_t ix = 52;
-        bool sel_src  = (view->cursor == ARP_CUR_SOURCE);
-        bool sel_wave = (view->cursor == ARP_CUR_WAVE);
         char ibuf[12];
-        if (sel_src) {
-            snprintf(ibuf, sizeof(ibuf), "SRC:%s", view->wave_mode ? "W" : "P");
-        } else if (view->wave_mode) {
-            snprintf(ibuf, sizeof(ibuf), "W:%s",
-                     view->wave_str ? view->wave_str : "?");
-        } else {
-            snprintf(ibuf, sizeof(ibuf), "P%u", (unsigned)view->patch);
-        }
-        if (sel_src || sel_wave) {
-            draw_field(u8g2, ix, 25, ibuf, true, view->editing);
-        } else if (!view->wave_mode && view->patch_select) {
-            /* Patch hold+turn: frame the number (full name banners over grid). */
+        snprintf(ibuf, sizeof(ibuf), "P%u", (unsigned)view->patch);
+        if (view->patch_select) {
             uint8_t iw = (uint8_t)u8g2_GetStrWidth(u8g2, ibuf);
             u8g2_DrawRFrame(u8g2, (uint8_t)(ix - 2), 17, (uint8_t)(iw + 4), 11, 1);
-            u8g2_DrawStr(u8g2, ix, 25, ibuf);
-        } else {
-            u8g2_DrawStr(u8g2, ix, 25, ibuf);
         }
+        u8g2_DrawStr(u8g2, ix, 25, ibuf);
     }
 
     /* GLIDE (portamento), right-aligned: raw ms ("GL:200") or "GL:off" at
@@ -133,7 +117,7 @@ void display_arp_draw_frame(u8g2_t *u8g2, const arp_view_t *view)
     /* Patch-name banner over the slot grid during the hold+turn gesture, same
      * affordance as the sequencer view. patch_name is NULL when the name table
      * is compiled out, so this costs nothing then. */
-    if (!view->wave_mode && view->patch_select && view->patch_name) {
+    if (view->patch_select && view->patch_name) {
         u8g2_SetFont(u8g2, u8g2_font_6x10_tf);
         uint8_t nw = (uint8_t)u8g2_GetStrWidth(u8g2, view->patch_name);
         if (nw > 124) nw = 124;

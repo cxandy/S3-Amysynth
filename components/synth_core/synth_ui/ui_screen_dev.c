@@ -96,7 +96,7 @@ static void dist_push_domain(voice_dist_domain_t domain)
 {
     switch (domain) {
     case VOICE_DIST_ARP:
-        if (arp_get_source() == ARP_SRC_WAVE)
+        if (sequencer_core_is_wave_patch(arp_get_patch()))
             voice_apply_dist(sequencer_core_arp_synth());
         break;
     case VOICE_DIST_DRONE:

@@ -522,8 +522,6 @@ static bool parse_layer(tlv_reader_t *b, seq_layer_t *L, uint8_t ver)
 
 typedef struct {
     bool         enabled;
-    arp_source_t source;
-    uint16_t     wave;
     uint16_t     patch;
     arp_dir_t    dir;
     uint8_t      octaves;
@@ -542,15 +540,15 @@ typedef struct {
 
 static void ser_arp(tlv_writer_t *w)
 {
-    size_t h = tlv_begin_section(w, TAG_ARP, 7);  /* v2: LFO target is a bitmask;
+    size_t h = tlv_begin_section(w, TAG_ARP, 8);  /* v2: LFO target is a bitmask;
                                                    * v3: LFO +wob_rate/+wob_depth;
                                                    * v4: LFO +wob_depth_only;
                                                    * v5: filter +feedback (KS);
                                                    * v6: +follow_quant (appended);
-                                                   * v7: LFO +flt_oct_q */
+                                                   * v7: LFO +flt_oct_q;
+                                                   * v8: -source/-wave (patch
+                                                   *     covers the wave range) */
     tlv_put_u8(w, arp_get_enabled() ? 1 : 0);
-    tlv_put_u8(w, (uint8_t)arp_get_source());
-    tlv_put_u16(w, arp_get_wave());
     tlv_put_u16(w, arp_get_patch());
     tlv_put_u8(w, (uint8_t)arp_get_direction());
     tlv_put_u8(w, arp_get_octaves());
@@ -574,9 +572,16 @@ static bool parse_arp(tlv_reader_t *b, staged_arp_t *a, uint8_t ver)
     uint8_t v;
     if (!tlv_get_u8(b, &v)) return false;
     a->enabled = v != 0;
-    if (!tlv_get_u8(b, &v)) return false;
-    a->source = (v > ARP_SRC_PATCH) ? ARP_SRC_PATCH : (arp_source_t)v;
-    if (!tlv_get_u16(b, &a->wave))  return false;
+    /* Pre-v8: a WAVE/PATCH source toggle (u8) plus a raw AMY waveform (u16)
+     * preceded the patch number. The toggle is gone (the patch range covers
+     * the raw waves); consume the fields to keep the walk aligned, discard
+     * the values - a legacy WAVE-mode save falls back to its stored patch. */
+    if (ver < 8) {
+        uint8_t  legacy_src;
+        uint16_t legacy_wave;
+        if (!tlv_get_u8(b, &legacy_src))   return false;
+        if (!tlv_get_u16(b, &legacy_wave)) return false;
+    }
     if (!tlv_get_u16(b, &a->patch)) return false;
     a->patch = clamp_patch(a->patch);
     if (!tlv_get_u8(b, &v)) return false;
@@ -613,11 +618,9 @@ static bool parse_arp(tlv_reader_t *b, staged_arp_t *a, uint8_t ver)
     return true;
 }
 
-/* source before patch/wave so the reconfigure lands once; enabled LAST. */
+/* patch first so later param pushes land on the rebuilt slot; enabled LAST. */
 static void apply_arp(const staged_arp_t *a)
 {
-    arp_set_source(a->source);
-    arp_set_wave(a->wave);
     arp_set_patch(a->patch);
     arp_set_direction(a->dir);
     arp_set_octaves(a->octaves);
@@ -950,7 +953,7 @@ bool project_snapshot_load(uint8_t slot)
             break;
         case TAG_ARP:
             /* Ceiling must track ser_arp()'s version (see TAG_LAYR). */
-            if (got_arp || ver < 1 || ver > 7) { ok = false; break; }
+            if (got_arp || ver < 1 || ver > 8) { ok = false; break; }
             ok = parse_arp(&body, &staged_arp, ver);
             got_arp = ok;
             break;

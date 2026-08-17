@@ -14,15 +14,14 @@ extern "C" {
  *
  * Layout (everything visible at once, no multiplexed slots):
  *   ARP:ON | MODE | OCT:2 |      R:1/16   <- macro row 1 (cursor 0..3, L->R)
- *   GATE:75% |  W:SAW/P12  |      GL:200   <- macro row 2 (cursor 4..7, L->R)
+ *   GATE:75% |    P12     |      GL:200   <- macro row 2 (cursor 4..5, L->R)
  *   [C3]  E3   G3   B3   --   --  ...      <- 8 note slots
  *
  * Cursor index space:
- *   0=ARP enable, 1=MODE, 2=OCT, 3=RATE, 4=GATE,
- *   5=SOURCE, 6=WAVE (skipped in PATCH mode), 7=GLIDE, 8..15 = slots 0..7.
+ *   0=ARP enable, 1=MODE, 2=OCT, 3=RATE, 4=GATE, 5=GLIDE, 6..13 = slots 0..7.
  *
- * The row-2 centre indicator implies the source (W: = wave engine, P = patch);
- * on the SOURCE cursor it reads SRC:W / SRC:P. */
+ * The row-2 centre indicator shows the patch number (full catalog, as on the
+ * sequencer view); the patch changes via the hold+turn gesture, not a cursor. */
 
 #define ARP_VIEW_SLOTS 8
 
@@ -31,10 +30,8 @@ extern "C" {
 #define ARP_CUR_OCT     2
 #define ARP_CUR_RATE    3
 #define ARP_CUR_GATE    4
-#define ARP_CUR_SOURCE  5   /* toggle WAVE/PATCH sound source        */
-#define ARP_CUR_WAVE    6   /* waveform selector (WAVE mode only)    */
-#define ARP_CUR_PORTA   7   /* portamento/glide time, ms             */
-#define ARP_CUR_SLOT0   8
+#define ARP_CUR_PORTA   5   /* portamento/glide time, ms             */
+#define ARP_CUR_SLOT0   6
 #define ARP_CUR_COUNT   (ARP_CUR_SLOT0 + ARP_VIEW_SLOTS)
 
 typedef struct {
@@ -51,11 +48,6 @@ typedef struct {
     bool        slot_rest[ARP_VIEW_SLOTS];
     uint8_t     cursor;       /* 0..ARP_CUR_COUNT-1   */
     bool        editing;      /* value being adjusted */
-    /* Sound source + waveform (F-UI). source_str: "WAVE" or "PTCH".
-     * wave_str: short waveform name (e.g. "SAW"). wave_mode mirrors source. */
-    const char *source_str;   /* "WAVE" or "PTCH"                          */
-    const char *wave_str;     /* waveform name, e.g. "SAW"                 */
-    bool        wave_mode;    /* true when source == ARP_SRC_WAVE           */
     uint16_t    portamento_ms;/* glide time, ms (0 = off)                   */
     /* Patch indicator (mirrors the sequencer view): the number shows top-right
      * in PATCH mode; while the select button is held, a non-NULL patch_name is

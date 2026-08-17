@@ -69,6 +69,54 @@ flowchart TD
 
 ## Active local edits
 
+### `filters.c` + `amy.c` + `amy.h` — distortion on the SILENT control osc (upstream PR candidate)
+
+Follow-up to the per-osc distortion stage (#1116), extending the SILENT control
+osc to carry distortion alongside the envelope and filter it already applies.
+Two parts:
+
+**1. `dist_process` split into a scope-agnostic kernel.** `dist_block(block,
+len, cfg, st)` takes an explicit `dist_config_t` and `dist_state_t` instead of
+reading both off `synth[osc]`; `dist_process(block, osc)` remains as the per-osc
+wrapper with identical behaviour. `synthinfo`'s five loose `dist_*` fields
+become `dist_config_t dist`, and `dist_hold`/`dist_hold_count` become
+`dist_state_t dist_state`. **`amy_event` is deliberately untouched** — its flat
+`dist_*` fields are the wire/API surface that the generated bindings key on.
+
+**2. Distortion on the SILENT chained-osc head.** `dist_process` was called only
+inside the `if (wave != SILENT)` branch, which runs *before* chained oscs are
+summed; the SILENT branch that runs after applies `render_envelope` and
+`filter_process` and nothing else. So SILENT — "a control osc for applying
+filter and env without contributing waveform" — carried two of the three
+processing stages. A SILENT head is a per-voice node (`chained_osc` is
+base-osc-relative via `EVENT_TO_DELTA_WITH_BASEOSC`, so each voice has its own
+head, buffer and state), which makes it the natural place to shape a summed
+voice. The new call sits after the envelope (so note dynamics drive the shaper,
+as per-osc) and before the filter (keeping dist -> filter order).
+
+This is a feature extension, not a fix — per-osc distortion works correctly on
+every osc that renders a waveform, and a preset is a preconfigured topology
+rather than a contract about what osc 0 means. What it buys is a defined
+per-voice summing node for SILENT-headed voices: the same node they already
+apply their envelope and filter at.
+
+Host-simulation proof (fixed-point build, replaying the same event sequence
+against both revisions), Juno patch 0 = SILENT head, DX7 patch 138 = ALGO head:
+
+| case | before | after |
+|---|---|---|
+| SILENT, dist off | rms 755.6 / peak 3043 | rms 755.6 / peak 3043 |
+| SILENT, CLIP on head | **rms 755.6 / peak 3043 (unprocessed)** | **rms 2069.0 / peak 4620** |
+| ALGO, dist off | rms 1048.3 / peak 2906 | rms 1048.3 / peak 2906 |
+| ALGO, CLIP on head | rms 1503.5 / peak 1592 | rms 1503.5 / peak 1592 |
+
+The three unchanged rows are byte-identical across the two builds, so the
+kernel split is behaviour-preserving; only the SILENT row moves. A control case
+setting the same shaper on the chain's sounding members instead of its head
+gives rms 1019.0 / peak 2972 — nowhere near the head result, confirming the tap
+shapes the summed voice rather than being a rename of per-osc.
+
+
 ### `pcm.c` — retrig fade-restart (gated; replaces the zero-cross defer by default)
 
 Upstream's retrig-into-active-PCM path (#1070) defers the new onset to the

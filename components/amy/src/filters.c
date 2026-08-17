@@ -1058,12 +1058,12 @@ void reset_parametric(uint16_t bus) {
 // max must not be reused).  Pre-gain needs MUL6A_SS: drive * x overflows
 // MUL4_SS's [-16, 16) range and wraps sign.
 AMY_IRAM_ATTR SAMPLE dist_process(SAMPLE * block, uint16_t osc) {
-    struct synthinfo *ps = synth[osc];
-    SAMPLE drive = F2S(ps->dist_drive);
-    SAMPLE mix = F2S(ps->dist_mix);
+    struct synthinfo *psynth = synth[osc];
+    SAMPLE drive = F2S(psynth->dist_drive);
+    SAMPLE mix = F2S(psynth->dist_mix);
     SAMPLE dry = F2S(1.0f) - mix;
     SAMPLE amax = 0;
-    switch (ps->dist_type) {
+    switch (psynth->dist_type) {
     case DIST_CLIP:
         for (uint16_t i = 0; i < AMY_BLOCK_SIZE; ++i) {
             SAMPLE x = block[i];
@@ -1103,10 +1103,10 @@ AMY_IRAM_ATTR SAMPLE dist_process(SAMPLE * block, uint16_t osc) {
         break;
     case DIST_CRUSH: {
         // Bit-depth + sample-rate reduction.
-        SAMPLE hold = ps->dist_hold;
-        uint16_t count = ps->dist_hold_count;
-        uint16_t rate = (uint16_t)ps->dist_rate;
-        int bits = (int)ps->dist_bits;
+        SAMPLE hold = psynth->dist_hold;
+        uint16_t count = psynth->dist_hold_count;
+        uint16_t rate = (uint16_t)psynth->dist_rate;
+        int bits = (int)psynth->dist_bits;
         // Quantize to `bits` magnitude bits, rounding to nearest: truncation
         // is a half-step DC offset that the echo feedback loop integrates.
 #ifdef AMY_USE_FIXEDPOINT
@@ -1146,8 +1146,8 @@ AMY_IRAM_ATTR SAMPLE dist_process(SAMPLE * block, uint16_t osc) {
             if (y < 0) y = -y;
             if (y > amax) amax = y;
         }
-        ps->dist_hold = hold;
-        ps->dist_hold_count = count;
+        psynth->dist_hold = hold;
+        psynth->dist_hold_count = count;
         break;
     }
     default:  // unreachable; keep the return contract anyway

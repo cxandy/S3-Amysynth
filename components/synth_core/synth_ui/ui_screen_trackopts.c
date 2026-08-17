@@ -140,8 +140,9 @@ bool synth_ui_trackopts_handle_encoder(int delta)
                     root = (uint8_t)nr;
                 } else {
                     int nct = (int)ct + delta;
-                    while (nct < 0) nct += CHORD_TYPE_COUNT;
-                    nct %= CHORD_TYPE_COUNT;
+                    /* Real chords only - CHORD_OFF is a drone affordance. */
+                    while (nct < 0) nct += CHORD_REAL_COUNT;
+                    nct %= CHORD_REAL_COUNT;
                     ct = (chord_type_t)nct;
                 }
                 sequencer_core_progression_set_layer_chord(li, root, ct);

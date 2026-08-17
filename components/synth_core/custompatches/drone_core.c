@@ -426,7 +426,7 @@ void drone_core_init(void)
     s_d.enabled      = false;
     s_d.source       = DRONE_SRC_WAVE;
     s_d.wave         = SAW_DOWN;
-    s_d.chord        = CHORD_MIN7;
+    s_d.chord        = CHORD_OFF;   /* root note only until a chord is chosen */
     s_d.root_note    = DRONE_ROOT_DEFAULT;
     s_d.resonance    = 1.5f;
     s_d.amp_peak     = 0.5f;     /* on-beat level (linear; 0.5 = -6 dB)   */

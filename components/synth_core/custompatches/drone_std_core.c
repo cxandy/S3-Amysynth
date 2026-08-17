@@ -241,7 +241,7 @@ void drone_std_core_init(void)
     s_ds.enabled      = false;
     s_ds.source       = DRONE_SRC_WAVE;
     s_ds.wave         = SAW_DOWN;
-    s_ds.chord        = CHORD_MIN7;
+    s_ds.chord        = CHORD_OFF;   /* root note only until a chord is chosen */
     s_ds.root_note    = 45;          /* A2, same default as the stutter drone */
     s_ds.level        = 0.5f;
     s_ds.patch        = 25;

@@ -90,8 +90,9 @@ bool synth_ui_prog_handle_encoder(int delta)
             }
             case 1: {  /* chord type */
                 int nct = (int)ct + delta;
-                while (nct < 0) nct += CHORD_TYPE_COUNT;
-                nct %= CHORD_TYPE_COUNT;
+                /* Real chords only - CHORD_OFF is a drone affordance. */
+                while (nct < 0) nct += CHORD_REAL_COUNT;
+                nct %= CHORD_REAL_COUNT;
                 ct = (chord_type_t)nct;
                 break;
             }

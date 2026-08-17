@@ -154,8 +154,10 @@ static void drone_std_edit_row(drone_std_row_t r, int delta)
             break;
         }
         case DSROW_CHORD: {
-            int c = SEQ_CLAMP_INT((int)drone_std_get_chord() + dir,
-                                  0, CHORD_TYPE_COUNT - 1);
+            /* Wraps, unlike the clamped rows around it: CHORD_OFF is the
+             * default and sits last, so wrapping keeps it one detent from the
+             * first chord instead of stranding it at the end. */
+            int c = ((int)drone_std_get_chord() + dir + CHORD_TYPE_COUNT) % CHORD_TYPE_COUNT;
             drone_std_set_chord((chord_type_t)c);
             break;
         }

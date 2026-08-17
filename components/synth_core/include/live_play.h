@@ -78,6 +78,11 @@ void live_play_set_envelope2(const seq_env_t *env);
 void live_play_get_filter(seq_filter_t *out);
 void live_play_set_filter(const seq_filter_t *f);
 
+void live_play_get_dist(seq_dist_t *out);
+void live_play_set_dist(const seq_dist_t *d);
+void live_play_preview_dist(const seq_dist_t *d);
+void live_play_reapply_dist(void);
+
 void live_play_get_lfo(seq_lfo_t *out);
 void live_play_set_lfo(const seq_lfo_t *lfo);
 

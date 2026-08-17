@@ -27,6 +27,7 @@ extern uint8_t           s_graph_layer;    /* owner: ui_editors.c; task clamps i
 extern uint8_t           s_graph_track;    /* owner: ui_editors.c; task clamps it */
 extern bool              s_filter_active;  /* owner: ui_editors.c; task reads for cascade */
 extern bool              s_lfo_active;     /* owner: ui_editors.c; task reads for cascade */
+extern bool              s_dist_active;    /* owner: ui_editors.c; task reads for cascade */
 extern bool              s_drone_vis_open; /* owner: ui_screen_drone.c; task reads for V_DRONE_VIS */
 extern uint8_t           s_to_layer;       /* owner: ui_screen_trackopts.c; task + menu write it */
 extern uint8_t           s_to_track;       /* owner: ui_screen_trackopts.c; menu sets it */
@@ -66,6 +67,7 @@ uint32_t seq_view_signature(void);
 uint32_t graph_view_signature(void);
 uint32_t filter_view_signature(void);
 uint32_t lfo_view_signature(void);
+uint32_t dist_view_signature(void);
 uint32_t arp_view_signature(arp_view_t *out);
 uint32_t menu_view_signature(menu_view_t *out);
 uint32_t drone_view_signature(drone_view_t *out);
@@ -214,5 +216,6 @@ void     synth_ui_editors_live_service(void);
 void     synth_ui_graph_view_draw(u8g2_t *u8g2);
 void     synth_ui_filter_view_draw(u8g2_t *u8g2);
 void     synth_ui_lfo_view_draw(u8g2_t *u8g2);
+void     synth_ui_dist_view_draw(u8g2_t *u8g2);
 /* NOTE: graph_draw_topbar is static in ui_editors.c, called only by
  *       synth_ui_graph_view_draw. Do NOT forward-declare it here. */

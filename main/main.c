@@ -301,6 +301,8 @@ static void dispatch_button_event(my_button_id_t button_id, button_event_t event
                 synth_ui_graph_close_commit();
             } else if (sv == UI_VIEW_LFO) {
                 synth_ui_lfo_close_commit();
+            } else if (sv == UI_VIEW_DIST) {
+                synth_ui_dist_close_commit();
             } else if (sv == UI_VIEW_FILTER) {
                 synth_ui_filter_close_commit();
             }
@@ -312,7 +314,7 @@ static void dispatch_button_event(my_button_id_t button_id, button_event_t event
         } else { /* MY_BUTTON_3 */
             /* Chorded so an accidental bare press can't overwrite the whole
              * layer's config. */
-            if (sv == UI_VIEW_GRAPH || sv == UI_VIEW_LFO) {
+            if (sv == UI_VIEW_GRAPH || sv == UI_VIEW_LFO || sv == UI_VIEW_DIST) {
                 synth_ui_toggle_editor_apply_scope();
             }
         }
@@ -347,7 +349,7 @@ static void dispatch_button_event(my_button_id_t button_id, button_event_t event
             }
             return;
         }
-        if (synth_ui_lfo_is_active()) {
+        if (synth_ui_lfo_is_active() || synth_ui_dist_is_active()) {
             return;   /* bare press is a no-op; scope is SHIFT+3 */
         }
         /* PROG screen: delete the entry at the cursor. */
@@ -485,9 +487,11 @@ static void dispatch_button_event(my_button_id_t button_id, button_event_t event
     }
 
     // MY_BUTTON_3: inside an editor, click cycles editor pages (EG0 -> EG1 ->
-    // filter -> LFO); in STEPEDIT it closes; otherwise it is the menu toggle.
+    // filter -> LFO -> DIST); in STEPEDIT it closes; otherwise it is the menu
+    // toggle.
     if (button_id == MY_BUTTON_3) {
-        if (v == UI_VIEW_GRAPH || v == UI_VIEW_FILTER || v == UI_VIEW_LFO) {
+        if (v == UI_VIEW_GRAPH || v == UI_VIEW_FILTER || v == UI_VIEW_LFO ||
+            v == UI_VIEW_DIST) {
             if (event == BUTTON_SINGLE_CLICK) {
                 synth_ui_cycle_editor();
             }
@@ -515,6 +519,9 @@ static void dispatch_button_event(my_button_id_t button_id, button_event_t event
                 return;
             case UI_VIEW_LFO:
                 if (event == BUTTON_PRESS_DOWN)  synth_ui_lfo_handle_button(false);
+                return;
+            case UI_VIEW_DIST:
+                if (event == BUTTON_PRESS_DOWN)  synth_ui_dist_handle_button(false);
                 return;
             case UI_VIEW_STEPEDIT:
                 if (event == BUTTON_PRESS_DOWN)  synth_ui_stepedit_handle_button();
@@ -561,16 +568,18 @@ static void dispatch_button_event(my_button_id_t button_id, button_event_t event
      * cancel/discard (STEPEDIT has no discard path; both just close it). All
      * events consumed, so transport is unavailable until the editor closes. */
     if (button_id == MY_BUTTON_0 &&
-        (v == UI_VIEW_GRAPH || v == UI_VIEW_FILTER ||
-         v == UI_VIEW_LFO   || v == UI_VIEW_STEPEDIT)) {
+        (v == UI_VIEW_GRAPH || v == UI_VIEW_FILTER || v == UI_VIEW_LFO ||
+         v == UI_VIEW_DIST  || v == UI_VIEW_STEPEDIT)) {
         if (event == BUTTON_SINGLE_CLICK) {              /* tap = commit & close */
             if (v == UI_VIEW_FILTER)        synth_ui_filter_close_commit();
             else if (v == UI_VIEW_LFO)      synth_ui_lfo_close_commit();
+            else if (v == UI_VIEW_DIST)     synth_ui_dist_close_commit();
             else if (v == UI_VIEW_STEPEDIT) synth_ui_stepedit_close();
             else                            synth_ui_graph_close_commit();
         } else if (event == BUTTON_LONG_PRESS_START) {   /* hold = cancel / discard */
             if (v == UI_VIEW_FILTER)        synth_ui_filter_handle_button(true);
             else if (v == UI_VIEW_LFO)      synth_ui_lfo_handle_button(true);
+            else if (v == UI_VIEW_DIST)     synth_ui_dist_handle_button(true);
             else if (v == UI_VIEW_STEPEDIT) synth_ui_stepedit_close(); /* no discard path */
             else                            synth_ui_graph_handle_button(true);
         }
@@ -614,6 +623,7 @@ static void encoder_process_steps(long steps)
     switch (v) {
         case UI_VIEW_FILTER:   synth_ui_filter_handle_encoder(steps);   return;
         case UI_VIEW_LFO:      synth_ui_lfo_handle_encoder(steps);      return;
+        case UI_VIEW_DIST:     synth_ui_dist_handle_encoder(steps);     return;
         case UI_VIEW_STEPEDIT: synth_ui_stepedit_handle_encoder(steps); return;
         case UI_VIEW_GRAPH:    synth_ui_graph_handle_encoder(steps);    return;
         case UI_VIEW_MENU:     synth_ui_menu_handle_encoder(steps);     return;

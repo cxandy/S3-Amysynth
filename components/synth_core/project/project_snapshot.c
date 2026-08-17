@@ -113,6 +113,36 @@ static bool de_filter(tlv_reader_t *r, seq_filter_t *f, bool has_feedback)
     return true;
 }
 
+/* ── Distortion codec (LAYR v12+, ARP v9+) ───────────────────────────────
+ * `present` is the caller's version gate, and it is load-bearing rather than
+ * cosmetic for LAYR: the block lives at the end of each track's vp, mid-body,
+ * so a wrong gate would desync every following track. ARP's copy really is
+ * section-final. `present = false` leaves the caller's initialised default
+ * (type OFF) untouched. Values are re-clamped on read: a truncated or
+ * hand-edited body must not push an out-of-range type into AMY. */
+static void ser_dist(tlv_writer_t *w, const seq_dist_t *d)
+{
+    tlv_put_u8(w, d->type);
+    tlv_put_u8(w, d->drive);
+    tlv_put_u8(w, d->bits);
+    tlv_put_u8(w, d->rate);
+    tlv_put_u8(w, d->mix);
+}
+
+static bool de_dist(tlv_reader_t *r, seq_dist_t *d, bool present)
+{
+    if (!present) return true;   /* keep the caller's default */
+    uint8_t type, drive, bits, rate, mix;
+    if (!tlv_get_u8(r, &type))  return false;
+    if (!tlv_get_u8(r, &drive)) return false;
+    if (!tlv_get_u8(r, &bits))  return false;
+    if (!tlv_get_u8(r, &rate))  return false;
+    if (!tlv_get_u8(r, &mix))   return false;
+    d->type = type; d->drive = drive; d->bits = bits; d->rate = rate; d->mix = mix;
+    voice_dist_clamp(d);
+    return true;
+}
+
 static void ser_lfo(tlv_writer_t *w, const seq_lfo_t *l)
 {
     tlv_put_u8(w, l->enabled ? 1 : 0);
@@ -198,6 +228,8 @@ static void ser_vp(tlv_writer_t *w, const voice_params_t *vp)
     tlv_put_u8(w, vp->filter_authored ? 1 : 0);
     tlv_put_u8(w, vp->lfo_authored ? 1 : 0);
     tlv_put_f32(w, vp->amp_trim);
+    ser_dist(w, &vp->dist);                        /* LAYR v12+ */
+    tlv_put_u8(w, vp->dist_authored ? 1 : 0);
 }
 
 static bool de_vp(tlv_reader_t *r, voice_params_t *vp, uint8_t ver)
@@ -218,6 +250,17 @@ static bool de_vp(tlv_reader_t *r, voice_params_t *vp, uint8_t ver)
     vp->lfo_authored    = la  != 0;
     if (!tlv_get_f32(r, &vp->amp_trim)) return false;
     vp->amp_trim = SEQ_CLAMP_F32(vp->amp_trim, 0.0f, 1.0f);
+    /* LAYR v12+: distortion, appended to each track's vp block - which sits
+     * INSIDE the per-track loop, so this is mid-body, not section-end. The
+     * version gate is what keeps the walk aligned: on a pre-v12 file both
+     * sides skip these bytes and the next track starts where it should.
+     * Unread, the block keeps voice_params_init_defaults()' OFF default. */
+    if (!de_dist(r, &vp->dist, ver >= 12)) return false;
+    if (ver >= 12) {
+        uint8_t da;
+        if (!tlv_get_u8(r, &da)) return false;
+        vp->dist_authored = da != 0;
+    }
     return true;
 }
 
@@ -327,7 +370,7 @@ static void apply_glob(const staged_glob_t *g)
 
 static void ser_layer(tlv_writer_t *w, const seq_layer_t *L)
 {
-    size_t h = tlv_begin_section(w, TAG_LAYR, 11); /* v2: LFO target bitmask;
+    size_t h = tlv_begin_section(w, TAG_LAYR, 12); /* v2: LFO target bitmask;
                                                     * v3: +gate_pct, +portamento_ms;
                                                     * v4: +groove_pct;
                                                     * v5: LFO +wob_rate/+wob_depth;
@@ -338,7 +381,8 @@ static void ser_layer(tlv_writer_t *w, const seq_layer_t *L)
                                                     *     independent every+prev
                                                     *     (same two array slots);
                                                     * v10: +track_pcm_mode;
-                                                    * v11: +step_pitch_ofs      */
+                                                    * v11: +step_pitch_ofs;
+                                                    * v12: vp +dist/+dist_authored */
     tlv_put_u8(w, (uint8_t)L->type);
     tlv_put_u8(w, L->num_steps);
     tlv_put_u16(w, L->patch);
@@ -536,18 +580,20 @@ typedef struct {
     seq_env_t    env, env2;
     seq_filter_t filter;
     seq_lfo_t    lfo;
+    seq_dist_t   dist;
 } staged_arp_t;
 
 static void ser_arp(tlv_writer_t *w)
 {
-    size_t h = tlv_begin_section(w, TAG_ARP, 8);  /* v2: LFO target is a bitmask;
+    size_t h = tlv_begin_section(w, TAG_ARP, 9);  /* v2: LFO target is a bitmask;
                                                    * v3: LFO +wob_rate/+wob_depth;
                                                    * v4: LFO +wob_depth_only;
                                                    * v5: filter +feedback (KS);
                                                    * v6: +follow_quant (appended);
                                                    * v7: LFO +flt_oct_q;
                                                    * v8: -source/-wave (patch
-                                                   *     covers the wave range) */
+                                                   *     covers the wave range);
+                                                   * v9: +dist (appended)      */
     tlv_put_u8(w, arp_get_enabled() ? 1 : 0);
     tlv_put_u16(w, arp_get_patch());
     tlv_put_u8(w, (uint8_t)arp_get_direction());
@@ -564,12 +610,18 @@ static void ser_arp(tlv_writer_t *w)
     seq_filter_t f; arp_get_filter(&f);  ser_filter(w, &f);
     seq_lfo_t l; arp_get_lfo(&l);        ser_lfo(w, &l);
     tlv_put_u8(w, arp_get_follow_quant() ? 1 : 0);   /* v6 */
+    seq_dist_t d; arp_get_dist(&d);      ser_dist(w, &d);   /* v9 */
     tlv_end_section(w, h);
 }
 
 static bool parse_arp(tlv_reader_t *b, staged_arp_t *a, uint8_t ver)
 {
     uint8_t v;
+    /* The caller memsets the staging block, and an all-zero distortion is not
+     * the OFF default - it is OFF with every secondary parameter below its
+     * legal floor. Seed before parsing so a pre-v9 file restores the same
+     * block a fresh boot would give it. */
+    a->dist = (seq_dist_t){ .type = 0, .drive = 2, .bits = 8, .rate = 8, .mix = 100 };
     if (!tlv_get_u8(b, &v)) return false;
     a->enabled = v != 0;
     /* Pre-v8: a WAVE/PATCH source toggle (u8) plus a raw AMY waveform (u16)
@@ -615,6 +667,8 @@ static bool parse_arp(tlv_reader_t *b, staged_arp_t *a, uint8_t ver)
     } else {
         a->follow_quant = false;
     }
+    /* v9: distortion, appended last. Pre-v9 keeps the staged default. */
+    if (!de_dist(b, &a->dist, ver >= 9)) return false;
     return true;
 }
 
@@ -636,6 +690,7 @@ static void apply_arp(const staged_arp_t *a)
     arp_set_envelope2(&a->env2);
     arp_set_filter(&a->filter);
     arp_set_lfo(&a->lfo);
+    arp_set_dist(&a->dist);
     arp_set_enabled(a->enabled);
 }
 
@@ -947,13 +1002,13 @@ bool project_snapshot_load(uint8_t slot)
         case TAG_LAYR:
             /* Ceiling must track ser_layer()'s version or the firmware
              * rejects its own files. */
-            if (ver < 1 || ver > 11 || staged_layer_count >= MAX_LAYERS) { ok = false; break; }
+            if (ver < 1 || ver > 12 || staged_layer_count >= MAX_LAYERS) { ok = false; break; }
             ok = parse_layer(&body, &staged_layers[staged_layer_count], ver);
             if (ok) staged_layer_count++;
             break;
         case TAG_ARP:
             /* Ceiling must track ser_arp()'s version (see TAG_LAYR). */
-            if (got_arp || ver < 1 || ver > 8) { ok = false; break; }
+            if (got_arp || ver < 1 || ver > 9) { ok = false; break; }
             ok = parse_arp(&body, &staged_arp, ver);
             got_arp = ok;
             break;

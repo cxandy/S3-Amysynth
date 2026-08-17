@@ -193,7 +193,7 @@ bool synth_ui_filter_close_commit(void);
 void synth_ui_filter_toggle_enabled(void);
 
 /* ── LFO editor (per-track tempo-synced modulator) ─────────────────────────
- * Opened as the third tab in the ADSR→Filter→LFO cycle (MY_BUTTON_3).
+ * Opened as the third tab in the ADSR→Filter→LFO→DIST cycle (MY_BUTTON_3).
  * Controls: encoder scrolls cursor / adjusts field (short press to toggle);
  * encoder long-press commits; MY_BUTTON_0 long-press cancels. */
 bool synth_ui_lfo_is_active(void);
@@ -201,6 +201,16 @@ void synth_ui_lfo_open(void);
 bool synth_ui_lfo_handle_encoder(long delta);
 bool synth_ui_lfo_handle_button(bool is_long);
 bool synth_ui_lfo_close_commit(void);
+
+/* ── Distortion editor (per-target waveshaper: CLIP / FOLD / CRUSH) ────────
+ * The fourth tab in the same cycle, with identical controls. Type OFF is the
+ * bypass, so there is no separate enable gesture. Applies to whatever the
+ * target's base osc is, patch-backed or wave-backed alike. */
+bool synth_ui_dist_is_active(void);
+void synth_ui_dist_open(void);
+bool synth_ui_dist_handle_encoder(long delta);
+bool synth_ui_dist_handle_button(bool is_long);
+bool synth_ui_dist_close_commit(void);
 
 /* Toggle whether effect-editor commits apply to the selected track (false) or
  * all tracks in the active layer (true). MY_BUTTON_1 while the ADSR or LFO
@@ -229,12 +239,14 @@ bool synth_ui_stepedit_handle_button(void);
  * input routers) resolves once and dispatches on the result, so input and draw
  * can never disagree.
  *
- * Order (high to low): FILTER > LFO > STEPEDIT > GRAPH > MENU > mode-tail.
- * The first five are the input-capturing overlays (UI_VIEW_IS_OVERLAY); the
- * mode-tail comes from seq_state.ui_mode when no overlay is up. */
+ * Order (high to low): FILTER > LFO > DIST > STEPEDIT > GRAPH > MENU >
+ * mode-tail. The first six are the input-capturing overlays
+ * (UI_VIEW_IS_OVERLAY); the mode-tail comes from seq_state.ui_mode when no
+ * overlay is up. */
 typedef enum {
     UI_VIEW_FILTER = 0,
     UI_VIEW_LFO,
+    UI_VIEW_DIST,
     UI_VIEW_STEPEDIT,
     UI_VIEW_GRAPH,
     UI_VIEW_MENU,
@@ -250,7 +262,7 @@ typedef enum {
     UI_VIEW_COUNT
 } ui_view_id_t;
 
-/* True for the five leading overlays, which capture encoder/button input
+/* True for the six leading overlays, which capture encoder/button input
  * outright ahead of any mode screen. */
 #define UI_VIEW_IS_OVERLAY(v)  ((v) <= UI_VIEW_MENU)
 

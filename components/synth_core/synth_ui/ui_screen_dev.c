@@ -4,11 +4,6 @@
 #include "synth_ui/synth_ui_internal.h"
 #include "synth_ui.h"
 #include "sequencer_core.h"
-#include "voice_config.h"
-#include "arp_core.h"
-#include "custompatches/drone_core.h"
-#include "custompatches/drone_std_core.h"
-#include "synth_slots.h"
 #include "seq_clamp.h"
 #include "amy.h"
 #include "esp_heap_caps.h"
@@ -76,81 +71,6 @@ static void pcm_mode_adjust(int delta, int arg)
     m %= PCM_MODE_COUNT;
     if (m < 0) m += PCM_MODE_COUNT;
     sequencer_core_set_drum_pcm_mode(0, (uint8_t)arg, (uint8_t)m);
-}
-
-/* ── WAVE-voice distortion (backing state lives in voice_config) ─────────
- * One param set per domain (arp / drone / melodic), each on its own subpage.
- * One fmt/adjust pair serves all 15 rows: `arg` packs domain and param. */
-static const char *DIST_TYPE_NAMES[] = { "OFF", "CLIP", "FOLD", "CRUSH" };
-#define DIST_TYPE_COUNT 4
-
-enum { DIST_P_TYPE, DIST_P_DRIVE, DIST_P_BITS, DIST_P_RATE, DIST_P_MIX };
-
-#define DIST_ARG(dom, param)  (((int)(dom) << 4) | (int)(param))
-#define DIST_ARG_DOMAIN(arg)  ((voice_dist_domain_t)((arg) >> 4))
-#define DIST_ARG_P(arg)       ((arg) & 0xF)
-
-/* Live push to a domain's built WAVE targets; PATCH-mode targets have none
- * (the next wave rebuild inherits the set anyway). */
-static void dist_push_domain(voice_dist_domain_t domain)
-{
-    switch (domain) {
-    case VOICE_DIST_ARP:
-        if (sequencer_core_is_wave_patch(arp_get_patch()))
-            voice_apply_dist(sequencer_core_arp_synth());
-        break;
-    case VOICE_DIST_DRONE:
-        if (drone_get_source() == DRONE_SRC_WAVE) {
-            voice_apply_dist(DRONE_SYNTH_MAIN);
-            voice_apply_dist(DRONE_SYNTH_SUB);
-        }
-        if (drone_std_get_source() == DRONE_SRC_WAVE) {
-            voice_apply_dist(DRONE_STD_SYNTH_MAIN);
-            voice_apply_dist(DRONE_STD_SYNTH_SUB);
-        }
-        break;
-    case VOICE_DIST_MELODIC:
-        sequencer_core_apply_wave_dist();
-        break;
-    default:
-        break;
-    }
-}
-
-static void dist_fmt(char *buf, size_t n, int arg)
-{
-    const voice_dist_t *d = voice_dist_get(DIST_ARG_DOMAIN(arg));
-    switch (DIST_ARG_P(arg)) {
-    case DIST_P_TYPE:
-        snprintf(buf, n, "%s",
-                 DIST_TYPE_NAMES[d->type < DIST_TYPE_COUNT ? d->type : 0]);
-        break;
-    case DIST_P_DRIVE: snprintf(buf, n, "%u",   (unsigned)d->drive); break;
-    case DIST_P_BITS:  snprintf(buf, n, "%u",   (unsigned)d->bits);  break;
-    case DIST_P_RATE:  snprintf(buf, n, "%ux",  (unsigned)d->rate);  break;
-    case DIST_P_MIX:   snprintf(buf, n, "%u%%", (unsigned)d->mix);   break;
-    }
-}
-
-static void dist_adjust(int delta, int arg)
-{
-    voice_dist_domain_t domain = DIST_ARG_DOMAIN(arg);
-    voice_dist_t d = *voice_dist_get(domain);
-    switch (DIST_ARG_P(arg)) {
-    case DIST_P_TYPE: {
-        int t = (int)d.type + delta;
-        t %= DIST_TYPE_COUNT;
-        if (t < 0) t += DIST_TYPE_COUNT;
-        d.type = (uint8_t)t;
-        break;
-    }
-    case DIST_P_DRIVE: d.drive = SEQ_CLAMP_U8((int)d.drive + delta, 1, 16); break;
-    case DIST_P_BITS:  d.bits  = SEQ_CLAMP_U8((int)d.bits + delta, 1, 16);  break;
-    case DIST_P_RATE:  d.rate  = SEQ_CLAMP_U8((int)d.rate + delta, 1, 64);  break;
-    case DIST_P_MIX:   d.mix   = SEQ_CLAMP_U8((int)d.mix + 5 * delta, 0, 100); break;
-    }
-    voice_dist_set(domain, &d);
-    dist_push_domain(domain);
 }
 
 /* One-shot sequencer state dump to the console (seq_core_dump.c). */
@@ -334,43 +254,7 @@ static const dev_item_t s_pcm_items[] = {
 static const dev_page_t s_page_pcm = { "PCM MODE L1", s_pcm_items,
                                        sizeof s_pcm_items / sizeof *s_pcm_items };
 
-/* One five-row page per distortion domain. */
-#define DIST_ROW(name, dom, param)                     \
-    { .label = name, .fmt = dist_fmt,                  \
-      .adjust = dist_adjust, .arg = DIST_ARG(dom, param) }
-
-#define DIST_PAGE_ITEMS(dom)          \
-    DIST_ROW("Type",  dom, DIST_P_TYPE),  \
-    DIST_ROW("Drive", dom, DIST_P_DRIVE), \
-    DIST_ROW("Bits",  dom, DIST_P_BITS),  \
-    DIST_ROW("Rate",  dom, DIST_P_RATE),  \
-    DIST_ROW("Mix",   dom, DIST_P_MIX)
-
-static const dev_item_t s_dist_arp_items[]  = { DIST_PAGE_ITEMS(VOICE_DIST_ARP) };
-static const dev_item_t s_dist_drn_items[]  = { DIST_PAGE_ITEMS(VOICE_DIST_DRONE) };
-static const dev_item_t s_dist_mel_items[]  = { DIST_PAGE_ITEMS(VOICE_DIST_MELODIC) };
-
-static const dev_page_t s_page_dist_arp = { "DIST ARP", s_dist_arp_items,
-                                            sizeof s_dist_arp_items / sizeof *s_dist_arp_items };
-static const dev_page_t s_page_dist_drn = { "DIST DRONE", s_dist_drn_items,
-                                            sizeof s_dist_drn_items / sizeof *s_dist_drn_items };
-static const dev_page_t s_page_dist_mel = { "DIST MELODIC", s_dist_mel_items,
-                                            sizeof s_dist_mel_items / sizeof *s_dist_mel_items };
-
-/* Index page: each row previews its domain's current TYPE. */
-static const dev_item_t s_dist_items[] = {
-    { .label = "Arp",     .sub = &s_page_dist_arp, .fmt = dist_fmt,
-      .arg = DIST_ARG(VOICE_DIST_ARP, DIST_P_TYPE) },
-    { .label = "Drone",   .sub = &s_page_dist_drn, .fmt = dist_fmt,
-      .arg = DIST_ARG(VOICE_DIST_DRONE, DIST_P_TYPE) },
-    { .label = "Melodic", .sub = &s_page_dist_mel, .fmt = dist_fmt,
-      .arg = DIST_ARG(VOICE_DIST_MELODIC, DIST_P_TYPE) },
-};
-static const dev_page_t s_page_dist = { "DIST (WAVE)", s_dist_items,
-                                        sizeof s_dist_items / sizeof *s_dist_items };
-
 static const dev_item_t s_root_items[] = {
-    { .label = "Distortion",  .sub = &s_page_dist },
     { .label = "PCM Mode L1", .sub = &s_page_pcm },
     { .label = "AMY OOM",     .fmt = oom_fmt },
     { .label = "Heap int",    .fmt = heap_fmt },

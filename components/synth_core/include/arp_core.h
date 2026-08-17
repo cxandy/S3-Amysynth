@@ -121,6 +121,14 @@ void arp_set_filter(const seq_filter_t *f);
 void arp_preview_envelope(const seq_env_t *env);
 void arp_preview_envelope2(const seq_env_t *env);
 void arp_preview_filter(const seq_filter_t *f);
+void arp_preview_dist(const seq_dist_t *d);
+
+/* ── Runtime-editable distortion (shared distortion editor) ──
+ * Parallel to the filter; defaults to type OFF. arp_reapply_dist() re-asserts
+ * after a patch change, which rebuilds the voices and drops the stage. */
+void arp_get_dist(seq_dist_t *out);
+void arp_set_dist(const seq_dist_t *d);
+void arp_reapply_dist(void);
 
 /* ── LFO (shared editor) ──
  * Patches with a reserved carrier pair (raw waves, wavetables, bass presets -

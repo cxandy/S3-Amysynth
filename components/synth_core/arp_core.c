@@ -288,6 +288,8 @@ static void arp_rebuild(void)
     if (s_arp.vp.env1_authored) {
         sequencer_core_push_envelope_eg1(sequencer_core_arp_synth(), 0, &s_arp.vp.env1);
     }
+    /* Distortion is per-osc state the reconfigure above cleared - reassert. */
+    arp_reapply_dist();
     /* Any reconfigure above resets AMY's per-osc portamento_alpha to 0 -
      * reassert. */
     arp_push_portamento();
@@ -611,6 +613,36 @@ void arp_set_filter(const seq_filter_t *f)
     ESP_LOGI(TAG, "arp filter -> type%u %.0fHz Q%.2f en=%d",
              s_arp.vp.filter.filter_type, (double)s_arp.vp.filter.cutoff_hz,
              (double)s_arp.vp.filter.resonance, s_arp.vp.filter.enabled);
+}
+
+void arp_get_dist(seq_dist_t *out)
+{
+    if (out) *out = s_arp.vp.dist;
+}
+
+void arp_preview_dist(const seq_dist_t *d)
+{
+    voice_apply_dist(sequencer_core_arp_synth(), d);
+}
+
+void arp_set_dist(const seq_dist_t *d)
+{
+    if (!d) return;
+    s_arp.vp.dist = *d;
+    voice_dist_clamp(&s_arp.vp.dist);
+    s_arp.vp.dist_authored = true;
+    voice_apply_dist(sequencer_core_arp_synth(), &s_arp.vp.dist);
+    ESP_LOGI(TAG, "arp dist -> type%u drv%u bit%u rte%u mix%u",
+             s_arp.vp.dist.type, s_arp.vp.dist.drive, s_arp.vp.dist.bits,
+             s_arp.vp.dist.rate, s_arp.vp.dist.mix);
+}
+
+/* Re-assert after any voice rebuild (patch change): AMY drops the stage with
+ * the osc pool, and the arp's rebuild path is not the wave-cfg one. */
+void arp_reapply_dist(void)
+{
+    if (s_arp.vp.dist_authored)
+        voice_apply_dist(sequencer_core_arp_synth(), &s_arp.vp.dist);
 }
 
 void arp_get_lfo(seq_lfo_t *out)

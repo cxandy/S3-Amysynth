@@ -62,6 +62,14 @@ void drone_std_get_filter(seq_filter_t *out);
 void drone_std_set_filter(const seq_filter_t *f);
 void drone_std_preview_filter(const seq_filter_t *f);  /* AMY only, store untouched */
 
+/* ── Distortion (shared distortion editor) ──
+ * One block governs main + sub, as the filter does. reapply re-asserts after a
+ * rebuild, which clears the per-osc stage. */
+void drone_std_get_dist(seq_dist_t *out);
+void drone_std_set_dist(const seq_dist_t *d);
+void drone_std_preview_dist(const seq_dist_t *d);  /* AMY only, store untouched */
+void drone_std_reapply_dist(void);
+
 /* ── Free LFO (shared LFO editor; WAVE mode only takes effect) ── */
 void drone_std_get_lfo(seq_lfo_t *out);
 void drone_std_set_lfo(const seq_lfo_t *lfo);

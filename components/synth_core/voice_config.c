@@ -2,7 +2,6 @@
 #include "amy.h"            /* wave constants, COEF_* indices */
 #include "amy_helpers.h"    /* shared scratch-event begin/send */
 #include "sequencer_core.h" /* sequencer_core_ks_feedback_from_q */
-#include "synth_slots.h"    /* slot map: distortion domain of a synth id */
 #include "seq_clamp.h"
 #include <math.h>           /* powf: wobble downward-only center offset */
 #include <string.h>
@@ -12,6 +11,9 @@ void voice_params_init_defaults(voice_params_t *vp)
     if (!vp) return;
     memset(vp, 0, sizeof(*vp));
     vp->amp_trim = 1.0f;   /* unity — the one non-zero default */
+    /* Distortion off, but with the secondary parameters already in audible
+     * territory: the first TYPE flip should be heard, not land on a no-op. */
+    vp->dist = (seq_dist_t){ .type = 0, .drive = 2, .bits = 8, .rate = 8, .mix = 100 };
 }
 
 /* ── Lazy LFO-sibling materialization state ──────────────────────────────
@@ -131,61 +133,43 @@ void voice_build_wave(const voice_wave_cfg_t *cfg)
     e->amp_coefs[COEF_EG0]   = 1.0f;
     amy_helpers_event_send(e);
 
-    /* Every wave build inherits the current distortion set (no stale state). */
-    voice_apply_dist(cfg->synth);
+    /* A rebuild must not drop the stage, so the owner's block rides every
+     * build. cfg->dist == NULL means the caller has none to assert yet. */
+    if (cfg->dist) voice_apply_dist(cfg->synth, cfg->dist);
 }
 
-/* ── WAVE-voice distortion ───────────────────────────────────────────────
- * Defaults: OFF, with secondary params audible so the first TYPE flip is heard. */
-#define VOICE_DIST_DEFAULTS { .type = 0, .drive = 2, .bits = 8, .rate = 8, .mix = 100 }
+/* ── Per-voice distortion ────────────────────────────────────────────────── */
 
-static voice_dist_t s_dist[VOICE_DIST_DOMAIN_COUNT] = {
-    [VOICE_DIST_ARP]     = VOICE_DIST_DEFAULTS,
-    [VOICE_DIST_DRONE]   = VOICE_DIST_DEFAULTS,
-    [VOICE_DIST_MELODIC] = VOICE_DIST_DEFAULTS,
-};
-
-voice_dist_domain_t voice_dist_domain_of(uint8_t synth)
+void voice_dist_clamp(seq_dist_t *d)
 {
-    if (synth == SEQ_ARP_SYNTH)              return VOICE_DIST_ARP;
-    if (synth >= DRONE_SYNTH_MAIN &&
-        synth <= DRONE_STD_SYNTH_SUB)        return VOICE_DIST_DRONE;
-    if (synth >= SEQ_MEL_SYNTH_BASE &&
-        synth <= SEQ_MAX_SYNTH)              return VOICE_DIST_MELODIC;
-    return VOICE_DIST_DOMAIN_COUNT;          /* drums, live play, sentinel */
+    if (!d) return;
+    d->type  = (uint8_t)(d->type > 3u ? 0u : d->type);  /* unknown type -> OFF */
+    d->drive = SEQ_CLAMP_U8(d->drive, 1u, 16u);
+    d->bits  = SEQ_CLAMP_U8(d->bits, 1u, 24u);
+    d->rate  = SEQ_CLAMP_U8(d->rate, 1u, 64u);
+    d->mix   = SEQ_CLAMP_U8(d->mix, 0u, 100u);
 }
 
-const voice_dist_t *voice_dist_get(voice_dist_domain_t domain)
+void voice_apply_dist(uint8_t synth, const seq_dist_t *d)
 {
-    if (domain >= VOICE_DIST_DOMAIN_COUNT) domain = VOICE_DIST_ARP;
-    return &s_dist[domain];
-}
+    if (!d) return;
+    seq_dist_t v = *d;
+    voice_dist_clamp(&v);
 
-void voice_dist_set(voice_dist_domain_t domain, const voice_dist_t *d)
-{
-    if (!d || domain >= VOICE_DIST_DOMAIN_COUNT) return;
-    voice_dist_t *s = &s_dist[domain];
-    s->type  = (uint8_t)(d->type > 3u ? 0u : d->type);  /* unknown type -> OFF */
-    s->drive = SEQ_CLAMP_U8(d->drive, 1u, 16u);
-    s->bits  = SEQ_CLAMP_U8(d->bits, 1u, 16u);
-    s->rate  = SEQ_CLAMP_U8(d->rate, 1u, 64u);
-    s->mix   = SEQ_CLAMP_U8(d->mix, 0u, 100u);
-}
-
-void voice_apply_dist(uint8_t synth)
-{
-    voice_dist_domain_t domain = voice_dist_domain_of(synth);
-    if (domain >= VOICE_DIST_DOMAIN_COUNT) return;
-    const voice_dist_t *d = &s_dist[domain];
-
+    /* osc 0 addresses the BASE osc of every voice in the synth (AMY's
+     * patches_event_has_voices). For wave voices and for ALGO/FM voices - where
+     * osc 0 already carries the summed operator output - that is the whole
+     * voice. Multi-osc patch strings distort their base osc only; distorting
+     * each osc and summing afterwards is a different, harsher effect, so the
+     * reach stops here deliberately. */
     amy_event *e = amy_helpers_event_begin();
     e->synth      = synth;
     e->osc        = 0;
-    e->dist_type  = (float)d->type;
-    e->dist_drive = (float)d->drive;
-    e->dist_bits  = (float)d->bits;
-    e->dist_rate  = (float)d->rate;
-    e->dist_mix   = (float)d->mix / 100.0f;
+    e->dist_type  = (float)v.type;
+    e->dist_drive = (float)v.drive;
+    e->dist_bits  = (float)v.bits;
+    e->dist_rate  = (float)v.rate;
+    e->dist_mix   = (float)v.mix / 100.0f;
     amy_helpers_event_send(e);
 }
 

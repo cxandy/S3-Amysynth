@@ -242,6 +242,10 @@ static void sequencer_configure_drum_pcm_track_params(uint8_t layer_idx,
         sequencer_configure_melodic_envelope1_track(layer_idx, track);
     }
     sequencer_configure_melodic_filter_track(layer_idx, track);
+    /* Only when authored: an unauthored row has nothing to restore, and
+     * pushing its OFF default would add an AMY event per track per kit reload
+     * for a setting nobody touched. */
+    if (vp->dist_authored) sequencer_configure_melodic_dist_track(layer_idx, track);
 }
 
 /* Apply per-track envelope shape and hat HPF after PCM wave/preset are set. */
@@ -413,6 +417,18 @@ static void sequencer_configure_melodic_filter(uint8_t layer_idx)
             amy_helpers_event_send(e);
 #endif
         }
+    }
+}
+
+/* Push the distortion for every authored row in a layer (after a patch
+ * reload). Unauthored rows are left alone: a patch string never carries a
+ * distortion block, so there is nothing to strip and nothing to restore. */
+static void sequencer_configure_melodic_dist(uint8_t layer_idx)
+{
+    const seq_layer_t *layer = &s_layers[layer_idx];
+    for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
+        if (layer->vp[t].dist_authored)
+            sequencer_configure_melodic_dist_track(layer_idx, t);
     }
 }
 
@@ -615,22 +631,10 @@ void sequencer_configure_synth(uint8_t layer_idx)
     sequencer_configure_melodic_envelope(layer_idx);
     sequencer_configure_melodic_envelope1(layer_idx);
     sequencer_configure_melodic_filter(layer_idx);
+    sequencer_configure_melodic_dist(layer_idx);
     sequencer_configure_melodic_lfo(layer_idx);
     /* Glide is a per-osc AMY setting that a voice rebuild clears - reassert. */
     sequencer_core_push_melodic_portamento(layer_idx);
-}
-
-/* ── Public API — WAVE-voice distortion fan-out ─────────────────────── */
-
-void sequencer_core_apply_wave_dist(void)
-{
-    for (uint8_t i = 0; i < s_num_layers; i++) {
-        const seq_layer_t *layer = &s_layers[i];
-        if (layer->type != SEQ_LAYER_MELODIC) continue;
-        if (!sequencer_core_is_wave_patch(layer->patch)) continue;
-        for (uint8_t t = 0; t < SEQ_TRACKS; t++)
-            voice_apply_dist(layer->synth_id[t]);
-    }
 }
 
 /* ── Public API — melodic patch ─────────────────────────────────────── */

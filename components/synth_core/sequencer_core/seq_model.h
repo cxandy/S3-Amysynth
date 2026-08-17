@@ -197,6 +197,21 @@ typedef struct {
     uint8_t  eg_type;       /* AMY ENVELOPE_* (NORMAL/LINEAR/DX7/TRUE_EXP)   */
 } seq_env_t;
 
+/* ── Per-osc distortion stage (AMY DIST_*) ──
+ * A static waveshaper ahead of the filter: soft-clip, wavefolder, or bit
+ * crusher. Stored as concrete AMY units so it survives patch changes, and
+ * scoped per voice like the filter - `type == 0` (OFF) is the disable, there is
+ * no separate enable flag. `bits` tops out at 24 because AMY samples are s8.23
+ * (S_FRAC_BITS, amy_fixedpoint.h): one sign bit plus 23 fraction bits is where
+ * quantization becomes a no-op, whatever the output stage does. */
+typedef struct {
+    uint8_t type;   /* AMY DIST_*: 0 OFF, 1 CLIP, 2 FOLD, 3 CRUSH   */
+    uint8_t drive;  /* 1..16  pre-gain (fold depth for FOLD)        */
+    uint8_t bits;   /* 1..24  CRUSH bit depth; 24 = no-op           */
+    uint8_t rate;   /* 1..64  CRUSH sample-hold length in samples   */
+    uint8_t mix;    /* 0..100 wet %                                 */
+} seq_dist_t;
+
 /* ── Per-voice parameter block (shared voice-config layer) ──
  * Embedded by every engine's state: melodic layers (per track), the arp and the
  * drone. Bundles the runtime-editable env/EG1/filter/LFO with their
@@ -210,10 +225,12 @@ typedef struct {
     seq_env_t    env1;            /* second envelope (EG1)                  */
     seq_filter_t filter;
     seq_lfo_t    lfo;
+    seq_dist_t   dist;
     bool         env_authored;
     bool         env1_authored;
     bool         filter_authored;
     bool         lfo_authored;
+    bool         dist_authored;
     float        amp_trim;        /* output trim 0..1, unity default        */
 } voice_params_t;
 

@@ -10,6 +10,7 @@
 #include "graph_popup.h"
 #include "filter_graph.h"
 #include "display_lfo.h"
+#include "display_dist.h"
 #include "seq_defaults.h"
 #include "amy_helpers.h"
 #include "filter_scope.h"
@@ -2132,6 +2133,197 @@ bool synth_ui_lfo_close_commit(void)
     return true;
 }
 
+/* ── LFO editor: end ─────────────────────────────────────────────────────── */
+
+/* ── Distortion editor ───────────────────────────────────────────────────── */
+
+bool s_dist_active;
+static dist_view_t s_dist_view;
+#if CONFIG_SYNTH_WIRELESS
+static bool s_dist_live_target;
+#endif
+
+uint32_t dist_view_signature(void)
+{
+    const seq_dist_t *d = &s_dist_view.dist;
+    return (uint32_t)d->type                    /* 2 bits  */
+         | ((uint32_t)d->drive           <<  2) /* 5 bits  */
+         | ((uint32_t)d->bits            <<  7) /* 5 bits  */
+         | ((uint32_t)d->rate            << 12) /* 7 bits  */
+         | ((uint32_t)d->mix             << 19) /* 7 bits  */
+         | ((uint32_t)s_dist_view.cursor << 26) /* 3 bits  */
+         | ((uint32_t)s_dist_view.editing << 29);
+}
+
+bool synth_ui_dist_is_active(void) { return s_dist_active; }
+
+void synth_ui_dist_open(void)
+{
+#if CONFIG_SYNTH_WIRELESS
+    /* Wireless page first, before the mode ladder - it is a menu overlay. */
+    s_dist_live_target = synth_ui_wireless_page_is_open();
+    if (!s_dist_live_target)
+#endif
+    {
+        /* The stutter drone edits its timbre through its own screen and has no
+         * filter/LFO tab worth pairing with; keep its cycle short. */
+        if (seq_state.ui_mode == UI_MODE_DRONE) return;
+    }
+    uint8_t li = seq_state.active_layer_idx;
+    uint8_t tr = seq_state.selected_track;
+    seq_dist_t existing = { .type = 0, .drive = 2, .bits = 8, .rate = 8, .mix = 100 };
+#if CONFIG_SYNTH_WIRELESS
+    if (s_dist_live_target)
+        live_play_get_dist(&existing);
+    else
+#endif
+    if (seq_state.ui_mode == UI_MODE_ARP)
+        arp_get_dist(&existing);
+    else if (seq_state.ui_mode == UI_MODE_DRONE_STD)
+        drone_std_get_dist(&existing);
+    else
+        sequencer_core_get_melodic_dist(li, tr, &existing);
+    s_dist_view.dist         = existing;
+    s_dist_view.cursor       = 0;
+    s_dist_view.editing      = false;
+    s_dist_view.layer_idx    = li;
+    s_dist_view.track_idx    = tr;
+    s_dist_view.apply_all    = s_editor_apply_all;
+    s_dist_view.target_label = (seq_state.ui_mode == UI_MODE_ARP)       ? "ARP"
+                             : (seq_state.ui_mode == UI_MODE_DRONE_STD) ? "DRONE"
+                             : NULL;
+#if CONFIG_SYNTH_WIRELESS
+    if (s_dist_live_target) s_dist_view.target_label = "LIVE";
+#endif
+    s_dist_active  = true;
+    s_force_redraw = true;
+    ESP_LOGI(TAG, "DIST editor open L%u T%u", li + 1u, tr + 1u);
+}
+
+/* Live audition. Unlike the LFO page every target previews: distortion has no
+ * software-stepper path to arbitrate, so a preview is just a push that skips
+ * the store. Single-track even in apply-all scope - the selected track is the
+ * audition voice, the rest follow at commit. */
+static void dist_live_push_preview(void)
+{
+#if CONFIG_SYNTH_WIRELESS
+    if (s_dist_live_target) { live_play_preview_dist(&s_dist_view.dist); return; }
+#endif
+    if (seq_state.ui_mode == UI_MODE_ARP)
+        arp_preview_dist(&s_dist_view.dist);
+    else if (seq_state.ui_mode == UI_MODE_DRONE_STD)
+        drone_std_preview_dist(&s_dist_view.dist);
+    else
+        sequencer_core_preview_melodic_dist(s_dist_view.layer_idx,
+                                            s_dist_view.track_idx,
+                                            &s_dist_view.dist);
+}
+
+/* Cancel path: re-push the committed state over the auditioned one. */
+static void dist_preview_cancel_restore(void)
+{
+#if CONFIG_SYNTH_WIRELESS
+    if (s_dist_live_target) { live_play_reapply_dist(); return; }
+#endif
+    if (seq_state.ui_mode == UI_MODE_ARP)
+        arp_reapply_dist();
+    else if (seq_state.ui_mode == UI_MODE_DRONE_STD)
+        drone_std_reapply_dist();
+    else
+        sequencer_core_reapply_melodic_dist(s_dist_view.layer_idx,
+                                            s_dist_view.track_idx);
+}
+
+bool synth_ui_dist_handle_encoder(long delta)
+{
+    if (!s_dist_active) return false;
+    const uint8_t N = DIST_FLD_COUNT;
+    if (!s_dist_view.editing) {
+        if (delta > 0)      s_dist_view.cursor = (s_dist_view.cursor + 1) % N;
+        else if (delta < 0) s_dist_view.cursor = (s_dist_view.cursor + N - 1) % N;
+        s_force_redraw = true;
+        return true;
+    }
+    seq_dist_t *d = &s_dist_view.dist;
+    int step = (delta > 0) ? 1 : -1;
+    switch (s_dist_view.cursor) {
+        case DIST_FLD_TYPE:
+            /* 4-way wrap: OFF is a value in the cycle, not a separate toggle. */
+            d->type = (uint8_t)((d->type + 4u + step) % 4u);
+            break;
+        case DIST_FLD_DRIVE:
+            d->drive = (uint8_t)SEQ_CLAMP_INT((int)d->drive + step,
+                                              (int)DIST_DRIVE_MIN, (int)DIST_DRIVE_MAX);
+            break;
+        case DIST_FLD_BITS:
+            d->bits = (uint8_t)SEQ_CLAMP_INT((int)d->bits + step,
+                                             (int)DIST_BITS_MIN, (int)DIST_BITS_MAX);
+            break;
+        case DIST_FLD_RATE:
+            d->rate = (uint8_t)SEQ_CLAMP_INT((int)d->rate + step,
+                                             (int)DIST_RATE_MIN, (int)DIST_RATE_MAX);
+            break;
+        case DIST_FLD_MIX:
+            d->mix = (uint8_t)SEQ_CLAMP_INT((int)d->mix + step * (int)DIST_MIX_STEP,
+                                            0, 100);
+            break;
+        default: break;
+    }
+    dist_live_push_preview();
+    s_force_redraw = true;
+    return true;
+}
+
+bool synth_ui_dist_handle_button(bool is_long)
+{
+    if (!s_dist_active) return false;
+    if (is_long) {
+        dist_preview_cancel_restore();
+        s_dist_active  = false;
+        s_force_redraw = true;
+        ESP_LOGI(TAG, "DIST editor cancelled");
+        return true;
+    }
+    /* Every field is multi-value, so a short press only toggles adjust mode. */
+    s_dist_view.editing = !s_dist_view.editing;
+    s_force_redraw = true;
+    return true;
+}
+
+bool synth_ui_dist_close_commit(void)
+{
+    if (!s_dist_active) return false;
+#if CONFIG_SYNTH_WIRELESS
+    /* Before the mode ladder: the Wireless page is an overlay. */
+    if (s_dist_live_target) {
+        live_play_set_dist(&s_dist_view.dist);
+        s_dist_active  = false;
+        s_force_redraw = true;
+        ESP_LOGI(TAG, "DIST editor committed (live voice)");
+        return true;
+    }
+#endif
+    if (seq_state.ui_mode == UI_MODE_DRONE) return false;
+    if (seq_state.ui_mode == UI_MODE_ARP) {
+        arp_set_dist(&s_dist_view.dist);
+    } else if (seq_state.ui_mode == UI_MODE_DRONE_STD) {
+        drone_std_set_dist(&s_dist_view.dist);
+    } else if (s_editor_apply_all) {
+        for (uint8_t t = 0; t < SEQ_TRACKS; ++t)
+            sequencer_core_set_melodic_dist(s_dist_view.layer_idx, t, &s_dist_view.dist);
+    } else {
+        sequencer_core_set_melodic_dist(s_dist_view.layer_idx,
+                                        s_dist_view.track_idx,
+                                        &s_dist_view.dist);
+    }
+    s_dist_active  = false;
+    s_force_redraw = true;
+    ESP_LOGI(TAG, "DIST editor committed (apply_all=%d)", (int)s_editor_apply_all);
+    return true;
+}
+
+/* ── Distortion editor: end ──────────────────────────────────────────────── */
+
 /* Toggle layer-wide vs single-track commit scope for the effects editors
  * (MY_BUTTON_1 while the ADSR or LFO editor is open). Returns true if consumed.
  * ARP/DRONE have no "apply to all tracks" concept - no-op there. */
@@ -2145,13 +2337,16 @@ bool synth_ui_toggle_editor_apply_scope(void)
         seq_state.ui_mode == UI_MODE_DRONE_STD)
         return false;
     bool graph_open = graph_popup_is_active(&s_graph_popup);
-    if (!graph_open && !s_lfo_active) return false;
+    if (!graph_open && !s_lfo_active && !s_dist_active) return false;
 
     s_editor_apply_all = !s_editor_apply_all;
 
-    /* Keep the LFO view in sync so its indicator matches. */
+    /* Keep the open view in sync so its indicator matches. */
     if (s_lfo_active) {
         s_lfo_view.apply_all = s_editor_apply_all;
+    }
+    if (s_dist_active) {
+        s_dist_view.apply_all = s_editor_apply_all;
     }
 
     s_force_redraw = true;
@@ -2159,7 +2354,8 @@ bool synth_ui_toggle_editor_apply_scope(void)
     return true;
 }
 
-/* Cycle ADSR → Filter → LFO → ADSR (MY_BUTTON_3 while any editor is open). */
+/* Cycle ADSR → Filter → LFO → DIST → ADSR (MY_BUTTON_3 while any editor is
+ * open). UI_MODE_DRONE has neither an LFO nor a DIST tab and wraps early. */
 void synth_ui_cycle_editor(void)
 {
     if (graph_popup_is_active(&s_graph_popup)) {
@@ -2186,6 +2382,12 @@ void synth_ui_cycle_editor(void)
             synth_ui_lfo_open();
     } else if (s_lfo_active) {
         synth_ui_lfo_close_commit();
+        /* dist_open self-gates (see there); if it declines, wrap rather than
+         * leaving the cycle with no editor open. */
+        synth_ui_dist_open();
+        if (!s_dist_active) synth_ui_graph_open_envelope();
+    } else if (s_dist_active) {
+        synth_ui_dist_close_commit();
         synth_ui_graph_open_envelope();
     }
 }
@@ -2352,4 +2554,11 @@ void synth_ui_lfo_view_draw(u8g2_t *u8g2)
     u8g2_ClearBuffer(u8g2);
     u8g2_SetDrawColor(u8g2, 1);
     lfo_view_draw(u8g2, &s_lfo_view);
+}
+
+void synth_ui_dist_view_draw(u8g2_t *u8g2)
+{
+    u8g2_ClearBuffer(u8g2);
+    u8g2_SetDrawColor(u8g2, 1);
+    dist_view_draw(u8g2, &s_dist_view);
 }

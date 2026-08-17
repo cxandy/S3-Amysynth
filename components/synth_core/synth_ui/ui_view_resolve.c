@@ -15,6 +15,7 @@ ui_view_id_t synth_ui_active_view(void)
 {
     if (s_filter_active)                return UI_VIEW_FILTER;
     if (s_lfo_active)                   return UI_VIEW_LFO;
+    if (s_dist_active)                  return UI_VIEW_DIST;
     if (synth_ui_stepedit_is_active())  return UI_VIEW_STEPEDIT; /* self-gated */
     if (synth_ui_graph_is_active())     return UI_VIEW_GRAPH;
     if (seq_state.menu_open)            return UI_VIEW_MENU;
@@ -37,6 +38,7 @@ ui_view_id_t synth_ui_active_view(void)
 /* ─── Signature thunks (build vw once, return the FNV render-gate hash) ─── */
 static uint32_t sig_filter(ui_view_vw_t *vw)    { (void)vw; return filter_view_signature(); }
 static uint32_t sig_lfo(ui_view_vw_t *vw)       { (void)vw; return lfo_view_signature(); }
+static uint32_t sig_dist(ui_view_vw_t *vw)      { (void)vw; return dist_view_signature(); }
 static uint32_t sig_stepedit(ui_view_vw_t *vw)  { return stepedit_view_signature(&vw->stepedit); }
 static uint32_t sig_graph(ui_view_vw_t *vw)     { (void)vw; return graph_view_signature(); }
 static uint32_t sig_menu(ui_view_vw_t *vw)      { return menu_view_signature(&vw->menu); }
@@ -50,6 +52,7 @@ static uint32_t sig_seq(ui_view_vw_t *vw)       { (void)vw; return seq_view_sign
 /* ─── Draw thunks (reuse the vw the signature already built) ───────────── */
 static void draw_filter(u8g2_t *g, ui_view_vw_t *vw)    { (void)vw; synth_ui_filter_view_draw(g); }
 static void draw_lfo(u8g2_t *g, ui_view_vw_t *vw)       { (void)vw; synth_ui_lfo_view_draw(g); }
+static void draw_dist(u8g2_t *g, ui_view_vw_t *vw)      { (void)vw; synth_ui_dist_view_draw(g); }
 static void draw_stepedit(u8g2_t *g, ui_view_vw_t *vw)  { display_stepedit_draw_frame(g, &vw->stepedit); }
 static void draw_graph(u8g2_t *g, ui_view_vw_t *vw)     { (void)vw; synth_ui_graph_view_draw(g); }
 static void draw_menu(u8g2_t *g, ui_view_vw_t *vw)      { display_menu_draw_frame_titled(g, menu_page_title(), &vw->menu); }
@@ -104,9 +107,10 @@ static void     draw_dev(u8g2_t *g, ui_view_vw_t *vw) { display_dev_draw_frame(g
 #endif
 
 /* ─── Dynamic hint labels (state the view id does not carry) ─────────────
- * Only the cells that vary on ui_mode: the LFO editor's b2 falls through to the
- * underlying screen. SHIFT gestures are not shown on the 3-button strip. */
-static const char *hint_lfo_b2(void)
+ * Only the cells that vary on ui_mode: the LFO and DIST editors' b2 falls
+ * through to the underlying screen. SHIFT gestures are not shown on the
+ * 3-button strip. */
+static const char *hint_editor_b2(void)
 {
     switch (seq_state.ui_mode) {
         case UI_MODE_ARP:
@@ -143,7 +147,8 @@ static const char *hint_menu_b2(void)
  * choose. */
 const ui_view_desc_t ui_view_table[UI_VIEW_COUNT] = {
     [UI_VIEW_FILTER]    = { "FILTER", sig_filter,    draw_filter,    "On/Off", "-",     "Next",  NULL,               NULL,                   52 },
-    [UI_VIEW_LFO]       = { "LFO",    sig_lfo,       draw_lfo,       "-",      NULL,    "Next",  NULL,               hint_lfo_b2,            68 },
+    [UI_VIEW_LFO]       = { "LFO",    sig_lfo,       draw_lfo,       "-",      NULL,    "Next",  NULL,               hint_editor_b2,         68 },
+    [UI_VIEW_DIST]      = { "DIST",   sig_dist,      draw_dist,      "-",      NULL,    "Next",  NULL,               hint_editor_b2,          0 },
     [UI_VIEW_STEPEDIT]  = { "STEP",   sig_stepedit,  draw_stepedit,  "Patch",  "-",     "Close", NULL,               NULL,                    0 },
     [UI_VIEW_GRAPH]     = { "GRAPH",  sig_graph,     draw_graph,     "Type",   NULL,    "Next",  NULL,               synth_ui_graph_hint_b2, 52 },
     [UI_VIEW_MENU]      = { "MENU",   sig_menu,      draw_menu,      NULL,     NULL,    "Menu",  hint_menu_b1,       hint_menu_b2,           52 },

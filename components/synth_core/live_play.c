@@ -169,6 +169,7 @@ static void live_apply_authored(void)
         sequencer_core_push_envelope(LIVE_SYNTH, &s_vp.env);
     if (s_vp.env1_authored)   sequencer_core_push_envelope_eg1(LIVE_SYNTH, 0, &s_vp.env1);
     if (s_vp.filter_authored) live_apply_filter(&s_vp.filter);
+    if (s_vp.dist_authored)   voice_apply_dist(LIVE_SYNTH, &s_vp.dist);
     live_apply_lfo();   /* internal layout guard: no-op for patch strings */
     /* Patch loads reset per-osc portamento_alpha; reassert unconditionally
      * (0 is a valid "off" reassert) - the arp_rebuild discipline. */
@@ -438,6 +439,33 @@ void live_play_set_filter(const seq_filter_t *f)
     vp->filter = *f;
     vp->filter_authored = true;
     if (s_ready) live_apply_filter(&vp->filter);
+}
+
+void live_play_get_dist(seq_dist_t *out)
+{
+    if (out) *out = live_vp()->dist;
+}
+
+void live_play_set_dist(const seq_dist_t *d)
+{
+    if (!d) return;
+    voice_params_t *vp = live_vp();
+    vp->dist = *d;
+    voice_dist_clamp(&vp->dist);
+    vp->dist_authored = true;
+    if (s_ready) voice_apply_dist(LIVE_SYNTH, &vp->dist);
+}
+
+void live_play_preview_dist(const seq_dist_t *d)
+{
+    if (d && s_ready) voice_apply_dist(LIVE_SYNTH, d);
+}
+
+/* Re-assert after a voice rebuild (patch change) clears the per-osc stage. */
+void live_play_reapply_dist(void)
+{
+    voice_params_t *vp = live_vp();
+    if (vp->dist_authored && s_ready) voice_apply_dist(LIVE_SYNTH, &vp->dist);
 }
 
 void live_play_get_lfo(seq_lfo_t *out)

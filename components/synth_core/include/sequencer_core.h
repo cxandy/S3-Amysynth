@@ -296,6 +296,20 @@ bool sequencer_core_get_melodic_filter(uint8_t layer_idx, uint8_t track,
 void sequencer_core_set_melodic_filter(uint8_t layer_idx, uint8_t track,
                                        const seq_filter_t *f);
 
+/* ── Per-row melodic distortion (runtime-editable) ──
+ * Parallel to the filter. Default: type OFF (bypass), secondary params seeded
+ * audible by voice_params_init_defaults(). set stores + pushes to that row's
+ * synth immediately; preview pushes without storing; reapply re-pushes the
+ * store (editor cancel, and after anything that rebuilds the voice).
+ * get returns false for non-melodic/out-of-range layers. */
+bool sequencer_core_get_melodic_dist(uint8_t layer_idx, uint8_t track,
+                                     seq_dist_t *out);
+void sequencer_core_set_melodic_dist(uint8_t layer_idx, uint8_t track,
+                                     const seq_dist_t *d);
+void sequencer_core_preview_melodic_dist(uint8_t layer_idx, uint8_t track,
+                                         const seq_dist_t *d);
+void sequencer_core_reapply_melodic_dist(uint8_t layer_idx, uint8_t track);
+
 /* Push a filter directly to an arbitrary AMY synth slot (shared by arp/drone).
  * is_ks also pushes f->resonance through sequencer_core_ks_feedback_from_q()
  * into the synth's KS feedback field, independent of f->enabled: KS feedback is
@@ -478,10 +492,6 @@ void sequencer_core_push_envelope(uint8_t synth, const seq_env_t *env);
  * lives on osc 1); melodic rows, arp and drone all target osc 0. This supplies
  * only the timing - whatever coef is wired to COEF_EG1 is what moves. */
 void sequencer_core_push_envelope_eg1(uint8_t synth, uint8_t osc, const seq_env_t *env);
-
-/* Re-push the MELODIC distortion set to every melodic track on a wave patch
- * (arp/drone fan-out stays with the caller). Core-0 / UI-task only. */
-void sequencer_core_apply_wave_dist(void);
 
 /* ── Arpeggiator support ──────────────────────────────────────────────────
  * The arp lives in arp_core but routes all AMY traffic through these helpers,

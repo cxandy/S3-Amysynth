@@ -146,46 +146,38 @@ typedef struct {
     float    ks_feedback;          /* seq_filter_t.feedback (0..1) when authored;
                                       <= 0 or unauthored -> fixed 0.9 default */
     int16_t  wt_preset;            /* >=0 => e->preset (WAVETABLE); else -1 */
+    const seq_dist_t *dist;        /* re-pushed on every build so a rebuild
+                                      never drops the stage; NULL = leave the
+                                      synth's distortion untouched            */
 } voice_wave_cfg_t;
 
 /* Core-0 / UI-task only; pushes through amy_helpers (never amy_queue_lock). */
 void voice_build_wave(const voice_wave_cfg_t *cfg);
 
-/* ── WAVE-voice distortion (DEV-menu controlled, one set per domain) ──────
- * AMY per-osc distortion (DIST_*) on osc0 of WAVE-mode targets. The owning
- * domain is derived from the synth slot, never passed by callers.
- * voice_build_wave() re-applies the owning set on every rebuild; live edits
- * additionally push to already-built targets (ui_screen_dev.c owns that
- * fan-out). PATCH-mode targets and non-WAVE slots never receive these. */
-typedef enum {
-    VOICE_DIST_ARP = 0,     /* SEQ_ARP_SYNTH                                 */
-    VOICE_DIST_DRONE,       /* both drones: DRONE_SYNTH_* + DRONE_STD_SYNTH_* */
-    VOICE_DIST_MELODIC,     /* every melodic slot (>= SEQ_MEL_SYNTH_BASE)    */
-    VOICE_DIST_DOMAIN_COUNT
-} voice_dist_domain_t;
+/* ── Per-voice distortion (AMY DIST_*) ───────────────────────────────────
+ * The distortion block is owned by the caller's voice_params_t (seq_model.h),
+ * exactly like the filter and the LFO: melodic layers hold one per track, the
+ * arp / both drones / live-play hold one each. There is no global or
+ * per-domain set - a synth's distortion is whatever its owner last pushed.
+ *
+ * Reach: the event addresses osc 0, which AMY resolves to the BASE osc of every
+ * voice in the synth. Wave voices and ALGO/FM voices (whose osc 0 carries the
+ * summed operator output) are fully covered; multi-osc patch strings distort
+ * their base osc only. That is deliberate - see voice_apply_dist.
+ *
+ * Applies to any synth the caller names, patch-backed or wave-backed. If a
+ * future patch layout needs excluding, gate at the call sites the way the LFO
+ * editor gates WOBBLE on sequencer_core_lfo_native_layout(); nothing here
+ * inspects the target's topology. */
 
-typedef struct {
-    uint8_t type;   /* AMY DIST_* value: 0 OFF, 1 CLIP, 2 FOLD, 3 CRUSH */
-    uint8_t drive;  /* 1..16 pre-gain (fold depth for FOLD) */
-    uint8_t bits;   /* 1..16 CRUSH bit depth */
-    uint8_t rate;   /* 1..64 CRUSH sample-hold length in samples */
-    uint8_t mix;    /* 0..100 wet % */
-} voice_dist_t;
+/* Clamp a block to the documented field ranges, in place. Callers that accept
+ * values from the wire, a snapshot, or the UI run this before storing. */
+void voice_dist_clamp(seq_dist_t *d);
 
-/* Which set governs a slot; VOICE_DIST_DOMAIN_COUNT for slots the stage
- * does not reach (0, drums, live play). */
-voice_dist_domain_t voice_dist_domain_of(uint8_t synth);
-
-/* Current set for a domain. Never NULL (out-of-range yields the ARP set). */
-const voice_dist_t *voice_dist_get(voice_dist_domain_t domain);
-
-/* Clamp to the documented ranges and store. Does NOT push (see
- * voice_apply_dist). Out-of-range domain: no-op. */
-void voice_dist_set(voice_dist_domain_t domain, const voice_dist_t *d);
-
-/* Push the set owning this slot to its voices (osc0); type OFF actively
- * disables. Slots outside every domain: no-op. Core-0 / UI-task only. */
-void voice_apply_dist(uint8_t synth);
+/* Push `d` to `synth` (base osc of each voice); type OFF actively disables the
+ * stage rather than leaving the last setting running. Clamps a copy, so the
+ * caller's block is untouched. NULL `d`: no-op. Core-0 / UI-task only. */
+void voice_apply_dist(uint8_t synth, const seq_dist_t *d);
 
 /* ── Lazy LFO-sibling materialization ────────────────────────────────────
  * voice_build_wave() reserves the osc1 (LFO carrier) and osc2 (wobble) INDEX

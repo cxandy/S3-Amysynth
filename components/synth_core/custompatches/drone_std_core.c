@@ -179,6 +179,9 @@ static void drone_std_rebuild(void)
         }
     }
 
+    /* Per-osc distortion does not survive a rebuild either. */
+    drone_std_reapply_dist();
+
     /* Deferred authority: re-impose the user's envelopes after any rebuild. */
     if (s_ds.vp.env_authored) {
         sequencer_core_push_envelope(DRONE_STD_SYNTH_MAIN, &s_ds.vp.env);
@@ -497,6 +500,38 @@ void drone_std_preview_filter(const seq_filter_t *f)
 }
 
 /* ── Free LFO ── */
+
+/* Distortion reaches both drone slots, like the filter: main and sub are one
+ * instrument to the player, so a single editor block governs the pair. */
+void drone_std_get_dist(seq_dist_t *out)
+{
+    if (out) *out = s_ds.vp.dist;
+}
+
+static void drone_std_push_dist(const seq_dist_t *d)
+{
+    voice_apply_dist(DRONE_STD_SYNTH_MAIN, d);
+    if (s_ds.sub_enabled) voice_apply_dist(DRONE_STD_SYNTH_SUB, d);
+}
+
+void drone_std_set_dist(const seq_dist_t *d)
+{
+    if (!d) return;
+    s_ds.vp.dist = *d;
+    voice_dist_clamp(&s_ds.vp.dist);
+    s_ds.vp.dist_authored = true;
+    drone_std_push_dist(&s_ds.vp.dist);
+}
+
+void drone_std_preview_dist(const seq_dist_t *d)
+{
+    if (d) drone_std_push_dist(d);
+}
+
+void drone_std_reapply_dist(void)
+{
+    if (s_ds.vp.dist_authored) drone_std_push_dist(&s_ds.vp.dist);
+}
 
 void drone_std_get_lfo(seq_lfo_t *out)
 {

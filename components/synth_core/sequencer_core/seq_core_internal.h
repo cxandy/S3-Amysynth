@@ -191,6 +191,7 @@ seq_env_t *seq_layer_env1(uint8_t layer_idx, uint8_t track);
 void sequencer_configure_melodic_envelope_track(uint8_t layer_idx, uint8_t track);
 void sequencer_configure_melodic_envelope1_track(uint8_t layer_idx, uint8_t track);
 void sequencer_configure_melodic_filter_track(uint8_t layer_idx, uint8_t track);
+void sequencer_configure_melodic_dist_track(uint8_t layer_idx, uint8_t track);
 void sequencer_configure_melodic_lfo(uint8_t layer_idx);
 void melodic_lfo_refresh_native_freq(void);
 

@@ -264,6 +264,58 @@ void sequencer_core_set_melodic_filter(uint8_t layer_idx, uint8_t track,
              (double)dst->cutoff_hz, (double)dst->resonance);
 }
 
+/* ── Per-row melodic distortion ──────────────────────────────────────────
+ * Parallel to the filter, minus the service loop: distortion has no software
+ * fallback path, so a push goes straight to the row's synth and there is
+ * nothing for lfo_service to arbitrate. Preview and commit therefore differ
+ * only in whether the store is written. */
+
+bool sequencer_core_get_melodic_dist(uint8_t layer_idx, uint8_t track,
+                                     seq_dist_t *out)
+{
+    if (!out || layer_idx >= s_num_layers || track >= SEQ_TRACKS) return false;
+    *out = s_layers[layer_idx].vp[track].dist;
+    return true;
+}
+
+void sequencer_core_set_melodic_dist(uint8_t layer_idx, uint8_t track,
+                                     const seq_dist_t *d)
+{
+    if (!d || layer_idx >= s_num_layers || track >= SEQ_TRACKS) return;
+    seq_layer_t *layer = &s_layers[layer_idx];
+
+    layer->vp[track].dist = *d;
+    voice_dist_clamp(&layer->vp[track].dist);
+    layer->vp[track].dist_authored = true;
+    voice_apply_dist(layer->synth_id[track], &layer->vp[track].dist);
+    ESP_LOGI(TAG, "dist L%u T%u -> type%u drv%u bit%u rte%u mix%u (authored)",
+             layer_idx + 1u, track + 1u, layer->vp[track].dist.type,
+             layer->vp[track].dist.drive, layer->vp[track].dist.bits,
+             layer->vp[track].dist.rate, layer->vp[track].dist.mix);
+}
+
+void sequencer_core_preview_melodic_dist(uint8_t layer_idx, uint8_t track,
+                                         const seq_dist_t *d)
+{
+    if (!d || layer_idx >= s_num_layers || track >= SEQ_TRACKS) return;
+    voice_apply_dist(s_layers[layer_idx].synth_id[track], d);
+}
+
+void sequencer_core_reapply_melodic_dist(uint8_t layer_idx, uint8_t track)
+{
+    if (layer_idx >= s_num_layers || track >= SEQ_TRACKS) return;
+    voice_apply_dist(s_layers[layer_idx].synth_id[track],
+                     &s_layers[layer_idx].vp[track].dist);
+}
+
+/* Re-assert a row's stored distortion after anything that rebuilds its voice
+ * (patch load, layer reload). Without this the stage is silently dropped, the
+ * same failure the filter/LFO re-pushes exist for. */
+void sequencer_configure_melodic_dist_track(uint8_t layer_idx, uint8_t track)
+{
+    sequencer_core_reapply_melodic_dist(layer_idx, track);
+}
+
 /* Generic filter push: shared by arp, drone (via synth_ui). */
 void sequencer_core_push_filter(uint8_t synth, const seq_filter_t *f, bool is_ks)
 {

@@ -2,6 +2,7 @@
 #include "synth_ui/synth_ui_internal.h"
 #include "sequencer_core.h"
 #include "seq_chords.h"
+#include "quantizer.h"         /* quantizer_chord_intervals() - shared voicing table */
 #include "seq_core_config.h"   /* SEQ_MEL_NOTE_MIN/MAX - same-component limits */
 #include <stdio.h>
 #include <string.h>
@@ -13,11 +14,22 @@
  * in ui_screen_menu.c (same split as the FX/NoteFX/Projects pages).
  *
  * Two levels inside one page: the slot list (CH1..CH8 + Back) and, after
- * clicking a slot, the edit view (4 note positions + Clear + Back). Every edit
+ * clicking a slot, the edit view (Root + Type + Clear + Back). Every edit
  * commits immediately through seq_chords_set(), so the engine sweep (re-emit,
  * voice reconfig, delete fallback) rides each commit and closing the menu
- * mid-edit can never lose a voicing. The edit view keeps a raw working copy so
- * display order stays stable; storage normalizes (sorted, zero-packed).
+ * mid-edit can never lose a voicing.
+ *
+ * Authoring is root + chord type, the same model the drone and progression
+ * screens use, so one mental model covers every place chords are chosen.
+ * STORAGE IS UNCHANGED: seq_chord_t still holds absolute MIDI pitches, which
+ * the engine expands and transposes exactly as before - root/type are an
+ * authoring surface, generated into pitches on every edit. That is why this
+ * needed no snapshot version change.
+ *
+ * The previous editor let each note position be set freely. If that is ever
+ * wanted back, it is in git before this commit; nothing it relied on
+ * (normalization, the engine sweep, audition) lives in this file, so it is a
+ * self-contained restore rather than a rewrite.
  *
  * Changes audition through the selected melodic track's actual patch; falls
  * back to the first melodic track on a drum layer, silent with none. */
@@ -26,14 +38,104 @@ typedef enum { CHORDS_MODE_LIST = 0, CHORDS_MODE_EDIT } chords_mode_t;
 
 static chords_mode_t s_mode = CHORDS_MODE_LIST;
 static uint8_t       s_slot = 0;
-static seq_chord_t   s_edit;                 /* working copy (edit view) */
 
-#define CHORDS_LIST_COUNT (SEQ_CHORD_SLOTS + 1)          /* slots + Back  */
-#define CHORDS_EDIT_COUNT (SEQ_CHORD_MAX_NOTES + 2)      /* notes + Clear + Back */
-#define CHORDS_EDIT_CLEAR (SEQ_CHORD_MAX_NOTES)
-#define CHORDS_EDIT_BACK  (SEQ_CHORD_MAX_NOTES + 1)
+/* Working copy of the authoring parameters for the open slot. */
+static uint8_t       s_root = 60;          /* absolute MIDI */
+static chord_type_t  s_type = CHORD_MAJ;
+
+#define CHORDS_LIST_COUNT (SEQ_CHORD_SLOTS + 1)   /* slots + Back            */
+#define CHORDS_EDIT_ROOT  0
+#define CHORDS_EDIT_TYPE  1
+#define CHORDS_EDIT_CLEAR 2
+#define CHORDS_EDIT_BACK  3
+#define CHORDS_EDIT_COUNT 4
 
 static menu_item_view_t s_items[CHORDS_LIST_COUNT];
+
+/* ── Chord type helpers ──────────────────────────────────────────────────
+ * Every chord type fits at SEQ_CHORD_MAX_NOTES 5, including the 9ths. The fit
+ * check reads the shared interval table rather than assuming that, so lowering
+ * the ceiling drops the wide chords from the list instead of silently storing a
+ * truncated voicing under their name. Voice cost is per row and dynamic
+ * (seq_track_num_voices widens only rows carrying a chord), so the wider
+ * chords cost nothing until one is actually assigned. */
+
+static uint8_t chord_type_tones(chord_type_t t)
+{
+    const int8_t *row = quantizer_chord_intervals(t);
+    if (!row) return 0;
+    uint8_t n = 0;
+    while (n < 6 && row[n] >= 0) n++;
+    return n;
+}
+
+static bool chord_type_fits(chord_type_t t)
+{
+    uint8_t n = chord_type_tones(t);
+    return n >= 2 && n <= SEQ_CHORD_MAX_NOTES;
+}
+
+/* Highest interval of a type, so the root can be bounded to keep the whole
+ * chord inside the melodic range instead of letting storage clamp the top
+ * tones together into a collapsed voicing. */
+static uint8_t chord_type_span(chord_type_t t)
+{
+    const int8_t *row = quantizer_chord_intervals(t);
+    if (!row) return 0;
+    uint8_t span = 0;
+    for (uint8_t i = 0; i < 6 && row[i] >= 0; i++) span = (uint8_t)row[i];
+    return span;
+}
+
+static uint8_t chord_root_max(chord_type_t t)
+{
+    int hi = (int)SEQ_MEL_NOTE_MAX - (int)chord_type_span(t);
+    return (hi < SEQ_MEL_NOTE_MIN) ? SEQ_MEL_NOTE_MIN : (uint8_t)hi;
+}
+
+/* Walk to the next fitting type, wrapping within the fitting set. */
+static chord_type_t chord_type_step(chord_type_t cur, int dir)
+{
+    int n = (int)cur;
+    for (int guard = 0; guard < CHORD_REAL_COUNT; guard++) {
+        n = (n + dir + CHORD_REAL_COUNT) % CHORD_REAL_COUNT;
+        if (chord_type_fits((chord_type_t)n)) return (chord_type_t)n;
+    }
+    return cur;
+}
+
+/* Generate the stored voicing for root + type. */
+static void chord_build(uint8_t root, chord_type_t type, seq_chord_t *out)
+{
+    memset(out, 0, sizeof(*out));
+    const int8_t *row = quantizer_chord_intervals(type);
+    if (!row) return;
+    for (uint8_t i = 0; i < SEQ_CHORD_MAX_NOTES && row[i] >= 0; i++) {
+        int n = (int)root + (int)row[i];
+        if (n < SEQ_MEL_NOTE_MIN) n = SEQ_MEL_NOTE_MIN;
+        if (n > SEQ_MEL_NOTE_MAX) n = SEQ_MEL_NOTE_MAX;
+        out->notes[out->count++] = (uint8_t)n;
+    }
+}
+
+/* Recover root + type from a stored voicing, so reopening a slot shows what was
+ * authored. Exact match only, which is sufficient because every voicing in the
+ * table was generated by chord_build() - nothing writes a free-form chord. */
+static bool chord_match(const seq_chord_t *c, uint8_t *root, chord_type_t *type)
+{
+    if (!c || c->count < 2) return false;
+    for (uint8_t t = 0; t < CHORD_REAL_COUNT; t++) {
+        if (!chord_type_fits((chord_type_t)t)) continue;
+        const int8_t *row = quantizer_chord_intervals((chord_type_t)t);
+        if (chord_type_tones((chord_type_t)t) != c->count) continue;
+        bool ok = true;
+        for (uint8_t i = 0; i < c->count; i++) {
+            if ((int)c->notes[i] - (int)c->notes[0] != (int)row[i]) { ok = false; break; }
+        }
+        if (ok) { *root = c->notes[0]; *type = (chord_type_t)t; return true; }
+    }
+    return false;
+}
 
 /* Audition target: the selected track when its layer is melodic, else the
  * first melodic layer's first track. Returns false with no melodic layer. */
@@ -63,6 +165,15 @@ static void chords_audition(const seq_chord_t *c)
     sequencer_core_audition_chord(li, track, c);
 }
 
+/* Regenerate, commit and audition after any root/type change. */
+static void chords_commit(void)
+{
+    seq_chord_t c;
+    chord_build(s_root, s_type, &c);
+    seq_chords_set(s_slot, &c);
+    chords_audition(&c);
+}
+
 const char *chords_menu_title(void)
 {
     static char s_title[16];
@@ -81,10 +192,18 @@ const menu_item_view_t *chords_menu_build_items(void)
             snprintf(s_items[i].label, MENU_LABEL_LEN, "CH%u", (unsigned)(i + 1u));
             seq_chord_t c;
             if (seq_chords_get(i, &c) && c.count > 0) {
-                /* Compact voicing summary: lowest tone + tone count. */
+                /* Every voicing is generated from root + type, so the match
+                 * names it; the tone-count summary is a belt-and-braces path
+                 * that no chord authored here reaches. */
+                uint8_t r; chord_type_t t;
                 ui_note_name(c.notes[0], nb);
-                snprintf(s_items[i].value, MENU_VALUE_LEN, "%s x%u",
-                         nb, (unsigned)c.count);
+                if (chord_match(&c, &r, &t)) {
+                    snprintf(s_items[i].value, MENU_VALUE_LEN, "%s%s",
+                             nb, chord_type_name(t));
+                } else {
+                    snprintf(s_items[i].value, MENU_VALUE_LEN, "%s x%u",
+                             nb, (unsigned)c.count);
+                }
             } else {
                 snprintf(s_items[i].value, MENU_VALUE_LEN, "--");
             }
@@ -94,15 +213,14 @@ const menu_item_view_t *chords_menu_build_items(void)
         return s_items;
     }
 
-    for (uint8_t i = 0; i < SEQ_CHORD_MAX_NOTES; i++) {
-        snprintf(s_items[i].label, MENU_LABEL_LEN, "Note %u", (unsigned)(i + 1u));
-        if (s_edit.notes[i] == 0) {
-            snprintf(s_items[i].value, MENU_VALUE_LEN, "--");
-        } else {
-            ui_note_name(s_edit.notes[i], nb);
-            snprintf(s_items[i].value, MENU_VALUE_LEN, "%s", nb);
-        }
-    }
+    snprintf(s_items[CHORDS_EDIT_ROOT].label, MENU_LABEL_LEN, "Root");
+    ui_note_name(s_root, nb);
+    snprintf(s_items[CHORDS_EDIT_ROOT].value, MENU_VALUE_LEN, "%s", nb);
+
+    snprintf(s_items[CHORDS_EDIT_TYPE].label, MENU_LABEL_LEN, "Type");
+    snprintf(s_items[CHORDS_EDIT_TYPE].value, MENU_VALUE_LEN, "%s",
+             chord_type_name(s_type));
+
     snprintf(s_items[CHORDS_EDIT_CLEAR].label, MENU_LABEL_LEN, "Clear");
     s_items[CHORDS_EDIT_CLEAR].value[0] = '\0';
     snprintf(s_items[CHORDS_EDIT_BACK].label, MENU_LABEL_LEN, "< Back");
@@ -124,7 +242,8 @@ bool chords_menu_item_is_back(uint8_t idx)
 
 bool chords_menu_item_is_value(uint8_t idx)
 {
-    return s_mode == CHORDS_MODE_EDIT && idx < SEQ_CHORD_MAX_NOTES;
+    return s_mode == CHORDS_MODE_EDIT &&
+           (idx == CHORDS_EDIT_ROOT || idx == CHORDS_EDIT_TYPE);
 }
 
 /* Returns the new menu_editing state (mirrors projects_menu_handle_click). */
@@ -133,21 +252,30 @@ bool chords_menu_handle_click(uint8_t idx)
     if (s_mode == CHORDS_MODE_LIST) {
         if (idx < SEQ_CHORD_SLOTS) {
             s_slot = idx;
-            if (!seq_chords_get(s_slot, &s_edit)) {
-                memset(&s_edit, 0, sizeof(s_edit));
+            /* Zeroed up front: the audition below reads c.count on every path,
+             * including the one where the getter never filled it. */
+            seq_chord_t c = { 0 };
+            if (seq_chords_get(s_slot, &c) && c.count > 0) {
+                /* Generated voicings always match; a miss can only come from a
+                 * malformed slot, so fall back to its lowest tone as root. */
+                if (!chord_match(&c, &s_root, &s_type)) s_root = c.notes[0];
+            } else {
+                /* Fresh slot: a middle-register major, audible immediately. */
+                s_root = 60;
+                s_type = CHORD_MAJ;
             }
+            if (!chord_type_fits(s_type)) s_type = chord_type_step(s_type, 1);
             s_mode = CHORDS_MODE_EDIT;
             seq_state.menu_cursor = 0;
-            if (s_edit.count > 0) chords_audition(&s_edit);  /* hear it on open */
+            if (c.count > 0) chords_audition(&c);   /* hear it on open */
         }
         return false;
     }
 
-    if (idx < SEQ_CHORD_MAX_NOTES) {
-        return !seq_state.menu_editing;   /* toggle note-position editing */
+    if (idx == CHORDS_EDIT_ROOT || idx == CHORDS_EDIT_TYPE) {
+        return !seq_state.menu_editing;   /* toggle value editing */
     }
     if (idx == CHORDS_EDIT_CLEAR) {
-        memset(&s_edit, 0, sizeof(s_edit));
         seq_chords_clear(s_slot);
         return false;
     }
@@ -159,27 +287,28 @@ bool chords_menu_handle_click(uint8_t idx)
 
 void chords_menu_edit_value(uint8_t idx, int delta)
 {
-    if (s_mode != CHORDS_MODE_EDIT || idx >= SEQ_CHORD_MAX_NOTES || delta == 0) {
+    if (s_mode != CHORDS_MODE_EDIT || delta == 0) return;
+
+    int dir = (delta > 0) ? 1 : -1;
+    int steps = (delta > 0) ? delta : -delta;
+
+    if (idx == CHORDS_EDIT_ROOT) {
+        int n = (int)s_root + dir * steps;
+        int hi = (int)chord_root_max(s_type);
+        if (n < SEQ_MEL_NOTE_MIN) n = SEQ_MEL_NOTE_MIN;
+        if (n > hi)               n = hi;
+        s_root = (uint8_t)n;
+    } else if (idx == CHORDS_EDIT_TYPE) {
+        for (int k = 0; k < steps; k++) s_type = chord_type_step(s_type, dir);
+        /* A wider chord can push the top tone out of range - pull the root
+         * down rather than let the voicing collapse against the ceiling. */
+        uint8_t hi = chord_root_max(s_type);
+        if (s_root > hi) s_root = hi;
+    } else {
         return;
     }
 
-    /* Position domain: -- (empty, stored 0) below C1, then C1..C7. */
-    int dir = (delta > 0) ? 1 : -1;
-    int n = (int)s_edit.notes[idx];
-    for (int k = (delta > 0 ? delta : -delta); k > 0; k--) {
-        if (n == 0) {
-            if (dir > 0) n = SEQ_MEL_NOTE_MIN;
-        } else {
-            n += dir;
-            if (n < SEQ_MEL_NOTE_MIN) n = 0;
-            if (n > SEQ_MEL_NOTE_MAX) n = SEQ_MEL_NOTE_MAX;
-        }
-    }
-    s_edit.notes[idx] = (uint8_t)n;
-
-    /* Commit + audition; s_edit keeps raw order so the cursor doesn't jump. */
-    seq_chords_set(s_slot, &s_edit);
-    chords_audition(&s_edit);
+    chords_commit();
 }
 
 void chords_menu_reset(void)

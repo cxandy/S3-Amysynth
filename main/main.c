@@ -15,7 +15,8 @@
 #include "rotary_encoder.h"
 #include "synth_ui.h"
 #include "sequencer_core.h"
-#include "synth_slots.h"   /* SYNTH_SLOT_COUNT for amy_cfg.max_synths */
+#include "synth_slots.h"      /* SYNTH_SLOT_COUNT for amy_cfg.max_synths */
+#include "seq_core_config.h"  /* AMY sequencer tag-space layout */
 #include "amy_helpers.h"   /* amy_helpers_set_render_task */
 #include "custompatches/sample_rec.h"
 #include "filter_scope.h"
@@ -874,11 +875,13 @@ void app_main(void)
     /* Sample recordings (~140 KB) would land in PSRAM anyway; set explicitly
      * so intent doesn't depend on the size threshold. */
     amy_cfg.ram_caps_sample = MALLOC_CAP_SPIRAM;
-    /* Default 256 covers only layer 0. Tag ranges: sequencer 0..1055, arp
-     * 1056..1119, ratchet trigs 1120..1247, chord one-shots up to 1727
-     * (seq_core_config.h); sequencer_add_wire rejects tag >= max_sequencer_tags,
-     * so 1730 leaves a small margin above the top tag. */
-    amy_cfg.max_sequencer_tags = 1730;
+    /* Default 256 covers only layer 0. The tag space is laid out in
+     * seq_core_config.h (sequencer, arp, ratchet trigs, chord one-shots, chord
+     * previews) and its top depends on SEQ_CHORD_MAX_NOTES, so this is derived
+     * rather than a literal - a wider chord silently moved the ceiling past a
+     * hardcoded 1730 once. sequencer_add_wire rejects tag >= this, and the
+     * layout comment requires two above the top tag. */
+    amy_cfg.max_sequencer_tags = SEQ_CHORD_PREVIEW_TAG_MAX + 2;
     /* Slot map lives in synth_slots.h: statics pack 1..10, melodic is the
      * open-ended arena 11..SYNTH_SLOT_COUNT-1. This is the polyphony knob. */
     amy_cfg.max_synths = SYNTH_SLOT_COUNT;

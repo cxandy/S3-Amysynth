@@ -22,7 +22,15 @@ extern "C" {
 #endif
 
 #define SEQ_CHORD_SLOTS      8
-#define SEQ_CHORD_MAX_NOTES  4      /* == Kconfig ceiling for SEQ_MEL_VOICES */
+/* Widest voicing: the 9th chords. Voice cost is dynamic - seq_track_num_voices
+ * widens only rows carrying a chord - but a second ceiling applies on top:
+ * seq_clamp_patch_voices caps voices at SEQ_TRACK_OSC_BUDGET / oscs_per_voice,
+ * which is 32/8 = 4 for the DX7 family. So a 9th on a DX7 patch clamps to four
+ * voices and loses its top tone (logged, not silent). Left that way
+ * deliberately: the render budget does not support chorded tracks on
+ * osc-heavy patches anyway (three chorded tracks with sweeps already measured
+ * ~60% CPU at four tones), so the osc clamp bites before the CPU does. */
+#define SEQ_CHORD_MAX_NOTES  5
 #define SEQ_CHORD_BASE       200u
 
 #define SEQ_NOTE_IS_CHORD(n) ((uint8_t)(n) >= SEQ_CHORD_BASE && \

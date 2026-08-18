@@ -195,12 +195,21 @@ void synth_ui_filter_toggle_enabled(void);
 /* ── LFO editor (per-track tempo-synced modulator) ─────────────────────────
  * Opened as the third tab in the ADSR→Filter→LFO→DIST cycle (MY_BUTTON_3).
  * Controls: encoder scrolls cursor / adjusts field (short press to toggle);
- * encoder long-press commits; MY_BUTTON_0 long-press cancels. */
+ * encoder long-press commits; MY_BUTTON_0 long-press cancels; the shoulder
+ * button flips the target checklist between its two tabs. */
 bool synth_ui_lfo_is_active(void);
 void synth_ui_lfo_open(void);
 bool synth_ui_lfo_handle_encoder(long delta);
 bool synth_ui_lfo_handle_button(bool is_long);
 bool synth_ui_lfo_close_commit(void);
+
+/* Flip the target checklist to the other tab (MY_BUTTON_SHOULDER while the
+ * editor is open). The panel shows five checkbox rows, so the distortion
+ * targets live on a second tab. A cursor parked on a checkbox row of the tab
+ * being hidden moves to the first row of the tab being shown; cursors on the
+ * shared parameter rows are untouched. No-op when the editor is closed.
+ * UI-task only. */
+void synth_ui_lfo_toggle_target_tab(void);
 
 /* ── Distortion editor (per-target waveshaper: CLIP / FOLD / CRUSH) ────────
  * The fourth tab in the same cycle, with identical controls. Type OFF is the

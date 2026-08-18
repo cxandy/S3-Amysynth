@@ -1911,8 +1911,8 @@ uint32_t lfo_view_signature(void)
                      NULL, NULL);
     s_lfo_view.wob_native = native;
 
-    /* DIST is served by a domain's 20 Hz software stepper; the drone has
-     * none, so its checkbox/reach rows draw struck-through. */
+    /* The distortion targets are served by a domain's 20 Hz software stepper;
+     * the drone has none, so its dist checkbox rows draw struck-through. */
     bool dist_inert = false;
 #if CONFIG_SYNTH_WIRELESS
     if (!s_lfo_live_target)
@@ -1925,12 +1925,12 @@ uint32_t lfo_view_signature(void)
          | ((uint32_t)l->wave    <<  1)   /* 3 bits */
          | ((uint32_t)l->rate    <<  4)   /* 4 bits (0..11) */
          | ((uint32_t)l->depth   <<  8)   /* 7 bits (0..100) */
-         | ((uint32_t)l->targets << 15)   /* 6 bits */
-         | ((uint32_t)l->dist_reach      << 21)   /* 2 bits */
-         | ((uint32_t)s_lfo_view.cursor  << 23)   /* 4 bits (0..14) */
-         | ((uint32_t)s_lfo_view.editing << 27)
-         | ((uint32_t)(native ? 1u : 0u) << 28)
-         | ((uint32_t)(dist_inert ? 1u : 0u) << 29);
+         | ((uint32_t)l->targets << 15)   /* 7 bits */
+         | ((uint32_t)s_lfo_view.cursor  << 22)   /* 4 bits (0..14) */
+         | ((uint32_t)s_lfo_view.editing << 26)
+         | ((uint32_t)(native ? 1u : 0u) << 27)
+         | ((uint32_t)(dist_inert ? 1u : 0u) << 28)
+         | ((uint32_t)s_lfo_view.tgt_tab << 29);
 }
 
 bool synth_ui_lfo_is_active(void) { return s_lfo_active; }
@@ -1971,6 +1971,7 @@ void synth_ui_lfo_open(void)
         sequencer_core_get_melodic_lfo(li, tr, &existing);
     s_lfo_view.lfo          = existing;
     s_lfo_view.cursor       = 0;
+    s_lfo_view.tgt_tab      = 0;
     s_lfo_view.editing      = false;
     s_lfo_view.layer_idx    = li;
     s_lfo_view.track_idx    = tr;
@@ -2016,14 +2017,41 @@ static void lfo_preview_cancel_restore(void)
     sequencer_core_reapply_melodic_lfo(s_lfo_view.layer_idx, s_lfo_view.track_idx);
 }
 
+/* True when a cursor field is on screen. Only the shown target tab's checkbox
+ * rows are - the shared parameter rows always are, which is what makes the
+ * skip-ahead loop below terminate. */
+static bool lfo_cursor_visible(uint8_t c)
+{
+    if (c >= LFO_TARGET_COUNT) return true;
+    return (c >= LFO_TARGET_DIST_DRIVE) == (s_lfo_view.tgt_tab != 0);
+}
+
+void synth_ui_lfo_toggle_target_tab(void)
+{
+    if (!s_lfo_active) return;
+    s_lfo_view.tgt_tab = s_lfo_view.tgt_tab ? 0u : 1u;
+    /* A cursor left on the hidden tab's checkbox would be invisible and would
+     * toggle an off-screen target, so land it on the new tab's first row. */
+    if (!lfo_cursor_visible(s_lfo_view.cursor))
+        s_lfo_view.cursor = s_lfo_view.tgt_tab ? (uint8_t)LFO_TARGET_DIST_DRIVE : 0u;
+    s_force_redraw = true;
+}
+
 bool synth_ui_lfo_handle_encoder(long delta)
 {
     if (!s_lfo_active) return false;
-    /* Fields: 6 target checkboxes (0..LFO_TARGET_COUNT-1), then WAVE/RATE/DEPTH/EN. */
+    /* Fields: the shown tab's target checkboxes (< LFO_TARGET_COUNT), then
+     * WAVE/RATE/DEPTH/EN. Wraps in both directions over the visible set. */
     const uint8_t N = LFO_FLD_COUNT;
     if (!s_lfo_view.editing) {
-        if (delta > 0)      s_lfo_view.cursor = (s_lfo_view.cursor + 1) % N;
-        else if (delta < 0) s_lfo_view.cursor = (s_lfo_view.cursor + N - 1) % N;
+        if (delta != 0) {
+            uint8_t c = s_lfo_view.cursor;
+            do {
+                c = (delta > 0) ? (uint8_t)((c + 1u) % N)
+                                : (uint8_t)((c + N - 1u) % N);
+            } while (!lfo_cursor_visible(c));
+            s_lfo_view.cursor = c;
+        }
         s_force_redraw = true;
         return true;
     }
@@ -2102,11 +2130,6 @@ bool synth_ui_lfo_handle_button(bool is_long)
     } else if (c == LFO_FLD_WOB_MODE) {
         /* 3-way reach cycle: depth+rate -> depth -> rate -> ... */
         l->wob_reach = (uint8_t)((l->wob_reach + 1u) % WOB_REACH_COUNT);
-        s_lfo_view.editing = false;
-        lfo_live_push_preview();
-    } else if (c == LFO_FLD_DIST_REACH) {
-        /* 3-way reach cycle: drive -> mix -> both -> ... */
-        l->dist_reach = (uint8_t)((l->dist_reach + 1u) % LFO_DIST_REACH_COUNT);
         s_lfo_view.editing = false;
         lfo_live_push_preview();
     } else {

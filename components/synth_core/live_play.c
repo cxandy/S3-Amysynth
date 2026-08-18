@@ -323,11 +323,11 @@ void live_play_lfo_service(void)
 {
     const seq_lfo_t *lfo = &s_vp.lfo;
     /* DIST has no COEF_MOD rail: on native-eligible patches the stepper stays
-     * armed for that one bit (hybrid, mirrors the arp/sequencer steppers). */
+     * armed for those bits alone (hybrid, mirrors the arp/sequencer steppers). */
     bool native = live_play_lfo_native_eligible();
     bool want = s_ready && s_vp.lfo_authored && lfo->enabled &&
                 lfo->targets != 0 &&
-                (!native || LFO_HAS_TGT(lfo, LFO_TARGET_DIST));
+                (!native || (lfo->targets & LFO_TGT_DIST_MASK));
 
     if (!want) {
         if (s_swlfo_active) {
@@ -339,8 +339,12 @@ void live_play_lfo_service(void)
                 if (!(s_swlfo_targets & LFO_TGT_BIT(t))) continue;
                 if (t == LFO_TARGET_FILTER)
                     live_apply_filter(&s_vp.filter);
-                else if (t == LFO_TARGET_DIST)
-                    voice_apply_dist(LIVE_SYNTH, &s_vp.dist);
+                else if (t == LFO_TARGET_DIST_DRIVE || t == LFO_TARGET_DIST_MIX) {
+                    /* One restore event covers both dist bits. */
+                    if (t == LFO_TARGET_DIST_DRIVE ||
+                        !(s_swlfo_targets & LFO_TGT_BIT(LFO_TARGET_DIST_DRIVE)))
+                        voice_apply_dist(LIVE_SYNTH, &s_vp.dist);
+                }
                 else
                     lfo_push_target_neutral(LIVE_SYNTH, (lfo_target_t)t);
             }
@@ -352,9 +356,9 @@ void live_play_lfo_service(void)
         s_swlfo_active = true;
         s_swlfo_phase  = 0.0f;
     }
-    /* On native patches the stepper drives only the DIST bit; recording just
-     * that keeps deactivation from re-pushing rails it never touched. */
-    s_swlfo_targets = native ? (uint8_t)(lfo->targets & LFO_TGT_BIT(LFO_TARGET_DIST))
+    /* On native patches the stepper drives only the DIST bits; recording just
+     * those keeps deactivation from re-pushing rails it never touched. */
+    s_swlfo_targets = native ? (uint8_t)(lfo->targets & LFO_TGT_DIST_MASK)
                              : lfo->targets;
 
     float ph = s_swlfo_phase +
@@ -385,9 +389,9 @@ void live_play_lfo_service(void)
     amy_helpers_event_send(e);
     } /* !native */
 
-    /* PROTOTYPE DIST target: software-only on every patch, base = the live
+    /* PROTOTYPE DIST targets: software-only on every patch, base = the live
      * voice's committed dist block (law and event in voice_push_dist_lfo). */
-    if (LFO_HAS_TGT(lfo, LFO_TARGET_DIST))
+    if (lfo->targets & LFO_TGT_DIST_MASK)
         voice_push_dist_lfo(LIVE_SYNTH, &s_vp.dist, lfo, val);
 
     if (!native && LFO_HAS_TGT(lfo, LFO_TARGET_PITCH)) {

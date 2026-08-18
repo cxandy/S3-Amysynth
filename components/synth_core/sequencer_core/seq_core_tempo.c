@@ -82,7 +82,8 @@ void lfo_push_target_neutral(uint8_t synth_id, lfo_target_t target)
         /* DIST has no context-free neutral - resting state is the caller's
          * committed seq_dist_t, so every restore path pushes it directly
          * via voice_apply_dist (same shape as the FILTER special case). */
-        case LFO_TARGET_DIST:
+        case LFO_TARGET_DIST_DRIVE:
+        case LFO_TARGET_DIST_MIX:
         default: break;
     }
     amy_helpers_event_send(e);

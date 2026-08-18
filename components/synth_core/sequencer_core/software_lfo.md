@@ -40,20 +40,23 @@ every 50 ms, for each synth with an LFO enabled:
 *(only the parameters the user actually targeted are included)*
 
 > this deliberately does not use AMY's mod_source LFO mechanism. A mod_source needs a free oscillator, and inside a loaded patch voice (Juno, DX7) there are none - every osc is the output, the patch's own LFO, or an FM operator/chained layer, and naming one as a mod_source mutes it (fatal for DX7 carriers). So instead, the modulation is done from outside: a control-rate task recomputes each target parameter's constant term and re-sends it as a normal parameter update, exactly as if a very fast hand were turning the knob 20 times a second. The patch's internal structure is untouched; the trade-offs are 50 ms zipper-stepping (audible on square/random-to-amp without slew) and that the patch's original constants on the modulated parameters are overwritten rather than restored when the LFO turns off.
-## DIST target (prototype)
+## DIST targets (prototype)
 
-`LFO_TARGET_DIST` sweeps the distortion stage's drive and/or mix
-(`seq_lfo_t.dist_reach`: drive / mix / both) around the row's committed
-`seq_dist_t`. It differs from every other target in two ways:
+`LFO_TARGET_DIST_DRIVE` and `LFO_TARGET_DIST_MIX` are two independent target
+bits sweeping the distortion stage's drive and mix around the row's committed
+`seq_dist_t` - check either, or both. They live on a second tab of the LFO
+editor's target checklist (the panel fits five rows; the shoulder button flips
+tabs), which is why there is no separate reach field. They differ from every
+other target in two ways:
 
 - **Software-only, everywhere.** AMY's `dist_config` has flat scalar fields,
   not ControlCoefficients rails, so there is no native (COEF_MOD) form of
   this target at all. On native-carrier patches - where the other targets
   ride the reserved carrier osc and this stepper normally disarms - the
-  stepper stays armed for the DIST bit alone and pushes nothing else
+  stepper stays armed for the DIST bits alone and pushes nothing else
   (a "hybrid" track: COEF_MOD rails native, distortion stepped).
 - **Partial wire events.** Each tick sends only `dist_drive`/`dist_mix`
-  (per `dist_reach`); type/bits/rate stay whatever the dist editor last
+  (whichever bits are checked); type/bits/rate stay whatever the dist editor last
   applied. The shaper being OFF makes the target inert - the LFO never
   switches distortion on. Law and clamps live in `voice_push_dist_lfo()`
   (voice_config.c): drive sweeps +/-`VOICE_LFO_DEPTH_DIST_OCT` octaves of
@@ -61,7 +64,9 @@ every 50 ms, for each synth with an LFO enabled:
 
 Restore on disable is the committed dist block via `voice_apply_dist()` -
 there is no context-free neutral, so `lfo_push_target_neutral()` skips DIST
-(same shape as the FILTER special case).
+(same shape as the FILTER special case). One restore covers both bits: the
+block carries drive and mix together, so the restore loops push it once even
+when both targets were checked.
 
 This is a PROTOTYPE: if the 20 Hz stepping on drive ever matters audibly,
 the successor is a real coefficient rail on `dist_config` in vendored AMY,

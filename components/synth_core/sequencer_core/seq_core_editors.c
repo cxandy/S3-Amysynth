@@ -58,10 +58,15 @@ static void lfo_restore_target_neutrals(const seq_layer_t *layer, uint8_t track,
         if (t == LFO_TARGET_FILTER)
             sequencer_core_push_filter(layer->synth_id[track], &layer->vp[track].filter,
                                        layer->patch == SEQ_PATCH_KS);
-        else if (t == LFO_TARGET_DIST)
+        else if (t == LFO_TARGET_DIST_DRIVE || t == LFO_TARGET_DIST_MIX) {
             /* Neutral = the committed dist block; only this caller has it,
-             * so lfo_push_target_neutral leaves DIST alone (like FILTER). */
-            voice_apply_dist(layer->synth_id[track], &layer->vp[track].dist);
+             * so lfo_push_target_neutral leaves DIST alone (like FILTER).
+             * The two dist bits share one restore event - re-pushing the same
+             * block for the second bit would just cost a redundant event. */
+            if (t == LFO_TARGET_DIST_DRIVE ||
+                !LFO_HAS_TGT(lfo, LFO_TARGET_DIST_DRIVE))
+                voice_apply_dist(layer->synth_id[track], &layer->vp[track].dist);
+        }
         else
             lfo_push_target_neutral(layer->synth_id[track], (lfo_target_t)t);
     }
@@ -408,12 +413,13 @@ static void melodic_lfo_apply_runtime(uint8_t layer_idx, uint8_t track,
             lfo_restore_target_neutrals(layer, track, lfo);
         }
         /* s_lfo_hz = 0 makes the software service loop skip native tracks -
-         * EXCEPT when the DIST target is checked: distortion has no COEF_MOD
-         * rail, so the stepper stays armed for that one bit and the service
+         * EXCEPT when a DIST target is checked: distortion has no COEF_MOD
+         * rail, so the stepper stays armed for those bits alone and the service
          * loop's native check keeps it off the natively-driven rails. */
-        s_lfo_hz[layer_idx][track] = (lfo->enabled && LFO_HAS_TGT(lfo, LFO_TARGET_DIST))
-                                     ? seq_lfo_sw_hz(lfo->rate, s_bpm)
-                                     : 0.0f;
+        s_lfo_hz[layer_idx][track] =
+            (lfo->enabled && (lfo->targets & LFO_TGT_DIST_MASK))
+            ? seq_lfo_sw_hz(lfo->rate, s_bpm)
+            : 0.0f;
         return;
     }
 #endif
@@ -507,7 +513,7 @@ void __attribute__((optimize("O3", "unroll-loops", "fast-math"))) sequencer_core
 
 #if CONFIG_SEQ_MELODIC_AMY_NATIVE_LFO
             /* Hybrid: a native-carrier track reaches here only when armed for
-             * the DIST bit (melodic_lfo_apply_runtime). Its other rails ride
+             * the DIST bits (melodic_lfo_apply_runtime). Its other rails ride
              * the carrier's COEF_MOD - stepping them here too would
              * double-modulate - so only DIST is pushed below. */
             bool native_track =
@@ -542,7 +548,7 @@ void __attribute__((optimize("O3", "unroll-loops", "fast-math"))) sequencer_core
             /* PROTOTYPE DIST target: stepped on every patch type - the
              * committed dist block is the base, drive/mix law and event in
              * voice_push_dist_lfo. Inert while the shaper is OFF. */
-            if (LFO_HAS_TGT(lfo, LFO_TARGET_DIST))
+            if (lfo->targets & LFO_TGT_DIST_MASK)
                 voice_push_dist_lfo(syn, &s_layers[li].vp[tr].dist, lfo, val);
 
             if (!native_track && LFO_HAS_TGT(lfo, LFO_TARGET_PITCH)) {
@@ -585,11 +591,11 @@ void sequencer_configure_melodic_lfo(uint8_t layer_idx)
         if (!layer->vp[t].lfo_authored) continue;
         melodic_configure_native_lfo_track(layer, t);
         /* Keep s_lfo_hz in sync so the service loop skips native tracks -
-         * unless the DIST bit keeps the stepper armed (no COEF_MOD rail;
+         * unless a DIST bit keeps the stepper armed (no COEF_MOD rail;
          * mirrors melodic_lfo_apply_runtime). */
         const seq_lfo_t *lfo = &layer->vp[t].lfo;
         s_lfo_hz[layer_idx][t] =
-            (lfo->enabled && LFO_HAS_TGT(lfo, LFO_TARGET_DIST))
+            (lfo->enabled && (lfo->targets & LFO_TGT_DIST_MASK))
             ? seq_lfo_sw_hz(lfo->rate, s_bpm)
             : 0.0f;
     }

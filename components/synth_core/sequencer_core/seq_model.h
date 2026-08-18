@@ -124,27 +124,18 @@ typedef enum {
     LFO_TARGET_PITCH,      LFO_TARGET_PAN,
     LFO_TARGET_SCAN,       /* AMY `duty`: wavetable cycle-scan position when
                                wave=WAVETABLE, pulse width when wave=PULSE */
-    LFO_TARGET_DIST,       /* PROTOTYPE: distortion drive/mix (reach below).
-                               dist_config has no AMY coefficient rails, so
-                               this target is served ONLY by the 20 Hz
-                               software stepper re-pushing DIST_DRIVE /
-                               DIST_MIX - on native-carrier patches too, where
-                               the stepper stays armed for this bit alone.
-                               May be revisited as a real COEF_MOD rail in
-                               vendored AMY if the control-rate stepping ever
-                               matters audibly. */
+    /* PROTOTYPE: distortion rails, one independent bit each - check either or
+       both. dist_config has no AMY coefficient rails, so
+       these targets are served ONLY by the 20 Hz software stepper re-pushing
+       DIST_DRIVE / DIST_MIX - on native-carrier patches too, where the
+       stepper stays armed for these bits alone. May be revisited as real
+       COEF_MOD rails in vendored AMY if the control-rate stepping ever
+       matters audibly. They live on a second target-checklist tab in the LFO
+       editor, so the panel stays 5 rows tall. */
+    LFO_TARGET_DIST_DRIVE, /* pre-gain sweep (breathing distortion)        */
+    LFO_TARGET_DIST_MIX,   /* wet/dry sweep on a preconfigured shaper      */
     LFO_TARGET_COUNT,
 } lfo_target_t;
-typedef enum {
-    /* Which distortion rails the DIST target sweeps. One persisted byte,
-     * APPEND-ONLY; 0 = drive so zero-init structs and pre-DIST snapshot
-     * files land on the expressive default. Modulation is always relative
-     * to the row's committed seq_dist_t (the dist editor's authority). */
-    LFO_DIST_REACH_DRIVE = 0,  /* pre-gain sweep (breathing distortion)    */
-    LFO_DIST_REACH_MIX   = 1,  /* wet/dry sweep on a preconfigured shaper  */
-    LFO_DIST_REACH_BOTH  = 2,
-    LFO_DIST_REACH_COUNT,
-} lfo_dist_reach_t;
 typedef enum {
     LFO_RATE_1_8 = 0, LFO_RATE_1_4,  LFO_RATE_1_2,
     LFO_RATE_1BAR,    LFO_RATE_2BAR, LFO_RATE_4BAR,
@@ -187,10 +178,6 @@ typedef struct {
                               wob_depth_only byte: 0 both, 1 depth-only,
                               2 rate-only; older firmware reads 2 as nonzero
                               = depth-only, a benign degrade.                 */
-    uint8_t dist_reach;    /* lfo_dist_reach_t: which distortion rails the
-                              DIST target sweeps (0 drive, 1 mix, 2 both).
-                              Persisted append-only, LAYR v13+ / ARP v10+;
-                              absent = 0 = drive.                             */
     uint8_t flt_oct_q;     /* FILTER-target swing in quarter-octaves (1..16 =
                               +/-0.25..4.0 oct), independent of the shared
                               depth % - octaves are what the ear and AMY's log2
@@ -206,6 +193,14 @@ typedef struct {
 #define LFO_TGT_BIT(t)     ((uint8_t)(1u << (t)))
 #define LFO_TGT_ALL        ((uint8_t)((1u << LFO_TARGET_COUNT) - 1u))
 #define LFO_HAS_TGT(l, t)  (((l)->targets & LFO_TGT_BIT(t)) != 0)
+
+/* The software-stepper-only distortion targets as one mask: the stepper gate
+ * and the native-carrier arming mask both work on the pair, not on a single
+ * bit. Seven of the eight target bits are spoken for - a future dist bits/rate
+ * target would take the last one, past which `targets` has to widen (a
+ * snapshot format change, since it is persisted as one byte). */
+#define LFO_TGT_DIST_MASK  ((uint8_t)(LFO_TGT_BIT(LFO_TARGET_DIST_DRIVE) | \
+                                      LFO_TGT_BIT(LFO_TARGET_DIST_MIX)))
 
 /* ── ADSR envelope (one AMY EG0 breakpoint set) ──
  * Stored as concrete ms/percent so it survives patch changes and stays

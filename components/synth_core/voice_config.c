@@ -185,14 +185,14 @@ void voice_push_dist_lfo(uint8_t synth, const seq_dist_t *base,
     amy_event *e = amy_helpers_event_begin();
     e->synth = synth;
     e->osc   = 0;   /* base osc of every voice - same reach as voice_apply_dist */
-    if (lfo->dist_reach != LFO_DIST_REACH_MIX) {
+    if (LFO_HAS_TGT(lfo, LFO_TARGET_DIST_DRIVE)) {
         /* Octave-denominated pre-gain swing around the committed drive,
          * clamped to the documented wire range. */
         float drv = (float)base->drive *
                     powf(2.0f, d * VOICE_LFO_DEPTH_DIST_OCT * val);
         e->dist_drive = SEQ_CLAMP_F32(drv, 1.0f, 16.0f);
     }
-    if (lfo->dist_reach != LFO_DIST_REACH_DRIVE) {
+    if (LFO_HAS_TGT(lfo, LFO_TARGET_DIST_MIX)) {
         float mix = (float)base->mix / 100.0f +
                     d * VOICE_LFO_DEPTH_DIST_MIX * val;
         e->dist_mix = SEQ_CLAMP_F32(mix, 0.0f, 1.0f);

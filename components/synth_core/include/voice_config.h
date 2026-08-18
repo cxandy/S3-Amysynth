@@ -185,9 +185,10 @@ void voice_dist_clamp(seq_dist_t *d);
  * caller's block is untouched. NULL `d`: no-op. Core-0 / UI-task only. */
 void voice_apply_dist(uint8_t synth, const seq_dist_t *d);
 
-/* PROTOTYPE: one LFO_TARGET_DIST stepper tick. Computes the swept drive
- * and/or mix (lfo->dist_reach) around the committed `base` block and pushes
- * ONLY those wire params - type/bits/rate stay whatever the dist editor last
+/* PROTOTYPE: one distortion-target stepper tick. Computes the swept drive
+ * and/or mix - whichever of LFO_TARGET_DIST_DRIVE / LFO_TARGET_DIST_MIX the
+ * caller has checked in lfo->targets - around the committed `base` block, and
+ * pushes ONLY those wire params - type/bits/rate stay whatever the dist editor last
  * applied. dist_config has no AMY coefficient rails, so unlike the other LFO
  * targets there is no native COEF_MOD form of this; every domain (melodic,
  * arp, live - native-carrier patches included) reaches distortion through

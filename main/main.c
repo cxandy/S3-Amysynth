@@ -246,17 +246,21 @@ static void main_button_event_cb(my_button_id_t button_id, button_event_t event,
 static void dispatch_button_event(my_button_id_t button_id, button_event_t event)
 {
     /* MY_BUTTON_SHOULDER, per view: SEQ toggles the step under the cursor
-     * (two-handed tracker-style entry), GRAPH flips the EG1 sweep polarity.
-     * PRESS_DOWN for zero tap latency; all events consumed here. */
+     * (two-handed tracker-style entry), GRAPH flips the EG1 sweep polarity,
+     * LFO flips the target checklist tab. Step entry and the polarity flip
+     * take PRESS_DOWN for zero tap latency; the tab flip is a deliberate
+     * navigation gesture, so it waits for the click. All events consumed. */
     if (button_id == MY_BUTTON_SHOULDER) {
+        ui_view_id_t sv = synth_ui_active_view();
         if (event == BUTTON_PRESS_DOWN) {
-            ui_view_id_t sv = synth_ui_active_view();
             if (sv == UI_VIEW_SEQ) {
                 synth_ui_toggle_step_at_cursor();
             } else if (sv == UI_VIEW_GRAPH) {
                 /* No-op on the EG0 page and for arp/drone targets. */
                 synth_ui_graph_flip_eg1_polarity();
             }
+        } else if (event == BUTTON_SINGLE_CLICK && sv == UI_VIEW_LFO) {
+            synth_ui_lfo_toggle_target_tab();
         }
         return;
     }

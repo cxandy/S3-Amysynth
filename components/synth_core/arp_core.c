@@ -738,12 +738,12 @@ static void arp_swlfo_service(void)
     const seq_lfo_t *lfo = &s_arp.vp.lfo;
     /* Only patches with NO reserved carrier pair - wave numbers and bass
      * presets are served natively by arp_rebuild, so stepping them here would
-     * double-modulate. Exception: the DIST target has no COEF_MOD rail, so
-     * on native patches the stepper stays armed for that one bit (hybrid,
+     * double-modulate. Exception: the DIST targets have no COEF_MOD rail, so
+     * on native patches the stepper stays armed for those bits alone (hybrid,
      * mirrors sequencer_core_lfo_service). */
     bool native = sequencer_core_lfo_native_layout(s_arp.patch, NULL, NULL);
     bool want = s_arp.enabled && lfo->enabled && lfo->targets != 0 &&
-                (!native || LFO_HAS_TGT(lfo, LFO_TARGET_DIST));
+                (!native || (lfo->targets & LFO_TGT_DIST_MASK));
 
     if (!want) {
         if (s_swlfo_active) {
@@ -756,8 +756,12 @@ static void arp_swlfo_service(void)
                 if (t == LFO_TARGET_FILTER)
                     sequencer_core_push_filter(syn, &s_arp.vp.filter,
                                                s_arp.patch == SEQ_PATCH_KS);
-                else if (t == LFO_TARGET_DIST)
-                    voice_apply_dist(syn, &s_arp.vp.dist);
+                else if (t == LFO_TARGET_DIST_DRIVE || t == LFO_TARGET_DIST_MIX) {
+                    /* One restore event covers both dist bits. */
+                    if (t == LFO_TARGET_DIST_DRIVE ||
+                        !(s_swlfo_targets & LFO_TGT_BIT(LFO_TARGET_DIST_DRIVE)))
+                        voice_apply_dist(syn, &s_arp.vp.dist);
+                }
                 else
                     lfo_push_target_neutral(syn, (lfo_target_t)t);
             }
@@ -769,9 +773,9 @@ static void arp_swlfo_service(void)
         s_swlfo_active = true;
         s_swlfo_phase  = 0.0f;
     }
-    /* On native patches the stepper drives only the DIST bit; recording just
-     * that keeps deactivation from re-pushing rails it never touched. */
-    s_swlfo_targets = native ? (uint8_t)(lfo->targets & LFO_TGT_BIT(LFO_TARGET_DIST))
+    /* On native patches the stepper drives only the DIST bits; recording just
+     * those keeps deactivation from re-pushing rails it never touched. */
+    s_swlfo_targets = native ? (uint8_t)(lfo->targets & LFO_TGT_DIST_MASK)
                              : lfo->targets;
 
     float ph = s_swlfo_phase +
@@ -802,9 +806,9 @@ static void arp_swlfo_service(void)
     amy_helpers_event_send(e);
     } /* !native */
 
-    /* PROTOTYPE DIST target: software-only on every patch, base = the arp's
+    /* PROTOTYPE DIST targets: software-only on every patch, base = the arp's
      * committed dist block (law and event in voice_push_dist_lfo). */
-    if (LFO_HAS_TGT(lfo, LFO_TARGET_DIST))
+    if (lfo->targets & LFO_TGT_DIST_MASK)
         voice_push_dist_lfo(sequencer_core_arp_synth(), &s_arp.vp.dist, lfo, val);
 
     if (!native && LFO_HAS_TGT(lfo, LFO_TARGET_PITCH)) {

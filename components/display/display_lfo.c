@@ -4,13 +4,13 @@
 #include <stdio.h>
 #include <string.h>
 
-/* Two-panel layout (128x64): left checklist of the 5 modulation targets (one
+/* Two-panel layout (128x64): left checklist of the 6 modulation targets (one
  * LFO carrier drives every checked one), right column of shared
  * WAVE/RATE/DEPTH/EN parameters. Both use the 5x7 font at a tight pitch so
  * every row ends above the hint strip at y=57. */
 #define LFO_DIV_X      60      /* vertical divider between the two panels */
 #define LFO_ROW0_Y     21      /* first checklist row baseline            */
-#define LFO_ROW_DY      8      /* checklist row pitch                      */
+#define LFO_ROW_DY      7      /* checklist row pitch (6 rows since DIST)  */
 #define LFO_RCOL_X     64      /* right-column text x                      */
 #define LFO_SCROLL_X  117      /* scroll caret x (clears the widest row and
                                   the adjust caret at x=123)               */
@@ -40,6 +40,7 @@ static const char *target_name(int t)
         case LFO_TARGET_PITCH:  return "Pitch";
         case LFO_TARGET_PAN:    return "Pan";
         case LFO_TARGET_SCAN:   return "Scan";
+        case LFO_TARGET_DIST:   return "Dist";
         default:                return "?";
     }
 }
@@ -147,13 +148,21 @@ void lfo_view_draw(u8g2_t *u8g2, const lfo_view_t *v)
 
         if (selected) {
             u8g2_SetDrawColor(u8g2, 1);
-            u8g2_DrawBox(u8g2, 0, base - 7, LFO_DIV_X, 9);
+            /* One px shorter than the old 8-px-pitch box: at the 7-px pitch a
+             * base-7 top would clip the descender row of the label above. */
+            u8g2_DrawBox(u8g2, 0, base - 6, LFO_DIV_X, 8);
             u8g2_SetDrawColor(u8g2, 0);
         }
         /* checkbox: filled when the target is active, framed when not */
         if (on) u8g2_DrawBox(u8g2, 2, base - 6, 6, 6);
         else    u8g2_DrawFrame(u8g2, 2, base - 6, 6, 6);
         u8g2_DrawStr(u8g2, 11, base, target_name(t));
+        /* DIST without a serving stepper (drone): inert, struck through like
+         * the WOBBLE rows on software tracks. Current colour already matches
+         * the row context (0 on the inverted selection bar). */
+        if (t == LFO_TARGET_DIST && v->dist_inert)
+            u8g2_DrawHLine(u8g2, 11, (uint8_t)(base - 3),
+                           u8g2_GetStrWidth(u8g2, target_name(t)));
         if (selected) u8g2_SetDrawColor(u8g2, 1);
     }
 
@@ -233,6 +242,15 @@ void lfo_view_draw(u8g2_t *u8g2, const lfo_view_t *v)
                 snprintf(buf, sizeof(buf), "WTo %s", reach_lbl[wr]);
                 break;
             }
+            case LFO_FLD_DIST_REACH: {
+                /* Which distortion rails the DIST target sweeps. */
+                static const char *dist_lbl[LFO_DIST_REACH_COUNT] =
+                    { "Drv", "Mix", "D+M" };
+                uint8_t dr = (l->dist_reach < LFO_DIST_REACH_COUNT)
+                             ? l->dist_reach : 0;
+                snprintf(buf, sizeof(buf), "DTo %s", dist_lbl[dr]);
+                break;
+            }
             default:
                 buf[0] = '\0';
                 break;
@@ -244,9 +262,10 @@ void lfo_view_draw(u8g2_t *u8g2, const lfo_view_t *v)
          * rather than hide them - the values persist and re-arm the moment
          * the patch turns native. Match the row's colour context so the
          * strike stays legible on the inverted selection bar. */
-        if (!v->wob_native &&
-            (fld == LFO_FLD_WOB_RATE || fld == LFO_FLD_WOB_DEPTH ||
-             fld == LFO_FLD_WOB_MODE)) {
+        if ((!v->wob_native &&
+             (fld == LFO_FLD_WOB_RATE || fld == LFO_FLD_WOB_DEPTH ||
+              fld == LFO_FLD_WOB_MODE)) ||
+            (v->dist_inert && fld == LFO_FLD_DIST_REACH)) {
             u8g2_SetDrawColor(u8g2, sel ? 0 : 1);
             u8g2_DrawHLine(u8g2, LFO_RCOL_X, (uint8_t)(base - 3),
                            u8g2_GetStrWidth(u8g2, buf));

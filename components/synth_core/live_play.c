@@ -322,8 +322,12 @@ static float live_swlfo_eval(lfo_wave_t wave, float ph)
 void live_play_lfo_service(void)
 {
     const seq_lfo_t *lfo = &s_vp.lfo;
-    bool want = s_ready && !live_play_lfo_native_eligible() &&
-                s_vp.lfo_authored && lfo->enabled && lfo->targets != 0;
+    /* DIST has no COEF_MOD rail: on native-eligible patches the stepper stays
+     * armed for that one bit (hybrid, mirrors the arp/sequencer steppers). */
+    bool native = live_play_lfo_native_eligible();
+    bool want = s_ready && s_vp.lfo_authored && lfo->enabled &&
+                lfo->targets != 0 &&
+                (!native || LFO_HAS_TGT(lfo, LFO_TARGET_DIST));
 
     if (!want) {
         if (s_swlfo_active) {
@@ -335,6 +339,8 @@ void live_play_lfo_service(void)
                 if (!(s_swlfo_targets & LFO_TGT_BIT(t))) continue;
                 if (t == LFO_TARGET_FILTER)
                     live_apply_filter(&s_vp.filter);
+                else if (t == LFO_TARGET_DIST)
+                    voice_apply_dist(LIVE_SYNTH, &s_vp.dist);
                 else
                     lfo_push_target_neutral(LIVE_SYNTH, (lfo_target_t)t);
             }
@@ -346,7 +352,10 @@ void live_play_lfo_service(void)
         s_swlfo_active = true;
         s_swlfo_phase  = 0.0f;
     }
-    s_swlfo_targets = lfo->targets;
+    /* On native patches the stepper drives only the DIST bit; recording just
+     * that keeps deactivation from re-pushing rails it never touched. */
+    s_swlfo_targets = native ? (uint8_t)(lfo->targets & LFO_TGT_BIT(LFO_TARGET_DIST))
+                             : lfo->targets;
 
     float ph = s_swlfo_phase +
                live_swlfo_hz(lfo->rate, sequencer_core_get_bpm()) * 0.05f;
@@ -359,6 +368,7 @@ void live_play_lfo_service(void)
     float val = live_swlfo_eval(lfo->wave, ph);
     float d   = (float)lfo->depth / 100.0f;
 
+    if (!native) {
     amy_event *e = amy_helpers_event_begin();
     e->synth = LIVE_SYNTH;
     if (LFO_HAS_TGT(lfo, LFO_TARGET_FILTER)) {
@@ -373,17 +383,23 @@ void live_play_lfo_service(void)
         e->pan_coefs[COEF_CONST] = 0.5f + d * 0.5f * val;
     /* SCAN needs a wavetable voice - wave patches / native only. */
     amy_helpers_event_send(e);
+    } /* !native */
 
-    if (LFO_HAS_TGT(lfo, LFO_TARGET_PITCH)) {
+    /* PROTOTYPE DIST target: software-only on every patch, base = the live
+     * voice's committed dist block (law and event in voice_push_dist_lfo). */
+    if (LFO_HAS_TGT(lfo, LFO_TARGET_DIST))
+        voice_push_dist_lfo(LIVE_SYNTH, &s_vp.dist, lfo, val);
+
+    if (!native && LFO_HAS_TGT(lfo, LFO_TARGET_PITCH)) {
         /* Absolute Hz: see SEQ_LFO_PITCH_BASE_HZ - a bare ratio here lands
          * ~8.8 octaves down. Osc 0 only: a synth-wide push would rewrite
          * patch-internal modulator oscs' rates (stopgap - revisit, see the
          * sequencer stepper). */
-        e = amy_helpers_event_begin();
-        e->synth = LIVE_SYNTH;
-        e->osc   = 0;
-        e->freq_coefs[COEF_CONST] = SEQ_LFO_PITCH_BASE_HZ * powf(2.0f, d * VOICE_LFO_DEPTH_PITCH * val);
-        amy_helpers_event_send(e);
+        amy_event *pe = amy_helpers_event_begin();
+        pe->synth = LIVE_SYNTH;
+        pe->osc   = 0;
+        pe->freq_coefs[COEF_CONST] = SEQ_LFO_PITCH_BASE_HZ * powf(2.0f, d * VOICE_LFO_DEPTH_PITCH * val);
+        amy_helpers_event_send(pe);
     }
 }
 

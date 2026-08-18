@@ -124,8 +124,27 @@ typedef enum {
     LFO_TARGET_PITCH,      LFO_TARGET_PAN,
     LFO_TARGET_SCAN,       /* AMY `duty`: wavetable cycle-scan position when
                                wave=WAVETABLE, pulse width when wave=PULSE */
+    LFO_TARGET_DIST,       /* PROTOTYPE: distortion drive/mix (reach below).
+                               dist_config has no AMY coefficient rails, so
+                               this target is served ONLY by the 20 Hz
+                               software stepper re-pushing DIST_DRIVE /
+                               DIST_MIX - on native-carrier patches too, where
+                               the stepper stays armed for this bit alone.
+                               May be revisited as a real COEF_MOD rail in
+                               vendored AMY if the control-rate stepping ever
+                               matters audibly. */
     LFO_TARGET_COUNT,
 } lfo_target_t;
+typedef enum {
+    /* Which distortion rails the DIST target sweeps. One persisted byte,
+     * APPEND-ONLY; 0 = drive so zero-init structs and pre-DIST snapshot
+     * files land on the expressive default. Modulation is always relative
+     * to the row's committed seq_dist_t (the dist editor's authority). */
+    LFO_DIST_REACH_DRIVE = 0,  /* pre-gain sweep (breathing distortion)    */
+    LFO_DIST_REACH_MIX   = 1,  /* wet/dry sweep on a preconfigured shaper  */
+    LFO_DIST_REACH_BOTH  = 2,
+    LFO_DIST_REACH_COUNT,
+} lfo_dist_reach_t;
 typedef enum {
     LFO_RATE_1_8 = 0, LFO_RATE_1_4,  LFO_RATE_1_2,
     LFO_RATE_1BAR,    LFO_RATE_2BAR, LFO_RATE_4BAR,
@@ -168,6 +187,10 @@ typedef struct {
                               wob_depth_only byte: 0 both, 1 depth-only,
                               2 rate-only; older firmware reads 2 as nonzero
                               = depth-only, a benign degrade.                 */
+    uint8_t dist_reach;    /* lfo_dist_reach_t: which distortion rails the
+                              DIST target sweeps (0 drive, 1 mix, 2 both).
+                              Persisted append-only, LAYR v13+ / ARP v10+;
+                              absent = 0 = drive.                             */
     uint8_t flt_oct_q;     /* FILTER-target swing in quarter-octaves (1..16 =
                               +/-0.25..4.0 oct), independent of the shared
                               depth % - octaves are what the ear and AMY's log2

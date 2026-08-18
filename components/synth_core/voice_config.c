@@ -173,6 +173,33 @@ void voice_apply_dist(uint8_t synth, const seq_dist_t *d)
     amy_helpers_event_send(e);
 }
 
+/* PROTOTYPE LFO->distortion tick: contract in voice_config.h. Partial event -
+ * EVENT_TO_DELTA emits deltas only for the fields set here, so the committed
+ * type/bits/rate are never re-sent, and a stepper tick costs one event. */
+void voice_push_dist_lfo(uint8_t synth, const seq_dist_t *base,
+                         const seq_lfo_t *lfo, float val)
+{
+    if (!base || !lfo || base->type == 0u) return;
+    float d = (float)lfo->depth / 100.0f;
+
+    amy_event *e = amy_helpers_event_begin();
+    e->synth = synth;
+    e->osc   = 0;   /* base osc of every voice - same reach as voice_apply_dist */
+    if (lfo->dist_reach != LFO_DIST_REACH_MIX) {
+        /* Octave-denominated pre-gain swing around the committed drive,
+         * clamped to the documented wire range. */
+        float drv = (float)base->drive *
+                    powf(2.0f, d * VOICE_LFO_DEPTH_DIST_OCT * val);
+        e->dist_drive = SEQ_CLAMP_F32(drv, 1.0f, 16.0f);
+    }
+    if (lfo->dist_reach != LFO_DIST_REACH_DRIVE) {
+        float mix = (float)base->mix / 100.0f +
+                    d * VOICE_LFO_DEPTH_DIST_MIX * val;
+        e->dist_mix = SEQ_CLAMP_F32(mix, 0.0f, 1.0f);
+    }
+    amy_helpers_event_send(e);
+}
+
 void voice_apply_native_lfo_topo(uint8_t synth, const seq_lfo_t *lfo,
                                  uint16_t bpm, uint8_t carrier_osc,
                                  uint8_t coupled_mask)

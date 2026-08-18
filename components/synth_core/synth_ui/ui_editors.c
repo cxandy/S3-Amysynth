@@ -1911,15 +1911,26 @@ uint32_t lfo_view_signature(void)
                      NULL, NULL);
     s_lfo_view.wob_native = native;
 
+    /* DIST is served by a domain's 20 Hz software stepper; the drone has
+     * none, so its checkbox/reach rows draw struck-through. */
+    bool dist_inert = false;
+#if CONFIG_SYNTH_WIRELESS
+    if (!s_lfo_live_target)
+#endif
+        dist_inert = (seq_state.ui_mode == UI_MODE_DRONE_STD);
+    s_lfo_view.dist_inert = dist_inert;
+
     const seq_lfo_t *l = &s_lfo_view.lfo;
     return (uint32_t)l->enabled
          | ((uint32_t)l->wave    <<  1)   /* 3 bits */
-         | ((uint32_t)l->rate    <<  4)   /* 3 bits */
-         | ((uint32_t)l->depth   <<  7)   /* 7 bits (0..100) */
-         | ((uint32_t)l->targets << 14)   /* 5 bits */
-         | ((uint32_t)s_lfo_view.cursor  << 19)   /* 4 bits (0..8) */
-         | ((uint32_t)s_lfo_view.editing << 23)
-         | ((uint32_t)(native ? 1u : 0u) << 24);
+         | ((uint32_t)l->rate    <<  4)   /* 4 bits (0..11) */
+         | ((uint32_t)l->depth   <<  8)   /* 7 bits (0..100) */
+         | ((uint32_t)l->targets << 15)   /* 6 bits */
+         | ((uint32_t)l->dist_reach      << 21)   /* 2 bits */
+         | ((uint32_t)s_lfo_view.cursor  << 23)   /* 4 bits (0..14) */
+         | ((uint32_t)s_lfo_view.editing << 27)
+         | ((uint32_t)(native ? 1u : 0u) << 28)
+         | ((uint32_t)(dist_inert ? 1u : 0u) << 29);
 }
 
 bool synth_ui_lfo_is_active(void) { return s_lfo_active; }
@@ -2008,7 +2019,7 @@ static void lfo_preview_cancel_restore(void)
 bool synth_ui_lfo_handle_encoder(long delta)
 {
     if (!s_lfo_active) return false;
-    /* Fields: 5 target checkboxes (0..LFO_TARGET_COUNT-1), then WAVE/RATE/DEPTH/EN. */
+    /* Fields: 6 target checkboxes (0..LFO_TARGET_COUNT-1), then WAVE/RATE/DEPTH/EN. */
     const uint8_t N = LFO_FLD_COUNT;
     if (!s_lfo_view.editing) {
         if (delta > 0)      s_lfo_view.cursor = (s_lfo_view.cursor + 1) % N;
@@ -2091,6 +2102,11 @@ bool synth_ui_lfo_handle_button(bool is_long)
     } else if (c == LFO_FLD_WOB_MODE) {
         /* 3-way reach cycle: depth+rate -> depth -> rate -> ... */
         l->wob_reach = (uint8_t)((l->wob_reach + 1u) % WOB_REACH_COUNT);
+        s_lfo_view.editing = false;
+        lfo_live_push_preview();
+    } else if (c == LFO_FLD_DIST_REACH) {
+        /* 3-way reach cycle: drive -> mix -> both -> ... */
+        l->dist_reach = (uint8_t)((l->dist_reach + 1u) % LFO_DIST_REACH_COUNT);
         s_lfo_view.editing = false;
         lfo_live_push_preview();
     } else {

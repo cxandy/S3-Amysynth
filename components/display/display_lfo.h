@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-/* Editor cursor fields. The 5 target checkboxes come first with indices equal
+/* Editor cursor fields. The 6 target checkboxes come first with indices equal
  * to their lfo_target_t value, so `cursor < LFO_TARGET_COUNT` means "cursor is
  * on a target checkbox and its enum value is the cursor". The shared LFO
  * parameters follow. */
@@ -20,15 +20,17 @@ enum {
     LFO_FLD_WOB_RATE,         /* WOBBLE (second-order LFO) rate               */
     LFO_FLD_WOB_DEPTH,        /* WOBBLE amount in dB of swing, OFF = off      */
     LFO_FLD_WOB_MODE,         /* WOBBLE reach: depth only vs depth + rate     */
+    LFO_FLD_DIST_REACH,       /* DIST target reach: drive / mix / both        */
     LFO_FLD_EN,               /* drawn as a header chip, not a panel row      */
     LFO_FLD_COUNT,            /* total navigable fields */
 };
 
-/* Right-panel geometry. The parameter rows (WAVE..WOB_MODE) outnumber the slots
- * that fit above the hint strip, so the panel scrolls by one when the cursor
- * reaches the bottom row. A new parameter field only has to sit in this range. */
+/* Right-panel geometry. The parameter rows (WAVE..DIST_REACH) outnumber the
+ * slots that fit above the hint strip, so the panel scrolls by one when the
+ * cursor reaches the bottom row. A new parameter field only has to sit in this
+ * range. */
 #define LFO_PANEL_SLOTS  5
-#define LFO_PANEL_ROWS   (LFO_FLD_WOB_MODE - LFO_FLD_WAVE + 1)
+#define LFO_PANEL_ROWS   (LFO_FLD_DIST_REACH - LFO_FLD_WAVE + 1)
 
 /* View state for the LFO editor overlay: the working copy being edited plus
  * display metadata (cursor, editing flag, target track). */
@@ -45,6 +47,9 @@ typedef struct {
     bool        wob_native;   /* target runs the native LFO carrier; false =
                                  software stepper, where the WOBBLE rows are
                                  inert and drawn struck-through             */
+    bool        dist_inert;   /* domain has no software stepper for the DIST
+                                 target (drone): checkbox + reach row drawn
+                                 struck-through                             */
 } lfo_view_t;
 
 void lfo_view_draw(u8g2_t *u8g2, const lfo_view_t *v);

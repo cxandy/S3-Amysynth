@@ -158,6 +158,8 @@ static void ser_lfo(tlv_writer_t *w, const seq_lfo_t *l)
                                    * 2 as nonzero = depth-only - benign. */
     tlv_put_u8(w, l->flt_oct_q);  /* LAYR v8+ / ARP v7+: FILTER swing in
                                    * quarter-octaves; 0 = legacy depth-derived */
+    tlv_put_u8(w, l->dist_reach); /* LAYR v13+ / ARP v10+: DIST target reach
+                                   * (0 drive, 1 mix, 2 both) */
 }
 
 /* Same "read everything, then validate" shape as de_filter. The 6th byte
@@ -170,10 +172,10 @@ static void ser_lfo(tlv_writer_t *w, const seq_lfo_t *l)
  * `flt_oct` = FILTER octave-swing byte (LAYR v8+, ARP v7+; absent leaves the
  * 0 sentinel = old depth-derived filter law). */
 static bool de_lfo(tlv_reader_t *r, seq_lfo_t *l, uint8_t ver, bool wobble,
-                   bool wob_mode, bool flt_oct)
+                   bool wob_mode, bool flt_oct, bool dist_reach)
 {
     uint8_t en, mode, wave, rate, depth, tgt;
-    uint8_t wrate = 0, wdepth = 0, wdeponly = 0, foct = 0;
+    uint8_t wrate = 0, wdepth = 0, wdeponly = 0, foct = 0, dreach = 0;
     if (!tlv_get_u8(r, &en))     return false;
     if (!tlv_get_u8(r, &mode))   return false;
     if (!tlv_get_u8(r, &wave))   return false;
@@ -189,6 +191,9 @@ static bool de_lfo(tlv_reader_t *r, seq_lfo_t *l, uint8_t ver, bool wobble,
     }
     if (flt_oct) {
         if (!tlv_get_u8(r, &foct)) return false;
+    }
+    if (dist_reach) {
+        if (!tlv_get_u8(r, &dreach)) return false;
     }
 
     if (mode > LFO_MODE_RETRIG || wave >= LFO_WAVE_COUNT ||
@@ -212,6 +217,7 @@ static bool de_lfo(tlv_reader_t *r, seq_lfo_t *l, uint8_t ver, bool wobble,
     l->wob_reach = (wdeponly < WOB_REACH_COUNT) ? wdeponly : 0;
     l->flt_oct_q = (foct > VOICE_LFO_FLT_OCT_Q_MAX)
                    ? (uint8_t)VOICE_LFO_FLT_OCT_Q_MAX : foct;
+    l->dist_reach = (dreach < LFO_DIST_REACH_COUNT) ? dreach : 0;
     return true;
 }
 
@@ -238,7 +244,7 @@ static bool de_vp(tlv_reader_t *r, voice_params_t *vp, uint8_t ver)
     if (!de_env(r, &vp->env))       return false;
     if (!de_env(r, &vp->env1))      return false;
     if (!de_filter(r, &vp->filter, ver >= 7)) return false;  /* LAYR: feedback v7+ */
-    if (!de_lfo(r, &vp->lfo, ver, ver >= 5, ver >= 6, ver >= 8))  return false;  /* LAYR: wobble v5+, reach v6+, flt_oct v8+ */
+    if (!de_lfo(r, &vp->lfo, ver, ver >= 5, ver >= 6, ver >= 8, ver >= 13))  return false;  /* LAYR: wobble v5+, reach v6+, flt_oct v8+, dist_reach v13+ */
     uint8_t ea, e1a, fa, la;
     if (!tlv_get_u8(r, &ea))  return false;
     if (!tlv_get_u8(r, &e1a)) return false;
@@ -370,7 +376,7 @@ static void apply_glob(const staged_glob_t *g)
 
 static void ser_layer(tlv_writer_t *w, const seq_layer_t *L)
 {
-    size_t h = tlv_begin_section(w, TAG_LAYR, 12); /* v2: LFO target bitmask;
+    size_t h = tlv_begin_section(w, TAG_LAYR, 13); /* v2: LFO target bitmask;
                                                     * v3: +gate_pct, +portamento_ms;
                                                     * v4: +groove_pct;
                                                     * v5: LFO +wob_rate/+wob_depth;
@@ -382,7 +388,8 @@ static void ser_layer(tlv_writer_t *w, const seq_layer_t *L)
                                                     *     (same two array slots);
                                                     * v10: +track_pcm_mode;
                                                     * v11: +step_pitch_ofs;
-                                                    * v12: vp +dist/+dist_authored */
+                                                    * v12: vp +dist/+dist_authored;
+                                                    * v13: LFO +dist_reach */
     tlv_put_u8(w, (uint8_t)L->type);
     tlv_put_u8(w, L->num_steps);
     tlv_put_u16(w, L->patch);
@@ -585,7 +592,7 @@ typedef struct {
 
 static void ser_arp(tlv_writer_t *w)
 {
-    size_t h = tlv_begin_section(w, TAG_ARP, 9);  /* v2: LFO target is a bitmask;
+    size_t h = tlv_begin_section(w, TAG_ARP, 10); /* v2: LFO target is a bitmask;
                                                    * v3: LFO +wob_rate/+wob_depth;
                                                    * v4: LFO +wob_depth_only;
                                                    * v5: filter +feedback (KS);
@@ -593,7 +600,8 @@ static void ser_arp(tlv_writer_t *w)
                                                    * v7: LFO +flt_oct_q;
                                                    * v8: -source/-wave (patch
                                                    *     covers the wave range);
-                                                   * v9: +dist (appended)      */
+                                                   * v9: +dist (appended);
+                                                   * v10: LFO +dist_reach      */
     tlv_put_u8(w, arp_get_enabled() ? 1 : 0);
     tlv_put_u16(w, arp_get_patch());
     tlv_put_u8(w, (uint8_t)arp_get_direction());
@@ -658,7 +666,7 @@ static bool parse_arp(tlv_reader_t *b, staged_arp_t *a, uint8_t ver)
     if (!de_env(b, &a->env))       return false;
     if (!de_env(b, &a->env2))      return false;
     if (!de_filter(b, &a->filter, ver >= 5)) return false;   /* ARP: feedback v5+ */
-    if (!de_lfo(b, &a->lfo, ver, ver >= 3, ver >= 4, ver >= 7))  return false;   /* ARP: wobble v3+, reach v4+, flt_oct v7+ */
+    if (!de_lfo(b, &a->lfo, ver, ver >= 3, ver >= 4, ver >= 7, ver >= 10))  return false;   /* ARP: wobble v3+, reach v4+, flt_oct v7+, dist_reach v10+ */
     /* v6: follow the global scale quantizer. Pre-v6 files default OFF
      * (the arp's own scale). */
     if (ver >= 6) {

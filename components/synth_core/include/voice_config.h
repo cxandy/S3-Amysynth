@@ -22,6 +22,12 @@
 #define VOICE_LFO_DEPTH_PITCH  (1.0f / 12.0f)
 #define VOICE_LFO_DEPTH_SCAN   0.5f
 #define VOICE_LFO_DEPTH_PAN    0.5f  /* swing around the 0.5 center baseline */
+/* DIST target (software stepper only - see voice_push_dist_lfo). Drive is
+ * perceived roughly log like cutoff, so the swing is denominated in octaves
+ * of pre-gain around the committed value: 100% depth = +/-2 oct (x1/4..x4).
+ * Mix is bounded [0,1] and linear like pan: 100% depth = +/-0.5 swing. */
+#define VOICE_LFO_DEPTH_DIST_OCT 2.0f
+#define VOICE_LFO_DEPTH_DIST_MIX 0.5f
 
 /* Anchor for software-LFO pitch pushes (every software stepper: sequencer
  * layers, arp, live voice). AMY's freq COEF_CONST is an absolute frequency in
@@ -178,6 +184,18 @@ void voice_dist_clamp(seq_dist_t *d);
  * stage rather than leaving the last setting running. Clamps a copy, so the
  * caller's block is untouched. NULL `d`: no-op. Core-0 / UI-task only. */
 void voice_apply_dist(uint8_t synth, const seq_dist_t *d);
+
+/* PROTOTYPE: one LFO_TARGET_DIST stepper tick. Computes the swept drive
+ * and/or mix (lfo->dist_reach) around the committed `base` block and pushes
+ * ONLY those wire params - type/bits/rate stay whatever the dist editor last
+ * applied. dist_config has no AMY coefficient rails, so unlike the other LFO
+ * targets there is no native COEF_MOD form of this; every domain (melodic,
+ * arp, live - native-carrier patches included) reaches distortion through
+ * its 20 Hz software stepper calling this. May be revisited as a real coef
+ * rail in vendored AMY. No-op when the shaper is OFF - an inert target, not
+ * an implicit enable. Core-0 / UI-task only. */
+void voice_push_dist_lfo(uint8_t synth, const seq_dist_t *base,
+                         const seq_lfo_t *lfo, float val);
 
 /* ── Lazy LFO-sibling materialization ────────────────────────────────────
  * voice_build_wave() reserves the osc1 (LFO carrier) and osc2 (wobble) INDEX

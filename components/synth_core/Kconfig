@@ -282,6 +282,42 @@ config SEQ_MELODIC_AMY_NATIVE_LFO
 		does not support them (same limitation as the arp).
 		Disable to revert all melodic LFO to the software accumulator.
 
+config SEQ_DIST_DRIVE_AMP_EG
+	bool "Amp envelope (EG0) modulates distortion drive (WIP)"
+	default n
+	help
+		PROTOTYPE / experimental. Routes each voice's amplitude envelope
+		(EG0) into the per-osc distortion DRIVE via AMY's control-coef rail.
+		Drive is a log2 rail, so - exactly like a filter EG sweeps cutoff -
+		the unipolar 0..1 envelope adds a SIGNED octave depth
+		(SEQ_DIST_DRIVE_AMP_EG_DEPTH_Q) of pre-gain: full at the attack peak,
+		tapering to the authored drive at the release tail. Positive depth
+		means louder/attack = more grit (as a real overdrive stage responds
+		to level); a negative depth instead pulls drive DOWN as the note
+		swells.
+
+		Applies wherever distortion is authored (melodic, arp, live, drone) -
+		they share voice_apply_dist. The authored drive is the floor; EG0's
+		sustain level holds a proportional boost for the note's length, since
+		drive's contour is shared with amplitude (AMY has only two envelopes,
+		both already spoken for - amp and filter).
+
+		Off by default; adding the symbol needs a clean rebuild. TODO: if it
+		earns its keep, promote to a per-track amount with an EG0/EG1 source
+		choice (see the dist coef rail in AMY-EDITS.md).
+
+config SEQ_DIST_DRIVE_AMP_EG_DEPTH_Q
+	int "  Drive EG depth (quarter-octaves, signed)"
+	depends on SEQ_DIST_DRIVE_AMP_EG
+	range -16 16
+	default 4
+	help
+		EG0-into-drive depth in quarter-octaves at the envelope peak:
+		4 = +1.0 oct (up to 2x drive), 16 = +4 oct (the rail's clamp).
+		Negative values sweep drive DOWN as the envelope rises. Value-only
+		change, so tunable in menuconfig without a clean rebuild once the
+		toggle above is on.
+
 config SYNTH_CUSTOM_FM
 	bool "Custom FM/DX7 6-operator voices (WIP)"
 	default n

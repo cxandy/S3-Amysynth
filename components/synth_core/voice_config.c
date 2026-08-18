@@ -166,10 +166,13 @@ void voice_apply_dist(uint8_t synth, const seq_dist_t *d)
     e->synth      = synth;
     e->osc        = 0;
     e->dist_type  = (float)v.type;
-    e->dist_drive = (float)v.drive;
     e->dist_bits  = (float)v.bits;
     e->dist_rate  = (float)v.rate;
-    e->dist_mix   = (float)v.mix / 100.0f;
+    /* Drive and mix ride AMY's control-coef rails now: author the CONST term
+     * only, leaving the MOD rail for a native LFO. Drive's CONST is linear
+     * (AMY maps it onto its log2 drive rail on the way in); mix is linear 0..1. */
+    e->dist_drive_coefs[COEF_CONST] = (float)v.drive;
+    e->dist_mix_coefs[COEF_CONST]   = (float)v.mix / 100.0f;
     amy_helpers_event_send(e);
 }
 
@@ -190,12 +193,12 @@ void voice_push_dist_lfo(uint8_t synth, const seq_dist_t *base,
          * clamped to the documented wire range. */
         float drv = (float)base->drive *
                     powf(2.0f, d * VOICE_LFO_DEPTH_DIST_OCT * val);
-        e->dist_drive = SEQ_CLAMP_F32(drv, 1.0f, 16.0f);
+        e->dist_drive_coefs[COEF_CONST] = SEQ_CLAMP_F32(drv, 1.0f, 16.0f);
     }
     if (LFO_HAS_TGT(lfo, LFO_TARGET_DIST_MIX)) {
         float mix = (float)base->mix / 100.0f +
                     d * VOICE_LFO_DEPTH_DIST_MIX * val;
-        e->dist_mix = SEQ_CLAMP_F32(mix, 0.0f, 1.0f);
+        e->dist_mix_coefs[COEF_CONST] = SEQ_CLAMP_F32(mix, 0.0f, 1.0f);
     }
     amy_helpers_event_send(e);
 }

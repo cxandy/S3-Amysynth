@@ -80,8 +80,9 @@ len, cfg, st)` takes an explicit `dist_config_t` and `dist_state_t` instead of
 reading both off `synth[osc]`; `dist_process(block, osc)` remains as the per-osc
 wrapper with identical behaviour. `synthinfo`'s five loose `dist_*` fields
 become `dist_config_t dist`, and `dist_hold`/`dist_hold_count` become
-`dist_state_t dist_state`. **`amy_event` is deliberately untouched** — its flat
-`dist_*` fields are the wire/API surface that the generated bindings key on.
+`dist_state_t dist_state`. `amy_event` was untouched at this stage — its flat
+`dist_*` fields were the wire/API surface — but the coef-rail edit below then
+moves drive and mix onto control-coef vectors (see next section).
 
 **2. Distortion on the SILENT chained-osc head.** `dist_process` was called only
 inside the `if (wave != SILENT)` branch, which runs *before* chained oscs are
@@ -115,6 +116,46 @@ kernel split is behaviour-preserving; only the SILENT row moves. A control case
 setting the same shaper on the chain's sounding members instead of its head
 gives rms 1019.0 / peak 2972 — nowhere near the head result, confirming the tap
 shapes the summed voice rather than being a rename of per-osc.
+
+
+### `amy.c` + `amy.h` + `filters.c` + `parse.c` + `api.c` + `patches.c` — distortion drive/mix on the control-coef rail (upstream PR candidate)
+
+Follow-up to the two distortion edits above and to #1116. Distortion drive is a
+timbre control, so it earns the same control-coefficient rail every other timbre
+control in AMY has — velocity, EG and a mod source into drive are what make a
+waveshaper part of a *voice* rather than an insert effect, and none of them are
+reachable while `dist.drive` is a scalar fixed at delta-apply. This is what lets
+the S3-Amysynth firmware modulate distortion natively (COEF_MOD off the reserved
+LFO carrier) instead of stepping it from a 20 Hz software task.
+
+- **Drive on a log2 rail, like freq and filter freq.** The wire and the `COEF_CONST`
+  term carry linear drive (1 = unity); the modulation coefs carry octaves, so a
+  coef of 1 doubles the drive. `EVENT_TO_DELTA_COEFS_COEF0_SPECIAL(..., logdrive_of_drive)`
+  converts the constant on the way in (mirroring the freq rail), new
+  `logdrive_of_drive`/`drive_of_logdrive` do the log2<->linear map. The rail spans
+  2^-4..2^4 (the old 0..16 with the degenerate zero replaced by a floor); **mix,
+  not drive, turns the stage down.**
+- **Mix follows duty:** linear combine, clamped 0..1.
+- **Combined in `hold_and_modify` into `msynth`,** gated on `dist_type != DIST_OFF`,
+  so an osc with the stage off pays one compare. `dist_block` already hoists drive
+  and mix above its sample loops, so the per-sample loops are untouched and stay
+  zero-overhead; the clamps move from delta-apply to the combine, still once per
+  block, preserving the "`dist_block` receives a checked config, never range-checks
+  per sample" property.
+- **`synthinfo` stores authored coefs, not a ready-made `dist_config_t`;**
+  `dist_process` composes the config from the authored scalars plus `msynth`.
+  `dist_config_t` stays purely the kernel's input contract (what a per-bus/global
+  caller with static parameters wants).
+- **Wire:** `'C'` now carries `[type, bits, rate]`; drive coefs ride `'U'`, mix
+  coefs `'W'`. `DIST_LOGDRIVE`/`DIST_MIX` claim ten param ids each (75..84, 85..94)
+  out of the freed block-VOLUME range, leaving 95..98.
+
+Ported from fork branch `dist-voice-scope` (`35fd69b`), which pins the octave
+scale in both directions in `tests/test_dist_coefs.c` (a VEL coef of 2 octaves at
+full velocity renders identically to a stated drive of 4; a coef of 1 does not)
+and is behaviour-neutral where dist is off (full suite byte-identical to its
+parent). The three edits above plus this one are the standing local distortion
+stack, staged as follow-up PRs after #1116 lands.
 
 
 ### `pcm.c` — retrig fade-restart (gated; replaces the zero-cross defer by default)

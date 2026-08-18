@@ -733,11 +733,35 @@ LFO tab), then back to ADSR.
 live frequency response. ENC long = commit, B0 long = cancel, B1 = instant
 enable toggle.
 
-**LFO parameters:** target (Filter / Amp / Pitch / Pan / Scan), wave (Sine /
-Triangle / Saw up / Saw down / Square / Random sample-and-hold), rate (1/8
-bar up to 4 bars, tempo-locked), depth (0-100 %), enable. The **Scan** target
-sweeps the wavetable cycle position on wavetable patches (and pulse width on
-PULSE). ENC long = commit, B0 long = cancel.
+**LFO parameters:** target, wave (Sine / Triangle / Saw up / Saw down / Square /
+Random sample-and-hold), rate (1/8 bar up to 4 bars, tempo-locked), depth
+(0-100 %), enable. Targets live on two tabs, switched with the **shoulder
+button**: tab 1 is **Filter / Amp / Pitch / Pan / Scan**, tab 2 is **Dist Drive /
+Dist Mix** (distortion pre-gain and wet/dry, active only when the track has a
+distortion type set). The **Scan** target sweeps the wavetable cycle position on
+wavetable patches (and pulse width on PULSE). ENC long = commit, B0 long = cancel.
+
+**How LFO depth maps to each target.** Depth is one 0-100 % knob, but what 100 %
+*means* is per-target, and splits two ways by the parameter's natural unit - so a
+given depth does **not** produce the same-sized effect on every target:
+
+- **Interval targets (multiplicative) - Pitch, Dist Drive.** Depth swings a fixed
+  musical interval *around the current value*, so the audible size scales with the
+  value you set. Pitch is anchored at one semitone per 100 %. Dist Drive is
+  denominated in octaves of pre-gain: full depth swings +-2 octaves (x4 / ÷4)
+  around the committed drive - subtle on a low drive, dramatic on a high one.
+- **Offset targets (additive) - Amp, Pan, Scan, Dist Mix.** Depth swings a fixed
+  *absolute* amount that does not scale with the current value, then clamps to the
+  legal range. Dist Mix at full depth swings +-0.5 of the 0-1 wet/dry range; set
+  near 0 % or 100 % it clips against the end, so one half of the LFO cycle flattens.
+- **Filter is the exception.** Its sweep *width* comes from the filter editor's
+  octave-range control, not the depth knob - turning depth up does nothing to a
+  filter sweep once an octave range is set. There, depth is only the Amp/Pitch/
+  Pan/Scan control.
+
+Native patches (wave / bass) evaluate this per audio block; PCM and other
+software-LFO tracks re-send it as a 20 Hz staircase - identical numbers and law,
+coarser stepping. ENC long = commit, B0 long = cancel.
 
 ---
 

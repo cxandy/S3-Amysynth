@@ -412,14 +412,12 @@ static void melodic_lfo_apply_runtime(uint8_t layer_idx, uint8_t track,
         if (!lfo->enabled || !is_native_lfo_track(lfo)) {
             lfo_restore_target_neutrals(layer, track, lfo);
         }
-        /* s_lfo_hz = 0 makes the software service loop skip native tracks -
-         * EXCEPT when a DIST target is checked: distortion has no COEF_MOD
-         * rail, so the stepper stays armed for those bits alone and the service
-         * loop's native check keeps it off the natively-driven rails. */
-        s_lfo_hz[layer_idx][track] =
-            (lfo->enabled && (lfo->targets & LFO_TGT_DIST_MASK))
-            ? seq_lfo_sw_hz(lfo->rate, s_bpm)
-            : 0.0f;
+        /* s_lfo_hz = 0 makes the software service loop skip native tracks.
+         * Distortion drive/mix now have COEF_MOD rails (dist_*_coefs), driven
+         * by the carrier in melodic_native_lfo_apply, so a native track no
+         * longer arms the stepper for the DIST bits either - every target
+         * rides the carrier. */
+        s_lfo_hz[layer_idx][track] = 0.0f;
         return;
     }
 #endif
@@ -512,10 +510,11 @@ void __attribute__((optimize("O3", "unroll-loops", "fast-math"))) sequencer_core
             uint8_t syn = s_layers[li].synth_id[tr];
 
 #if CONFIG_SEQ_MELODIC_AMY_NATIVE_LFO
-            /* Hybrid: a native-carrier track reaches here only when armed for
-             * the DIST bits (melodic_lfo_apply_runtime). Its other rails ride
-             * the carrier's COEF_MOD - stepping them here too would
-             * double-modulate - so only DIST is pushed below. */
+            /* Native-carrier tracks disarm the stepper wholesale (s_lfo_hz = 0
+             * in melodic_lfo_apply_runtime), so in practice they never reach
+             * this body - every rail, distortion included, rides the carrier's
+             * COEF_MOD. This guard stays as a belt-and-braces: were a native
+             * track ever armed, stepping its rails here would double-modulate. */
             bool native_track =
                 s_layers[li].type == SEQ_LAYER_MELODIC &&
                 sequencer_core_lfo_native_layout(s_layers[li].patch, NULL, NULL);
@@ -527,8 +526,9 @@ void __attribute__((optimize("O3", "unroll-loops", "fast-math"))) sequencer_core
             e->synth = syn;
             /* Multi-target: each checked target modulates its own COEF_CONST
              * from the same LFO value. SCAN has no software analog - it needs a
-             * wavetable voice, which always takes the native path. DIST is the
-             * other way around: software-only, handled after this block. */
+             * wavetable voice, which always takes the native path. DIST is
+             * handled after this block: native on carrier patches, stepped here
+             * only on PATCH-mode tracks with no free carrier osc. */
             if (LFO_HAS_TGT(lfo, LFO_TARGET_FILTER)) {
                 const seq_filter_t *fb = (prev_here && prev.filter_valid)
                                          ? &prev.filter
@@ -545,10 +545,12 @@ void __attribute__((optimize("O3", "unroll-loops", "fast-math"))) sequencer_core
             amy_helpers_event_send(e);
             } /* !native_track */
 
-            /* PROTOTYPE DIST target: stepped on every patch type - the
-             * committed dist block is the base, drive/mix law and event in
-             * voice_push_dist_lfo. Inert while the shaper is OFF. */
-            if (lfo->targets & LFO_TGT_DIST_MASK)
+            /* DIST target on a PATCH-mode track (no carrier for a native rail):
+             * step drive/mix around the committed dist block, same law as the
+             * native rail (voice_push_dist_lfo). Native tracks drive it via
+             * COEF_MOD instead, so they are excluded like every other target.
+             * Inert while the shaper is OFF. */
+            if (!native_track && (lfo->targets & LFO_TGT_DIST_MASK))
                 voice_push_dist_lfo(syn, &s_layers[li].vp[tr].dist, lfo, val);
 
             if (!native_track && LFO_HAS_TGT(lfo, LFO_TARGET_PITCH)) {
@@ -590,14 +592,10 @@ void sequencer_configure_melodic_lfo(uint8_t layer_idx)
     for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
         if (!layer->vp[t].lfo_authored) continue;
         melodic_configure_native_lfo_track(layer, t);
-        /* Keep s_lfo_hz in sync so the service loop skips native tracks -
-         * unless a DIST bit keeps the stepper armed (no COEF_MOD rail;
-         * mirrors melodic_lfo_apply_runtime). */
-        const seq_lfo_t *lfo = &layer->vp[t].lfo;
-        s_lfo_hz[layer_idx][t] =
-            (lfo->enabled && (lfo->targets & LFO_TGT_DIST_MASK))
-            ? seq_lfo_sw_hz(lfo->rate, s_bpm)
-            : 0.0f;
+        /* Keep s_lfo_hz in sync so the service loop skips native tracks. DIST
+         * rides the carrier now too (COEF_MOD), so nothing keeps the stepper
+         * armed on a native track (mirrors melodic_lfo_apply_runtime). */
+        s_lfo_hz[layer_idx][t] = 0.0f;
     }
 #else
     (void)layer_idx;

@@ -1911,14 +1911,11 @@ uint32_t lfo_view_signature(void)
                      NULL, NULL);
     s_lfo_view.wob_native = native;
 
-    /* The distortion targets are served by a domain's 20 Hz software stepper;
-     * the drone has none, so its dist checkbox rows draw struck-through. */
-    bool dist_inert = false;
-#if CONFIG_SYNTH_WIRELESS
-    if (!s_lfo_live_target)
-#endif
-        dist_inert = (seq_state.ui_mode == UI_MODE_DRONE_STD);
-    s_lfo_view.dist_inert = dist_inert;
+    /* Distortion drive/mix have COEF_MOD rails now, so every domain can drive
+     * them - natively on carrier patches (drone_std included), via the 20 Hz
+     * stepper on PATCH-mode tracks. Nothing is inert; the flag stays plumbed
+     * for the display struct but is never set. */
+    s_lfo_view.dist_inert = false;
 
     const seq_lfo_t *l = &s_lfo_view.lfo;
     return (uint32_t)l->enabled
@@ -1929,7 +1926,7 @@ uint32_t lfo_view_signature(void)
          | ((uint32_t)s_lfo_view.cursor  << 22)   /* 4 bits (0..14) */
          | ((uint32_t)s_lfo_view.editing << 26)
          | ((uint32_t)(native ? 1u : 0u) << 27)
-         | ((uint32_t)(dist_inert ? 1u : 0u) << 28)
+         /* bit 28 (dist_inert) retired - dist is never inert now */
          | ((uint32_t)s_lfo_view.tgt_tab << 29);
 }
 

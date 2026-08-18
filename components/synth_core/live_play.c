@@ -322,12 +322,12 @@ static float live_swlfo_eval(lfo_wave_t wave, float ph)
 void live_play_lfo_service(void)
 {
     const seq_lfo_t *lfo = &s_vp.lfo;
-    /* DIST has no COEF_MOD rail: on native-eligible patches the stepper stays
-     * armed for those bits alone (hybrid, mirrors the arp/sequencer steppers). */
+    /* DIST has COEF_MOD rails now (dist_*_coefs), so on native-eligible patches
+     * it rides the carrier like every other target and the stepper is fully off
+     * there (mirrors the arp/sequencer steppers). */
     bool native = live_play_lfo_native_eligible();
     bool want = s_ready && s_vp.lfo_authored && lfo->enabled &&
-                lfo->targets != 0 &&
-                (!native || (lfo->targets & LFO_TGT_DIST_MASK));
+                lfo->targets != 0 && !native;
 
     if (!want) {
         if (s_swlfo_active) {
@@ -356,10 +356,9 @@ void live_play_lfo_service(void)
         s_swlfo_active = true;
         s_swlfo_phase  = 0.0f;
     }
-    /* On native patches the stepper drives only the DIST bits; recording just
-     * those keeps deactivation from re-pushing rails it never touched. */
-    s_swlfo_targets = native ? (uint8_t)(lfo->targets & LFO_TGT_DIST_MASK)
-                             : lfo->targets;
+    /* want requires !native, so the stepper only runs on PATCH-mode voices -
+     * record the full target set for the deactivation restore. */
+    s_swlfo_targets = lfo->targets;
 
     float ph = s_swlfo_phase +
                live_swlfo_hz(lfo->rate, sequencer_core_get_bpm()) * 0.05f;
@@ -389,9 +388,10 @@ void live_play_lfo_service(void)
     amy_helpers_event_send(e);
     } /* !native */
 
-    /* PROTOTYPE DIST targets: software-only on every patch, base = the live
-     * voice's committed dist block (law and event in voice_push_dist_lfo). */
-    if (lfo->targets & LFO_TGT_DIST_MASK)
+    /* DIST targets on a PATCH-mode voice (no carrier): step around the committed
+     * dist block, same law as the native rail (voice_push_dist_lfo). Native
+     * voices drive it via COEF_MOD, so !native excludes them like the rest. */
+    if (!native && (lfo->targets & LFO_TGT_DIST_MASK))
         voice_push_dist_lfo(LIVE_SYNTH, &s_vp.dist, lfo, val);
 
     if (!native && LFO_HAS_TGT(lfo, LFO_TARGET_PITCH)) {

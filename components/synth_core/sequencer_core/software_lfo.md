@@ -40,34 +40,33 @@ every 50 ms, for each synth with an LFO enabled:
 *(only the parameters the user actually targeted are included)*
 
 > this deliberately does not use AMY's mod_source LFO mechanism. A mod_source needs a free oscillator, and inside a loaded patch voice (Juno, DX7) there are none - every osc is the output, the patch's own LFO, or an FM operator/chained layer, and naming one as a mod_source mutes it (fatal for DX7 carriers). So instead, the modulation is done from outside: a control-rate task recomputes each target parameter's constant term and re-sends it as a normal parameter update, exactly as if a very fast hand were turning the knob 20 times a second. The patch's internal structure is untouched; the trade-offs are 50 ms zipper-stepping (audible on square/random-to-amp without slew) and that the patch's original constants on the modulated parameters are overwritten rather than restored when the LFO turns off.
-## DIST targets (prototype)
+## DIST targets
 
 `LFO_TARGET_DIST_DRIVE` and `LFO_TARGET_DIST_MIX` are two independent target
 bits sweeping the distortion stage's drive and mix around the row's committed
 `seq_dist_t` - check either, or both. They live on a second tab of the LFO
 editor's target checklist (the panel fits five rows; the shoulder button flips
-tabs), which is why there is no separate reach field. They differ from every
-other target in two ways:
+tabs), which is why there is no separate reach field.
 
-- **Software-only, everywhere.** AMY's `dist_config` has flat scalar fields,
-  not ControlCoefficients rails, so there is no native (COEF_MOD) form of
-  this target at all. On native-carrier patches - where the other targets
-  ride the reserved carrier osc and this stepper normally disarms - the
-  stepper stays armed for the DIST bits alone and pushes nothing else
-  (a "hybrid" track: COEF_MOD rails native, distortion stepped).
-- **Partial wire events.** Each tick sends only `dist_drive`/`dist_mix`
-  (whichever bits are checked); type/bits/rate stay whatever the dist editor last
-  applied. The shaper being OFF makes the target inert - the LFO never
-  switches distortion on. Law and clamps live in `voice_push_dist_lfo()`
-  (voice_config.c): drive sweeps +/-`VOICE_LFO_DEPTH_DIST_OCT` octaves of
-  pre-gain, mix +/-`VOICE_LFO_DEPTH_DIST_MIX` linear, both scaled by depth%.
+Drive and mix have ControlCoefficient rails in vendored AMY now
+(`dist_logdrive_coefs` / `dist_mix_coefs`; see AMY-EDITS.md), so DIST behaves
+like every other target - native where a carrier exists, stepped where it does
+not:
 
-Restore on disable is the committed dist block via `voice_apply_dist()` -
-there is no context-free neutral, so `lfo_push_target_neutral()` skips DIST
-(same shape as the FILTER special case). One restore covers both bits: the
-block carries drive and mix together, so the restore loops push it once even
-when both targets were checked.
+- **Native (COEF_MOD) on carrier patches** - wave/bass/drone_std. The dist
+  rails ride the same reserved carrier osc as filter/amp/pitch, set once in
+  `voice_apply_native_lfo_topo()` on the base osc (osc0, where the shaper
+  lives). No 20 Hz stepping, no zipper. Drive's COEF_MOD is in octaves (AMY's
+  log2 drive rail), so the carrier's +/-1 swing is +/-`VOICE_LFO_DEPTH_DIST_OCT`
+  octaves of pre-gain; mix is a linear rail, +/-`VOICE_LFO_DEPTH_DIST_MIX`.
+- **Software stepper on PATCH-mode tracks** - a loaded Juno/DX7 with no free
+  carrier osc. Same fallback as filter/amp/pitch: each tick rewrites the drive
+  and mix coefs' CONST term. Law and clamps in `voice_push_dist_lfo()`
+  (voice_config.c), matching the native law exactly.
 
-This is a PROTOTYPE: if the 20 Hz stepping on drive ever matters audibly,
-the successor is a real coefficient rail on `dist_config` in vendored AMY,
-replacing the stepper path wholesale.
+Either way the shaper being OFF makes the target inert - the LFO never switches
+distortion on (native combine is gated on `dist_type`; the stepper checks
+`base->type`). Restore on disable is the committed dist block via
+`voice_apply_dist()`: there is no context-free neutral, so
+`lfo_push_target_neutral()` skips DIST (same shape as FILTER). Native disable
+additionally clears the dist COEF_MOD rails in the topo's disabled branch.

@@ -229,10 +229,25 @@ void voice_apply_native_lfo_topo(uint8_t synth, const seq_lfo_t *lfo,
             e->freq_coefs[COEF_MOD]        = 0.0f;
             e->duty_coefs[COEF_MOD]        = 0.0f;
             e->pan_coefs[COEF_MOD]         = 0.0f;
+            /* Distortion lives on the base osc (osc0) only - the same reach as
+             * voice_apply_dist - so its COEF_MOD rides osc0 alone; clear it on
+             * every coupled osc so a stale rail cannot keep modulating. */
+            e->dist_drive_coefs[COEF_MOD]  = 0.0f;
+            e->dist_mix_coefs[COEF_MOD]    = 0.0f;
             if (LFO_HAS_TGT(lfo, LFO_TARGET_FILTER)) e->filter_freq_coefs[COEF_MOD] = voice_lfo_filter_octaves(lfo);
             if (LFO_HAS_TGT(lfo, LFO_TARGET_AMP))    e->amp_coefs[COEF_MOD]         = d * VOICE_LFO_DEPTH_AMP;
             if (LFO_HAS_TGT(lfo, LFO_TARGET_PITCH))  e->freq_coefs[COEF_MOD]        = d * VOICE_LFO_DEPTH_PITCH;
             if (LFO_HAS_TGT(lfo, LFO_TARGET_SCAN))   e->duty_coefs[COEF_MOD]        = d * VOICE_LFO_DEPTH_SCAN;
+            if (o == 0) {
+                /* Drive rides AMY's log2 rail, so the drive COEF_MOD is in
+                 * octaves: the carrier's +/-1 swing is +/-(d*OCT) octaves of
+                 * pre-gain, matching the old software stepper's law. Mix is a
+                 * linear rail. Both stay inert until osc0's dist_type is set. */
+                if (LFO_HAS_TGT(lfo, LFO_TARGET_DIST_DRIVE))
+                    e->dist_drive_coefs[COEF_MOD] = d * VOICE_LFO_DEPTH_DIST_OCT;
+                if (LFO_HAS_TGT(lfo, LFO_TARGET_DIST_MIX))
+                    e->dist_mix_coefs[COEF_MOD]   = d * VOICE_LFO_DEPTH_DIST_MIX;
+            }
             if (LFO_HAS_TGT(lfo, LFO_TARGET_PAN)) {
                 /* Pan is [0,1], not bipolar: set the center baseline and swing
                  * COEF_MOD around it in the same event. */
@@ -305,6 +320,8 @@ void voice_apply_native_lfo_topo(uint8_t synth, const seq_lfo_t *lfo,
             e->freq_coefs[COEF_MOD]        = 0.0f;
             e->duty_coefs[COEF_MOD]        = 0.0f;
             e->pan_coefs[COEF_MOD]         = 0.0f;
+            e->dist_drive_coefs[COEF_MOD]  = 0.0f;
+            e->dist_mix_coefs[COEF_MOD]    = 0.0f;
             amy_helpers_event_send(e);
         }
 

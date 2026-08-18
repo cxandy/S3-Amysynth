@@ -738,12 +738,11 @@ static void arp_swlfo_service(void)
     const seq_lfo_t *lfo = &s_arp.vp.lfo;
     /* Only patches with NO reserved carrier pair - wave numbers and bass
      * presets are served natively by arp_rebuild, so stepping them here would
-     * double-modulate. Exception: the DIST targets have no COEF_MOD rail, so
-     * on native patches the stepper stays armed for those bits alone (hybrid,
-     * mirrors sequencer_core_lfo_service). */
+     * double-modulate. Distortion now has COEF_MOD rails too (dist_*_coefs),
+     * so it rides the carrier on native patches like every other target and
+     * the stepper is fully off there (mirrors sequencer_core_lfo_service). */
     bool native = sequencer_core_lfo_native_layout(s_arp.patch, NULL, NULL);
-    bool want = s_arp.enabled && lfo->enabled && lfo->targets != 0 &&
-                (!native || (lfo->targets & LFO_TGT_DIST_MASK));
+    bool want = s_arp.enabled && lfo->enabled && lfo->targets != 0 && !native;
 
     if (!want) {
         if (s_swlfo_active) {
@@ -773,10 +772,9 @@ static void arp_swlfo_service(void)
         s_swlfo_active = true;
         s_swlfo_phase  = 0.0f;
     }
-    /* On native patches the stepper drives only the DIST bits; recording just
-     * those keeps deactivation from re-pushing rails it never touched. */
-    s_swlfo_targets = native ? (uint8_t)(lfo->targets & LFO_TGT_DIST_MASK)
-                             : lfo->targets;
+    /* want requires !native, so the stepper only ever runs on PATCH-mode
+     * tracks - record the full target set for the deactivation restore. */
+    s_swlfo_targets = lfo->targets;
 
     float ph = s_swlfo_phase +
                arp_swlfo_hz(lfo->rate, sequencer_core_get_bpm()) * 0.05f;
@@ -806,9 +804,10 @@ static void arp_swlfo_service(void)
     amy_helpers_event_send(e);
     } /* !native */
 
-    /* PROTOTYPE DIST targets: software-only on every patch, base = the arp's
-     * committed dist block (law and event in voice_push_dist_lfo). */
-    if (lfo->targets & LFO_TGT_DIST_MASK)
+    /* DIST targets on a PATCH-mode arp (no carrier): step around the committed
+     * dist block, same law as the native rail (voice_push_dist_lfo). Native
+     * patches drive it via COEF_MOD, so !native excludes them like the rest. */
+    if (!native && (lfo->targets & LFO_TGT_DIST_MASK))
         voice_push_dist_lfo(sequencer_core_arp_synth(), &s_arp.vp.dist, lfo, val);
 
     if (!native && LFO_HAS_TGT(lfo, LFO_TARGET_PITCH)) {

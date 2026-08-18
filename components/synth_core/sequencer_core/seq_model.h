@@ -124,13 +124,11 @@ typedef enum {
     LFO_TARGET_PITCH,      LFO_TARGET_PAN,
     LFO_TARGET_SCAN,       /* AMY `duty`: wavetable cycle-scan position when
                                wave=WAVETABLE, pulse width when wave=PULSE */
-    /* PROTOTYPE: distortion rails, one independent bit each - check either or
-       both. dist_config has no AMY coefficient rails, so
-       these targets are served ONLY by the 20 Hz software stepper re-pushing
-       DIST_DRIVE / DIST_MIX - on native-carrier patches too, where the
-       stepper stays armed for these bits alone. May be revisited as real
-       COEF_MOD rails in vendored AMY if the control-rate stepping ever
-       matters audibly. They live on a second target-checklist tab in the LFO
+    /* Distortion rails, one independent bit each - check either or both.
+       Drive and mix have COEF_MOD rails in AMY now (dist_*_coefs), so these
+       behave like every other target: native (carrier COEF_MOD) on wave/bass/
+       drone patches, 20 Hz software stepper on PATCH-mode tracks with no free
+       carrier osc. They live on a second target-checklist tab in the LFO
        editor, so the panel stays 5 rows tall. */
     LFO_TARGET_DIST_DRIVE, /* pre-gain sweep (breathing distortion)        */
     LFO_TARGET_DIST_MIX,   /* wet/dry sweep on a preconfigured shaper      */
@@ -194,11 +192,10 @@ typedef struct {
 #define LFO_TGT_ALL        ((uint8_t)((1u << LFO_TARGET_COUNT) - 1u))
 #define LFO_HAS_TGT(l, t)  (((l)->targets & LFO_TGT_BIT(t)) != 0)
 
-/* The software-stepper-only distortion targets as one mask: the stepper gate
- * and the native-carrier arming mask both work on the pair, not on a single
- * bit. Seven of the eight target bits are spoken for - a future dist bits/rate
- * target would take the last one, past which `targets` has to widen (a
- * snapshot format change, since it is persisted as one byte). */
+/* The distortion targets as one mask: the PATCH-mode stepper gate works on the
+ * pair, not on a single bit. Seven of the eight target bits are spoken for - a
+ * future dist bits/rate target would take the last one, past which `targets`
+ * has to widen (a snapshot format change, since it is persisted as one byte). */
 #define LFO_TGT_DIST_MASK  ((uint8_t)(LFO_TGT_BIT(LFO_TARGET_DIST_DRIVE) | \
                                       LFO_TGT_BIT(LFO_TARGET_DIST_MIX)))
 

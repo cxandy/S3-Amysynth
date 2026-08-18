@@ -185,16 +185,15 @@ void voice_dist_clamp(seq_dist_t *d);
  * caller's block is untouched. NULL `d`: no-op. Core-0 / UI-task only. */
 void voice_apply_dist(uint8_t synth, const seq_dist_t *d);
 
-/* PROTOTYPE: one distortion-target stepper tick. Computes the swept drive
- * and/or mix - whichever of LFO_TARGET_DIST_DRIVE / LFO_TARGET_DIST_MIX the
- * caller has checked in lfo->targets - around the committed `base` block, and
- * pushes ONLY those wire params - type/bits/rate stay whatever the dist editor last
- * applied. dist_config has no AMY coefficient rails, so unlike the other LFO
- * targets there is no native COEF_MOD form of this; every domain (melodic,
- * arp, live - native-carrier patches included) reaches distortion through
- * its 20 Hz software stepper calling this. May be revisited as a real coef
- * rail in vendored AMY. No-op when the shaper is OFF - an inert target, not
- * an implicit enable. Core-0 / UI-task only. */
+/* One distortion-target stepper tick, the PATCH-mode fallback. Computes the
+ * swept drive and/or mix - whichever of LFO_TARGET_DIST_DRIVE / DIST_MIX the
+ * caller checked in lfo->targets - around the committed `base` block, and
+ * writes ONLY the drive/mix coefs' CONST term (type/bits/rate stay whatever the
+ * dist editor last applied). Drive and mix have COEF_MOD rails in AMY now, so
+ * native-carrier tracks drive distortion through voice_apply_native_lfo_topo()
+ * instead; only PATCH-mode tracks (no free carrier osc) reach it through this
+ * stepper. The law here matches the native rail exactly. No-op when the shaper
+ * is OFF - an inert target, not an implicit enable. Core-0 / UI-task only. */
 void voice_push_dist_lfo(uint8_t synth, const seq_dist_t *base,
                          const seq_lfo_t *lfo, float val);
 

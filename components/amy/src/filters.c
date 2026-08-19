@@ -1051,11 +1051,23 @@ void reset_parametric(uint16_t bus) {
 }
 
 
+// DIST_CRUSH's wet path is DC-blocked with a pole at DIST_HPF_POLE and a zero
+// at 1, placing the corner at DIST_HPF_HZ.  The sample-and-hold is a
+// downsampler with no anti-aliasing, so every partial near a multiple of
+// AMY_SAMPLE_RATE/rate folds down; when that product lands below a few Hz the
+// whole voice rides a slow DC swing measured at a third of full scale, and
+// nothing downstream removes it (distortion runs pre-filter, and an LPF passes
+// DC).  The corner sits below the lowest musical fundamental, so it takes the
+// sub-audio fold-down without touching the audible grit.
+#define DIST_HPF_HZ 15.0f
+#define DIST_HPF_POLE (1.0f - 2 * (float)M_PI * DIST_HPF_HZ / AMY_SAMPLE_RATE)
+
 // Distortion over one channel of `len` samples, in place.  Scope-agnostic:
 // `cfg` and `st` are the caller's, so the same shaper serves the per-osc
 // timbral stage and a chained-osc head shaping a whole voice.  `st` carries
-// only DIST_CRUSH's sample-and-hold, so every independent signal path needs
-// its own (channels included - sharing one across a stereo pair smears them).
+// DIST_CRUSH's sample-and-hold and DC blocker, so every independent signal path
+// needs its own (channels included - sharing one across a stereo pair smears
+// them).
 // Params arrive range-clamped from play_delta(); loop bodies are call-free
 // so they take the Xtensa zero-overhead-loop form.  Returns the abs max of
 // what it wrote (folding can amplify a quiet input, so the pre-distortion
@@ -1128,12 +1140,22 @@ AMY_IRAM_ATTR SAMPLE dist_block(SAMPLE * block, uint16_t len,
             qinv = 1.0f / qscale;
         }
 #endif
+        // DC blocker, wet path only: the dry path stays bit-exact so mix still
+        // crossfades to the true input.  Only `yn1` is carried - the filter's
+        // x[n] - x[n-1] term is zero on every sample that isn't a capture,
+        // because a capture is exactly when the held value moves.  Its impulse
+        // response has l1 norm 2, so the wet term stays inside MUL4_SS's range.
+        SAMPLE pole = F2S(DIST_HPF_POLE);
+        SAMPLE yn1 = st->hpf_yn1;
         for (uint16_t i = 0; i < len; ++i) {
             SAMPLE x = block[i];
+            // Advance the pole, then let a capture inject the step:
+            // y[n] = pole * y[n-1] + (hold[n] - hold[n-1]).
+            yn1 = FILT_MUL_SS(pole, yn1);
             if (count == 0) {
                 SAMPLE v = MUL6A_SS(x, drive);
                 // Saturate before quantizing: keeps hold on the CLIP/FOLD
-                // level scale and mix * hold inside MUL4_SS's [-16, 16).
+                // level scale and the wet term inside MUL4_SS's [-16, 16).
                 if (v > F2S(1.0f)) v = F2S(1.0f);
                 if (v < F2S(-1.0f)) v = F2S(-1.0f);
 #ifdef AMY_USE_FIXEDPOINT
@@ -1141,17 +1163,19 @@ AMY_IRAM_ATTR SAMPLE dist_block(SAMPLE * block, uint16_t len,
 #else
                 if (qscale != 0)  v = floorf(v * qscale + 0.5f) * qinv;
 #endif
+                yn1 += v - hold;
                 hold = v;
                 count = rate;
             }
             --count;
-            SAMPLE y = MUL4_SS(dry, x) + MUL4_SS(mix, hold);
+            SAMPLE y = MUL4_SS(dry, x) + MUL4_SS(mix, yn1);
             block[i] = y;
             if (y < 0) y = -y;
             if (y > amax) amax = y;
         }
         st->hold = hold;
         st->hold_count = count;
+        st->hpf_yn1 = yn1;
         break;
     }
     default:  // unreachable; keep the return contract anyway

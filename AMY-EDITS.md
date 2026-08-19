@@ -158,6 +158,37 @@ parent). The three edits above plus this one are the standing local distortion
 stack, staged as follow-up PRs after #1116 lands.
 
 
+### `filters.c` + `amy.h` + `amy.c` — DC blocker on DIST_CRUSH's wet path (upstream PR candidate)
+
+`DIST_CRUSH`'s sample-and-hold is a downsampler with no anti-aliasing, so every
+partial near a multiple of `AMY_SAMPLE_RATE / rate` folds down to the difference
+frequency. When that product lands below a few Hz the result is not heard as
+aliasing at all — the voice rides a slow DC swing, measured at a third of full
+scale with a saw whose 6th harmonic sits 0.5 Hz off twice the hold rate. Nothing
+downstream removes it: distortion runs pre-filter, an LPF passes DC, and the
+global output high-pass is `#ifdef AMY_HPF_OUTPUT`, which no build defines.
+
+- **One pole, one zero on the wet path only** (`DIST_HPF_HZ` = 15 Hz, corner
+  below the lowest musical fundamental). The dry path stays bit-exact, so `mix`
+  still crossfades to the true input; only the held staircase is filtered.
+- **`dist_state_t` carries `hpf_yn1`,** cleared everywhere `hold` is
+  (`reset_osc_by_pointer`, and the `DIST_TYPE` delta — the blocker's state
+  belongs to the shaper being left behind).
+- **The x[n] - x[n-1] term is folded into the capture.** A held signal only moves
+  when the sample-and-hold reloads, so the difference is zero on every other
+  sample: the loop advances the pole unconditionally and a capture injects
+  `v - hold`. That is exact (bit-identical to the explicit two-state form in
+  simulation), drops the `xn1` state word, and — the reason it is written this
+  way — keeps the crusher loop inside the Xtensa zero-overhead form. The direct
+  transcription spilled and demoted it; this one costs 9 instructions per sample
+  (25 -> 34 in the loop body) with all four `dist_block` ZOL loops intact.
+
+Measured off-target on the exact C: sub-20 Hz energy drops 28 dB in the
+pathological case with the 200 Hz - 20 kHz band unchanged to 0.1 %, i.e. the
+grit survives and only the fold-down goes. CLIP and FOLD are memoryless and
+odd-symmetric, so they generate no DC and are left alone.
+
+
 ### `pcm.c` — retrig fade-restart (gated; replaces the zero-cross defer by default)
 
 Upstream's retrig-into-active-PCM path (#1070) defers the new onset to the

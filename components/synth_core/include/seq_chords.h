@@ -22,15 +22,17 @@ extern "C" {
 #endif
 
 #define SEQ_CHORD_SLOTS      8
-/* Widest voicing: the 9th chords. Voice cost is dynamic - seq_track_num_voices
- * widens only rows carrying a chord - but a second ceiling applies on top:
- * seq_clamp_patch_voices caps voices at SEQ_TRACK_OSC_BUDGET / oscs_per_voice,
- * which is 32/8 = 4 for the DX7 family. So a 9th on a DX7 patch clamps to four
- * voices and loses its top tone (logged, not silent). Left that way
- * deliberately: the render budget does not support chorded tracks on
- * osc-heavy patches anyway (three chorded tracks with sweeps already measured
- * ~60% CPU at four tones), so the osc clamp bites before the CPU does. */
+/* Storage width: wide enough for the 9th chords. Authoring is capped below
+ * that at SEQ_CHORD_MAX_SELECT, because a chord-carrying row widens its voice
+ * count to the tone count and seq_clamp_patch_voices caps voices at
+ * SEQ_TRACK_OSC_BUDGET / oscs_per_voice, which is 32/8 = 4 for the DX7 family:
+ * a 9th on a DX7 patch would clamp to four voices and lose its top tone.
+ * Storage stays 5-wide so admitting 5-tone voicings again (e.g. by spreading
+ * tones across a track pair) is a picker-ceiling change, not a format change. */
 #define SEQ_CHORD_MAX_NOTES  5
+/* Widest chord the picker offers. Raising this past 4 re-admits the 9ths and
+ * re-opens the top-tone clamp described above. */
+#define SEQ_CHORD_MAX_SELECT 4
 #define SEQ_CHORD_BASE       200u
 
 #define SEQ_NOTE_IS_CHORD(n) ((uint8_t)(n) >= SEQ_CHORD_BASE && \

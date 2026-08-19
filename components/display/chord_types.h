@@ -38,11 +38,14 @@ typedef enum {
  * every chord list. Keep CHORD_OFF last for this to hold. */
 #define CHORD_REAL_COUNT  ((uint8_t)CHORD_OFF)
 
+/* Display names follow chord-chart convention: the dominant types and the
+ * major 6th are written bare (C7, C9, C6), so a rooted label concatenates
+ * naturally ("C#7"), while Maj/Min qualify everything else. */
 static inline const char *chord_type_name(chord_type_t t)
 {
     static const char *const s[] = {
-        "Maj", "Min", "Maj7", "Min7", "Dom7", "Sus2", "Sus4", "Dim", "Aug",
-        "Min9", "Maj9", "Maj6", "Min6", "Dom9", "--"
+        "Maj", "Min", "Maj7", "Min7", "7", "Sus2", "Sus4", "Dim", "Aug",
+        "Min9", "Maj9", "6", "Min6", "9", "--"
     };
     return ((unsigned)t < CHORD_TYPE_COUNT) ? s[t] : "?";
 }

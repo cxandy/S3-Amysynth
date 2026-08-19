@@ -18,11 +18,15 @@ typedef enum {
     CHORD_AUG,
     CHORD_MIN9,
     CHORD_MAJ9,
-    /* No chord: the root alone. Appended rather than placed first so every
-     * stored chord value keeps its meaning - a snapshot written before this
-     * existed still decodes to the same chord. It needs no special case
-     * downstream: its interval row is just {0}, so note counts, voice sizing
-     * and voicing all fall out of the existing table. */
+    CHORD_MAJ6,
+    CHORD_MIN6,
+    CHORD_DOM9,
+    /* No chord: the root alone. It needs no special case downstream: its
+     * interval row is just {0}, so note counts, voice sizing and voicing all
+     * fall out of the existing table. CHORD_OFF must stay last (see
+     * CHORD_REAL_COUNT), so new real types insert above and renumber it -
+     * a snapshot that stored OFF under the old numbering decodes to a real
+     * chord, which the load-time clamp accepts (wrong chord, no crash). */
     CHORD_OFF,
     CHORD_TYPE_COUNT
 } chord_type_t;
@@ -38,7 +42,7 @@ static inline const char *chord_type_name(chord_type_t t)
 {
     static const char *const s[] = {
         "Maj", "Min", "Maj7", "Min7", "Dom7", "Sus2", "Sus4", "Dim", "Aug",
-        "Min9", "Maj9", "--"
+        "Min9", "Maj9", "Maj6", "Min6", "Dom9", "--"
     };
     return ((unsigned)t < CHORD_TYPE_COUNT) ? s[t] : "?";
 }

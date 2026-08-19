@@ -106,6 +106,9 @@ static const int8_t s_chord_intervals[CHORD_TYPE_COUNT][6] = {
     /* AUG  */ {  0,  4,  8, -1, -1, -1 },
     /* MIN9 */ {  0,  3,  7, 10, 14, -1 },  // min7 + 9th
     /* MAJ9 */ {  0,  4,  7, 11, 14, -1 },  // maj7 + 9th
+    /* MAJ6 */ {  0,  4,  7,  9, -1, -1 },
+    /* MIN6 */ {  0,  3,  7,  9, -1, -1 },
+    /* DOM9 */ {  0,  4,  7, 10, 14, -1 },  // dom7 + 9th
     /* OFF  */ {  0, -1, -1, -1, -1, -1 },  // root only - "no chord"
 };
 

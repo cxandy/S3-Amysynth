@@ -39,12 +39,14 @@ fx_state_t s_fx = {
     .reverb_xover_hz = FX_PARAM_UNSET,
     .chorus_rate     = FX_PARAM_UNSET,
     .chorus_depth    = FX_PARAM_UNSET,
-    /* Mirrors bus_reset(): stage off, unity drive/mix, transparent crusher. */
+    /* Stage off, unity drive, transparent crusher (mirrors bus_reset()).
+     * Mix starts dry, diverging from the engine's wet default: at bus scope
+     * the wet amount is small and dialed in deliberately. */
     .bus_dist_type   = 0,
     .bus_dist_drive  = 1,
     .bus_dist_bits   = 16,
     .bus_dist_rate   = 1,
-    .bus_dist_mix    = 100,
+    .bus_dist_mix    = 0,
     .presets_alter_global = false,
 };
 

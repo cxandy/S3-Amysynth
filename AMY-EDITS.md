@@ -189,6 +189,32 @@ grit survives and only the fold-down goes. CLIP and FOLD are memoryless and
 odd-symmetric, so they generate no DC and are left alone.
 
 
+### `filters.c` + `amy.h` + `amy.c` + `parse.c` + `api.c` + `patches.c` — per-bus distortion stage (upstream PR candidate)
+
+Port of the `dist-bus-stage` branch on the fork: one distortion stage per bus,
+FIRST in the bus FX chain (before EQ/chorus/echo/reverb in `amy_fill_buffer`),
+so the delays and reverb take clean tails of the shaped signal. `bus_state_t`
+carries a `dist_config_t` (static drive/mix - bus params have no coef rail)
+plus `dist_state_t dist_state[AMY_MAX_CHANNELS]`.
+
+- **Pre-gain moved from `MUL6A_SS` to `SMULR6`** in `dist_block` (all three
+  types): a bus sum runs several times full scale, so drive * x can pass
+  MUL6A's [-64, 64) product range and wrap sign. SMULR6 is exact on
+  64-bit-mul hardware (S3, desktop); the 32x32 fallback's [-128, 128) sizes
+  the bus stage's +/-8 FS input wrap guard (`DIST_BUS_MAX`).
+- Params: `BUS_DIST_TYPE/DRIVE/BITS/RATE/MIX` in the bus-directed family
+  (bus in `delta.osc`); event fields `bus_dist_*`; clamps once at delta
+  apply. Bus drive is linear, capped at 16 (= `drive_of_logdrive(4)`).
+- Wire: `'J'` takes a 5-float list `[type,drive,bits,rate,mix]`, matching
+  this tree's `'C'` list style for the per-osc stage (the fork/upstream
+  branch uses `G`-style sub-commands instead - the wire converges at the
+  next re-vendor). `sprint_event` parity deliberately skipped here for the
+  same reason; `event_addresses_bus` and delta readback are wired.
+
+Everything defaults off (`bus_reset`); with the stage unset the render path
+is untouched.
+
+
 ### `pcm.c` — retrig fade-restart (gated; replaces the zero-cross defer by default)
 
 Upstream's retrig-into-active-PCM path (#1070) defers the new onset to the

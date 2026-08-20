@@ -758,7 +758,17 @@ int amy_parse_message(char * message, amy_event *e) {
             case 'i': pos += amy_parse_synth_layer_message(arg, e); break;  // Skip over second cmd letter, if any, or entire MIDI CC code string.
             case 'I': e->ratio = atoff(arg); break;
             case 'j': e->tempo = atoff(arg); break;
-            /* J available */
+            // Per-bus dist.{type,drive,bits,rate,mix}; 'y' picks the bus.
+            case 'J': {
+                float bus_dist_params[5];
+                parse_list_float(arg, bus_dist_params, 5, AMY_UNSET_FLOAT);
+                e->bus_dist_type = bus_dist_params[0];
+                e->bus_dist_drive = bus_dist_params[1];
+                e->bus_dist_bits = bus_dist_params[2];
+                e->bus_dist_rate = bus_dist_params[3];
+                e->bus_dist_mix = bus_dist_params[4];
+                break;
+            }
             // chorus.level
             case 'k': if(AMY_HAS_CHORUS) {
                 float chorus_params[4];

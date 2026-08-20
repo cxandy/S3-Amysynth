@@ -455,6 +455,7 @@ bool event_addresses_bus(amy_event *e) {
     _RET_TRUE_IF_5_F_SET(echo_level, echo_delay_ms, echo_max_delay_ms, echo_feedback, echo_filter_coef);
     _RET_TRUE_IF_5_F_SET(chorus_level, chorus_max_delay, chorus_lfo_freq, chorus_depth, chorus_depth);
     _RET_TRUE_IF_5_F_SET(reverb_level, reverb_liveness, reverb_damping, reverb_xover_hz, reverb_xover_hz);
+    _RET_TRUE_IF_5_F_SET(bus_dist_type, bus_dist_drive, bus_dist_bits, bus_dist_rate, bus_dist_mix);
     return false;
 }
 
@@ -600,6 +601,11 @@ struct delta *deltas_to_event(struct delta *queue, struct amy_event *event) {
       _CASE_F(reverb_liveness, REVERB_LIVENESS)
       _CASE_F(reverb_damping, REVERB_DAMPING)
       _CASE_F(reverb_xover_hz, REVERB_XOVER_HZ)
+      _CASE_F(bus_dist_type, BUS_DIST_TYPE)
+      _CASE_F(bus_dist_drive, BUS_DIST_DRIVE)
+      _CASE_F(bus_dist_bits, BUS_DIST_BITS)
+      _CASE_F(bus_dist_rate, BUS_DIST_RATE)
+      _CASE_F(bus_dist_mix, BUS_DIST_MIX)
       _CASE_I(eg_type[0], EG0_TYPE)
       _CASE_I(eg_type[1], EG1_TYPE)
       _CASE_F(velocity, VELOCITY)

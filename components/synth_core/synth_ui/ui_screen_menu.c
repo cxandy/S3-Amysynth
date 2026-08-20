@@ -496,8 +496,10 @@ bool synth_ui_menu_handle_encoder(long delta)
 #endif
                 (int)MI_COUNT;
         int c = (int)seq_state.menu_cursor + (int)delta;
-        /* clamp (no wrap) so the list feels bounded */
-        c = SEQ_CLAMP_INT(c, 0, n - 1);
+        /* wrap: the lists are long enough that top-to-bottom in one click
+         * beats scrolling the whole way */
+        c %= n;
+        if (c < 0) c += n;
         seq_state.menu_cursor = (uint8_t)c;
     }
     s_force_redraw = true;

@@ -35,6 +35,14 @@ typedef struct {
     int16_t reverb_xover_hz; /* 500..8000 Hz; unset -> AMY 3000 Hz        */
     int16_t chorus_rate;     /* centi-Hz (0.01 Hz); unset -> AMY 0.5 Hz   */
     int16_t chorus_depth;    /* 0..100 (%);  unset -> AMY 0.5             */
+    /* Per-bus distortion, used at global scope (bus 0 - everything renders
+     * there today). Concrete defaults, no sentinels: bus_reset()'s values
+     * are known, unlike the factory FX above. */
+    uint8_t bus_dist_type;   /* AMY DIST_*: 0 OFF, 1 CLIP, 2 FOLD, 3 CRUSH */
+    uint8_t bus_dist_drive;  /* 1..16 pre-gain (fold depth for FOLD)       */
+    uint8_t bus_dist_bits;   /* 1..24 CRUSH bit depth; 24 = no-op          */
+    uint8_t bus_dist_rate;   /* 1..64 CRUSH sample-hold length in samples  */
+    uint8_t bus_dist_mix;    /* 0..100 -> 0..1 wet/dry                     */
     /* False: loading a patch must NOT change the global FX. Every built-in
      * Juno patch string ends with `x<eq>k<chorus>` commands writing the single
      * global EQ/chorus, so without this guard a preset change on any synth
@@ -54,6 +62,7 @@ void fx_push_eq(void);
 void fx_push_echo(void);
 void fx_push_chorus(void);
 void fx_push_reverb(void);
+void fx_push_dist(void);
 
 /* Re-impose the cached global FX after a patch load, since every built-in Juno
  * patch ends with global EQ/chorus commands that would re-skin the whole mix.

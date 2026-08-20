@@ -304,6 +304,11 @@ static void ser_glob(tlv_writer_t *w)
     tlv_put_i16(w, s_fx.chorus_rate);
     tlv_put_i16(w, s_fx.chorus_depth);
     tlv_put_u8(w,  s_fx.presets_alter_global ? 1 : 0);
+    tlv_put_u8(w,  s_fx.bus_dist_type);
+    tlv_put_u8(w,  s_fx.bus_dist_drive);
+    tlv_put_u8(w,  s_fx.bus_dist_bits);
+    tlv_put_u8(w,  s_fx.bus_dist_rate);
+    tlv_put_u8(w,  s_fx.bus_dist_mix);
     tlv_end_section(w, h);
 }
 
@@ -343,6 +348,12 @@ static bool parse_glob(tlv_reader_t *b, staged_glob_t *g)
     if (!tlv_get_i16(b, &g->fx.chorus_depth))   return true;
     if (!tlv_get_u8(b, &v))                     return true;
     g->fx.presets_alter_global = v != 0;
+    if (!tlv_get_u8(b, &g->fx.bus_dist_type))   return true;
+    g->fx.bus_dist_type &= 3;  /* stray data reads as a valid type */
+    if (!tlv_get_u8(b, &g->fx.bus_dist_drive))  return true;
+    if (!tlv_get_u8(b, &g->fx.bus_dist_bits))   return true;
+    if (!tlv_get_u8(b, &g->fx.bus_dist_rate))   return true;
+    if (!tlv_get_u8(b, &g->fx.bus_dist_mix))    return true;
     return true;
 }
 
@@ -358,6 +369,7 @@ static void apply_glob(const staged_glob_t *g)
     fx_push_eq();
     fx_push_echo();
     fx_push_chorus();
+    fx_push_dist();
     fx_push_reverb();
 }
 

@@ -1,5 +1,6 @@
 #include "synth_ui/synth_ui_internal.h"
 #include "amy_fx.h"
+#include "display_dist.h"   /* DIST_DRIVE/BITS/RATE range + mix step */
 #include "seq_clamp.h"
 #include <stdio.h>
 
@@ -30,6 +31,11 @@ typedef enum {
     FXI_REVERB_LIVENESS,
     FXI_REVERB_DAMPING,
     FXI_REVERB_XOVER,
+    FXI_DIST_TYPE,
+    FXI_DIST_DRIVE,
+    FXI_DIST_BITS,
+    FXI_DIST_RATE,
+    FXI_DIST_MIX,
     FXI_PRESET_GLOBAL_FX,
     FXI_NOTEFX,     /* dive row: opens the per-layer NoteFX (gate/glide) page */
     FXI_BACK,
@@ -104,6 +110,27 @@ const menu_item_view_t *fx_menu_build_items(void)
     snprintf(s_fx_items[FXI_REVERB_XOVER].label, MENU_LABEL_LEN, "Rev Xover");
     snprintf(s_fx_items[FXI_REVERB_XOVER].value, MENU_VALUE_LEN, "%dHz",
              fx_eff(s_fx.reverb_xover_hz, 3000));
+
+    /* Per-bus distortion at global scope; same field model as the per-track
+     * dist editor (type OFF..CRUSH, drive 1..16, bits/rate for CRUSH). */
+    {
+        static const char *dist_names[4] = { "OFF", "CLIP", "FOLD", "CRUSH" };
+        snprintf(s_fx_items[FXI_DIST_TYPE].label, MENU_LABEL_LEN, "Dist");
+        snprintf(s_fx_items[FXI_DIST_TYPE].value, MENU_VALUE_LEN, "%s",
+                 dist_names[s_fx.bus_dist_type & 3]);
+    }
+    snprintf(s_fx_items[FXI_DIST_DRIVE].label, MENU_LABEL_LEN, "Dst Drive");
+    snprintf(s_fx_items[FXI_DIST_DRIVE].value, MENU_VALUE_LEN, "%u",
+             (unsigned)s_fx.bus_dist_drive);
+    snprintf(s_fx_items[FXI_DIST_BITS].label, MENU_LABEL_LEN, "Dst Bits");
+    snprintf(s_fx_items[FXI_DIST_BITS].value, MENU_VALUE_LEN, "%u",
+             (unsigned)s_fx.bus_dist_bits);
+    snprintf(s_fx_items[FXI_DIST_RATE].label, MENU_LABEL_LEN, "Dst Rate");
+    snprintf(s_fx_items[FXI_DIST_RATE].value, MENU_VALUE_LEN, "%u",
+             (unsigned)s_fx.bus_dist_rate);
+    snprintf(s_fx_items[FXI_DIST_MIX].label, MENU_LABEL_LEN, "Dst Mix");
+    snprintf(s_fx_items[FXI_DIST_MIX].value, MENU_VALUE_LEN, "%u%%",
+             (unsigned)s_fx.bus_dist_mix);
 
     /* "Presets alter global FX? y/n" — OFF makes Juno presets per-synth. */
     snprintf(s_fx_items[FXI_PRESET_GLOBAL_FX].label, MENU_LABEL_LEN, "Preset FX");
@@ -208,6 +235,35 @@ void fx_menu_edit_value(uint8_t idx, int delta)
             break;
         case FXI_REVERB_XOVER:
             fx_step(&s_fx.reverb_xover_hz, 3000, 250, 500, 8000, dir, fx_push_reverb);
+            break;
+        case FXI_DIST_TYPE:
+            /* 4-way wrap like the per-track dist editor: OFF is a value in
+             * the cycle, not a separate toggle. */
+            s_fx.bus_dist_type = (uint8_t)((s_fx.bus_dist_type + 4u + dir) % 4u);
+            fx_push_dist();
+            break;
+        case FXI_DIST_DRIVE:
+            s_fx.bus_dist_drive = (uint8_t)SEQ_CLAMP_INT(
+                (int)s_fx.bus_dist_drive + dir,
+                (int)DIST_DRIVE_MIN, (int)DIST_DRIVE_MAX);
+            fx_push_dist();
+            break;
+        case FXI_DIST_BITS:
+            s_fx.bus_dist_bits = (uint8_t)SEQ_CLAMP_INT(
+                (int)s_fx.bus_dist_bits + dir,
+                (int)DIST_BITS_MIN, (int)DIST_BITS_MAX);
+            fx_push_dist();
+            break;
+        case FXI_DIST_RATE:
+            s_fx.bus_dist_rate = (uint8_t)SEQ_CLAMP_INT(
+                (int)s_fx.bus_dist_rate + dir,
+                (int)DIST_RATE_MIN, (int)DIST_RATE_MAX);
+            fx_push_dist();
+            break;
+        case FXI_DIST_MIX:
+            s_fx.bus_dist_mix = (uint8_t)SEQ_CLAMP_INT(
+                (int)s_fx.bus_dist_mix + dir * (int)DIST_MIX_STEP, 0, 100);
+            fx_push_dist();
             break;
         case FXI_PRESET_GLOBAL_FX:
             s_fx.presets_alter_global = !s_fx.presets_alter_global;

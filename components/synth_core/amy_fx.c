@@ -39,6 +39,12 @@ fx_state_t s_fx = {
     .reverb_xover_hz = FX_PARAM_UNSET,
     .chorus_rate     = FX_PARAM_UNSET,
     .chorus_depth    = FX_PARAM_UNSET,
+    /* Mirrors bus_reset(): stage off, unity drive/mix, transparent crusher. */
+    .bus_dist_type   = 0,
+    .bus_dist_drive  = 1,
+    .bus_dist_bits   = 16,
+    .bus_dist_rate   = 1,
+    .bus_dist_mix    = 100,
     .presets_alter_global = false,
 };
 
@@ -93,6 +99,20 @@ void fx_push_reverb(void)
         e->reverb_damping  = (float)s_fx.reverb_damping / 100.0f;
     if (s_fx.reverb_xover_hz != FX_PARAM_UNSET)
         e->reverb_xover_hz = (float)s_fx.reverb_xover_hz;
+    amy_helpers_event_send(e);
+}
+
+void fx_push_dist(void)
+{
+    /* The full config travels together (like the per-osc 'C' wire): the type
+     * delta restarts the crusher/DC-blocker state, which recaptures within
+     * one hold period - inaudible at menu-edit rate. */
+    amy_event *e = amy_helpers_event_begin();
+    e->bus_dist_type  = (float)s_fx.bus_dist_type;
+    e->bus_dist_drive = (float)s_fx.bus_dist_drive;
+    e->bus_dist_bits  = (float)s_fx.bus_dist_bits;
+    e->bus_dist_rate  = (float)s_fx.bus_dist_rate;
+    e->bus_dist_mix   = (float)s_fx.bus_dist_mix / 100.0f;
     amy_helpers_event_send(e);
 }
 

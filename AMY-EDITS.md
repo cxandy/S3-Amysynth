@@ -69,6 +69,23 @@ flowchart TD
 
 ## Active local edits
 
+### 2026-08-21 status — distortion edits re-ported to the upstream `dist-followups` shape
+
+Upstream #1116 merged (per-osc distortion, 'G' wire, SILENT-head scope, crush
+DC blocker, SMULR6 pre-gain), and the follow-on work was assembled as the
+upstream PR branch `dist-followups` (stage-stacking bitmask, drive/mix coef
+vectors on GD/GM, per-bus 'J' stage). The vendored tree now carries that
+exact layout: per-stage enables (`dist_clip/fold/crush` + bus twins,
+`*_EN` param ids), `dist_stages` bitmask, int-typed bits/rate, a shared G/J
+stage parser, per-stage 1:1 printers. The old 'C' + 'U'/'W' wire and the
+single-type 'J' are retired. Firmware callers (`voice_config.c`,
+`amy_fx.c`) map their single-type UI model onto the enables.
+
+The four distortion sections below describe how the edits were built and
+remain accurate as history; as code, the SILENT-osc and DC-blocker parts are
+upstream now, and the rest should diff clean against `dist-followups` -
+reconcile by re-vendor once that PR merges.
+
 ### `filters.c` + `amy.c` + `amy.h` — distortion on the SILENT control osc (upstream PR candidate)
 
 Follow-up to the per-osc distortion stage (#1116), extending the SILENT control

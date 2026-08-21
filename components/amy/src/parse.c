@@ -476,6 +476,72 @@ int amy_parse_synth_layer_message(char *message, amy_event *e) {
     return skip_chars;
 }
 
+// Stage letters shared by the per-osc ('G') and per-bus ('J') distortion
+// grammars; the caller hands over whichever scope's event fields the letter
+// addresses. C<v> and F<v> enable clip and fold (0 turns the stage off);
+// H<bits>[,<rate>] enables the bitcrusher (H0 turns it off).  Stages are
+// independent - each letter touches only its own enable.  Returns 1 if cmd
+// was a stage letter.
+static int parse_dist_stage_message(char cmd, char *message, uint8_t *clip,
+                                    uint8_t *fold, uint8_t *crush,
+                                    uint8_t *bits, uint16_t *rate) {
+    if (cmd == 'C') { *clip = (atoff(message) != 0); return 1; }
+    if (cmd == 'F') { *fold = (atoff(message) != 0); return 1; }
+    if (cmd == 'H') {
+        uint16_t vals[2];
+        parse_list_uint16_t(message, vals, 2, AMY_UNSET_VALUE(vals[0]));
+        if (vals[0] == 0) {
+            *crush = 0;
+        } else {
+            *crush = 1;
+            if (AMY_IS_SET(vals[0])) *bits = (uint8_t)MIN(vals[0], 24);
+            if (AMY_IS_SET(vals[1])) *rate = vals[1];
+        }
+        return 1;
+    }
+    return 0;
+}
+
+// Parser for the 'G' prefix: a digit is filter_type as ever; a letter is a
+// distortion sub-command. GC<v> and GF<v> enable clip and fold (0 turns the
+// stage off), GH<bits>[,<rate>] enables the bitcrusher (GH0 turns it off),
+// GD<coefs> and GM<coefs> carry the drive and wet/dry coef vectors shared by
+// every stage - a single value sets just the constant term, so scalar use
+// reads as before.  Stages are independent: enabled stages stack in
+// clip -> fold -> crush order, and each command touches only its own stage.
+static int amy_parse_dist_layer_message(char *message, amy_event *e) {
+    if (message[0] >= '0' && message[0] <= '9') {
+        // It's just the filter type.
+        e->filter_type = atoi(message);
+        return 0;  // no extra skip.
+    }
+    char cmd = message[0];
+    message++;
+    if (!parse_dist_stage_message(cmd, message, &e->dist_clip, &e->dist_fold,
+                                  &e->dist_crush, &e->dist_bits, &e->dist_rate)) {
+        if (cmd == 'D')  parse_coef_message(message, e->dist_drive_coefs);
+        else if (cmd == 'M')  parse_coef_message(message, e->dist_mix_coefs);
+        else fprintf(stderr, "Unrecognized distortion command '%s'\n", message - 1);
+    }
+    return 1;  // skip the sub-command letter.
+}
+
+// Parser for the 'J' prefix: the per-osc 'G' stage grammar at bus scope
+// ('y' picks the bus).  JD<drive> and JM<mix> stay scalar - a bus has no
+// per-note modulation sources to feed a coef vector.
+static int amy_parse_bus_dist_layer_message(char *message, amy_event *e) {
+    char cmd = message[0];
+    message++;
+    if (!parse_dist_stage_message(cmd, message, &e->bus_dist_clip,
+                                  &e->bus_dist_fold, &e->bus_dist_crush,
+                                  &e->bus_dist_bits, &e->bus_dist_rate)) {
+        if (cmd == 'D')  e->bus_dist_drive = atoff(message);
+        else if (cmd == 'M')  e->bus_dist_mix = atoff(message);
+        else fprintf(stderr, "Unrecognized bus distortion command '%s'\n", message - 1);
+    }
+    return 1;  // skip the sub-command letter.
+}
+
 // Parse a sample-load parameter list ('z'/'zS' messages): comma-separated
 // unsigned integers, except the midinote field which may be fractional (e.g.
 // a sample tuned 4 cents sharp of C4 is "60.04"). parse_list_uint32_t cannot
@@ -726,22 +792,11 @@ int amy_parse_message(char * message, amy_event *e) {
             }
             case 'b': e->feedback = atoff(arg); break;
             case 'c': e->chained_osc = atoi(arg); break;
-            // dist.{type,bits,rate}; drive and mix are coef vectors, below.
-            case 'C': {
-                float dist_params[3];
-                parse_list_float(arg, dist_params, 3, AMY_UNSET_FLOAT);
-                e->dist_type = dist_params[0];
-                e->dist_bits = dist_params[1];
-                e->dist_rate = dist_params[2];
-                break;
-            }
-            case 'U': parse_coef_message(arg, e->dist_drive_coefs); break;
-            case 'W': parse_coef_message(arg, e->dist_mix_coefs); break;
             case 'd': parse_coef_message(arg, e->duty_coefs);break;
             case 'D': show_debug(atoi(arg)); break;
             case 'f': parse_coef_message(arg, e->freq_coefs);break;
             case 'F': parse_coef_message(arg, e->filter_freq_coefs); break;
-            case 'G': e->filter_type = atoi(arg); break;
+            case 'G': pos += amy_parse_dist_layer_message(arg, e); break;  // Skip over second cmd letter, if any.
             /* g used for Alles for client # */
             // 'H' is the ticks= schedule command, it's caught in amy_add_message before this.
             //case 'H': parse_list_uint32_t(arg, e->ticks, 3, 0); break;
@@ -758,17 +813,9 @@ int amy_parse_message(char * message, amy_event *e) {
             case 'i': pos += amy_parse_synth_layer_message(arg, e); break;  // Skip over second cmd letter, if any, or entire MIDI CC code string.
             case 'I': e->ratio = atoff(arg); break;
             case 'j': e->tempo = atoff(arg); break;
-            // Per-bus dist.{type,drive,bits,rate,mix}; 'y' picks the bus.
-            case 'J': {
-                float bus_dist_params[5];
-                parse_list_float(arg, bus_dist_params, 5, AMY_UNSET_FLOAT);
-                e->bus_dist_type = bus_dist_params[0];
-                e->bus_dist_drive = bus_dist_params[1];
-                e->bus_dist_bits = bus_dist_params[2];
-                e->bus_dist_rate = bus_dist_params[3];
-                e->bus_dist_mix = bus_dist_params[4];
-                break;
-            }
+            // Per-bus distortion: the 'G' stage grammar at bus scope
+            // ('y' picks the bus).
+            case 'J': pos += amy_parse_bus_dist_layer_message(arg, e); break;
             // chorus.level
             case 'k': if(AMY_HAS_CHORUS) {
                 float chorus_params[4];

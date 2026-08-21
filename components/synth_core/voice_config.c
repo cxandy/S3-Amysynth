@@ -165,9 +165,14 @@ void voice_apply_dist(uint8_t synth, const seq_dist_t *d)
     amy_event *e = amy_helpers_event_begin();
     e->synth      = synth;
     e->osc        = 0;
-    e->dist_type  = (float)v.type;
-    e->dist_bits  = (float)v.bits;
-    e->dist_rate  = (float)v.rate;
+    /* The firmware model keeps a single type choice; AMY's engine is
+     * per-stage enables, so author all three - the unchosen stages get 0,
+     * which is what makes a type change turn the previous stage off. */
+    e->dist_clip  = (v.type == 1u);
+    e->dist_fold  = (v.type == 2u);
+    e->dist_crush = (v.type == 3u);
+    e->dist_bits  = (uint8_t)v.bits;
+    e->dist_rate  = (uint16_t)v.rate;
     /* Drive and mix ride AMY's control-coef rails now: author the CONST term
      * only, leaving the MOD rail for a native LFO. Drive's CONST is linear
      * (AMY maps it onto its log2 drive rail on the way in); mix is linear 0..1. */
@@ -254,7 +259,7 @@ void voice_apply_native_lfo_topo(uint8_t synth, const seq_lfo_t *lfo,
                 /* Drive rides AMY's log2 rail, so the drive COEF_MOD is in
                  * octaves: the carrier's +/-1 swing is +/-(d*OCT) octaves of
                  * pre-gain, matching the old software stepper's law. Mix is a
-                 * linear rail. Both stay inert until osc0's dist_type is set. */
+                 * linear rail. Both stay inert until a dist stage is enabled. */
                 if (LFO_HAS_TGT(lfo, LFO_TARGET_DIST_DRIVE))
                     e->dist_drive_coefs[COEF_MOD] = d * VOICE_LFO_DEPTH_DIST_OCT;
                 if (LFO_HAS_TGT(lfo, LFO_TARGET_DIST_MIX))

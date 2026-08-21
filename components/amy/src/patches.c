@@ -383,9 +383,52 @@ int sprint_event(amy_event *e, char *s, size_t len, bool wirecode) {
     _EPRINT_I_SEQ(mod_source, "mod_source", NUM_MOD_SOURCES, "L");
     _EPRINT_I(algorithm, "algorithm", "o");
     _EPRINT_I(filter_type, "filter_type", "G");
-    _EPRINT_VALS_3(e->dist_type, e->dist_bits, e->dist_rate, "dist_{type,bits,rate}", "C");
-    _EPRINT_COEF(dist_drive_coefs, "dist_drive_coefs", "U");
-    _EPRINT_COEF(dist_mix_coefs, "dist_mix_coefs", "W");
+    // Distortion rides 'G' sub-commands; each stage prints its own toggle,
+    // so state-to-wire is one field per command.  GH carries the crusher's
+    // bits,rate; a disabled crusher prints as GH0.
+    _EPRINT_I(dist_clip, "dist_clip", "GC");
+    _EPRINT_I(dist_fold, "dist_fold", "GF");
+    if (AMY_IS_SET(e->dist_crush)) {
+        if (!wirecode) {
+            snprintf(s, len - (size_t)(s - s_entry), " dist_crush: %d", e->dist_crush); s += strlen(s);
+        } else if (!e->dist_crush) {
+            snprintf(s, len - (size_t)(s - s_entry), "GH0"); s += strlen(s);
+        } else {
+            snprintf(s, len - (size_t)(s - s_entry), "GH"); s += strlen(s);
+            if (AMY_IS_SET(e->dist_bits)) { snprintf(s, len - (size_t)(s - s_entry), "%d", e->dist_bits); s += strlen(s); }
+            if (AMY_IS_SET(e->dist_rate)) { snprintf(s, len - (size_t)(s - s_entry), ",%d", e->dist_rate); s += strlen(s); }
+        }
+    }
+    if (!wirecode) {
+        // Wire mode prints bits/rate inside GH above; they mean nothing
+        // without the crusher, so an event carrying them with dist_crush
+        // unset drops them from the wire form.
+        _EPRINT_I(dist_bits, "dist_bits", "");
+        _EPRINT_I(dist_rate, "dist_rate", "");
+    }
+    _EPRINT_COEF(dist_drive_coefs, "dist_drive_coefs", "GD");
+    _EPRINT_COEF(dist_mix_coefs, "dist_mix_coefs", "GM");
+    // Bus distortion rides 'J' with the same per-stage grammar; JD/JM stay
+    // scalar at bus scope.
+    _EPRINT_I(bus_dist_clip, "bus_dist_clip", "JC");
+    _EPRINT_I(bus_dist_fold, "bus_dist_fold", "JF");
+    if (AMY_IS_SET(e->bus_dist_crush)) {
+        if (!wirecode) {
+            snprintf(s, len - (size_t)(s - s_entry), " bus_dist_crush: %d", e->bus_dist_crush); s += strlen(s);
+        } else if (!e->bus_dist_crush) {
+            snprintf(s, len - (size_t)(s - s_entry), "JH0"); s += strlen(s);
+        } else {
+            snprintf(s, len - (size_t)(s - s_entry), "JH"); s += strlen(s);
+            if (AMY_IS_SET(e->bus_dist_bits)) { snprintf(s, len - (size_t)(s - s_entry), "%d", e->bus_dist_bits); s += strlen(s); }
+            if (AMY_IS_SET(e->bus_dist_rate)) { snprintf(s, len - (size_t)(s - s_entry), ",%d", e->bus_dist_rate); s += strlen(s); }
+        }
+    }
+    if (!wirecode) {
+        _EPRINT_I(bus_dist_bits, "bus_dist_bits", "");
+        _EPRINT_I(bus_dist_rate, "bus_dist_rate", "");
+    }
+    _EPRINT_F(bus_dist_drive, "bus_dist_drive", "JD");
+    _EPRINT_F(bus_dist_mix, "bus_dist_mix", "JM");
     _EPRINT_I_SEQ(bp_is_set, "bp_is_set", MAX_BREAKPOINT_SETS, "??");
     // Convert these two at least to vectors of ints, save several hundred bytes
     _EPRINT_I_SEQ(algo_source, "algo_source", MAX_ALGO_OPS, "O");
@@ -455,7 +498,15 @@ bool event_addresses_bus(amy_event *e) {
     _RET_TRUE_IF_5_F_SET(echo_level, echo_delay_ms, echo_max_delay_ms, echo_feedback, echo_filter_coef);
     _RET_TRUE_IF_5_F_SET(chorus_level, chorus_max_delay, chorus_lfo_freq, chorus_depth, chorus_depth);
     _RET_TRUE_IF_5_F_SET(reverb_level, reverb_liveness, reverb_damping, reverb_xover_hz, reverb_xover_hz);
-    _RET_TRUE_IF_5_F_SET(bus_dist_type, bus_dist_drive, bus_dist_bits, bus_dist_rate, bus_dist_mix);
+    // Not _RET_TRUE_IF_5_F_SET: the int fields' unset sentinels cast to
+    // ordinary floats rather than NaN.
+    _RET_TRUE_IF_SET(bus_dist_clip);
+    _RET_TRUE_IF_SET(bus_dist_fold);
+    _RET_TRUE_IF_SET(bus_dist_crush);
+    _RET_TRUE_IF_SET(bus_dist_drive);
+    _RET_TRUE_IF_SET(bus_dist_bits);
+    _RET_TRUE_IF_SET(bus_dist_rate);
+    _RET_TRUE_IF_SET(bus_dist_mix);
     return false;
 }
 
@@ -499,7 +550,11 @@ bool event_addresses_oscs(amy_event *e) {
     _RET_TRUE_IF_SET_SEQ(mod_source, NUM_MOD_SOURCES);
     _RET_TRUE_IF_SET(algorithm);
     _RET_TRUE_IF_SET(filter_type);
-    if (AMY_IS_SET((float)(e->dist_type)) || AMY_IS_SET((float)(e->dist_bits)) || AMY_IS_SET((float)(e->dist_rate))) return true;
+    _RET_TRUE_IF_SET(dist_clip);
+    _RET_TRUE_IF_SET(dist_fold);
+    _RET_TRUE_IF_SET(dist_crush);
+    _RET_TRUE_IF_SET(dist_bits);
+    _RET_TRUE_IF_SET(dist_rate);
     _RET_TRUE_IF_SET_COEF(dist_drive_coefs);
     _RET_TRUE_IF_SET_COEF(dist_mix_coefs);
     _RET_TRUE_IF_SET_SEQ(bp_is_set, MAX_BREAKPOINT_SETS);
@@ -581,9 +636,11 @@ struct delta *deltas_to_event(struct delta *queue, struct amy_event *event) {
       _CASE_I(reset_osc, RESET_OSC)
       _CASE_I(note_source_channel, NOTE_SOURCE_CHANNEL)
       _CASE_I(filter_type, FILTER_TYPE)
-      _CASE_F(dist_type, DIST_TYPE)
-      _CASE_F(dist_bits, DIST_BITS)
-      _CASE_F(dist_rate, DIST_RATE)
+      _CASE_I(dist_clip, DIST_CLIP_EN)
+      _CASE_I(dist_fold, DIST_FOLD_EN)
+      _CASE_I(dist_crush, DIST_CRUSH_EN)
+      _CASE_I(dist_bits, DIST_BITS)
+      _CASE_I(dist_rate, DIST_RATE)
       _CASE_I(algorithm, ALGORITHM)
       _CASE_F(eq_l, EQ_L)
       _CASE_F(eq_m, EQ_M)
@@ -601,10 +658,12 @@ struct delta *deltas_to_event(struct delta *queue, struct amy_event *event) {
       _CASE_F(reverb_liveness, REVERB_LIVENESS)
       _CASE_F(reverb_damping, REVERB_DAMPING)
       _CASE_F(reverb_xover_hz, REVERB_XOVER_HZ)
-      _CASE_F(bus_dist_type, BUS_DIST_TYPE)
+      _CASE_I(bus_dist_clip, BUS_DIST_CLIP_EN)
+      _CASE_I(bus_dist_fold, BUS_DIST_FOLD_EN)
+      _CASE_I(bus_dist_crush, BUS_DIST_CRUSH_EN)
       _CASE_F(bus_dist_drive, BUS_DIST_DRIVE)
-      _CASE_F(bus_dist_bits, BUS_DIST_BITS)
-      _CASE_F(bus_dist_rate, BUS_DIST_RATE)
+      _CASE_I(bus_dist_bits, BUS_DIST_BITS)
+      _CASE_I(bus_dist_rate, BUS_DIST_RATE)
       _CASE_F(bus_dist_mix, BUS_DIST_MIX)
       _CASE_I(eg_type[0], EG0_TYPE)
       _CASE_I(eg_type[1], EG1_TYPE)

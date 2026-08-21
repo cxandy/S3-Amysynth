@@ -110,10 +110,14 @@ void fx_push_dist(void)
      * delta restarts the crusher/DC-blocker state, which recaptures within
      * one hold period - inaudible at menu-edit rate. */
     amy_event *e = amy_helpers_event_begin();
-    e->bus_dist_type  = (float)s_fx.bus_dist_type;
+    /* Single type choice in the FX model onto AMY's per-stage enables; the
+     * unchosen stages get 0 so a type change turns the previous stage off. */
+    e->bus_dist_clip  = (s_fx.bus_dist_type == 1u);
+    e->bus_dist_fold  = (s_fx.bus_dist_type == 2u);
+    e->bus_dist_crush = (s_fx.bus_dist_type == 3u);
     e->bus_dist_drive = (float)s_fx.bus_dist_drive;
-    e->bus_dist_bits  = (float)s_fx.bus_dist_bits;
-    e->bus_dist_rate  = (float)s_fx.bus_dist_rate;
+    e->bus_dist_bits  = (uint8_t)s_fx.bus_dist_bits;
+    e->bus_dist_rate  = (uint16_t)s_fx.bus_dist_rate;
     e->bus_dist_mix   = (float)s_fx.bus_dist_mix / 100.0f;
     amy_helpers_event_send(e);
 }

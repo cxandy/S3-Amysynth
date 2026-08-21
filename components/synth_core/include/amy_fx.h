@@ -38,7 +38,8 @@ typedef struct {
     /* Per-bus distortion, used at global scope (bus 0 - everything renders
      * there today). Concrete defaults, no sentinels: bus_reset()'s values
      * are known, unlike the factory FX above. */
-    uint8_t bus_dist_type;   /* AMY DIST_*: 0 OFF, 1 CLIP, 2 FOLD, 3 CRUSH */
+    uint8_t bus_dist_type;   /* UI choice: 0 OFF, 1 CLIP, 2 FOLD, 3 CRUSH;
+                                mapped onto AMY's per-stage enables on push */
     uint8_t bus_dist_drive;  /* 1..16 pre-gain (fold depth for FOLD)       */
     uint8_t bus_dist_bits;   /* 1..24 CRUSH bit depth; 24 = no-op          */
     uint8_t bus_dist_rate;   /* 1..64 CRUSH sample-hold length in samples  */

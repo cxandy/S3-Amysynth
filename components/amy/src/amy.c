@@ -490,10 +490,10 @@ void bus_reset(uint16_t bus) {
     filters_init(bus);
     reset_parametric(bus);
     // Distortion defaults match the per-osc stage; state clears with them.
-    amy_global.bus[bus]->dist.type = DIST_OFF;
+    amy_global.bus[bus]->dist.stages = 0;
     amy_global.bus[bus]->dist.drive = 1.0f;
-    amy_global.bus[bus]->dist.bits = 16.0f;
-    amy_global.bus[bus]->dist.rate = 1.0f;
+    amy_global.bus[bus]->dist.bits = 16;
+    amy_global.bus[bus]->dist.rate = 1;
     amy_global.bus[bus]->dist.mix = 1.0f;
     for (int c = 0; c < AMY_MAX_CHANNELS; ++c) {
         amy_global.bus[bus]->dist_state[c].hold = 0;
@@ -764,10 +764,12 @@ void amy_event_to_deltas_queue(amy_event *e, uint16_t base_osc, struct delta **q
         EVENT_TO_DELTA_F(reverb_liveness, REVERB_LIVENESS)
         EVENT_TO_DELTA_F(reverb_damping, REVERB_DAMPING)
         EVENT_TO_DELTA_F(reverb_xover_hz, REVERB_XOVER_HZ)
-        EVENT_TO_DELTA_F(bus_dist_type, BUS_DIST_TYPE)
+        EVENT_TO_DELTA_I(bus_dist_clip, BUS_DIST_CLIP_EN)
+        EVENT_TO_DELTA_I(bus_dist_fold, BUS_DIST_FOLD_EN)
+        EVENT_TO_DELTA_I(bus_dist_crush, BUS_DIST_CRUSH_EN)
         EVENT_TO_DELTA_F(bus_dist_drive, BUS_DIST_DRIVE)
-        EVENT_TO_DELTA_F(bus_dist_bits, BUS_DIST_BITS)
-        EVENT_TO_DELTA_F(bus_dist_rate, BUS_DIST_RATE)
+        EVENT_TO_DELTA_I(bus_dist_bits, BUS_DIST_BITS)
+        EVENT_TO_DELTA_I(bus_dist_rate, BUS_DIST_RATE)
         EVENT_TO_DELTA_F(bus_dist_mix, BUS_DIST_MIX)
     }
     // Hereafter, d.osc refers to an osc
@@ -855,9 +857,11 @@ void amy_event_to_deltas_queue(amy_event *e, uint16_t base_osc, struct delta **q
     }
     EVENT_TO_DELTA_I(note_source_channel, NOTE_SOURCE_CHANNEL)
     EVENT_TO_DELTA_I(filter_type, FILTER_TYPE)
-    EVENT_TO_DELTA_F(dist_type, DIST_TYPE)
-    EVENT_TO_DELTA_F(dist_bits, DIST_BITS)
-    EVENT_TO_DELTA_F(dist_rate, DIST_RATE)
+    EVENT_TO_DELTA_I(dist_clip, DIST_CLIP_EN)
+    EVENT_TO_DELTA_I(dist_fold, DIST_FOLD_EN)
+    EVENT_TO_DELTA_I(dist_crush, DIST_CRUSH_EN)
+    EVENT_TO_DELTA_I(dist_bits, DIST_BITS)
+    EVENT_TO_DELTA_I(dist_rate, DIST_RATE)
     EVENT_TO_DELTA_COEFS_COEF0_SPECIAL(dist_drive_coefs, DIST_LOGDRIVE, logdrive_of_drive)
     EVENT_TO_DELTA_COEFS(dist_mix_coefs, DIST_MIX)
     EVENT_TO_DELTA_I(algorithm, ALGORITHM)
@@ -987,9 +991,9 @@ void reset_osc_params(struct synthinfo *psynth) {
     psynth->portamento_alpha = 0;
     psynth->resonance = 0.7f;
     psynth->filter_type = FILTER_NONE;
-    psynth->dist_type = DIST_OFF;
-    psynth->dist_bits = 16.0f;
-    psynth->dist_rate = 1.0f;
+    psynth->dist_stages = 0;
+    psynth->dist_bits = 16;
+    psynth->dist_rate = 1;
     for (int j = 0; j < NUM_COMBO_COEFS; ++j) {
         psynth->dist_logdrive_coefs[j] = 0;
         psynth->dist_mix_coefs[j] = 0;
@@ -1554,13 +1558,19 @@ void play_delta(struct delta *d) {
     DELTA_TO_SYNTH_F(RATIO, logratio)
     DELTA_TO_SYNTH_F(RESONANCE, resonance)
     DELTA_TO_SYNTH_I(FILTER_TYPE, filter_type)
-    if (d->param == DIST_TYPE) {
-        // Range-check as float before the cast (huge values are UB to cast).
-        // Restart the rate reducer so a type change can't replay a stale held
-        // sample, and clear the DC blocker with it: its state belongs to the
-        // shaper being left behind.
-        float type = d->data.f;
-        synth[d->osc]->dist_type = (type >= DIST_OFF && type <= DIST_CRUSH) ? (uint8_t)type : DIST_OFF;
+    if (d->param == DIST_CLIP_EN) {
+        if (d->data.i) synth[d->osc]->dist_stages |= DIST_CLIP;
+        else           synth[d->osc]->dist_stages &= ~DIST_CLIP;
+    }
+    if (d->param == DIST_FOLD_EN) {
+        if (d->data.i) synth[d->osc]->dist_stages |= DIST_FOLD;
+        else           synth[d->osc]->dist_stages &= ~DIST_FOLD;
+    }
+    if (d->param == DIST_CRUSH_EN) {
+        if (d->data.i) synth[d->osc]->dist_stages |= DIST_CRUSH;
+        else           synth[d->osc]->dist_stages &= ~DIST_CRUSH;
+        // The crusher is the only stage with state; restart its rate reducer
+        // and DC blocker on toggle so a re-enable can't replay stale state.
         synth[d->osc]->dist_state.hold = 0;
         synth[d->osc]->dist_state.hold_count = 0;
         synth[d->osc]->dist_state.hpf_yn1 = 0;
@@ -1569,16 +1579,16 @@ void play_delta(struct delta *d) {
     // are combined; bits and rate have no coef rail, so they clamp here and
     // dist_block still gets a fully checked config.
     if (d->param == DIST_BITS) {
-        float bits = d->data.f;
-        if (bits < 1.0f) bits = 1.0f;
-        if (bits > 24.0f) bits = 24.0f;  // > S_FRAC_BITS: quantization off
-        synth[d->osc]->dist_bits = bits;
+        int32_t bits = (int32_t)d->data.i;
+        if (bits < 1) bits = 1;
+        if (bits > 24) bits = 24;  // > S_FRAC_BITS: quantization off
+        synth[d->osc]->dist_bits = (uint8_t)bits;
     }
     if (d->param == DIST_RATE) {
-        float rate = d->data.f;
-        if (rate < 1.0f) rate = 1.0f;
-        if (rate > 1024.0f) rate = 1024.0f;
-        synth[d->osc]->dist_rate = rate;
+        int32_t rate = (int32_t)d->data.i;
+        if (rate < 1) rate = 1;
+        if (rate > 1024) rate = 1024;
+        synth[d->osc]->dist_rate = (uint16_t)rate;
     }
     DELTA_TO_SYNTH_I(NOTE_SOURCE_CHANNEL, s_note_source_channel)
     DELTA_TO_SYNTH_I(EG0_TYPE, eg_type[0])
@@ -1762,10 +1772,19 @@ void play_delta(struct delta *d) {
     if(d->param == REVERB_XOVER_HZ) config_reverb(bus, AMY_UNSET_FLOAT, AMY_UNSET_FLOAT, AMY_UNSET_FLOAT, d->data.f);
     // Per-bus distortion: same range rules as the per-osc stage (clamped here
     // so dist_process_bus doesn't range-check per block).
-    if(d->param == BUS_DIST_TYPE) {
-        // Same type range check and state restart as the per-osc DIST_TYPE.
-        float type = d->data.f;
-        amy_global.bus[bus]->dist.type = (type >= DIST_OFF && type <= DIST_CRUSH) ? (uint8_t)type : DIST_OFF;
+    if(d->param == BUS_DIST_CLIP_EN) {
+        if (d->data.i) amy_global.bus[bus]->dist.stages |= DIST_CLIP;
+        else           amy_global.bus[bus]->dist.stages &= ~DIST_CLIP;
+    }
+    if(d->param == BUS_DIST_FOLD_EN) {
+        if (d->data.i) amy_global.bus[bus]->dist.stages |= DIST_FOLD;
+        else           amy_global.bus[bus]->dist.stages &= ~DIST_FOLD;
+    }
+    if(d->param == BUS_DIST_CRUSH_EN) {
+        if (d->data.i) amy_global.bus[bus]->dist.stages |= DIST_CRUSH;
+        else           amy_global.bus[bus]->dist.stages &= ~DIST_CRUSH;
+        // Restart the rate reducer and DC blocker on toggle, exactly as the
+        // per-osc crush enable does.
         for (int c = 0; c < AMY_MAX_CHANNELS; ++c) {
             amy_global.bus[bus]->dist_state[c].hold = 0;
             amy_global.bus[bus]->dist_state[c].hold_count = 0;
@@ -1774,8 +1793,8 @@ void play_delta(struct delta *d) {
     }
     // Bus drive is linear (no coef rail); 16 = drive_of_logdrive(MAX_DIST_LOGDRIVE).
     if(d->param == BUS_DIST_DRIVE) { float v = d->data.f; if (v < 0.0f) v = 0.0f; if (v > 16.0f) v = 16.0f; amy_global.bus[bus]->dist.drive = v; }
-    if(d->param == BUS_DIST_BITS)  { float v = d->data.f; if (v < 1.0f) v = 1.0f; if (v > 24.0f) v = 24.0f; amy_global.bus[bus]->dist.bits = v; }
-    if(d->param == BUS_DIST_RATE)  { float v = d->data.f; if (v < 1.0f) v = 1.0f; if (v > 1024.0f) v = 1024.0f; amy_global.bus[bus]->dist.rate = v; }
+    if(d->param == BUS_DIST_BITS)  { int32_t v = (int32_t)d->data.i; if (v < 1) v = 1; if (v > 24) v = 24; amy_global.bus[bus]->dist.bits = (uint8_t)v; }
+    if(d->param == BUS_DIST_RATE)  { int32_t v = (int32_t)d->data.i; if (v < 1) v = 1; if (v > 1024) v = 1024; amy_global.bus[bus]->dist.rate = (uint16_t)v; }
     if(d->param == BUS_DIST_MIX)   { float v = d->data.f; if (v < 0.0f) v = 0.0f; if (v > 1.0f) v = 1.0f; amy_global.bus[bus]->dist.mix = v; }
 
     // triggers / envelopes
@@ -1981,7 +2000,7 @@ void hold_and_modify(uint16_t osc) {
     msynth[osc]->filter_logfreq = filter_logfreq;
     msynth[osc]->duty = combine_controls(ctrl_inputs, synth[osc]->duty_coefs);
 
-    if (synth[osc]->dist_type != DIST_OFF) {
+    if (synth[osc]->dist_stages) {
         // Both clamps live here, so dist_block still receives a checked config
         // once per block and its per-sample loops stay range-check free.
         msynth[osc]->dist_drive = drive_of_logdrive(
@@ -2124,7 +2143,7 @@ SAMPLE render_osc_wave(uint16_t osc, uint8_t core, SAMPLE* buf) {
         if (synth[osc]->wave != SILENT) {
             // apply distortion to osc if set, pre-filter; returns its own max
             // (folding can amplify a quiet release tail).
-            if (synth[osc]->dist_type != DIST_OFF) {
+            if (synth[osc]->dist_stages) {
                 max_val = dist_process(buf, osc);
             }
             // apply filter to osc if set
@@ -2152,7 +2171,7 @@ SAMPLE render_osc_wave(uint16_t osc, uint8_t core, SAMPLE* buf) {
             // runs once per voice on that voice's mix alone.  After the
             // envelope, so note dynamics drive the shaper as they do per-osc;
             // before the filter, keeping the per-osc dist -> filter order.
-            if (synth[osc]->dist_type != DIST_OFF) {
+            if (synth[osc]->dist_stages) {
                 max_val = dist_process(buf, osc);
             }
             // apply filter to osc if set
@@ -2373,7 +2392,7 @@ int16_t * amy_fill_buffer() {
         // apply the eq filters if there is some signal and EQ is non-default.
     for (int bus=0; bus <= amy_global.highest_bus; ++bus) {
         // Per-bus distortion, first so echo/reverb take clean tails.
-        if (amy_global.bus[bus]->dist.type != DIST_OFF) {
+        if (amy_global.bus[bus]->dist.stages) {
             dist_process_bus(bus, fbl[0][bus]);
         }
         // Per-bus EQ

@@ -321,11 +321,12 @@ enum coefs{
 #define FILTER_LPF24 4
 #define FILTER_NOTCH 5
 #define FILTER_PHASER 6
-// synth[].dist_type values
+// Distortion stage bits (synth[].dist_stages / dist_config_t.stages);
+// enabled stages run in clip -> fold -> crush order.
 #define DIST_OFF 0
 #define DIST_CLIP 1
 #define DIST_FOLD 2
-#define DIST_CRUSH 3
+#define DIST_CRUSH 4
 // synth[].wave values
 #define SINE 0
 #define PULSE 1
@@ -450,12 +451,14 @@ enum params{
     // to be VOLUME_BASE..VOLUME_BASE+n, which is what capped the bus count --
     // the ids would have run into MODE below.  95..98 are now free.
     VOLUME,                              // 71
-    // Per-osc distortion stage (see dist_process).  Drive and mix are
-    // modulatable, so each claims a full coef vector out of that free block.
-    DIST_TYPE,                           // 72
-    DIST_BITS, DIST_RATE,                // 73, 74
-    DIST_LOGDRIVE,                       // 75..84
-    DIST_MIX=DIST_LOGDRIVE + NUM_COMBO_COEFS,  // 85..94
+    // Per-osc distortion stage (see dist_process); one enable per stage.
+    // Drive and mix are modulatable, so each claims a full coef vector out
+    // of the free block; 97..98 remain.
+    DIST_CLIP_EN,                        // 72
+    DIST_FOLD_EN, DIST_CRUSH_EN,         // 73, 74
+    DIST_BITS, DIST_RATE,                // 75, 76
+    DIST_LOGDRIVE,                       // 77..86
+    DIST_MIX=DIST_LOGDRIVE + NUM_COMBO_COEFS,  // 87..96
     MODE=99,                             // 99
     ALGO_SOURCE_START=100,               // 100..105
     ALGO_SOURCE_END=100+MAX_ALGO_OPS,    // 106
@@ -479,7 +482,9 @@ enum params{
     REVERB_DAMPING,
     REVERB_XOVER_HZ,
     // Per-bus distortion stage; bus in delta.osc like the params above.
-    BUS_DIST_TYPE,
+    // Same per-stage enables as the per-osc stage.
+    BUS_DIST_CLIP_EN,
+    BUS_DIST_FOLD_EN, BUS_DIST_CRUSH_EN,
     BUS_DIST_DRIVE, BUS_DIST_BITS,
     BUS_DIST_RATE, BUS_DIST_MIX,
     BUS,
@@ -659,10 +664,13 @@ typedef struct amy_event {
     uint16_t mod_source[NUM_MOD_SOURCES];
     uint8_t algorithm;
     uint8_t filter_type;
-    // Per-osc distortion: scalars on 'C', drive coefs on 'U', mix coefs on 'W'.
-    float dist_type;
-    float dist_bits;
-    float dist_rate;
+    // Per-osc distortion: 'G' sub-commands - per-stage enables on GC/GF/GH,
+    // drive coefs on GD, mix coefs on GM.
+    uint8_t dist_clip;
+    uint8_t dist_fold;
+    uint8_t dist_crush;
+    uint8_t dist_bits;
+    uint16_t dist_rate;
     // Like freq_coefs, the CONST coef is in the natural unit -- linear drive,
     // 1 = unity -- and the modulation coefs are octaves of it.
     float dist_drive_coefs[NUM_COMBO_COEFS];
@@ -708,10 +716,12 @@ typedef struct amy_event {
     float reverb_liveness;
     float reverb_damping;
     float reverb_xover_hz;
-    float bus_dist_type;
+    uint8_t bus_dist_clip;
+    uint8_t bus_dist_fold;
+    uint8_t bus_dist_crush;
     float bus_dist_drive;
-    float bus_dist_bits;
-    float bus_dist_rate;
+    uint8_t bus_dist_bits;
+    uint16_t bus_dist_rate;
     float bus_dist_mix;
 } amy_event;
 
@@ -721,11 +731,11 @@ typedef struct amy_event {
 // DIST_CRUSH carries between blocks - its sample-and-hold plus the DC blocker
 // that follows it - and each independent signal path needs its own.
 typedef struct dist_config {
-    uint8_t type;    // One of the DIST_ values.
-    float drive;     // Pre-gain, 0..16 (fold depth for DIST_FOLD).
-    float bits;      // DIST_CRUSH bit depth; >= 24 disables quantization.
-    float rate;      // DIST_CRUSH sample-hold length in samples; 1 disables.
-    float mix;       // Wet/dry, 0..1.
+    uint8_t stages;  // DIST_ stage bits; 0 = no stage enabled, distortion bypassed.
+    float drive;     // Pre-gain, 2^-4..2^4 (fold depth for DIST_FOLD), shared.
+    uint8_t bits;    // DIST_CRUSH bit depth; >= 24 disables quantization.
+    uint16_t rate;   // DIST_CRUSH sample-hold length in samples; 1 disables.
+    float mix;       // Wet/dry per pass, 0..1, shared.
 } dist_config_t;
 
 typedef struct dist_state {
@@ -760,9 +770,9 @@ struct synthinfo {
     // timbral stage; on a SILENT chained-osc head it shapes the summed voice.
     // Drive and mix are combined per block into msynth, so what an osc stores
     // is the authored coef vectors, not a ready-made dist_config_t.
-    uint8_t dist_type;
-    float dist_bits;
-    float dist_rate;
+    uint8_t dist_stages;
+    uint8_t dist_bits;
+    uint16_t dist_rate;
     float dist_logdrive_coefs[NUM_COMBO_COEFS];
     float dist_mix_coefs[NUM_COMBO_COEFS];
     uint16_t chained_osc;

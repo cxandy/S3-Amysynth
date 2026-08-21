@@ -168,7 +168,7 @@ scale with a saw whose 6th harmonic sits 0.5 Hz off twice the hold rate. Nothing
 downstream removes it: distortion runs pre-filter, an LPF passes DC, and the
 global output high-pass is `#ifdef AMY_HPF_OUTPUT`, which no build defines.
 
-- **One pole, one zero on the wet path only** (`DIST_HPF_HZ` = 15 Hz, corner
+- **One pole, one zero on the wet path only** (`DIST_HPF_HZ` = 10 Hz, corner
   below the lowest musical fundamental). The dry path stays bit-exact, so `mix`
   still crossfades to the true input; only the held staircase is filtered.
 - **`dist_state_t` carries `hpf_yn1`,** cleared everywhere `hold` is

@@ -1059,7 +1059,7 @@ void reset_parametric(uint16_t bus) {
 // nothing downstream removes it (distortion runs pre-filter, and an LPF passes
 // DC).  The corner sits below the lowest musical fundamental, so it takes the
 // sub-audio fold-down without touching the audible grit.
-#define DIST_HPF_HZ 15.0f
+#define DIST_HPF_HZ 10.0f
 #define DIST_HPF_POLE (1.0f - 2 * (float)M_PI * DIST_HPF_HZ / AMY_SAMPLE_RATE)
 
 // Distortion over one channel of `len` samples, in place.  Scope-agnostic:

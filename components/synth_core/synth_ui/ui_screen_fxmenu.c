@@ -112,13 +112,10 @@ const menu_item_view_t *fx_menu_build_items(void)
              fx_eff(s_fx.reverb_xover_hz, 3000));
 
     /* Per-bus distortion at global scope; same field model as the per-track
-     * dist editor (type OFF..CRUSH, drive 1..16, bits/rate for CRUSH). */
-    {
-        static const char *dist_names[4] = { "OFF", "CLIP", "FOLD", "CRUSH" };
-        snprintf(s_fx_items[FXI_DIST_TYPE].label, MENU_LABEL_LEN, "Dist");
-        snprintf(s_fx_items[FXI_DIST_TYPE].value, MENU_VALUE_LEN, "%s",
-                 dist_names[s_fx.bus_dist_type & 3]);
-    }
+     * dist editor (type = stage mask, drive 1..16, bits/rate for CRUSH). */
+    snprintf(s_fx_items[FXI_DIST_TYPE].label, MENU_LABEL_LEN, "Dist");
+    snprintf(s_fx_items[FXI_DIST_TYPE].value, MENU_VALUE_LEN, "%s",
+             seq_dist_stage_label(s_fx.bus_dist_type));
     snprintf(s_fx_items[FXI_DIST_DRIVE].label, MENU_LABEL_LEN, "Dst Drive");
     snprintf(s_fx_items[FXI_DIST_DRIVE].value, MENU_VALUE_LEN, "%u",
              (unsigned)s_fx.bus_dist_drive);
@@ -237,9 +234,9 @@ void fx_menu_edit_value(uint8_t idx, int delta)
             fx_step(&s_fx.reverb_xover_hz, 3000, 250, 500, 8000, dir, fx_push_reverb);
             break;
         case FXI_DIST_TYPE:
-            /* 4-way wrap like the per-track dist editor: OFF is a value in
-             * the cycle, not a separate toggle. */
-            s_fx.bus_dist_type = (uint8_t)((s_fx.bus_dist_type + 4u + dir) % 4u);
+            /* 8-state stage-set cycle like the per-track dist editor: OFF is
+             * a value in the cycle, not a separate toggle. */
+            s_fx.bus_dist_type = seq_dist_stage_step(s_fx.bus_dist_type, dir);
             fx_push_dist();
             break;
         case FXI_DIST_DRIVE:

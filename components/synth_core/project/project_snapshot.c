@@ -349,7 +349,7 @@ static bool parse_glob(tlv_reader_t *b, staged_glob_t *g)
     if (!tlv_get_u8(b, &v))                     return true;
     g->fx.presets_alter_global = v != 0;
     if (!tlv_get_u8(b, &g->fx.bus_dist_type))   return true;
-    g->fx.bus_dist_type &= 3;  /* stray data reads as a valid type */
+    g->fx.bus_dist_type &= 7;  /* stray data reads as a valid stage mask */
     if (!tlv_get_u8(b, &g->fx.bus_dist_drive))  return true;
     if (!tlv_get_u8(b, &g->fx.bus_dist_bits))   return true;
     if (!tlv_get_u8(b, &g->fx.bus_dist_rate))   return true;

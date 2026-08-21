@@ -143,7 +143,7 @@ void voice_build_wave(const voice_wave_cfg_t *cfg)
 void voice_dist_clamp(seq_dist_t *d)
 {
     if (!d) return;
-    d->type  = (uint8_t)(d->type > 3u ? 0u : d->type);  /* unknown type -> OFF */
+    d->type  = (uint8_t)(d->type & 7u);  /* stage mask; stray bits dropped */
     d->drive = SEQ_CLAMP_U8(d->drive, 1u, 16u);
     d->bits  = SEQ_CLAMP_U8(d->bits, 1u, 24u);
     d->rate  = SEQ_CLAMP_U8(d->rate, 1u, 64u);
@@ -165,12 +165,11 @@ void voice_apply_dist(uint8_t synth, const seq_dist_t *d)
     amy_event *e = amy_helpers_event_begin();
     e->synth      = synth;
     e->osc        = 0;
-    /* The firmware model keeps a single type choice; AMY's engine is
-     * per-stage enables, so author all three - the unchosen stages get 0,
-     * which is what makes a type change turn the previous stage off. */
-    e->dist_clip  = (v.type == 1u);
-    e->dist_fold  = (v.type == 2u);
-    e->dist_crush = (v.type == 3u);
+    /* v.type is a stage mask; author all three enables explicitly so a
+     * mask change turns dropped stages off. */
+    e->dist_clip  = !!(v.type & 1u);
+    e->dist_fold  = !!(v.type & 2u);
+    e->dist_crush = !!(v.type & 4u);
     e->dist_bits  = (uint8_t)v.bits;
     e->dist_rate  = (uint16_t)v.rate;
     /* Drive and mix ride AMY's control-coef rails now: author the CONST term

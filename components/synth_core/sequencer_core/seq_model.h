@@ -220,12 +220,36 @@ typedef struct {
  * (S_FRAC_BITS, amy_fixedpoint.h): one sign bit plus 23 fraction bits is where
  * quantization becomes a no-op, whatever the output stage does. */
 typedef struct {
-    uint8_t type;   /* AMY DIST_*: 0 OFF, 1 CLIP, 2 FOLD, 3 CRUSH   */
+    uint8_t type;   /* AMY stage mask: bit0 CLIP, bit1 FOLD, bit2 CRUSH;
+                       0 = OFF.  Stages stack in clip->fold->crush order. */
     uint8_t drive;  /* 1..16  pre-gain (fold depth for FOLD)        */
     uint8_t bits;   /* 1..24  CRUSH bit depth; 24 = no-op           */
     uint8_t rate;   /* 1..64  CRUSH sample-hold length in samples   */
     uint8_t mix;    /* 0..100 wet %                                 */
 } seq_dist_t;
+
+/* Stage-set cycle for the dist Type rows (track editor and bus FX row cycle
+ * identically): raw masks ordered singles-first, labels indexed by mask. */
+#define SEQ_DIST_STAGE_STATES 8u
+static inline uint8_t seq_dist_stage_mask(uint8_t idx) {
+    static const uint8_t order[SEQ_DIST_STAGE_STATES] = {0,1,2,4,3,5,6,7};
+    return order[idx & 7u];
+}
+static inline uint8_t seq_dist_stage_index(uint8_t mask) {
+    for (uint8_t i = 0; i < SEQ_DIST_STAGE_STATES; ++i)
+        if (seq_dist_stage_mask(i) == (mask & 7u)) return i;
+    return 0;
+}
+static inline uint8_t seq_dist_stage_step(uint8_t mask, int step) {
+    uint8_t i = seq_dist_stage_index(mask);
+    return seq_dist_stage_mask((uint8_t)((i + SEQ_DIST_STAGE_STATES + (uint8_t)step)
+                                         % SEQ_DIST_STAGE_STATES));
+}
+static inline const char *seq_dist_stage_label(uint8_t mask) {
+    static const char *names[SEQ_DIST_STAGE_STATES] =
+        { "OFF", "CLIP", "FOLD", "C+F", "CRSH", "C+H", "F+H", "ALL" };
+    return names[mask & 7u];
+}
 
 /* ── Per-voice parameter block (shared voice-config layer) ──
  * Embedded by every engine's state: melodic layers (per track), the arp and the

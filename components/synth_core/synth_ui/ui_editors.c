@@ -2284,8 +2284,9 @@ bool synth_ui_dist_handle_encoder(long delta)
     int step = (delta > 0) ? 1 : -1;
     switch (s_dist_view.cursor) {
         case DIST_FLD_TYPE:
-            /* 4-way wrap: OFF is a value in the cycle, not a separate toggle. */
-            d->type = (uint8_t)((d->type + 4u + step) % 4u);
+            /* 8-state stage-set cycle (singles first, then the stacks); OFF
+             * is a value in the cycle, not a separate toggle. */
+            d->type = seq_dist_stage_step(d->type, step);
             break;
         case DIST_FLD_DRIVE:
             d->drive = (uint8_t)SEQ_CLAMP_INT((int)d->drive + step,

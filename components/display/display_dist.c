@@ -27,16 +27,6 @@
 #define DIST_CV_CY      35      /* vertical centre = output 0              */
 #define DIST_CV_HH      19      /* half height in pixels (y = -1 .. +1)    */
 
-static const char *type_label(uint8_t t)
-{
-    switch (t) {
-        case 0:  return "OFF";
-        case 1:  return "CLIP";
-        case 2:  return "FOLD";
-        case 3:  return "CRUSH";
-        default: return "?";
-    }
-}
 
 /* Float mirror of AMY's dist_process() shaping (components/amy/src/filters.c),
  * minus the wet/dry blend - see the file header on why Mix stays out. Kept in
@@ -44,39 +34,36 @@ static const char *type_label(uint8_t t)
  * the fixed-point render path. */
 static float dist_transfer(const seq_dist_t *d, float x)
 {
-    if (d->type == 0) return x;            /* OFF: the stage is bypassed */
+    if (d->type == 0) return x;            /* OFF: every stage bypassed */
 
+    /* Enabled stages compose in the engine's fixed clip -> fold -> crush
+     * order, each re-applying drive as its own pre-gain - exactly what the
+     * stacked passes in dist_block do at mix = 1. */
     float drive = (float)d->drive;
-    float v = x * drive;
-    float y;
-
-    switch (d->type) {
-        case 1:                            /* CLIP: cubic soft knee */
-            if (v >  1.0f) v =  1.0f;
-            if (v < -1.0f) v = -1.0f;
-            y = v * (1.0f - v * v * 0.33333334f);
-            break;
-        case 2: {                          /* FOLD: triangle wavefolder */
-            float w = v + 1.0f;
-            w -= 4.0f * floorf(w * 0.25f);
-            y = 1.0f - fabsf(w - 2.0f);
-            break;
+    float y = x;
+    if (d->type & 1u) {                    /* CLIP: cubic soft knee */
+        float v = y * drive;
+        if (v >  1.0f) v =  1.0f;
+        if (v < -1.0f) v = -1.0f;
+        y = v * (1.0f - v * v * 0.33333334f);
+    }
+    if (d->type & 2u) {                    /* FOLD: triangle wavefolder */
+        float v = y * drive;
+        float w = v + 1.0f;
+        w -= 4.0f * floorf(w * 0.25f);
+        y = 1.0f - fabsf(w - 2.0f);
+    }
+    if (d->type & 4u) {                    /* CRUSH: saturate then quantize */
+        float v = y * drive;
+        if (v >  1.0f) v =  1.0f;
+        if (v < -1.0f) v = -1.0f;
+        /* bits == 0 would make the shift below undefined. Every store path
+         * clamps to >= 1, but the renderer must not depend on that. */
+        if (d->bits >= 1u && d->bits <= 23u) {
+            float qscale = (float)(1u << (d->bits - 1u));
+            v = floorf(v * qscale + 0.5f) / qscale;
         }
-        case 3: {                          /* CRUSH: saturate then quantize */
-            if (v >  1.0f) v =  1.0f;
-            if (v < -1.0f) v = -1.0f;
-            /* bits == 0 would make the shift below undefined. Every store path
-             * clamps to >= 1, but the renderer must not depend on that. */
-            if (d->bits >= 1u && d->bits <= 23u) {
-                float qscale = (float)(1u << (d->bits - 1u));
-                v = floorf(v * qscale + 0.5f) / qscale;
-            }
-            y = v;
-            break;
-        }
-        default:
-            y = v;
-            break;
+        y = v;
     }
     return y;
 }
@@ -169,7 +156,7 @@ void dist_view_draw(u8g2_t *u8g2, const dist_view_t *v)
         bool sel = (v->cursor == f);
         switch (f) {
             case DIST_FLD_TYPE:
-                snprintf(buf, sizeof(buf), "Type: %s", type_label(d->type));
+                snprintf(buf, sizeof(buf), "Type: %s", seq_dist_stage_label(d->type));
                 break;
             case DIST_FLD_DRIVE:
                 snprintf(buf, sizeof(buf), "Drive: %u", (unsigned)d->drive);
@@ -193,10 +180,10 @@ void dist_view_draw(u8g2_t *u8g2, const dist_view_t *v)
         }
         draw_right_row(u8g2, slot_y[f], buf, sel, v->editing);
 
-        /* BITS and RATE only exist for CRUSH; strike them through on the other
-         * types rather than hiding them - the values persist and re-arm the
-         * moment the type comes back, matching the LFO page's WOBBLE rows. */
-        if (d->type != 3u && (f == DIST_FLD_BITS || f == DIST_FLD_RATE)) {
+        /* BITS and RATE only exist for CRUSH; strike them through while the
+         * crush stage is off rather than hiding them - the values persist and
+         * re-arm the moment it comes back, matching the WOBBLE rows. */
+        if (!(d->type & 4u) && (f == DIST_FLD_BITS || f == DIST_FLD_RATE)) {
             u8g2_SetDrawColor(u8g2, sel ? 0 : 1);
             u8g2_DrawHLine(u8g2, DIST_RCOL_X, (uint8_t)(slot_y[f] - 3),
                            u8g2_GetStrWidth(u8g2, buf));

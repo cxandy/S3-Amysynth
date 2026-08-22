@@ -7,7 +7,6 @@
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
-#include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,10 +15,11 @@
 static const char *TAG = "project_store";
 
 #define PROJECT_HDR_LEN 32
+#define SLOT_MAX_PATH (sizeof(PROJECT_FS_BASE) + 8 + 1)
 
-static void slot_path(uint8_t slot, bool tmp, char out[48])
+static void slot_path(uint8_t slot, bool tmp, char out[SLOT_MAX_PATH])
 {
-    snprintf(out, 48, PROJECT_FS_BASE "/P%02u.%s",
+    snprintf(out, SLOT_MAX_PATH, PROJECT_FS_BASE "/P%02u.%s",
              (unsigned)slot, tmp ? "tmp" : "amp");
 }
 
@@ -52,7 +52,7 @@ bool project_store_write(uint8_t slot, const char *name,
     put_hdr(hdr, name, (uint32_t)payload_len,
             project_crc32(payload, payload_len));
 
-    char tmp_path[48], final_path[48];
+    char tmp_path[SLOT_MAX_PATH], final_path[SLOT_MAX_PATH];
     slot_path(slot, true, tmp_path);
     slot_path(slot, false, final_path);
 
@@ -84,7 +84,7 @@ bool project_store_read(uint8_t slot, uint8_t **out, size_t *out_len,
     if (!project_fs_ok() || slot >= CONFIG_SYNTH_PROJECT_MAX_SLOTS || !out)
         return false;
 
-    char path[48];
+    char path[SLOT_MAX_PATH];
     slot_path(slot, false, path);
     FILE *f = fopen(path, "rb");
     if (!f) return false;
@@ -130,7 +130,7 @@ bool project_store_slot_info(uint8_t slot, project_slot_info_t *info)
     if (!project_fs_ok() || slot >= CONFIG_SYNTH_PROJECT_MAX_SLOTS || !info)
         return false;
 
-    char path[48];
+    char path[SLOT_MAX_PATH];
     slot_path(slot, false, path);
     FILE *f = fopen(path, "rb");
     if (!f) {
@@ -177,7 +177,7 @@ bool project_store_delete(uint8_t slot)
     if (!project_fs_ok() || slot >= CONFIG_SYNTH_PROJECT_MAX_SLOTS)
         return false;
 
-    char path[48];
+    char path[SLOT_MAX_PATH];
     slot_path(slot, false, path);
     return unlink(path) == 0 || access(path, F_OK) != 0;
 }
@@ -204,20 +204,16 @@ void project_store_cleanup_tmp(void)
     if (!project_fs_ok())
         return;
 
-    DIR *dir = opendir(PROJECT_FS_BASE);
-    if (!dir)
-        return;
-
-    struct dirent *ent;
-    while ((ent = readdir(dir)) != NULL) {
-        size_t len = strlen(ent->d_name);
-        if (len >= 4 && strcmp(&ent->d_name[len - 4], ".tmp") == 0) {
-            char path[48];
-            snprintf(path, 48, PROJECT_FS_BASE "/%s", ent->d_name);
-            unlink(path);
-        }
+    /* Enumerate the slots rather than scanning the directory: the only temp
+     * files this module can create are slot_path(slot, tmp) for slot <
+     * MAX_SLOTS, so the name comes from the same function that writes it.
+     * Nothing to bound, no path to assemble, and it cannot unlink a .tmp that
+     * is not ours. Absent files return ENOENT, which is the normal case. */
+    for (uint8_t slot = 0; slot < CONFIG_SYNTH_PROJECT_MAX_SLOTS; slot++) {
+        char path[SLOT_MAX_PATH];
+        slot_path(slot, true, path);
+        unlink(path);
     }
-    closedir(dir);
 }
 
 #if CONFIG_SYNTH_PROJECT_SELFTEST

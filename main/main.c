@@ -71,8 +71,9 @@ static volatile bool s_drum_select_held = false;
 
 // SHIFT hold state + per-button latch so a SHIFT-chorded button is swallowed
 // for its whole press (its normal gestures never fire, no stuck latch on
-// release). Touched only from the button-dispatch task, so no volatile.
-static bool s_shift_held = false;
+// release). Written by the button-dispatch task; volatile because the encoder
+// task reads it for the Shift+Turn gesture (same as s_patch_held).
+static volatile bool s_shift_held = false;
 static bool s_shift_chord_latched[MY_BUTTON_MAX] = { false };
 
 static QueueHandle_t s_button_queue = NULL;
@@ -672,6 +673,10 @@ static void encoder_process_steps(long steps)
     } else if (v == UI_VIEW_FM) {
         synth_ui_fm_handle_encoder((int)steps);
 #endif
+    } else if (s_shift_held) {
+        // SHIFT+Turn on the sequencer screen: step the active melodic
+        // layer's FM algorithm live instead of moving the cursor.
+        synth_ui_cycle_fm_algo((int)steps);
     } else {
         synth_ui_handle_encoder(steps);
     }

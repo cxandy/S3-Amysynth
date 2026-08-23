@@ -13,6 +13,13 @@
 extern "C" {
 #endif
 
+/* ── Built-in AMY patch banks (real patch strings, 0..256) ──────────────────
+ * Named so FM-aware code (algorithm stepping) can range-check the DX7 bank
+ * without magic numbers; the full bank map is the comment in
+ * sequencer_core_set_melodic_patch(). */
+#define SEQ_PATCH_DX7_BASE    128
+#define SEQ_PATCH_DX7_MAX     255
+
 /* ── Virtual wave-patch IDs ─────────────────────────────────────────────────
  * Patch numbers beyond the 0..256 built-in (Juno/DX7/piano) range, intercepted
  * before amy_send_patch() so they never collide with real patches. Melodic and
@@ -179,6 +186,19 @@ uint16_t sequencer_core_get_layer_patch(uint8_t layer_idx);
 /* Re-push the live custom FM voice (s_fm_voice) to every melodic row on
  * SEQ_PATCH_FM_CUSTOM. Called by the FM UI screen after any edit. */
 void sequencer_core_fm_voice_changed(void);
+
+/* Step the FM algorithm of layer_idx's patch by dir (+1/-1), wrapping over
+ * AMY's full algorithm table (amy_num_algorithms), and push it live to every
+ * row of the layer - operator setup untouched, audible on the next render
+ * block even mid-note. Returns the applied algorithm index, or -1 when the
+ * layer is not melodic or its patch has no ALGO osc (only the DX7 bank and the
+ * FM range qualify). The value shadows the patch (fm_algo_override) and is
+ * re-pushed after every reconfigure; changing the layer's patch clears it. On
+ * SEQ_PATCH_FM_CUSTOM it instead steps s_fm_voice.algorithm - the voice store
+ * is the source of truth there, shared with the FM screen and the arp.
+ * Call context: Core 0 input/UI path only; events go through the ingest pump,
+ * never call from the render task. */
+int sequencer_core_cycle_layer_fm_algo(uint8_t layer_idx, int dir);
 
 /* Re-push the live custom additive voice (s_additive_voice) to every melodic
  * row on SEQ_PATCH_ADDITIVE_CUSTOM, plus the arp if it is playing it. For the

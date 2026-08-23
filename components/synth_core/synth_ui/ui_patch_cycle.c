@@ -156,6 +156,25 @@ void synth_ui_cycle_drum_patch(int delta)
     }
 }
 
+/* Shift+Turn on the SEQ screen: step the active melodic layer's FM algorithm
+ * live (audible mid-note - the whole point is auditioning the 30+ variations
+ * by ear). Non-FM patches get a "NOT FM" banner instead of a dead detent;
+ * drum layers ignore the gesture. */
+void synth_ui_cycle_fm_algo(int delta)
+{
+    if (delta == 0) return;
+
+    uint8_t li = seq_state.active_layer_idx;
+    if (li >= seq_state.num_layers) return;
+    if (seq_state.layers[li].type != SEQ_LAYER_MELODIC) return;
+
+    int a = sequencer_core_cycle_layer_fm_algo(li, (delta > 0) ? 1 : -1);
+    seq_state.algo_banner_value =
+        (a >= 0) ? (uint8_t)a : DISPLAY_ALGO_BANNER_NOFM;
+    seq_state.algo_banner_ticks = 24;   /* ~1.2 s at the 20 Hz UI rate */
+    s_force_redraw = true;
+}
+
 /* Cycle the arp's OWN patch, independent of the melodic patch. */
 void synth_ui_arp_cycle_patch(int delta)
 {

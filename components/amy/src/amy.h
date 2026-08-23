@@ -1124,6 +1124,10 @@ void * malloc_caps_block(uint32_t size, uint32_t flags);
 // LOCAL EDIT (S3-Amysynth): amy_render()'s block clears reach algorithms.c's PIE
 // zero() through this; see the definition at the end of algorithms.c.
 void amy_block_zero_blocks(SAMPLE *p, int nblocks);
+// LOCAL EDIT (S3-Amysynth): count of entries in algorithms.c's algorithms[]
+// table; the valid amy_event.algorithm range is [0, amy_num_algorithms-1] and
+// render_algo does NOT bounds-check it. See the definition in algorithms.c.
+extern const uint16_t amy_num_algorithms;
 void amy_oom(const char *fmt, ...);
 // Bus numbers arrive unchecked from the API and the wire protocol ('y9' is
 // just an atoi), and every one of them ends up subscripting amy_global.bus[]

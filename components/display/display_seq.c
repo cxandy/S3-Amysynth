@@ -183,5 +183,28 @@ void display_seq_draw_frame(u8g2_t *u8g2, const display_seq_state_t *state, uint
             u8g2_DrawStr(u8g2, (uint8_t)(bx + 2), (uint8_t)(by + 9), pname);
         }
     }
+
+    /* === FM-ALGORITHM BANNER (Shift+Turn feedback) ===
+     * Same overlay shape as the patch-name banner above; timed rather than
+     * hold-gated, so it outlives the detent by ~a second. Drawn last: if both
+     * banners are up (patch hold + shift turn) this one wins. */
+    if (state->algo_banner_ticks > 0) {
+        char abuf[12];
+        if (state->algo_banner_value == DISPLAY_ALGO_BANNER_NOFM) {
+            snprintf(abuf, sizeof(abuf), "NOT FM");
+        } else {
+            snprintf(abuf, sizeof(abuf), "ALGO %u",
+                     (unsigned)state->algo_banner_value);
+        }
+        u8g2_SetFont(u8g2, u8g2_font_6x10_tf);
+        uint8_t nw = (uint8_t)u8g2_GetStrWidth(u8g2, abuf);
+        uint8_t bx = (uint8_t)((128 - (nw + 4)) / 2);
+        uint8_t by = 26;
+        u8g2_SetDrawColor(u8g2, 0);
+        u8g2_DrawBox(u8g2, bx, by, (uint8_t)(nw + 4), 13);
+        u8g2_SetDrawColor(u8g2, 1);
+        u8g2_DrawRFrame(u8g2, bx, by, (uint8_t)(nw + 4), 13, 2);
+        u8g2_DrawStr(u8g2, (uint8_t)(bx + 2), (uint8_t)(by + 9), abuf);
+    }
 }
 

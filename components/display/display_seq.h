@@ -21,6 +21,10 @@ typedef enum {
     UI_MODE_DEV       = 7,   /* DEV menu (CONFIG_SYNTH_DEV_MENU) */
 } ui_mode_t;
 
+/* algo_banner_value sentinel: Shift+Turn landed on a patch with no FM
+ * algorithm; the banner says so instead of showing a number. */
+#define DISPLAY_ALGO_BANNER_NOFM 0xFF
+
 /* ── Global sequencer display/UI state ── */
 typedef struct {
     seq_layer_t layers[MAX_LAYERS];
@@ -38,6 +42,12 @@ typedef struct {
                                        labels/banner show PCM presets, not
                                        patches. Mirror of the core engine,
                                        refreshed by seq_view_signature().  */
+    uint8_t     algo_banner_ticks;  /* SEQ screen "ALGO n" banner: UI frames
+                                       left to show it (Shift+Turn feedback,
+                                       decayed by synth_ui_task); 0 = hidden */
+    uint8_t     algo_banner_value;  /* algorithm index shown by the banner;
+                                       DISPLAY_ALGO_BANNER_NOFM = the active
+                                       patch has no FM algorithm            */
 
     /* ── Screen + menu overlay ── */
     ui_mode_t   ui_mode;            /* which top-level screen is active   */

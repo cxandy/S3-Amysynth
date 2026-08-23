@@ -159,6 +159,12 @@ static void synth_ui_task(void *pvParameters)
          * last encoder value lands even after the user stops turning. */
         synth_ui_editors_live_service();
 
+        /* Decay the FM-algorithm banner; the frame after it expires must
+         * repaint to clear it (the render-gate hash doesn't see it). */
+        if (seq_state.algo_banner_ticks > 0) {
+            if (--seq_state.algo_banner_ticks == 0) s_force_redraw = true;
+        }
+
         seq_state.current_step =
             sequencer_core_get_current_step(seq_state.active_layer_idx);
         if (s_u8g2) {

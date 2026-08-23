@@ -3,6 +3,7 @@
 #include "sequencer_core.h"
 #include "custompatches/fm_voice.h"
 #include "seq_clamp.h"
+#include "amy.h"   /* amy_num_algorithms */
 #include <stdio.h>
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -29,7 +30,9 @@ typedef enum {
     FM_ROW_COUNT,
 } fm_row_t;
 
-#define FM_ALGO_COUNT 33   /* AMY algorithms[33] */
+/* AMY's real algorithm-table size, so locally-authored algorithms extend the
+ * wrap automatically. */
+#define FM_ALGO_COUNT ((int)amy_num_algorithms)
 
 /* Curated DX7-style harmonic ratios plus a few inharmonic ones, kept short
  * enough to encoder through. Editing snaps to the nearest step, then walks. */

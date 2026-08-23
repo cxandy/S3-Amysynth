@@ -20,6 +20,7 @@
 #include "arp_core.h"
 #include "custompatches/drone_core.h"
 #include "amy_fx.h"
+#include "amy.h"               /* amy_num_algorithms - fm_algo_override clamp */
 #include "quantizer.h"
 #include "voice_config.h"
 #include "synth_ui/synth_ui_internal.h"   /* synth_ui_reload_mirror_from_core() */
@@ -382,7 +383,7 @@ static void apply_glob(const staged_glob_t *g)
 
 static void ser_layer(tlv_writer_t *w, const seq_layer_t *L)
 {
-    size_t h = tlv_begin_section(w, TAG_LAYR, 12); /* v2: LFO target bitmask;
+    size_t h = tlv_begin_section(w, TAG_LAYR, 13); /* v2: LFO target bitmask;
                                                     * v3: +gate_pct, +portamento_ms;
                                                     * v4: +groove_pct;
                                                     * v5: LFO +wob_rate/+wob_depth;
@@ -394,7 +395,8 @@ static void ser_layer(tlv_writer_t *w, const seq_layer_t *L)
                                                     *     (same two array slots);
                                                     * v10: +track_pcm_mode;
                                                     * v11: +step_pitch_ofs;
-                                                    * v12: vp +dist/+dist_authored */
+                                                    * v12: vp +dist/+dist_authored;
+                                                    * v13: +fm_algo_override */
     tlv_put_u8(w, (uint8_t)L->type);
     tlv_put_u8(w, L->num_steps);
     tlv_put_u16(w, L->patch);
@@ -432,6 +434,8 @@ static void ser_layer(tlv_writer_t *w, const seq_layer_t *L)
     tlv_put_u16(w, L->portamento_ms);
     /* v4: NoteFX GROOVE (accent-curve amount), same tail-append. */
     tlv_put_u8(w, L->groove_pct);
+    /* v13: live FM algorithm override (Shift+Turn), same tail-append. */
+    tlv_put_u8(w, L->fm_algo_override);
     tlv_end_section(w, h);
 }
 
@@ -570,6 +574,18 @@ static bool parse_layer(tlv_reader_t *b, seq_layer_t *L, uint8_t ver)
         L->groove_pct = 100;
     }
     if (L->groove_pct > 100) L->groove_pct = 100;
+
+    /* v13: live FM algorithm override. Pre-v13 (and corrupt values): none.
+     * The configure path reasserts it after the load's patch apply; anything
+     * past AMY's algorithm table would be an unchecked OOB index there. */
+    if (ver >= 13) {
+        if (!tlv_get_u8(b, &L->fm_algo_override)) return false;
+    } else {
+        L->fm_algo_override = SEQ_FM_ALGO_NONE;
+    }
+    if (L->fm_algo_override != SEQ_FM_ALGO_NONE &&
+        L->fm_algo_override >= amy_num_algorithms)
+        L->fm_algo_override = SEQ_FM_ALGO_NONE;
 
     return true;
 }
@@ -1014,7 +1030,7 @@ bool project_snapshot_load(uint8_t slot)
         case TAG_LAYR:
             /* Ceiling must track ser_layer()'s version or the firmware
              * rejects its own files. */
-            if (ver < 1 || ver > 12 || staged_layer_count >= MAX_LAYERS) { ok = false; break; }
+            if (ver < 1 || ver > 13 || staged_layer_count >= MAX_LAYERS) { ok = false; break; }
             ok = parse_layer(&body, &staged_layers[staged_layer_count], ver);
             if (ok) staged_layer_count++;
             break;

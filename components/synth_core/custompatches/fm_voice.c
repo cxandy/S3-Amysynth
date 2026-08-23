@@ -104,6 +104,11 @@ void fm_voice_push_live(uint8_t synth_id, const fm_voice_t *voice)
     e->osc       = 0;
     e->algorithm = voice->algorithm;
     e->feedback  = voice->feedback;
+    /* The ALGORITHM delta force-switches the osc's eg_type[0] to the DX7
+     * curve; this voice authors ENVELOPE_NORMAL (configure above), so
+     * re-assert it in the same event or the first live edit silently changes
+     * the envelope shape. */
+    e->eg_type[0] = ENVELOPE_NORMAL;
     amy_helpers_event_send(e);
 
     for (uint8_t i = 0; i < FM_NUM_OPS; i++) {

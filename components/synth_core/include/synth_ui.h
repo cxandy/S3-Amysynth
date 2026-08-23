@@ -38,6 +38,10 @@ void synth_ui_cycle_melodic_patch(int delta);
 /* Cycle the selected drum track's patch through the curated drum list. Active
  * layer must be a drum layer; otherwise a no-op. */
 void synth_ui_cycle_drum_patch(int delta);
+/* Shift+Turn on the SEQ screen: step the active melodic layer's FM algorithm
+ * live (DX7 bank + FM presets; shows a banner, non-FM patches say NOT FM).
+ * Core 0 input path only. */
+void synth_ui_cycle_fm_algo(int delta);
 void synth_ui_set_drum_select_mode(bool held);
 void synth_ui_set_patch_select_mode(bool held);
 

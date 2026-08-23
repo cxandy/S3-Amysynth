@@ -2,6 +2,10 @@
 #include "voice_config.h"
 #include "seq_clamp.h"
 
+/* Defined with the FM-algorithm stepper below; the configure path reasserts
+ * the layer's live algorithm override after every patch (re)load. */
+static void seq_reassert_layer_fm_algo(const seq_layer_t *layer);
+
 /* ── State definitions — owns drum engine selector ──────────────────── */
 /* Drum sound source for the whole drum layer. SYNTH = tonal AMY patches per
  * track, PCM = built-in 808 samples. Switching reconfigures the drum layer's
@@ -635,6 +639,9 @@ void sequencer_configure_synth(uint8_t layer_idx)
     sequencer_configure_melodic_lfo(layer_idx);
     /* Glide is a per-osc AMY setting that a voice rebuild clears - reassert. */
     sequencer_core_push_melodic_portamento(layer_idx);
+    /* The patch load just rewrote osc 0's baked algorithm - reassert the
+     * live override (no-op without one). */
+    seq_reassert_layer_fm_algo(layer);
 }
 
 /* ── Public API — melodic patch ─────────────────────────────────────── */
@@ -681,6 +688,7 @@ void sequencer_core_set_melodic_patch(uint16_t patch_number)
             continue;
         }
         layer->patch = s_melodic_patch;
+        layer->fm_algo_override = SEQ_FM_ALGO_NONE;  /* see set_layer_patch */
         sequencer_reconfigure_layer_paused(i);
     }
 
@@ -710,6 +718,9 @@ void sequencer_core_set_layer_patch(uint8_t layer_idx, uint16_t patch_number)
     patch_number = SEQ_CLAMP_U16(patch_number, 0, SEQ_PATCH_ROUTABLE_MAX);
     if (layer->patch == patch_number) return;
     layer->patch    = patch_number;
+    /* New patch = new baked-algorithm baseline; a stale override from the
+     * previous patch must not ride the reconfigure below. */
+    layer->fm_algo_override = SEQ_FM_ALGO_NONE;
     s_melodic_patch = patch_number;  /* the global accessor doubles as the
                                         display fallback and must track the
                                         last-touched layer (contract in
@@ -746,6 +757,105 @@ void sequencer_core_fm_voice_changed(void)
     arp_core_fm_voice_changed();
 }
 #endif
+
+/* ── Live FM algorithm stepping (Shift+Turn on the SEQ screen) ──────────── */
+
+/* Baked algorithm number of each built-in DX7 patch (the 'o' command in its
+ * patch string), so stepping starts from where the patch actually is instead
+ * of jumping to 0. Transcribed from components/amy/src/patches.h; regenerate
+ * after an AMY re-vendor with:
+ *   python3 -c "import re; s=open('components/amy/src/patches.h').read();
+ *     print([int(re.search(r'o(\d+)', p[1]).group(1)) for p in
+ *     re.findall(r'/\*\s*(\d+):[^*]*\*+/\s*\"((?:[^\"\\\\]|\\\\.)*)\"', s)
+ *     if 128 <= int(p[0]) <= 255])" */
+static const uint8_t s_dx7_baked_algo[128] = {
+    22, 22, 18,  2,  2, 15,  2, 19, 18,  3,  5,  8, 16, 18, 16, 17,
+    32, 19,  5,  3, 23,  7,  2, 16,  5,  5, 15, 16, 18,  7,  5, 10,
+    18,  3, 12,  5,  5,  5, 31, 30,  3,  3,  4,  4, 29, 29,  5, 29,
+     3, 25,  6, 16,  3,  8, 14, 14, 14,  3, 14,  8,  3,  3, 17, 17,
+     5, 18,  3, 17, 18,  2,  2,  2, 15,  2,  2, 22,  2, 22,  8, 22,
+     6,  1,  1,  7,  5,  7,  5,  7,  6, 16, 17, 27,  6, 18,  7, 14,
+    22, 22, 22,  1, 16,  7,  2,  5, 22, 22, 22,  3, 25, 25,  3,  9,
+     3,  5,  5,  5,  5,  3,  5,  1, 32, 18, 31,  1,  7, 17, 17, 16,
+};
+
+/* True when the layer's patch puts an ALGO control osc at voice-relative
+ * osc 0, i.e. an algorithm event has something to land on. FM_CUSTOM is
+ * excluded: its algorithm lives in s_fm_voice (stepped separately below). */
+static bool seq_layer_patch_has_algo(uint16_t patch)
+{
+    if (patch >= SEQ_PATCH_DX7_BASE && patch <= SEQ_PATCH_DX7_MAX) return true;
+#if CONFIG_SYNTH_CUSTOM_FM
+    if (patch >= SEQ_PATCH_FM_BASE && patch < SEQ_PATCH_FM_CUSTOM) return true;
+#endif
+    return false;
+}
+
+/* Send one algorithm value to osc 0 (the ALGO control osc) of every row of the
+ * layer; AMY resolves e->synth + e->osc to each voice's base_osc + 0. The
+ * FM-preset voices author ENVELOPE_NORMAL on osc 0, which the ALGORITHM delta
+ * force-switches to DX7 curves - re-assert it in the same event (the eg_type
+ * delta applies after the algorithm one). DX7-bank patches keep the DX7 curves
+ * their own patch load installs, so nothing to re-assert there. */
+static void seq_push_layer_fm_algo(const seq_layer_t *layer, uint8_t algo)
+{
+    bool preset_env = (layer->patch >= SEQ_PATCH_FM_BASE);
+    for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
+        amy_event *e = amy_helpers_event_begin();
+        e->synth     = layer->synth_id[t];
+        e->osc       = 0;
+        e->algorithm = algo;
+        if (preset_env) e->eg_type[0] = ENVELOPE_NORMAL;
+        amy_helpers_event_send(e);
+    }
+}
+
+/* Reconfigure-path reassert: a patch (re)load rewrites osc 0 with the baked
+ * algorithm, so the override must ride every configure - the same discipline
+ * as the portamento and FX reasserts above. No-op without an override. */
+static void seq_reassert_layer_fm_algo(const seq_layer_t *layer)
+{
+    if (layer->fm_algo_override == SEQ_FM_ALGO_NONE) return;
+    if (!seq_layer_patch_has_algo(layer->patch)) return;
+    seq_push_layer_fm_algo(layer, layer->fm_algo_override);
+}
+
+int sequencer_core_cycle_layer_fm_algo(uint8_t layer_idx, int dir)
+{
+    if (layer_idx >= s_num_layers) return -1;
+    seq_layer_t *layer = &s_layers[layer_idx];
+    if (layer->type != SEQ_LAYER_MELODIC) return -1;
+
+    int n = (int)amy_num_algorithms;
+    int step = (dir > 0) ? 1 : -1;
+    uint16_t p = layer->patch;
+
+#if CONFIG_SYNTH_CUSTOM_FM
+    if (p == SEQ_PATCH_FM_CUSTOM) {
+        /* The custom voice's algorithm is an authored field: step the voice
+         * store itself (shared with the FM screen and the arp), no shadow. */
+        int a = ((int)s_fm_voice.algorithm + step + n) % n;
+        s_fm_voice.algorithm = (uint8_t)a;
+        sequencer_core_fm_voice_changed();
+        return a;
+    }
+#endif
+    if (!seq_layer_patch_has_algo(p)) return -1;
+
+    int base;
+    if (layer->fm_algo_override != SEQ_FM_ALGO_NONE) {
+        base = layer->fm_algo_override;
+    } else if (p <= SEQ_PATCH_DX7_MAX) {
+        base = s_dx7_baked_algo[p - SEQ_PATCH_DX7_BASE];
+    } else {
+        base = 0;   /* every fixed FM preset bakes algorithm 0 */
+    }
+    int a = (base + step + n) % n;
+    layer->fm_algo_override = (uint8_t)a;
+    seq_push_layer_fm_algo(layer, (uint8_t)a);
+    ESP_LOGI(TAG, "L%u FM algo -> %d", (unsigned)layer_idx + 1u, a);
+    return a;
+}
 
 /* ── Live additive voice edits ────────────────────────────────────────────── */
 

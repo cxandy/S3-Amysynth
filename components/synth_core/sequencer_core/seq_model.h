@@ -21,6 +21,9 @@ extern "C" {
 #define SEQ_MAX_STEPS 32          /* maximum steps supported         */
 #define MAX_LAYERS    4           /* compile-time layer limit        */
 
+/* ── FM algorithm override sentinel (seq_layer_t.fm_algo_override) ── */
+#define SEQ_FM_ALGO_NONE 0xFF     /* no override: the patch's baked algorithm */
+
 /* ── Layer type ── */
 typedef enum {
     SEQ_LAYER_DRUM    = 0,
@@ -327,6 +330,14 @@ typedef struct {
                                         rows. Drums use track_patch[]; `patch`
                                         mirrors track_patch[0] as a display
                                         fallback only.                          */
+    uint8_t  fm_algo_override;       /* melodic, FM patches only: live FM
+                                        algorithm shadowing the patch's baked
+                                        one (Shift+Turn on the SEQ screen).
+                                        SEQ_FM_ALGO_NONE = follow the patch;
+                                        MUST be initialised to that in
+                                        add_layer - memset 0 is a real
+                                        algorithm. Cleared on patch change,
+                                        re-pushed after every reconfigure.      */
     uint16_t track_patch[SEQ_TRACKS];/* drum layer: per-track timbre. Unused by
                                         melodic layers.                         */
     uint16_t track_pcm_preset[SEQ_TRACKS]; /* drum layer, PCM engine: UI mirror

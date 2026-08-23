@@ -40,7 +40,7 @@ flowchart TD
     Active --> PROF["COARSE profiler mode<br/>src/amy.h, src/amy.c"]
     Active --> SPLIT["Ingest/tick split: flush_due_deltas<br/>src/amy.c - PR candidate #1049"]
     Active --> FOLD["Master bus fold - PR candidate<br/>src/amy.c, src/amy.h, src/api.c<br/>(feat/fx-bus-split only)"]
-    Active --> API["Read accessors: voice base osc, gamma blob size<br/>src/patches.c, src/pcm.c, src/instrument.c"]
+    Active --> API["Read accessors: voice base osc, gamma blob size, algorithm count<br/>src/patches.c, src/pcm.c, src/instrument.c, src/algorithms.c"]
 ```
 
 ## Dropped (merged upstream)
@@ -85,6 +85,19 @@ The four distortion sections below describe how the edits were built and
 remain accurate as history; as code, the SILENT-osc and DC-blocker parts are
 upstream now, and the rest should diff clean against `dist-followups` -
 reconcile by re-vendor once that PR merges.
+
+### `algorithms.c` + `amy.h` — `amy_num_algorithms` count export (upstream PR candidate)
+
+`const uint16_t amy_num_algorithms`, derived from `sizeof(algorithms)/sizeof(algorithms[0])`
+at the end of `algorithms.c` (below the byte-identical-to-upstream line), with an
+`extern` in `amy.h`. API users stepping or validating `amy_event.algorithm` need
+the real table size: `render_algo` indexes `algorithms[]` unchecked, so any
+out-of-range value is an OOB read, and hardcoding 33 breaks the moment the table
+grows (locally-authored algorithms are planned). App consumers: the sequencer's
+Shift+Turn algorithm stepper and the FM screen's ALGO row wrap.
+
+**Rollback:** drop the definition in `algorithms.c` and the `extern` in `amy.h`;
+consumers then need a local count define.
 
 ### `filters.c` + `amy.c` + `amy.h` — distortion on the SILENT control osc (upstream PR candidate)
 

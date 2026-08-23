@@ -131,6 +131,8 @@ uint8_t sequencer_core_add_layer(seq_layer_type_t type, uint8_t num_steps)
     layer->gate_pct       = SEQ_MELODIC_GATE_DEFAULT_PCT;
     layer->portamento_ms  = 0;
     layer->groove_pct     = 100;   /* full accent curve */
+    /* Required after the memset too: 0 is a real FM algorithm. */
+    layer->fm_algo_override = SEQ_FM_ALGO_NONE;
 
     if (type == SEQ_LAYER_DRUM) {
         /* Per-track drum layer: each track gets a fixed synth slot from the

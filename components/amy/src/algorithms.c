@@ -274,3 +274,11 @@ SAMPLE render_algo(SAMPLE* buf, uint16_t osc, uint8_t core) {
 void amy_block_zero_blocks(SAMPLE *p, int nblocks) {
     for (int i = 0; i < nblocks; ++i) zero(p + i * AMY_BLOCK_SIZE);
 }
+
+// LOCAL EDIT (S3-Amysynth): the algorithm table's size, exported so API users
+// can wrap/validate algorithm numbers against the real count instead of a
+// hardcoded 33 - render_algo indexes algorithms[] unchecked, so an out-of-range
+// value is an OOB read. Derived from the array so locally-authored algorithms
+// extend the range automatically.
+const uint16_t amy_num_algorithms =
+    sizeof(algorithms) / sizeof(algorithms[0]);

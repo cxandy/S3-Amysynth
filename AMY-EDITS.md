@@ -16,6 +16,7 @@ PR is rejected, re-mark its diff as a LOCAL EDIT here instead.
 |----|------|
 | [#1106](https://github.com/shorepine/amy/pull/1106) | Free a released voice's oscs (`RESET_FREE_OSC`); describe-paths (patch store, voice snapshot) no longer allocate oscs; deletion takes no snapshot. |
 | [#1107](https://github.com/shorepine/amy/pull/1107) | `ram_caps_oscs` config field: per-osc state arena caps, defaults to `ram_caps_events`. Replaces the former af10219 LOCAL EDIT; `main/main.c` sets it to PSRAM explicitly. |
+| [#1135](https://github.com/shorepine/amy/pull/1135) | `amy_update_handle` registered in `amy_platform_init()` gated on the audio config (`#ifdef ARDUINO` OR `!AMY_HAS_I2S`), fixing the multithread + non-I2S first-block deadlock. Vendored 2026-08-24 in the reworked shape (init-time registration per review; the original lazy-registration diff was never vendored). Contract: `amy_start()` must run on the task that calls `amy_update()`. Our config (`audio = AMY_AUDIO_IS_NONE`, `multithread = 0`) registers the init task's handle but nothing notifies it - benign; revisit if multithread ever flips on. |
 
 All edits are marked `// LOCAL EDIT` in the source. ESP32-S3-specific edits are
 permanent (upstream has no concept of IRAM/DRAM placement or FreeRTOS task

@@ -857,10 +857,11 @@ void app_main(void)
     amy_cfg.platform.multicore = 0;
     amy_cfg.platform.multithread = 0;
     amy_cfg.amy_external_sequencer_hook = main_sequencer_tick_hook;
-    /* PERF: pin the render-hot AMY allocations internal. The default caps
-     * fall back to PSRAM above SPIRAM_MALLOC_ALWAYSINTERNAL (16 KB), putting
-     * synth[]/msynth[], the delta pool and block buffers - all dereferenced
-     * every block - behind PSRAM latency. */
+    /* Every AMY arena gets an explicit cap: CONFIG_SPIRAM_USE_MALLOC is off,
+     * so plain malloc never reaches PSRAM and nothing auto-places by size -
+     * the caps below are the placement decision. Render-hot state stays
+     * internal: synth[]/msynth[], the delta pool and the block buffers are
+     * all dereferenced every block. */
     amy_cfg.ram_caps_events = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
     amy_cfg.ram_caps_synth  = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
     amy_cfg.ram_caps_block  = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
@@ -873,16 +874,16 @@ void app_main(void)
      * ram_caps_events. PSRAM is cached and per-block access is cheap. */
     amy_cfg.ram_caps_oscs = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
     /* Sequencer wire strings are cold control-plane data (read once per
-     * fire, parse is us-scale) - PSRAM-first keeps them from competing with
-     * per-osc synth state for the ~76 KB internal pool; the sites fall back
-     * to ram_caps_events if PSRAM is ever exhausted. */
+     * fire, parse is us-scale) - PSRAM-first keeps them out of the internal
+     * pool (~107 KB free post-init); the sites fall back to ram_caps_events
+     * if PSRAM is ever exhausted. */
     amy_cfg.ram_caps_sequencer = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
     /* FX delay lines (~108 KB reverb + 256 KB echo) don't fit internal -
      * pinning them internal made allocation fail (and once crashed on the
      * NULL deref). PSRAM latency in the FX stage is acceptable. */
     amy_cfg.ram_caps_delay  = MALLOC_CAP_SPIRAM;
-    /* Sample recordings (~140 KB) would land in PSRAM anyway; set explicitly
-     * so intent doesn't depend on the size threshold. */
+    /* Sample recordings (~140 KB): not render-hot and too large to spend
+     * internal on. */
     amy_cfg.ram_caps_sample = MALLOC_CAP_SPIRAM;
     /* Default 256 covers only layer 0. The tag space is laid out in
      * seq_core_config.h (sequencer, arp, ratchet trigs, chord one-shots, chord

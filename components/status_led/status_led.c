@@ -2,8 +2,8 @@
 // ticks at 100 ms for blink animation; the core-load sample and any LED
 // rewrite happen only once per CONFIG_AMYSYNTH_STATUS_LED_PERIOD_MS window,
 // and the WS2812 latches its color, so the steady-state cost is one
-// uxTaskGetSystemState() snapshot per window and zero RMT traffic while the
-// band is stable.
+// core_load_sample() read of the idle-hook counters per window (no kernel
+// critical section) and zero RMT traffic while the band is stable.
 #include "status_led.h"
 
 #if CONFIG_AMYSYNTH_STATUS_LED

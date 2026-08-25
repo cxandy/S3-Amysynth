@@ -30,8 +30,8 @@ attached.
 The updater is a low-priority task pinned to **core 0**, ticking at 100 ms for
 the blink animation. A core-load sample is taken only once per
 `CONFIG_AMYSYNTH_STATUS_LED_PERIOD_MS` window, so the steady-state cost is one
-`uxTaskGetSystemState()` snapshot per period plus the occasional 24-bit RMT
-frame. The alloc-failure hook runs in the context of whichever task's
+`core_load_sample()` read of the per-core idle-hook counters per period (no
+kernel critical section) plus the occasional 24-bit RMT frame. The alloc-failure hook runs in the context of whichever task's
 allocation failed and only sets an atomic flag; the burst itself is animated by
 the updater task.
 

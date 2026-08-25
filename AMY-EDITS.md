@@ -178,8 +178,9 @@ LFO carrier) instead of stepping it from a 20 Hz software task.
   `dist_config_t` stays purely the kernel's input contract (what a per-bus/global
   caller with static parameters wants).
 - **Wire:** `'C'` now carries `[type, bits, rate]`; drive coefs ride `'U'`, mix
-  coefs `'W'`. `DIST_LOGDRIVE`/`DIST_MIX` claim ten param ids each (75..84, 85..94)
-  out of the freed block-VOLUME range, leaving 95..98.
+  coefs `'W'`. `DIST_BITS`/`DIST_RATE` hold the two scalar ids (75, 76), and
+  `DIST_LOGDRIVE`/`DIST_MIX` claim ten param ids each (77..86, 87..96) out of
+  the freed block-VOLUME range, leaving 97..98.
 
 Ported from fork branch `dist-voice-scope` (`35fd69b`), which pins the octave
 scale in both directions in `tests/test_dist_coefs.c` (a VEL coef of 2 octaves at
@@ -848,6 +849,13 @@ Track local, project-specific changes made against the upstream AMY component he
   dropped 81,072 → 15,536 B (−64 KB). Net internal SRAM change for both edits: ≈ −55 KB used.
 
 - **Bug fix (crash): reverb delay-line OOM caused NULL-deref panic (`LoadProhibited`).**
+
+  > Superseded: merged upstream as [#744](https://github.com/shorepine/amy/pull/744)
+  > and since reshaped there - the reverb state now lives in `reverb_params_t` and
+  > rolls back through `deinit_stereo_reverb()`, with no `free_stereo_reverb()`,
+  > `stereo_reverb_ready()` or `amy_reverb_alloc_failed()`. Nothing below is still a
+  > local edit; kept for the root-cause history.
+
   - **Symptom:** Raising **Reverb** from 0 in the menu crashed with
     `Guru Meditation Error: Core 1 panic'ed (LoadProhibited)`, `EXCVADDR=0x00000000`,
     in `stereo_reverb` (via `amy_fill_buffer` / `amy_render_audio` / `amy_update` /

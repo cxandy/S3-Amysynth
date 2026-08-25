@@ -118,6 +118,7 @@ const LUT *choose_from_lutset(float period, const LUT *lutset) {
 #define NOTHING ;
 
 /* is this in fact ever used? */
+// LOCAL EDIT (S3-Amysynth): render-path kernel, keep in IRAM (upstream leaves unannotated)
 AMY_IRAM_ATTR PHASOR render_lut_fm_fb(SAMPLE* buf,
                         PHASOR phase, 
                         PHASOR step,

@@ -52,6 +52,9 @@ typedef struct {
     uint8_t  num_tracks;                          // always SEQ_TRACKS (4)
     bool     grid[SEQ_TRACKS][SEQ_MAX_STEPS];     // step on/off
     uint8_t  step_note[SEQ_TRACKS][SEQ_MAX_STEPS];// per-step MIDI pitch
+    int8_t   step_pitch_ofs[SEQ_TRACKS][SEQ_MAX_STEPS]; // +-24 st from step_note,
+                                                  // 0 = neutral; applied at emit,
+                                                  // survives pitch/bank rewrites
     uint8_t  track_base_note[SEQ_TRACKS];         // base pitch shown on OLED
 
     voice_params_t vp[SEQ_TRACKS];                // per-row EG0+EG1 envelopes, filter,
@@ -72,6 +75,9 @@ typedef struct {
     uint32_t synth_flags;
     uint8_t  num_voices;
     uint8_t  step_page;                           // display page 0|1 (32-step only)
+    uint8_t  fm_algo_override;                    // melodic FM patches: live algorithm
+                                                  // shadowing the patch's baked one;
+                                                  // SEQ_FM_ALGO_NONE (0xFF) = follow patch
 
     // per-step decorations (100/1/NONE = "plain" step, zero extra cost)
     uint8_t  step_prob[SEQ_TRACKS][SEQ_MAX_STEPS];      // 0..100 %
@@ -124,6 +130,7 @@ classDiagram
         uint8_t num_steps
         bool grid[4][32]
         uint8_t step_note[4][32]
+        int8_t step_pitch_ofs[4][32]
         voice_params_t vp[4]
         uint8_t repeat_rate[4]
         bool mute[4]
@@ -134,6 +141,7 @@ classDiagram
         uint8_t step_ratchet[4][32]
         uint8_t step_every[4][32]
         uint8_t step_prev[4][32]
+        uint8_t fm_algo_override
     }
     class voice_params_t {
         seq_env_t env
@@ -206,12 +214,15 @@ With `MAX_LAYERS=4`, `SEQ_TRACKS=4`, `SEQ_MAX_STEPS=32` the full map
 | 1024-1055 | one-shot preview events (one per layer per track) |
 | 1056-1119 | arpeggiator (`SEQ_ARP_TAG_BASE` .. `SEQ_ARP_TAG_MAX`) |
 | 1120-1247 | ratchet one-shots for decorated steps (`SEQ_RATCHET_TAG_BASE` ..) |
-| 1248-1631 | chord one-shots (`SEQ_CHORD_TAG_BASE` .. `SEQ_CHORD_TAG_MAX`) |
-| 1632-1727 | chord preview one-shots (`SEQ_CHORD_PREVIEW_TAG_BASE` ..) |
+| 1248-1759 | chord one-shots (`SEQ_CHORD_TAG_BASE` .. `SEQ_CHORD_TAG_MAX`) |
+| 1760-1887 | chord preview one-shots (`SEQ_CHORD_PREVIEW_TAG_BASE` ..) |
 
-`main.c` sets `amy_cfg.max_sequencer_tags = 1730`, clearing the highest used
-tag (1727) with margin (AMY's `sequencer_add_wire()` rejects
-`tag >= max_sequences` - see ARP-ARCHITECTURE.md).
+The chord ranges scale with `SEQ_CHORD_MAX_NOTES` (5), so `main.c` does not
+hardcode the ceiling: it sets `amy_cfg.max_sequencer_tags =
+SEQ_CHORD_PREVIEW_TAG_MAX + 2` (= 1889 as shipped), clearing the highest used
+tag with the margin the layout comment requires (AMY's `sequencer_add_wire()`
+rejects `tag >= max_sequences` - see ARP-ARCHITECTURE.md). Widening a chord
+moves the top tag; deriving it is what keeps the two in step.
 
 ### Period derivation
 
@@ -435,7 +446,8 @@ touched outside the queued event API.
 app_main
   ├── i2c_u8g2_init()
   ├── amy_start()              ← multicore=0, multithread=0, AMY_AUDIO_IS_NONE,
-  │                              max_synths=SYNTH_SLOT_COUNT (63), max_sequencer_tags=1730
+  │                              max_synths=SYNTH_SLOT_COUNT (63),
+  │                              max_sequencer_tags=SEQ_CHORD_PREVIEW_TAG_MAX+2 (1889)
   ├── usb_audio_init()
   ├── synth_ui_init(u8g2)
   │     ├── amy_helpers_init()          (shared event scratch + mutex)

@@ -9,21 +9,32 @@ audio interface required.
 
 - **UAC2 microphone device**: enumerates as a standard USB audio input
   (48 kHz, 16-bit, stereo).
-- **Lock-free SPSC ring buffer**: 32768 int16 samples (64 KB), allocated in
-  PSRAM (`heap_caps_malloc` with `MALLOC_CAP_SPIRAM`), decoupling the
-  real-time producer from the USB consumer with no mutex.
+- **Lock-free SPSC ring buffer**: 32768 int16 samples (64 KB = 341 ms of
+  stereo audio), allocated in PSRAM (`heap_caps_malloc` with
+  `MALLOC_CAP_SPIRAM`), decoupling the real-time producer from the USB
+  consumer with no mutex.
 - **Real-time-safe drop policy**: writes are all-or-nothing; when the ring is
   full a whole block is dropped (`ESP_ERR_NO_MEM`) rather than splicing a
   partial block or blocking the render task.
+- **Async source, never padded**: the input callback returns only the audio
+  the ring actually holds. A short return is the contract, not a fault - it is
+  what lets the endpoint's flow control size packets to the device's true
+  sample rate.
 - **Diagnostics counters** behind `CONFIG_USB_AUDIO_DIAGNOSTICS` (fill level,
-  peak fill, writes, drops, underruns, peak sample).
+  peak fill, writes, drop events, peak sample), plus two counters from the
+  `diagnostics` component that are live in every build.
 
 ## Architecture
 
 - `usb_audio.c`: device init, UAC input callback, and the SPSC ring.
 - `include/usb_audio.h`: the public API.
-- Relies on the `espressif/usb_device_uac` managed component for the UAC
-  implementation and `espressif__tinyusb` for the USB stack.
+- `components/usb_device_uac/` holds the UAC implementation. It is **vendored,
+  not a managed dependency** (base v1.3.1, on `espressif/tinyusb` 0.19) - the
+  component carries local edits, which a hash-checked managed component cannot;
+  they are listed in `UAC-EDITS.md` at the repository root. TinyUSB 0.19 is
+  load-bearing there: its audio class re-arms the isochronous IN endpoint in
+  ISR context, where 0.17 re-armed from the task and dropped a frame whenever
+  scheduling delayed the re-arm past the next IN token.
 
 The ring buffer decouples the AMY render task (producer, core 1) from the USB
 device stack (consumer, core 0):
@@ -31,31 +42,60 @@ device stack (consumer, core 0):
 ```mermaid
 sequenceDiagram
     participant Producer as amy_usb_render_task (Core 1)
-    participant Ring as SPSC Ring Buffer (PSRAM)
-    participant Consumer as UAC consumer (Core 0)
-    participant Host as TinyUSB mic endpoint / USB host
+    participant Ring as SPSC ring, 64 KB PSRAM (341 ms)
+    participant Mic as usb_mic_task (Core 0, prio 9)
+    participant FIFO as TinyUSB EP-IN FIFO
+    participant Host as USB host
 
-    loop every render block
+    loop every render block (5333 us)
         Producer->>Producer: amy_update() renders 256-sample block
         Producer->>Ring: usb_audio_write_stereo(block, 256) [all-or-nothing]
         alt space available
             Ring-->>Producer: write accepted
         else ring full
             Ring-->>Producer: ESP_ERR_NO_MEM
-            note over Producer: block dropped (usb_drops++)<br/>preserves render clock phase
+            note over Producer: block dropped (ring_overrun++)<br/>render clock phase preserved
         end
     end
 
-    loop USB frame service
-        Consumer->>Ring: drain available samples
-        Consumer->>Host: feed mic endpoint
-        Host->>Host: stream to host application
+    loop usb_mic_task cycle
+        Mic->>FIFO: tu_fifo_remaining() -> whole-frame room
+        Mic->>Ring: uac_input_cb(buf, room)
+        Ring-->>Mic: only the audio on hand (short return is normal)
+        Mic->>FIFO: tud_audio_write(bytes_read)
+    end
+
+    loop every USB frame
+        FIFO->>Host: ISO IN packet (47/48/49 frames, flow-controlled)
+        Host-->>FIFO: transfer complete -> re-armed in ISR
+        note over FIFO: empty FIFO sends a ZLP (not counted, see below)
     end
 ```
 
 The ring uses writer-owned and reader-owned indices with release/acquire
 ordering, so the high-priority render task never blocks on a lock held by the
 lower-priority consumer.
+
+### Dropout counters
+
+The counters that attribute a dropout live in the `diagnostics` component
+(`dropout_stats`), not here, because the events happen on different tasks.
+Two of them are written today:
+
+| Counter | Written by | Meaning |
+| --- | --- | --- |
+| `ring_overrun` | render task, Core 1 | the ring was full, a whole block was dropped |
+| `render_overrun` | render task, Core 1 | the render clock reported more than one elapsed tick |
+
+`wire_zlp` is meant to count zero-length packets (endpoint FIFO empty at
+load time - genuine starvation under the async-source pull), but its only
+writer, the `tud_audio_tx_done_post_load_cb` override in `usb_audio.c`, is a
+TinyUSB 0.17 hook that 0.19 no longer calls; the linker discards it, so the
+counter reads 0 regardless. `ring_underrun` and `chunk_drop` have no writer
+at all. Treat a zero in any of the three as "not measured", not "did not
+happen". The
+counters are also blind to anything that blocks in ISR context, which no
+counter on a task can see.
 
 ## Public API (`usb_audio.h`)
 
@@ -65,7 +105,7 @@ lower-priority consumer.
 | `usb_audio_write_stereo(samples, frames)` | Push one interleaved stereo block; all-or-nothing |
 | `usb_audio_write_mono(samples, frames)` | Mono convenience variant (duplicated to both channels) |
 | `usb_audio_consumer_active()` | True while the host is actually draining the stream |
-| `usb_audio_diag_get_snapshot()` / `usb_audio_diag_reset()` | Diagnostics counters (gated by Kconfig) |
+| `usb_audio_diag_get_snapshot()` / `usb_audio_diag_reset()` | Diagnostics snapshot: fill / peak / write / drop counters need `CONFIG_USB_AUDIO_DIAGNOSTICS`; the `dropout_stats` mirrors in the same struct are valid in every build |
 
 ## How the project drives it
 

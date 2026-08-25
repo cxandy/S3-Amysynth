@@ -28,6 +28,18 @@ The module mirrors the **arp module** pattern 1:1 (standalone engine + own synth
 slots + own screen, driven from the menu). If you understand `arp_core`, you
 understand this.
 
+### The sibling: the normal (free-running) drone
+
+`custompatches/drone_std_core.c` is a second, independent drone engine on its
+own slots **4 / 5** (`DRONE_STD_SYNTH_MAIN` / `_SUB`), so both drones can sound
+at once. It keeps this module's chord voicing and mono sub but drops everything
+tempo-locked: no stutter gate, no PEAK/DUCK amp coupling, no pattern/blip/swing
+service, no swept filter. In their place it exposes the standard per-voice
+toolset the sequencer rows use - a free filter edited in the filter graph
+editor, a free AMY-native LFO (WAVE mode only; PATCH-mode instruments own their
+own osc topology), and the shared ADSR/EG1 graph storage. Everything below in
+this document describes the **stutter** drone unless it says otherwise.
+
 ## Signal flow
 
 ```mermaid
@@ -59,30 +71,57 @@ voice model the arp's WAVE source uses):
 
 ### How the amplitude / stutter math actually works
 
-On screen the two amplitude controls are labelled **PEAK** (always-on carrier
-level, `amp_peak`) and **DUCK** (stutter depth, `amp_duck`); on the AMY wire
-they are the CONST and MOD amp coefficients. AMY's active amp combine is
-`amp_combine_controls` (`amy.c`), a dB/exponential model: every coefficient
-except MOD is dB-compressed and summed before a `powf` stage, while MOD still
-sums linearly — so the peak/duck relationship below holds:
+On screen the two amplitude controls are labelled **PEAK** (on-beat carrier
+level, `amp_peak`) and **DUCK** (duck depth, `amp_duck`); on the AMY wire they
+become the CONST and MOD amp coefficients of the carrier osc. AMY's amp combine
+is `amp_combine_controls` (`amy.c`), a **dB model**: every coefficient except
+the two MOD slots is dB-compressed (`map_60dB_to_01f`) before the weighted sum,
+the sum is tripled, and the result is exponentiated -
 
 ```
-amp = peak · eg0 · (1 + duck · LFO)        LFO ∈ {−1, +1}
+amp = 10^(3 · Σ coef·val)
 ```
 
-- `peak` (0..1): the always-on level.
-- `duck` (0..1): stutter depth. On the LFO-low half `amp = peak·(1−duck)`
-  → reaches **silence at duck=1** (true hard gate); on the high half
-  `amp = peak·(1+duck)`.
-- `eg0`: the ADSR envelope, multiplying the whole thing — so the
-  envelope shapes the drone swell/fade **around** the LFO chop.
+The MOD slots are the exception: they sum in linearly, which makes MOD linear
+*in the log domain*. A mod source does not scale the amplitude, it **shifts it
+by decibels**.
 
-> **Historical note / gotcha:** an earlier version derived a single "MIX" knob
-> as `peak = total·(1−mix)`, `duck = total·mix`. Because AMY *skips zero
-> coefficients*, this produced a cliff: at 95% mix the tone was near-silent,
-> but at 100% the const coef hit exactly 0, got skipped, and the level jumped
-> to full. Exposing the two controls directly removes the remap and the
-> discontinuity. Keep PEAK > 0 to avoid the same skip.
+The drone is authored directly against that. The carrier carries
+`amp_coefs[COEF_CONST] = const_sent` and `amp_coefs[COEF_MOD] = m`, with osc1's
+free-running PULSE as the mod source, so the per-sample gain is:
+
+```
+amp = const_sent · 10^(3 · m · LFO)        LFO ∈ [−1, +1]
+```
+
+`drone_core.c` solves the two knobs into those coefficients in one place (the
+helpers below are the single source of truth - never inline the formula):
+
+| Helper | Value |
+|---|---|
+| `s_amp_peak_lin()` | `peak_lin = clamp01(amp_peak · amp_trim)` |
+| `s_amp_duck_db()` | `duck_db = amp_duck · 40` |
+| `s_amp_m()` | `m = duck_db / 120` |
+| `s_amp_const_sent()` | `const_sent = peak_lin · 10^(−duck_db/40)` |
+
+Substituting back: at `LFO = +1` (on-beat) `amp = peak_lin` exactly; at
+`LFO = −1` (off-beat) `amp = peak_lin · 10^(−duck_db/20)`. So the duck is
+**unipolar and downward only** - PEAK sets the absolute on-beat ceiling and
+DUCK sets how far below it the off-beat floor sits, in dB. `amp_duck = 1.0` is
+a 40 dB floor, **not** silence; a true hard gate is not reachable on this rail.
+`drone_get_amp_levels_norm()` derives the on-screen meter from the same
+helpers, so display and engine cannot disagree.
+
+The ADSR (`vp.env`, EG0) rides the same dB sum rather than multiplying the
+result, so it shapes the swell and fade around the chop instead of scaling it.
+
+> **Gotcha:** AMY skips a coefficient that is exactly zero (`if (coef == 0)
+> continue`), so a rail allowed to reach 0 drops out of the sum instead of
+> attenuating to nothing. An earlier single "MIX" knob derived
+> `peak = total·(1−mix)` / `duck = total·mix` and hit precisely that cliff: at
+> 95 % mix the tone was near-silent, but at 100 % the const coef became 0, got
+> skipped, and the level jumped to full. Exposing the two controls directly
+> removes the remap and the discontinuity. Keep PEAK > 0.
 
 ## Chords
 

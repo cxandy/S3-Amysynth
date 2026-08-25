@@ -66,7 +66,7 @@ From rate/tick input through `arp_core_refresh` to the AMY synth slot:
 ```mermaid
 flowchart TD
     RATE["arp_rate_t (1/1 .. 1/32 + triplets)"] --> TICKS["rate_ticks via AMY_SEQUENCER_PPQ=48\n(192 / 48 / 24 / 12 / 6 / 32 / 16 / 8 / 4)"]
-    SLOTS["slots[] raw chromatic notes"] --> SORT["arp_collect_sorted\nascending, n <= 8\n(SLOT mode keeps written order)"]
+    SLOTS["slots[] raw chromatic notes"] --> SORT["arp_collect_up / arp_collect_down\nsorted, n <= 8\n(SLOT mode keeps written order)"]
     OCT["octaves"] --> STEPS
     SORT --> STEPS["steps = count x octaves\nperiod = steps x rate_ticks"]
     GATEPCT["gate_pct"] --> GATE["gate = rate_ticks x gate_pct / 100"]

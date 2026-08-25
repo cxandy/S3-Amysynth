@@ -29,8 +29,8 @@ flowchart TD
         F["synth_ui_task (prio 5, 20 Hz)<br/>arp/drone/LFO/progression + OLED"]
         G["encoder_task (prio 5, 50 Hz)"]
         H["button_handler_task (prio 5)"]
-        I["usb_mic_task (UAC consumer)"]
-        J["TinyUSB / UAC device stack"]
+        I["usb_mic_task (prio 9)<br/>UAC ring consumer"]
+        J["TinyUSB device task (prio 9)<br/>UAC device stack"]
         K["status_led (prio 2)<br/>Core-1 load indicator"]
     end
     D --> R["64 KB SPSC ring (PSRAM)"]
@@ -54,29 +54,35 @@ sequencer clock.
 | `button_handler_task` (`main/main.c`) | `button_task` | 8192 | 5 | 0 | Blocks on the button event queue; runs the full button dispatch (see SEQUENCER-ARCHITECTURE.md, Button Mapping). |
 | `amy_ingest_task` (`components/synth_core/amy_helpers.c`) | `amy_ingest` | 8192 | 5 | 0 | AMY event pump: drains queued `amy_event`s into `amy_add_event()` off the render path, urgent decorated-step trig jobs first. |
 | `encoder_init_task` (`main/main.c`) | `encoder_init_task` | 2048 | 5 | 0 | One-shot bring-up: encoder hardware, status LED, post-init heap report; self-deletes. |
-| `usb_mic_task` (`components/usb_device_uac/`, vendored) | (UAC) | - | - | 0 | Ring consumer; feeds the USB mic endpoint. |
+| `usb_mic_task` (`components/usb_device_uac/`, vendored) | `usb_mic_task` | 4096 | **9** | 0 | Ring consumer; feeds the USB mic endpoint. |
+| `tusb_device_task` (`components/usb_device_uac/`, vendored) | `TinyUSB` | 4096 | **9** | 0 | TinyUSB device stack: enumeration, control transfers, endpoint servicing. |
 | `status_led` (`components/status_led/`) | `status_led` | 3072 | **2** | 0 | Onboard WS2812 showing Core-1 render load (see the component README). |
 
-Priorities in one picture - the render task sits alone at the top, everything
-interactive shares priority 5 on Core 0, and the status LED runs below all of
-it:
+Priorities in one picture. The two cores schedule independently, and the render
+task is the only task on Core 1 - no Core-0 priority, however high, can preempt
+it. Core 0 then runs its own ladder: the system `esp_timer` task at 22 (it
+delivers the button and encoder callbacks), the two USB tasks at 9, the
+application pool at 5, the status LED at 2, and the IDF main task at 1. USB
+egress therefore outranks everything interactive, which is what keeps the mic
+endpoint fed while the UI is busy. (Dev builds with `CONFIG_DEV_SERIAL_HARNESS`
+add the harness command task at 3, between the application pool and the LED.)
 
 ```mermaid
 flowchart TD
-    subgraph Prio22["priority 22 - audio, isolated"]
-        R["amy_usb_render_task - Core 1"]
+    subgraph C1["Core 1 - one task, priority 22"]
+        R["amy_usb_render_task<br/>never preempted by Core 0"]
     end
-    subgraph Prio5["priority 5 - Core 0, everything else"]
-        UI["synth_ui_task - 20 Hz"]
-        ENC["encoder_task - 50 Hz"]
-        BTN["button_handler_task - event-driven"]
-        ING["amy_ingest_task - event-driven"]
+    subgraph C0["Core 0 - priority ladder, highest first"]
+        T["esp_timer (22)<br/>button/encoder callback delivery"]
+        U["TinyUSB + usb_mic_task (9)<br/>USB device stack and ring consumer"]
+        P["application pool (5)<br/>synth_ui_task, encoder_task,<br/>button_handler_task, amy_ingest_task"]
+        LED["status_led (2)"]
+        M["IDF main task (1)"]
+        T ~~~ U
+        U ~~~ P
+        P ~~~ LED
+        LED ~~~ M
     end
-    subgraph Prio2["priority 2 - Core 0, background"]
-        LED["status_led - yields to everything above"]
-    end
-    Prio22 ~~~ Prio5
-    Prio5 ~~~ Prio2
 ```
 
 Button and encoder callbacks never run UI logic in callback context: the

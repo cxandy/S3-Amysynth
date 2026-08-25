@@ -22,9 +22,10 @@ extern "C" {
  *     only - PATCH-mode instruments own their osc topology;
  *   - the shared ADSR/EG1 graph editor storage.
  *
- * Owns AMY synth slots 66/67 (above the stutter drone's 64/65) so both drones
- * can sound together; amy_cfg.max_synths must be >= 68. All AMY interaction
- * goes through amy_helpers deltas, never amy_queue_lock. */
+ * Owns AMY synth slots 4/5 (DRONE_STD_SYNTH_MAIN/_SUB, just above the stutter
+ * drone's 2/3) so both drones can sound together; the slot map is in
+ * synth_slots.h. All AMY interaction goes through amy_helpers deltas, never
+ * amy_queue_lock. */
 
 /* ── Lifecycle ── */
 void drone_std_core_init(void);

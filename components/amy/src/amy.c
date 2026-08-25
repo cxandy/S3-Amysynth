@@ -1040,6 +1040,9 @@ void reset_osc_state(struct synthinfo *psynth) {
     psynth->dist_state.hold = 0;
     psynth->dist_state.hold_count = 0;
     psynth->dist_state.hpf_yn1 = 0;
+    // Releases any Karplus-Strong ring this osc held: ks_alloc_row() treats a
+    // row whose owner no longer claims it as free, so there is nothing to undo.
+    psynth->ks_index = KS_NO_ROW;
 }
 
 void reset_osc_by_pointer(struct synthinfo *psynth, struct mod_synthinfo *pmsynth) {

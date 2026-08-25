@@ -895,6 +895,17 @@ void app_main(void)
     /* Slot map lives in synth_slots.h: statics pack 1..10, melodic is the
      * open-ended arena 11..SYNTH_SLOT_COUNT-1. This is the polyphony knob. */
     amy_cfg.max_synths = SYNTH_SLOT_COUNT;
+    /* Karplus-Strong rings. One ring is one physical string: two voices on a
+     * ring damp each other's decay, and a note-on refills the ring under any
+     * voice still reading it (a silent note-on measured +134% on the voices
+     * already sounding). So this is the count of KS voices that can sound at
+     * once before ks_alloc_row() starts stealing the quietest ring.
+     * 4 covers one KS voice on each of the SEQ_TRACKS melodic rows. A row set
+     * to more than one voice, or a chord row (voice count follows the tone
+     * count), oversubscribes and steals - raise this to match if that setup
+     * matters. Costs AMY_SAMPLE_RATE/55+1 SAMPLEs each: ~3.5 KB internal per
+     * ring at 48 kHz, from ram_caps_synth. */
+    amy_cfg.ks_oscs = 4;
     /* Disable AMY's CPU-overload failsafe (v1.2.121+): its per-block timing
      * span wraps amy_render(), whose body holds amy_queue_lock, so time the
      * render task spends BLOCKED on the lock while the ingest pump applies

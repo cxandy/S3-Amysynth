@@ -724,26 +724,63 @@ void partial_note_off(uint16_t osc) {
 // sample rate.  A literal sized for 44100 truncates the ring above it.
 #define MAX_KS_BUFFER_LEN (AMY_SAMPLE_RATE / KS_LOWEST_FREQ + 1)
 SAMPLE ** ks_buffer;
-uint8_t ks_polyphony_index;
+// Which osc each ring belongs to.  A ring is a physical string: two oscs
+// playing one ring damp each other's decay and re-excite each other on
+// note-on, so the mapping has to be per osc rather than a shared cursor.
+// The claim is two-way -- ks_row_owner[r] == osc AND synth[osc]->ks_index == r
+// -- so resetting or freeing an osc releases its ring with no explicit undo.
+static uint16_t *ks_row_owner;
+#define KS_ROW_UNOWNED 0xFFFF
 
 
 /* karplus-strong */
+
+// True if nothing is currently sounding on ring r.
+static bool ks_row_is_free(uint8_t r) {
+    uint16_t owner = ks_row_owner[r];
+    if (owner == KS_ROW_UNOWNED) return true;
+    if (synth[owner] == NULL) return true;            // osc was freed
+    if (synth[owner]->ks_index != r) return true;     // osc reset, or took another ring
+    if (synth[owner]->wave != KS) return true;        // osc switched wave
+    if (synth[owner]->status == SYNTH_OFF) return true;
+    return false;
+}
+
+// Pick the ring this note will play.  In order: the one this osc already owns
+// (a retrigger re-excites its own string, which is the common case and never
+// disturbs anyone else), then any idle ring, then -- only if every ring is
+// sounding -- the quietest one, because that is the collision least likely to
+// be heard.
+static uint8_t ks_alloc_row(uint16_t osc) {
+    uint8_t own = synth[osc]->ks_index;
+    if (own < AMY_KS_OSCS && ks_row_owner[own] == osc) return own;
+    for (uint8_t r = 0; r < AMY_KS_OSCS; ++r) {
+        if (ks_row_is_free(r)) return r;
+    }
+    uint8_t quietest = 0;
+    float lowest = msynth[ks_row_owner[0]]->amp;
+    for (uint8_t r = 1; r < AMY_KS_OSCS; ++r) {
+        float amp = msynth[ks_row_owner[r]]->amp;
+        if (amp < lowest) { lowest = amp; quietest = r; }
+    }
+    return quietest;
+}
+
 
 SAMPLE render_ks(SAMPLE * buf, uint16_t osc) {
     SAMPLE half = MUL0_SS(F2S(0.5f), F2S(synth[osc]->feedback));
     SAMPLE amp = F2S(msynth[osc]->amp);
     float freq = freq_of_logfreq(msynth[osc]->logfreq);
     SAMPLE max_value = 0;
-    if(freq >= KS_LOWEST_FREQ) {
+    if(freq >= KS_LOWEST_FREQ && synth[osc]->ks_index < AMY_KS_OSCS) {
         uint16_t buflen = (uint16_t)(AMY_SAMPLE_RATE / freq);
         if(buflen > MAX_KS_BUFFER_LEN) buflen = MAX_KS_BUFFER_LEN;
+        SAMPLE *ring = ks_buffer[synth[osc]->ks_index];
         for(uint16_t i = 0; i < AMY_BLOCK_SIZE; i++) {
             uint16_t index = (uint16_t)synth[osc]->phase;
-            SAMPLE sample = ks_buffer[ks_polyphony_index][index];
-            ks_buffer[ks_polyphony_index][index] =                 
-                SMULR7(
-                    (ks_buffer[ks_polyphony_index][index] + ks_buffer[ks_polyphony_index][(index + 1) % buflen]),
-                    half);
+            SAMPLE sample = ring[index];
+            ring[index] =
+                SMULR7((ring[index] + ring[(index + 1) % buflen]), half);
             synth[osc]->phase = (PHASOR)((index + 1) % buflen);
             SAMPLE value = SMULR7(sample, amp);
             buf[i] += value;
@@ -764,23 +801,26 @@ void ks_note_on(uint16_t osc, float freq) {
     // of the ring.  Any other wave leaves a fixed-point phasor here, whose
     // low 16 bits index far past the buffer.
     synth[osc]->phase = 0;
+    if(ks_buffer == NULL) { synth[osc]->ks_index = KS_NO_ROW; return; }
+    uint8_t row = ks_alloc_row(osc);
+    synth[osc]->ks_index = row;
+    ks_row_owner[row] = osc;
+    SAMPLE *ring = ks_buffer[row];
     uint16_t buflen = (uint16_t)(AMY_SAMPLE_RATE / freq);
     if(buflen > MAX_KS_BUFFER_LEN) buflen = MAX_KS_BUFFER_LEN;
     // init KS buffer with noise up to max
     SAMPLE sum = 0;
     for(uint16_t i = 0; i < buflen; i++) {
         SAMPLE val = amy_get_random();
-        ks_buffer[ks_polyphony_index][i] = val;
+        ring[i] = val;
         sum += val;
     }
     // Remove dc, to avoid ending up with a dc-offset residual.
     SAMPLE mean = sum / buflen;
     for(uint16_t i = 0; i < buflen; i++) {
-        ks_buffer[ks_polyphony_index][i] -= mean;
+        ring[i] -= mean;
     }
-    ks_polyphony_index++;
-    if(ks_polyphony_index == AMY_KS_OSCS) ks_polyphony_index = 0;
-    //fprintf(stderr, "ks_note_on: osc %d buflen %d poly_index %d\n", osc, buflen, ks_polyphony_index);
+    //fprintf(stderr, "ks_note_on: osc %d buflen %d row %d\n", osc, buflen, row);
 }
 
 void ks_note_off(uint16_t osc) {
@@ -789,15 +829,44 @@ void ks_note_off(uint16_t osc) {
 
 
 void ks_init(void) {
-    // 6ms buffer
-    ks_polyphony_index = 0;
-    ks_buffer = (SAMPLE**) malloc(sizeof(SAMPLE*)*AMY_KS_OSCS);
-    for(int i=0;i<AMY_KS_OSCS;i++) ks_buffer[i] = (SAMPLE*)malloc(sizeof(float)*MAX_KS_BUFFER_LEN); 
+    // One ring per simultaneously sounding KS osc; ks_oscs is the polyphony
+    // ceiling, past which ks_alloc_row() steals the quietest ring.
+    ks_buffer = (SAMPLE**) malloc_caps(sizeof(SAMPLE*)*AMY_KS_OSCS, amy_global.config.ram_caps_synth);
+    if(ks_buffer == NULL) {
+        amy_oom("unable to alloc %d KS rings\n", (int)AMY_KS_OSCS);
+        return;
+    }
+    // Before anything else can fail: ks_deinit() walks this array.
+    for(int i=0;i<AMY_KS_OSCS;i++) ks_buffer[i] = NULL;
+    ks_row_owner = (uint16_t*) malloc_caps(sizeof(uint16_t)*AMY_KS_OSCS, amy_global.config.ram_caps_synth);
+    if(ks_row_owner == NULL) {
+        amy_oom("unable to alloc %d KS ring owners\n", (int)AMY_KS_OSCS);
+        ks_deinit();
+        return;
+    }
+    for(int i=0;i<AMY_KS_OSCS;i++) ks_row_owner[i] = KS_ROW_UNOWNED;
+    for(int i=0;i<AMY_KS_OSCS;i++) {
+        ks_buffer[i] = (SAMPLE*)malloc_caps(sizeof(SAMPLE)*MAX_KS_BUFFER_LEN, amy_global.config.ram_caps_synth);
+        if(ks_buffer[i] == NULL) {
+            // All or nothing: a partly-filled table would let ks_alloc_row()
+            // hand out a NULL ring, so KS goes silent instead of half-working.
+            // ks_note_on's NULL check and render_ks's ks_index guard are what
+            // make silence safe.
+            amy_oom("unable to alloc KS ring of %d samples\n", (int)MAX_KS_BUFFER_LEN);
+            ks_deinit();
+            return;
+        }
+    }
 }
 
 void ks_deinit(void) {
-    for(int i=0;i<AMY_KS_OSCS;i++) free(ks_buffer[i]);
-    free(ks_buffer);
+    if(ks_buffer != NULL) {
+        for(int i=0;i<AMY_KS_OSCS;i++) free(ks_buffer[i]);
+        free(ks_buffer);
+        ks_buffer = NULL;
+    }
+    free(ks_row_owner);
+    ks_row_owner = NULL;
 }
 
 // --------- wavetable ----------

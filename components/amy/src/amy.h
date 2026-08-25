@@ -364,6 +364,9 @@ enum coefs{
 #define AMY_WAVE_IS_PCM(w) ((w) == PCM || (w) == PCM_LEFT || (w) == PCM_RIGHT)
 
 // synth[].status values
+// synth[].ks_index value meaning "this osc owns no Karplus-Strong ring".
+#define KS_NO_ROW 255
+
 #define SYNTH_OFF 0
 #define SYNTH_AUDIBLE 1
 #define SYNTH_INAUDIBLE 2
@@ -785,6 +788,7 @@ struct synthinfo {
     float *breakpoint_values[MAX_BREAKPOINT_SETS];  // dynamically sized.
     // Per-note state (set on initialization, does not change during note)
     uint8_t terminate_on_silence;  // Usually yes, not for PCM. not in event.
+    uint8_t ks_index;  // Which ks_buffer ring this osc plays, KS_NO_ROW if none. not in event.
     const LUT *lut;       // Selected lookup table and size.
     // Per-block state (changes with time)
     uint8_t status;  // not in event

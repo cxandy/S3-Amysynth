@@ -111,11 +111,47 @@ Both are target-agnostic, so they belong upstream rather than here.
    Verified: at 48 kHz, `MAX_KS_BUFFER_LEN` = 873 vs a worst-case `buflen` of
    872. At 44.1 kHz the value is still exactly 802, so no behaviour changes there.
 
-**Not fixed here** - the larger KS defect is that polyphony shares one buffer
-row (`ks_polyphony_index` is a single global with no per-osc binding), so three
-KS notes are as loud as one and `ks_oscs > 1` renders the first note silent.
-Design brief: `docs/TODO/2026-08-25-ks-polyphony.md`. Measurements:
-`docs/reports/2026-08-25-flanger-comb-feasibility.md` Appendix A.
+The larger shared-ring defect these two sat next to is fixed by the entry
+above. Measurements: `docs/reports/2026-08-25-flanger-comb-feasibility.md`
+Appendix A.
+
+### `oscillators.c` + `amy.h` + `amy.c` — per-osc Karplus-Strong ring binding (upstream PR candidate)
+
+`ks_buffer` is a pool of rings, but which ring an osc played was decided by a
+single module-global cursor (`ks_polyphony_index`) that every KS osc
+dereferenced at render time. Nothing recorded "this osc plays that ring", so
+all simultaneous KS voices landed on the same one. Measured consequences
+(host sim, `docs/tools-src/`):
+
+- voices sharing a ring damp each other every sample, so three KS notes were as
+  loud as one (1.12x where independent voices give 1.73x) and decayed ~2.6x
+  faster;
+- `ks_note_on()` refilled the shared ring at full amplitude under every voice
+  still reading it - a note-on at velocity 0.01, inaudible on its own, raised
+  the voices already sounding by **+134%**;
+- `ks_oscs > 1` was unusable: note-on filled ring N and left the cursor at N+1,
+  which is the ring `render_ks()` then read, so a single note rendered silence.
+  `ks_oscs = 1` worked only because the wrap sent N+1 back to 0.
+
+**Fix.** `synth[].ks_index` (amy.h) records the ring, chosen in `ks_note_on()`
+and read by `render_ks()`. Ownership is a two-way claim - `ks_row_owner[r] ==
+osc` and `synth[osc]->ks_index == r` - so `reset_osc_by_pointer()` setting
+`ks_index = KS_NO_ROW` (amy.c) releases the ring with no explicit free path.
+`ks_alloc_row()` prefers the ring this osc already owns (a retrigger re-excites
+its own string and disturbs nobody), then any idle ring, then steals the
+quietest - the least audible collision. `ks_init()` also gained the OOM
+handling AMY's other allocators have: all-or-nothing, `amy_oom()`, KS silent
+rather than half-allocated, and rings now come from `ram_caps_synth` instead of
+bare `malloc`.
+
+After: 3 notes measure 1.48-1.65x (target 1.73x), a silent note-on moves the
+ringing voices +9.5% instead of +134%, and `ks_oscs = 4` renders correctly.
+
+`main/main.c` sets `ks_oscs = 4`, one KS voice per melodic track; see the
+comment there for what oversubscribes it.
+
+Universal AMY logic, no target assumptions - PR candidate, same track as
+`FILTER_NOTCH` #1000 and `FILTER_PHASER` #1020.
 
 ### `algorithms.c` + `amy.h` — `amy_num_algorithms` count export (upstream PR candidate)
 

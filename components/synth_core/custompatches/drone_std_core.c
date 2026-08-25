@@ -36,6 +36,9 @@ static const char *TAG = "drone_std";
 /* ── State ── */
 typedef struct {
     bool           enabled;
+    bool           solo_muted;   /* silenced because a sequencer track is soloed;
+                                    separate from `enabled` so the user's own
+                                    on/off survives a solo round-trip        */
     drone_source_t source;
     uint16_t       wave;         /* AMY wave constant for the carrier      */
     chord_type_t   chord;
@@ -208,25 +211,33 @@ static void drone_std_note(uint8_t synth, bool on, float midi_note)
     amy_helpers_event_send(e);
 }
 
+/* Whether the drone should be making sound right now: the user's switch AND not
+ * silenced by a solo elsewhere. */
+static inline bool drone_std_sounding(void)
+{
+    return s_ds.enabled && !s_ds.solo_muted;
+}
+
 /* Start/stop the sustained voices: one note-on per chord note on the main,
  * a single root+interval note on the sub. Disable releases the same notes. */
 static void drone_std_apply_enabled(void)
 {
+    const bool on = drone_std_sounding();
     const int8_t *formula = quantizer_chord_intervals(s_ds.chord);
     uint8_t chord_n = drone_std_chord_note_count(s_ds.chord);
     if (chord_n < 1) {
-        drone_std_note(DRONE_STD_SYNTH_MAIN, s_ds.enabled, (float)s_ds.root_note);
+        drone_std_note(DRONE_STD_SYNTH_MAIN, on, (float)s_ds.root_note);
     } else {
         for (uint8_t i = 0; i < chord_n; i++) {
             if (!formula || formula[i] < 0) break;
             int midi = SEQ_CLAMP_INT((int)s_ds.root_note + (int)formula[i], 0, 127);
-            drone_std_note(DRONE_STD_SYNTH_MAIN, s_ds.enabled, (float)midi);
+            drone_std_note(DRONE_STD_SYNTH_MAIN, on, (float)midi);
         }
     }
 
     if (s_ds.sub_enabled) {
         int sub = SEQ_CLAMP_INT((int)s_ds.root_note + (int)s_ds.sub_interval, 12, 108);
-        drone_std_note(DRONE_STD_SYNTH_SUB, s_ds.enabled, (float)sub);
+        drone_std_note(DRONE_STD_SYNTH_SUB, on, (float)sub);
     }
 }
 
@@ -306,6 +317,15 @@ void drone_std_set_enabled(bool on)
     if (on) drone_std_rebuild();   /* fresh enable reflects current params */
     drone_std_apply_enabled();
     ESP_LOGI(TAG, "drone_std %s", on ? "ON" : "OFF");
+}
+
+void drone_std_set_solo_muted(bool muted)
+{
+    if (s_ds.solo_muted == muted) return;
+    s_ds.solo_muted = muted;
+    if (!s_ds.enabled) return;      /* nothing sounding either way */
+    if (!muted) drone_std_rebuild();  /* mirror the fresh-enable path */
+    drone_std_apply_enabled();
 }
 
 void drone_std_set_source(drone_source_t src)

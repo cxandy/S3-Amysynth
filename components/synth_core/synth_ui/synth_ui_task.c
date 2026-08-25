@@ -253,6 +253,18 @@ static void synth_ui_task(void *pvParameters)
 
 /* ── Public API ──────────────────────────────────────────────────────── */
 
+/* Sequencer solo is global, and the arp and drones are not sequencer tracks -
+ * they run off their own modules, which sequencer_core does not (and should
+ * not) know about. This is the join: the core reports "something is soloed",
+ * and the app layer silences the voices it owns. The live-play voice is left
+ * sounding on purpose - playing over a soloed row is why one solos it. */
+static void ui_solo_change(bool any_solo)
+{
+    arp_set_solo_muted(any_solo);
+    drone_set_solo_muted(any_solo);
+    drone_std_set_solo_muted(any_solo);
+}
+
 void synth_ui_init(u8g2_t *u8g2)
 {
     s_u8g2 = u8g2;
@@ -273,6 +285,8 @@ void synth_ui_init(u8g2_t *u8g2)
     DIAG_HEAP_CHECK("ui_init: after drone_core_init");
     drone_std_core_init();
     DIAG_HEAP_CHECK("ui_init: after drone_std_core_init");
+    /* After the three module inits: the hook may fire as soon as it is set. */
+    sequencer_core_set_solo_change_cb(ui_solo_change);
 #if CONFIG_SYNTH_CUSTOM_FM
     fm_voice_default(&s_fm_voice);
 #endif

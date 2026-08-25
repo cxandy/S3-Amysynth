@@ -295,9 +295,11 @@ typedef struct {
                                             sequencer_core_add_layer.            */
     uint8_t   repeat_rate[SEQ_TRACKS];   /* SEQ_REPEAT_*: fires every N bars   */
     bool      mute[SEQ_TRACKS];          /* true = track produces no note-ons */
-    bool      solo[SEQ_TRACKS];          /* true = only soloed tracks in this
-                                             layer are audible; overrides mute
-                                             on the soloed track(s) themselves */
+    bool      solo[SEQ_TRACKS];          /* true = this track stays audible while
+                                             solo is in force. Solo is global:
+                                             a flag here silences the other
+                                             layers too. Overrides mute on the
+                                             soloed track(s) themselves.        */
     bool      chord_mode;                /* false = scale quantizer (default) */
     uint8_t   chord_root;                /* chromatic 0-11 (C=0)              */
     chord_type_t chord_type;

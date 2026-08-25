@@ -590,16 +590,43 @@ void     sequencer_core_set_melodic_groove_pct(uint8_t layer_idx, uint8_t groove
 uint8_t  sequencer_core_get_melodic_groove_pct(uint8_t layer_idx);
 
 /* ── Per-track mute / solo ────────────────────────────────────────────────
- * Scoped per layer: solo compares only against tracks of the SAME layer.
- * Mixing-desk semantics - any solo in the layer mutes the rest, and solo
- * overrides mute even on a track that is both. Gated in sequencer_emit_step():
- * an inaudible track's steps are cancelled rather than scheduled, so it never
- * produces a note-on. Both setters hard-kill the affected slot's live voices so
- * the change is heard immediately. */
+ * Mute is per track. Solo is GLOBAL: any solo anywhere silences every track
+ * that is not itself soloed, across all layers, and solo overrides mute even on
+ * a track that is both. Solos stack - soloing rows on two layers leaves both
+ * audible. Gated in sequencer_emit_step(): an inaudible track's steps are
+ * cancelled rather than scheduled, so it never produces a note-on. Both setters
+ * hard-kill the affected slots' live voices so the change is heard immediately.
+ *
+ * The arp and the drones are not sequencer tracks - they are silenced through
+ * the solo-change hook below, which the app layer wires to their duck setters.
+ * The live-play voice is deliberately left alone: playing against a soloed row
+ * is the point of soloing it.
+ *
+ * Call from the UI task. sequencer_core_set_track_solo() and
+ * sequencer_core_clear_all_solos() invoke the hook synchronously. */
 void sequencer_core_set_track_mute(uint8_t layer_idx, uint8_t track, bool mute);
 bool sequencer_core_get_track_mute(uint8_t layer_idx, uint8_t track);
 void sequencer_core_set_track_solo(uint8_t layer_idx, uint8_t track, bool solo);
 bool sequencer_core_get_track_solo(uint8_t layer_idx, uint8_t track);
+
+/* True when any track of any layer is soloed - i.e. when the solo mode that
+ * silences everything else is in force. Drives the Trackopts clear affordance. */
+bool sequencer_core_any_solo(void);
+
+/* Drop every solo flag in the project and restore normal mute-only gating.
+ * No-op (and no hook call) when nothing was soloed. */
+void sequencer_core_clear_all_solos(void);
+
+/* Fired whenever the set of soloed tracks changes; `any_solo` is the new value
+ * of sequencer_core_any_solo(). The handler owns silencing/restoring the voices
+ * sequencer_core does not drive. Runs on the caller's task (the UI task). */
+typedef void (*seq_solo_change_cb_t)(bool any_solo);
+void sequencer_core_set_solo_change_cb(seq_solo_change_cb_t cb);
+
+/* Re-apply the current solo state to every layer and to the hook. For paths
+ * that write layer->solo[] wholesale rather than through the setter - snapshot
+ * load being the only one - so the audible result matches what was loaded. */
+void sequencer_core_notify_solo_changed(void);
 
 /* ── Global chord progression ─────────────────────────────────────────────
  * A list of (root, chord_type, duration_bars) entries that auto-advances.

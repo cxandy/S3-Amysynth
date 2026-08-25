@@ -69,6 +69,11 @@ void arp_core_mark_dirty(void);
 
 /* ── Parameter setters (each re-emits the sequence) ── */
 void arp_set_enabled(bool enabled);
+
+/* Silence the arp without disturbing arp_set_enabled()'s state: used by the
+ * sequencer solo hook, so releasing solo restores whatever the user had set.
+ * Kills the sounding voices and re-emits synchronously - call from the UI task. */
+void arp_set_solo_muted(bool muted);
 void arp_set_direction(arp_dir_t dir);
 void arp_set_octaves(uint8_t octaves);        /* clamped 1..ARP_OCT_MAX */
 void arp_set_rate(arp_rate_t rate);

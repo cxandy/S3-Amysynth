@@ -65,6 +65,9 @@ static const char *s_rate_names[ARP_RATE_COUNT] = {
 
 typedef struct {
     bool       enabled;
+    bool       solo_muted;    /* silenced because something is soloed; kept
+                                 apart from `enabled` so the user's own on/off
+                                 survives a solo round-trip                 */
     arp_dir_t  dir;
     uint8_t    octaves;       /* 1..ARP_OCT_MAX */
     arp_rate_t rate;
@@ -361,7 +364,7 @@ void arp_core_refresh(void)
      * only note-off they will ever get. */
     arp_kill_voices();
 
-    if (!s_arp.enabled) {
+    if (!s_arp.enabled || s_arp.solo_muted) {
         return;
     }
 
@@ -449,6 +452,16 @@ void arp_set_enabled(bool enabled)
     s_arp.enabled = enabled;
     arp_mark_dirty();
     ESP_LOGI(TAG, "arp %s", enabled ? "enabled" : "disabled");
+}
+
+void arp_set_solo_muted(bool muted)
+{
+    if (s_arp.solo_muted == muted) return;
+    s_arp.solo_muted = muted;
+    /* Refresh immediately rather than marking dirty: solo is toggled from the
+     * UI task, the same task that services the arp, so there is no reason to
+     * let up to one frame of arp notes through after the user hits solo. */
+    arp_core_refresh();
 }
 
 void arp_set_direction(arp_dir_t dir)

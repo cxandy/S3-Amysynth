@@ -167,23 +167,31 @@ float sequencer_step_velocity(const seq_layer_t *layer,
 #endif
 }
 
-/* True when any track has solo engaged. Scans all SEQ_TRACKS, not just
- * num_tracks, so a stale flag on an unused slot cannot silently affect the
- * tracks in use. */
-static bool sequencer_layer_has_solo(const seq_layer_t *layer)
+/* Set once at init by the app layer; NULL until then, so the core stays usable
+ * (and testable) with no arp/drone modules linked in at all. */
+static seq_solo_change_cb_t s_solo_change_cb = NULL;
+
+/* True when any track of any layer has solo engaged. Solo is a GLOBAL mode, not
+ * a per-layer one: soloing a row on one layer has to silence the other layers
+ * too, or the feature cannot do the one job it exists for. Scans all
+ * SEQ_TRACKS, not just num_tracks, so a stale flag on an unused slot cannot
+ * silently affect the tracks in use. */
+bool sequencer_core_any_solo(void)
 {
-    for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
-        if (layer->solo[t]) return true;
+    for (uint8_t li = 0; li < s_num_layers; li++) {
+        for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
+            if (s_layers[li].solo[t]) return true;
+        }
     }
     return false;
 }
 
 /* Whether `track` will sound: solo overrides mute (even on the same track)
- * whenever any track is soloed, otherwise mute alone gates. Not static: also
- * used by seq_core_trig.c's decorated-step ratchet path. */
+ * whenever anything anywhere is soloed, otherwise mute alone gates. Not static:
+ * also used by seq_core_trig.c's decorated-step ratchet path. */
 bool sequencer_track_audible(const seq_layer_t *layer, uint8_t track)
 {
-    if (sequencer_layer_has_solo(layer)) {
+    if (sequencer_core_any_solo()) {
         return layer->solo[track];
     }
     return !layer->mute[track];
@@ -862,21 +870,54 @@ bool sequencer_core_get_track_mute(uint8_t layer_idx, uint8_t track)
     return s_layers[layer_idx].mute[track];
 }
 
+/* Re-emit every layer and hard-kill whatever just went inaudible. Solo is
+ * global, so one toggle changes the audibility of every track in the project,
+ * not just the toggled layer's - a note already sounding on a now-silenced row
+ * would otherwise ring on to its scheduled note-off. Ducking the non-sequencer
+ * voices (arp, drones) is the hook's job: they are driven by their own modules,
+ * which sequencer_core deliberately does not depend on. */
+static void sequencer_apply_solo_change(void)
+{
+    for (uint8_t li = 0; li < s_num_layers; li++) {
+        seq_layer_t *L = &s_layers[li];
+        sequencer_resync_layer(li);
+        for (uint8_t t = 0; t < L->num_tracks; t++) {
+            if (!sequencer_track_audible(L, t)) {
+                sequencer_kill_synth_voices(L->synth_id[t]);
+            }
+        }
+    }
+    if (s_solo_change_cb) s_solo_change_cb(sequencer_core_any_solo());
+}
+
 void sequencer_core_set_track_solo(uint8_t layer_idx, uint8_t track, bool solo)
 {
     if (layer_idx >= s_num_layers || track >= SEQ_TRACKS) return;
     seq_layer_t *layer = &s_layers[layer_idx];
     if (layer->solo[track] == solo) return;
     layer->solo[track] = solo;
-    /* Solo changes every track's audibility, not just this one's: re-emit the
-     * whole layer and hard-kill the tracks that just became inaudible - a note
-     * already sounding would otherwise ring to its scheduled note-off. */
-    sequencer_resync_layer(layer_idx);
-    for (uint8_t t = 0; t < layer->num_tracks; t++) {
-        if (!sequencer_track_audible(layer, t)) {
-            sequencer_kill_synth_voices(layer->synth_id[t]);
+    sequencer_apply_solo_change();
+}
+
+void sequencer_core_clear_all_solos(void)
+{
+    bool any = false;
+    for (uint8_t li = 0; li < s_num_layers; li++) {
+        for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
+            if (s_layers[li].solo[t]) { s_layers[li].solo[t] = false; any = true; }
         }
     }
+    if (any) sequencer_apply_solo_change();
+}
+
+void sequencer_core_notify_solo_changed(void)
+{
+    sequencer_apply_solo_change();
+}
+
+void sequencer_core_set_solo_change_cb(seq_solo_change_cb_t cb)
+{
+    s_solo_change_cb = cb;
 }
 
 bool sequencer_core_get_track_solo(uint8_t layer_idx, uint8_t track)

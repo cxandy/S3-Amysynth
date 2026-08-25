@@ -49,8 +49,13 @@ void display_trackopts_draw_frame(u8g2_t *u8g2, const trackopts_view_t *view)
     u8g2_SetDrawColor(u8g2, 1);
     u8g2_SetFont(u8g2, u8g2_font_6x10_tf);
 
-    /* Title: "TRACK OPTS  " then Lx and Tx as interactive values. */
-    static const char *prefix = "TRACK OPTS  ";
+    /* Title: prefix, then Lx and Tx as interactive values, then the CLR action
+     * when something is soloed. The abbreviated prefix is what buys CLR its
+     * room: at 6px/char it puts the CLR box at x 86..107, i.e. exactly up
+     * against the scroll arrows at x>=108, so neither has to move. Widening
+     * either string, or the L/T gap, overlaps the arrows. */
+    bool show_clr = view && view->any_solo;
+    const char *prefix = show_clr ? "TRK OPTS " : "TRACK OPTS  ";
     u8g2_DrawStr(u8g2, 2, TO_TITLE_Y, prefix);
     uint8_t lx = (uint8_t)(2 + u8g2_GetStrWidth(u8g2, prefix));
     char lbuf[6], tbuf[6];
@@ -59,6 +64,10 @@ void display_trackopts_draw_frame(u8g2_t *u8g2, const trackopts_view_t *view)
     to_draw_title_val(u8g2, lx, lbuf, view && view->cursor == TO_ROW_LAYER);
     uint8_t tx = (uint8_t)(lx + u8g2_GetStrWidth(u8g2, lbuf) + 4);
     to_draw_title_val(u8g2, tx, tbuf, view && view->cursor == TO_ROW_TRACK);
+    if (show_clr) {
+        uint8_t cx = (uint8_t)(tx + u8g2_GetStrWidth(u8g2, tbuf) + 4);
+        to_draw_title_val(u8g2, cx, "CLR", view->cursor == TO_ROW_CLRSOLO);
+    }
     u8g2_DrawHLine(u8g2, 0, 15, 128);
 
     if (view == NULL) { return; }
@@ -67,7 +76,10 @@ void display_trackopts_draw_frame(u8g2_t *u8g2, const trackopts_view_t *view)
      * 4=Root 5=Type. Drum layers stop at Solo; melodic layers have all 6 and
      * need the scroll window to fit below the title bar. */
     uint8_t content_count = view->melodic ? 6 : 3;
-    uint8_t content_cursor = (view->cursor >= TO_ROW_REPEAT)
+    /* Title-bar rows (Layer/Track/CLR) leave the content window where it is by
+     * anchoring at the top - they are not content rows to scroll to. */
+    uint8_t content_cursor = (view->cursor >= TO_ROW_REPEAT &&
+                              view->cursor <= TO_ROW_TYPE)
                              ? (uint8_t)(view->cursor - TO_ROW_REPEAT) : 0;
     uint8_t first = 0;
     if (content_cursor >= TO_VIS_ROWS) {

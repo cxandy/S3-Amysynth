@@ -24,15 +24,51 @@ static uint8_t to_next_repeat_rate(uint8_t rr, int delta)
     return rates[idx];
 }
 
+/* The rows the cursor can actually land on, in navigation order. Two of them
+ * come and go: the chord rows are melodic-only, and CLR exists only while
+ * something is soloed. Building the list is what keeps navigation correct as
+ * they appear and disappear - a plain cursor range cannot express a gap.
+ * Returns the count; `rows` must hold TO_ROW_COUNT entries. */
+static uint8_t to_row_list(uint8_t li, uint8_t *rows)
+{
+    uint8_t n = 0;
+    rows[n++] = TO_ROW_LAYER;
+    rows[n++] = TO_ROW_TRACK;
+    rows[n++] = TO_ROW_REPEAT;
+    rows[n++] = TO_ROW_MUTE;
+    rows[n++] = TO_ROW_SOLO;
+    if (sequencer_core_get_layer_type(li) == SEQ_LAYER_MELODIC) {
+        rows[n++] = TO_ROW_CHORD;
+        rows[n++] = TO_ROW_ROOT;
+        rows[n++] = TO_ROW_TYPE;
+    }
+    if (sequencer_core_any_solo()) rows[n++] = TO_ROW_CLRSOLO;
+    return n;
+}
+
+/* Pull the cursor back onto a row that still exists - after a layer switch onto
+ * a drum layer, or after the last solo is cleared out from under CLR. Snapping
+ * to the last row keeps the cursor near where it was rather than jumping home. */
+static void to_clamp_cursor(void)
+{
+    uint8_t rows[TO_ROW_COUNT];
+    uint8_t n = to_row_list(s_to_layer, rows);
+    for (uint8_t i = 0; i < n; i++) {
+        if (rows[i] == s_to_cursor) return;
+    }
+    s_to_cursor  = rows[n - 1];
+    s_to_editing = false;
+}
+
 void trackopts_build_view(trackopts_view_t *out)
 {
     uint8_t li = s_to_layer;
     uint8_t tr = s_to_track;
     bool melodic = (sequencer_core_get_layer_type(li) == SEQ_LAYER_MELODIC);
 
-    /* Drum tracks expose only Repeat Rate, Mute, Solo, and the target
-     * selectors — chord rows are melodic-only. */
-    if (!melodic && s_to_cursor > TO_ROW_SOLO) s_to_cursor = TO_ROW_SOLO;
+    /* Solo is global, so it can be cleared from another screen or by a project
+     * load - re-clamp on every build rather than only on this screen's edits. */
+    to_clamp_cursor();
 
     out->layer_idx    = li;                 /* 0-based; renderer displays as 1-based */
     out->track_idx    = tr;
@@ -42,6 +78,7 @@ void trackopts_build_view(trackopts_view_t *out)
     out->repeat_rate  = (uint8_t)sequencer_core_get_track_repeat_rate(li, tr);
     out->track_mute   = sequencer_core_get_track_mute(li, tr);
     out->track_solo   = sequencer_core_get_track_solo(li, tr);
+    out->any_solo     = sequencer_core_any_solo();
     out->chord_locked = sequencer_core_progression_get_enabled();
     out->cursor       = s_to_cursor;
     out->editing      = s_to_editing;
@@ -65,6 +102,7 @@ uint32_t trackopts_view_signature(trackopts_view_t *out)
     h = fnv1a_bytes(h, &out->repeat_rate, sizeof(out->repeat_rate));
     h = fnv1a_bytes(h, &out->track_mute,  sizeof(out->track_mute));
     h = fnv1a_bytes(h, &out->track_solo,  sizeof(out->track_solo));
+    h = fnv1a_bytes(h, &out->any_solo,    sizeof(out->any_solo));
     h = fnv1a_bytes(h, &out->chord_mode,  sizeof(out->chord_mode));
     h = fnv1a_bytes(h, &out->chord_root,  sizeof(out->chord_root));
     h = fnv1a_bytes(h, &out->chord_type,  sizeof(out->chord_type));
@@ -83,8 +121,6 @@ bool synth_ui_trackopts_handle_encoder(int delta)
     if (!synth_ui_trackopts_is_active()) return false;
     uint8_t li = s_to_layer;
     uint8_t tr = s_to_track;
-    bool melodic = (sequencer_core_get_layer_type(li) == SEQ_LAYER_MELODIC);
-    uint8_t max_row = melodic ? TO_ROW_TYPE : TO_ROW_SOLO;
 
     if (s_to_editing) {
         switch (s_to_cursor) {
@@ -93,11 +129,7 @@ bool synth_ui_trackopts_handle_encoder(int delta)
                 int nc = (int)seq_state.num_layers;
                 if (nl < 0) nl += nc; else if (nl >= nc) nl -= nc;
                 s_to_layer = (uint8_t)nl;
-                /* Re-clamp track and cursor if the new layer is a drum layer. */
-                if (sequencer_core_get_layer_type(s_to_layer) != SEQ_LAYER_MELODIC &&
-                    s_to_cursor > TO_ROW_SOLO) {
-                    s_to_cursor = TO_ROW_SOLO;
-                }
+                to_clamp_cursor();   /* the new layer may not have chord rows */
                 break;
             }
             case TO_ROW_TRACK: {
@@ -151,10 +183,15 @@ bool synth_ui_trackopts_handle_encoder(int delta)
             default: break;
         }
     } else {
-        int nc = (int)s_to_cursor + delta;
-        if (nc < 0) nc = (int)max_row;
-        if (nc > (int)max_row) nc = 0;
-        s_to_cursor = (uint8_t)nc;
+        /* Walk the live row list rather than a numeric range: it wraps over the
+         * rows that are currently hidden instead of stalling on them. */
+        uint8_t rows[TO_ROW_COUNT];
+        uint8_t n = to_row_list(s_to_layer, rows);
+        int idx = 0;
+        for (uint8_t i = 0; i < n; i++) if (rows[i] == s_to_cursor) idx = (int)i;
+        idx = (idx + delta) % (int)n;
+        if (idx < 0) idx += (int)n;
+        s_to_cursor = rows[idx];
     }
     s_force_redraw = true;
     return true;
@@ -163,11 +200,15 @@ bool synth_ui_trackopts_handle_encoder(int delta)
 bool synth_ui_trackopts_handle_button(void)
 {
     if (!synth_ui_trackopts_is_active()) return false;
-    if (sequencer_core_get_layer_type(s_to_layer) != SEQ_LAYER_MELODIC &&
-        s_to_cursor > TO_ROW_SOLO) {
-        s_to_cursor = TO_ROW_SOLO;
+    to_clamp_cursor();
+    if (s_to_cursor == TO_ROW_CLRSOLO) {
+        /* An action, not a value: fire on press and stay out of edit mode. The
+         * clamp afterwards moves the cursor off CLR, which has just vanished. */
+        sequencer_core_clear_all_solos();
+        to_clamp_cursor();
+    } else {
+        s_to_editing = !s_to_editing;
     }
-    s_to_editing = !s_to_editing;
     s_force_redraw = true;
     return true;
 }

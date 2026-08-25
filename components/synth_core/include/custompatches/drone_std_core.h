@@ -40,6 +40,11 @@ void drone_std_core_refresh_lfo_freq(void);
 
 /* ── Parameter setters ── */
 void drone_std_set_enabled(bool on);           /* sustained note-on/off        */
+
+/* Silence the drone without disturbing drone_std_set_enabled()'s state: used by
+ * the sequencer solo hook, so releasing solo restores whatever the user had
+ * set. Call from the UI task. */
+void drone_std_set_solo_muted(bool muted);
 void drone_std_set_source(drone_source_t src); /* WAVE <-> PATCH               */
 void drone_std_set_wave(uint16_t amy_wave);    /* carrier wave (WAVE mode)     */
 void drone_std_set_chord(chord_type_t chord);

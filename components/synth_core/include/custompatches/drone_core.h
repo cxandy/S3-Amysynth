@@ -77,6 +77,12 @@ void drone_core_service(void);
 
 /* ── Parameter setters ── */
 void drone_set_enabled(bool on);          /* sustained note-on/off of the voices */
+
+/* Silence the drone without disturbing drone_set_enabled()'s state: used by the
+ * sequencer solo hook, so releasing solo restores whatever the user had set.
+ * Releases/re-triggers the sustained voices synchronously - call from the UI
+ * task. Unrelated to the stutter duck depth (drone_set_amp_duck). */
+void drone_set_solo_muted(bool muted);
 void drone_set_source(drone_source_t src);/* WAVE <-> PATCH (rebuilds the synths) */
 void drone_set_wave(uint16_t amy_wave);   /* SAW_DOWN/SAW_UP/PULSE/TRIANGLE/SINE  */
 void drone_set_chord(chord_type_t chord); /* chord preset the carrier plays       */

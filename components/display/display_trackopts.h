@@ -23,17 +23,26 @@ extern "C" {
  *    Type       : Min7
  * Cursor rows 2..7 are the content rows; 5..7 (chord/root/type) are hidden for
  * drum layers. The list scrolls to keep the cursor visible on melodic layers,
- * which have more content rows than fit. */
+ * which have more content rows than fit.
+ *
+ * While anything in the project is soloed, the title bar gains a CLR action and
+ * the prefix shortens to make room for it:
+ *   TRK OPTS  L2 T1 [CLR]
+ * Solo is global, so the layer holding it may not be the one on screen - CLR is
+ * the way out that does not require hunting for it. */
 
 typedef enum {
-    TO_ROW_LAYER  = 0,   /* title-bar: Lx selector  */
-    TO_ROW_TRACK  = 1,   /* title-bar: Tx selector  */
-    TO_ROW_REPEAT = 2,
-    TO_ROW_MUTE   = 3,
-    TO_ROW_SOLO   = 4,
-    TO_ROW_CHORD  = 5,
-    TO_ROW_ROOT   = 6,
-    TO_ROW_TYPE   = 7,
+    TO_ROW_LAYER   = 0,   /* title-bar: Lx selector  */
+    TO_ROW_TRACK   = 1,   /* title-bar: Tx selector  */
+    TO_ROW_REPEAT  = 2,
+    TO_ROW_MUTE    = 3,
+    TO_ROW_SOLO    = 4,
+    TO_ROW_CHORD   = 5,
+    TO_ROW_ROOT    = 6,
+    TO_ROW_TYPE    = 7,
+    TO_ROW_CLRSOLO = 8,   /* title-bar: clear-all-solos action, only while
+                             any_solo. An action, not a value: pressing it fires
+                             immediately and never enters edit mode.          */
     TO_ROW_COUNT,
 } trackopts_row_t;
 
@@ -45,7 +54,9 @@ typedef struct {
     bool         melodic;      /* chord rows only shown when true */
     uint8_t      repeat_rate;  /* 1/2/4/8 */
     bool         track_mute;
-    bool         track_solo;
+    bool         track_solo;   /* solo state of THIS track only */
+    bool         any_solo;     /* anything soloed anywhere: shows the CLR action
+                                  and tells the user why other rows are silent */
     bool         chord_mode;
     uint8_t      chord_root;   /* 0–11 */
     chord_type_t chord_type;

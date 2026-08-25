@@ -1105,6 +1105,11 @@ bool project_snapshot_load(uint8_t slot)
     if (got_drone) apply_drone(&staged_drone);
     if (got_prog)  apply_prog(&staged_prog);
 
+    /* The layer import writes solo[] wholesale rather than through the setter,
+     * so nothing has applied the loaded solo state yet. Do it after the arp and
+     * drone applies, or their duck would be undone by the enable that follows. */
+    sequencer_core_notify_solo_changed();
+
     synth_ui_reload_mirror_from_core();
 
     free(staged_layers);

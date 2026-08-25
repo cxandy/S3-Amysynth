@@ -124,6 +124,10 @@ static const char *s_pattern_names[DRONE_PAT_COUNT] = {
 /* ── State ── */
 typedef struct {
     bool           enabled;
+    bool           solo_muted;  /* silenced because a sequencer track is soloed;
+                                   separate from `enabled` so the user's own
+                                   on/off survives a solo round-trip. Unrelated
+                                   to amp_duck, which is the stutter depth. */
     drone_source_t source;
     uint16_t       wave;        /* AMY wave constant for the carrier */
     chord_type_t   chord;       /* chord preset (shared chord_type_t) */
@@ -381,27 +385,35 @@ static void drone_note(uint8_t synth, bool on, float midi_note)
     amy_helpers_event_send(e);
 }
 
+/* Whether the drone should be making sound right now: the user's switch AND not
+ * silenced by a solo elsewhere. */
+static inline bool drone_sounding(void)
+{
+    return s_d.enabled && !s_d.solo_muted;
+}
+
 /* Start/stop the sustained drone voices: one note-on per chord note on main,
  * one at root+sub_interval on the sub. Disable releases the same notes so the
  * ADSR release fades them out. */
 static void drone_apply_enabled(void)
 {
+    const bool on = drone_sounding();
     const int8_t *formula = quantizer_chord_intervals(s_d.chord);
     uint8_t chord_n = drone_chord_note_count(s_d.chord);
     if (chord_n < 1) {
         /* NULL or empty chord: play root note only. */
-        drone_note(DRONE_SYNTH_MAIN, s_d.enabled, (float)s_d.root_note);
+        drone_note(DRONE_SYNTH_MAIN, on, (float)s_d.root_note);
     } else {
         for (uint8_t i = 0; i < chord_n; i++) {
             if (!formula || formula[i] < 0) break;
             int midi = SEQ_CLAMP_INT((int)s_d.root_note + (int)formula[i], 0, 127);
-            drone_note(DRONE_SYNTH_MAIN, s_d.enabled, (float)midi);
+            drone_note(DRONE_SYNTH_MAIN, on, (float)midi);
         }
     }
 
     if (s_d.sub_enabled) {
         int sub = SEQ_CLAMP_INT((int)s_d.root_note + (int)s_d.sub_interval, 12, 108);
-        drone_note(DRONE_SYNTH_SUB, s_d.enabled, (float)sub);
+        drone_note(DRONE_SYNTH_SUB, on, (float)sub);
     }
 }
 
@@ -577,6 +589,17 @@ void drone_set_enabled(bool on)
     }
     drone_apply_enabled();
     ESP_LOGI(TAG, "drone %s", on ? "ON" : "OFF");
+}
+
+void drone_set_solo_muted(bool muted)
+{
+    if (s_d.solo_muted == muted) return;
+    s_d.solo_muted = muted;
+    if (!s_d.enabled) return;      /* nothing sounding either way */
+    /* Coming back from a solo is a fresh start, exactly like a fresh enable:
+     * rebuild so the voices reflect any params edited while silenced. */
+    if (!muted) drone_rebuild();
+    drone_apply_enabled();
 }
 
 void drone_set_source(drone_source_t src)

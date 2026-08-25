@@ -277,6 +277,16 @@ uint8_t s_voices_applied[MAX_LAYERS][SEQ_TRACKS];
 
 uint8_t seq_track_num_voices(const seq_layer_t *layer, uint8_t track)
 {
+    /* KS is mono per row, whatever the layer asks for. Each sounding KS voice
+     * needs its own ring in AMY's ks_buffer pool (amy_cfg.ks_oscs = 4, one per
+     * row): voices sharing a ring damp each other and a note-on re-excites the
+     * ring under the tail still reading it. Measured on a 4x2 layer, that cost
+     * 4x the sustained level and let one inaudible note-on lift the rest of the
+     * layer 386%. Clamping here rather than at the stored num_voices keeps the
+     * layer's setting intact for when the patch changes back, and covers chord
+     * rows too - a chord row on a KS layer sounds one note, the accepted
+     * trade for staying inside the ring budget. */
+    if (layer->type == SEQ_LAYER_MELODIC && layer->patch == SEQ_PATCH_KS) return 1;
     uint8_t v = layer->num_voices;
     if (layer->type == SEQ_LAYER_MELODIC &&
         SEQ_NOTE_IS_CHORD(layer->track_base_note[track])) {

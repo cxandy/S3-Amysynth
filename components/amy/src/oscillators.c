@@ -719,7 +719,10 @@ void partial_note_off(uint16_t osc) {
 }
 
 
-#define MAX_KS_BUFFER_LEN 802 // 44100/55  -- 55Hz (A1) lowest we can go for KS
+#define KS_LOWEST_FREQ 55 // 55Hz (A1) lowest note we can play
+// One period of KS_LOWEST_FREQ, so the ring holds any note we admit at any
+// sample rate.  A literal sized for 44100 truncates the ring above it.
+#define MAX_KS_BUFFER_LEN (AMY_SAMPLE_RATE / KS_LOWEST_FREQ + 1)
 SAMPLE ** ks_buffer;
 uint8_t ks_polyphony_index;
 
@@ -731,8 +734,9 @@ SAMPLE render_ks(SAMPLE * buf, uint16_t osc) {
     SAMPLE amp = F2S(msynth[osc]->amp);
     float freq = freq_of_logfreq(msynth[osc]->logfreq);
     SAMPLE max_value = 0;
-    if(freq >= 55) { // lowest note we can play
+    if(freq >= KS_LOWEST_FREQ) {
         uint16_t buflen = (uint16_t)(AMY_SAMPLE_RATE / freq);
+        if(buflen > MAX_KS_BUFFER_LEN) buflen = MAX_KS_BUFFER_LEN;
         for(uint16_t i = 0; i < AMY_BLOCK_SIZE; i++) {
             uint16_t index = (uint16_t)synth[osc]->phase;
             SAMPLE sample = ks_buffer[ks_polyphony_index][index];
@@ -756,6 +760,10 @@ SAMPLE render_ks(SAMPLE * buf, uint16_t osc) {
 }
 
 void ks_note_on(uint16_t osc, float freq) {
+    // render_ks reads phase as a plain ring index, so start it at the bottom
+    // of the ring.  Any other wave leaves a fixed-point phasor here, whose
+    // low 16 bits index far past the buffer.
+    synth[osc]->phase = 0;
     uint16_t buflen = (uint16_t)(AMY_SAMPLE_RATE / freq);
     if(buflen > MAX_KS_BUFFER_LEN) buflen = MAX_KS_BUFFER_LEN;
     // init KS buffer with noise up to max

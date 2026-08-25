@@ -87,6 +87,36 @@ remain accurate as history; as code, the SILENT-osc and DC-blocker parts are
 upstream now, and the rest should diff clean against `dist-followups` -
 reconcile by re-vendor once that PR merges.
 
+### `oscillators.c` — Karplus-Strong ring-index init + sample-rate-derived buffer length (upstream PR candidate)
+
+Two universal bugs, found 2026-08-25 while surveying the delay/comb machinery
+and measured with `docs/tools-src/ks_poly_sim.c` (host sim, fixed-point build).
+Both are target-agnostic, so they belong upstream rather than here.
+
+1. **`ks_note_on()` now zeroes `synth[osc]->phase`.** `render_ks()` uses
+   `phase` as a plain integer ring index, but nothing initialised it and every
+   other wave leaves a fixed-point phasor there (`P_FRAC_BITS = 31`). Measured:
+   after 10 blocks of `SAW_DOWN`, `phase = 0x17fb6000`, so `(uint16_t)phase` =
+   **24576** into an 802-entry row - one read *and one write* ~94 KB past the
+   allocation per note-on, then back in range. It fired on every wave-to-KS
+   switch on a reused osc, which is what preset scrolling does.
+
+2. **`MAX_KS_BUFFER_LEN` derives from `AMY_SAMPLE_RATE`** (`AMY_SAMPLE_RATE /
+   KS_LOWEST_FREQ + 1`) instead of the literal 802 = 44100/55, and `render_ks()`
+   applies the same clamp `ks_note_on()` always had. The literal held one period
+   of 55 Hz only at 44.1 kHz; at our 48 kHz the true floor was 59.85 Hz while
+   the `freq >= 55` guard still admitted MIDI notes 33-34, overrunning the row
+   by up to 70 samples every block for the life of the note. `KS_LOWEST_FREQ`
+   also replaces the duplicated magic 55 in the render guard.
+   Verified: at 48 kHz, `MAX_KS_BUFFER_LEN` = 873 vs a worst-case `buflen` of
+   872. At 44.1 kHz the value is still exactly 802, so no behaviour changes there.
+
+**Not fixed here** - the larger KS defect is that polyphony shares one buffer
+row (`ks_polyphony_index` is a single global with no per-osc binding), so three
+KS notes are as loud as one and `ks_oscs > 1` renders the first note silent.
+Design brief: `docs/TODO/2026-08-25-ks-polyphony.md`. Measurements:
+`docs/reports/2026-08-25-flanger-comb-feasibility.md` Appendix A.
+
 ### `algorithms.c` + `amy.h` — `amy_num_algorithms` count export (upstream PR candidate)
 
 `const uint16_t amy_num_algorithms`, derived from `sizeof(algorithms)/sizeof(algorithms[0])`

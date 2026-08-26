@@ -27,8 +27,8 @@ https://github.com/user-attachments/assets/620f663a-9390-42c4-92a9-24b24c08af9b
 
 ## What it does
 
-At boot you get a playing groove: a four-track drum layer (808-style PCM
-samples or synth patches, seeded with a four-on-the-floor pattern) and a
+At boot you get a playing groove: a four-track drum layer playing the
+built-in TR-808 PCM bank (seeded with a four-on-the-floor pattern) and a
 melodic layer, running at 108 BPM. From there:
 
 - **Step sequencer** - up to 4 layers of 4 tracks x 16 or 32 steps, edited
@@ -51,21 +51,29 @@ melodic layer, running at 108 BPM. From there:
 - **Chord progression** - up to 8 chords (root, type, duration in bars)
   that auto-advance with playback, re-voicing any layer with chord mode on
   and re-rooting the arpeggiator's quantizer as they go.
-- **Sound shaping editors** - graphical on-OLED editors for ADSR envelopes
-  (two per voice: EG0 for amplitude, EG1 typically for filter sweeps), a
-  biquad filter with live frequency-response plot, and an LFO with
-  filter/amp/pitch/pan/wavetable-scan targets - bound to whichever
-  instrument opened them.
+- **Voice editors** - graphical on-OLED editors for ADSR envelopes (two
+  per voice: EG0 for amplitude, EG1 typically for filter sweeps), a biquad
+  filter (LPF24 / LPF / phaser / notch / HPF / BPF) with live
+  frequency-response plot, an LFO with filter/amp/pitch/pan/wavetable-scan
+  and distortion targets, and a per-voice distortion stage (clip, fold and
+  bitcrush in any combination, with drive, bits, rate and mix) - bound to
+  whichever instrument opened them. See [Voice editors](#voice-editors).
 - **Patches** - AMY's built-in Juno and DX7 banks plus piano, raw
   oscillator waves, custom multi-osc bass presets, five wavetable banks,
   and (optionally) a live-editable 6-operator FM voice.
+- **Drum banks** - the built-in TR-808 bank, plus the optional Gamma9001
+  banks (909, Linn, MR12, SynFX, Power, Perc, Misc: 136 samples streamed
+  from the `drums` flash partition) selectable per layer from the menu, with
+  per-track preset cycling across all of them. A DX7/Juno synth drum engine
+  is available as a build option.
 - **Resampler** - arm the menu's Sample item and the firmware records 1.5 s
   of its own output into a PCM preset, playable from any drum track.
 - **Global FX page** - three-band EQ plus echo, chorus and reverb with
   extended parameters (feedback, time, tone, rate, depth, damping,
-  crossover), applied to the whole mix.
-- **Scale quantizer** - snaps melodic input to one of nine scales; the arp
-  carries its own independent quantizer.
+  crossover) and a bus distortion stage, applied to the whole mix.
+- **Scale quantizer** - snaps melodic input to one of twelve scales, from
+  the church modes to harmonic minor and whole tone; the arp carries its
+  own independent quantizer.
 
 Audio leaves the device over **USB Audio Class 2.0** (48 kHz stereo,
 16-bit) via TinyUSB - the device enumerates as a USB microphone, so any DAW
@@ -141,7 +149,7 @@ A few design decisions worth calling out:
   same clock the grid rides). The AMY music clock is the master clock for all
   audio-path logic, so everything stays beat-locked across tempo changes.
 - **Deferred envelope authority.** A patch's own envelope plays by default; a
-  custom envelope only overrides it once committed in the graph editor, so
+  custom envelope only overrides it once committed in the ADSR editor, so
   changing presets doesn't permanently shadow it. The same authored/unauthored
   rule applies to the filter and LFO settings.
 - **A shared voice-parameter layer.** The melodic rows, the arp, and the drone
@@ -407,7 +415,7 @@ cheap heartbeat and the status LED active, so shipping firmware pays effectively
 |---|---|
 | **Encoder (rotate)** | Navigate / select; adjusts value when in edit mode |
 | **ENC push (short)** | Confirm / toggle step; enters edit mode for focused field |
-| **ENC push (long)** | Open ADSR/envelope editor for the active instrument |
+| **SHIFT + B1** | Open the voice editors (ADSR first) for the active instrument |
 | **B0 - play/layer (short)** | Cycle active layer (sequencer screen only) |
 | **B0 - play/layer (long)** | Toggle global playback (cancels an open editor instead) |
 | **B1 - patch (hold + encoder)** | Cycle patch for the selected track / instrument |
@@ -452,7 +460,7 @@ four-on-the-floor groove) and one melodic layer already running at 108 BPM.
 |---|---|
 | Encoder | Move step cursor (wraps track→track; 32-step layers auto-page) |
 | ENC short | Toggle step at cursor |
-| ENC long | Open ADSR editor (bound to selected track) |
+| SHIFT + B1 | Open the voice editors (bound to selected track) |
 | B0 short | Cycle active layer - resets cursor to track 0 step 0 |
 | B0 long | Toggle play / stop |
 | B1 hold + encoder | Cycle patch for the selected track |
@@ -509,11 +517,11 @@ independent scale and root (see below).
 |---|---|
 | BPM | 40-300 |
 | Quant | ON / OFF |
-| Scale | Chromatic, Major, Natural Minor, Dorian, Phrygian, Lydian, Mixolydian, Minor Pentatonic, Major Pentatonic |
+| Scale | Chromatic, Major (Ionian), Natural Minor, Dorian, Phrygian, Lydian, Mixolydian, Minor Pentatonic, Major Pentatonic, Harmonic Minor, Locrian, Whole Tone |
 | Root | MIDI 0-127 |
 | Arp | ON / OFF |
 | Drone | ON / OFF |
-| Drum Mode | Synth (Juno/DX7 patches) / PCM (808-style samples) |
+| Drum Bank | 808 (built-in, default) / 909 / Linn / MR12 / SynFX / Power / Perc / Misc - the Gamma9001 banks are listed while the `drums` partition is mounted; Synth (DX7/Juno patches) appears first when built with `CONFIG_SYNTH_DRUM_SYNTH_MODE` |
 | Add Layer / Del Layer | add or remove a melodic layer |
 | FX | opens the effects page (see below) |
 | Volume | 0-200 % (unity = 100 %) |
@@ -533,6 +541,8 @@ edited.
 | Echo | 0-100 % level, plus Fbk 0-99 %, Time 0-743 ms, Tone −99 to +99 |
 | Chorus | 0-100 % level, plus Rate 0.05-10 Hz, Depth 0-100 % |
 | Reverb | 0-100 % level, plus Live 0-100 %, Damp 0-100 %, Xover 500-8000 Hz |
+| Dist | stage set: OFF / CLIP / FOLD / C+F / CRSH / C+H / F+H / ALL (clip, fold, bitcrush and their combinations) |
+| Dst Drive / Bits / Rate / Mix | pre-gain 1-16, bit depth 1-24, sample-rate divisor 1-64, wet/dry 0-100 % |
 | Preset FX | ON / OFF - see [Quirks](#non-obvious-quirks) |
 
 ---
@@ -562,7 +572,7 @@ always in sync with the sequencer's BPM.
 |---|---|
 | Encoder | Navigate fields and note slots; adjust when editing |
 | ENC short | Enter / exit edit mode on focused field |
-| ENC long | Open ADSR editor (bound to arp) |
+| SHIFT + B1 | Open the voice editors (bound to arp) |
 | B1 hold + encoder | Cycle the arp's own patch |
 | B3 | Menu |
 | B0 long | Play / stop |
@@ -603,7 +613,7 @@ from the same AMY musical clock.
 |---|---|
 | Encoder | Move row cursor; adjust value when editing |
 | ENC short | Toggle edit on focused row |
-| ENC long | Open ADSR editor (bound to drone) |
+| SHIFT + B1 | Open the voice editors (bound to drone) |
 | B1 hold + encoder | Cycle patch (PATCH mode only) |
 | B3 | Menu |
 | B0 long | Play / stop |
@@ -676,84 +686,6 @@ locked out.
 
 ---
 
-### Envelope (ADSR) editor
-
-Long-press ENC from the sequencer, arp, or drone screen to open the graphical
-ADSR editor. The editor binds to whichever instrument opened it.
-
-**Controls:**
-
-| Input | Action |
-|---|---|
-| Encoder | Move / adjust the selected ADSR point |
-| ENC short | Toggle between point-select and value-adjust mode |
-| ENC long | **Commit** envelope and close |
-| B0 long | **Cancel** - close without saving |
-| B1 | Toggle apply scope: this track only vs. all tracks in the layer (melodic only) |
-| B2 | Toggle amp-edit mode (encoder adjusts amplitude trim 0-100 % instead of time/level) |
-| B3 short | Cycle to the Filter editor |
-| B3 long | Switch between the EG0 (amplitude) and EG1 breakpoint sets |
-
-Each voice carries **two envelopes**: EG0 shapes amplitude; EG1 is free for
-modulation and is what the custom bass presets use to sweep their filter.
-Both are edited on the same graph, switched with B3 long-press.
-
-**Points:** Attack peak → Sustain level → Release end. Decay time is
-auto-derived from attack time and sustain level - it is not a separately
-draggable point.
-
-A committed envelope persists across patch changes; an unedited row always
-follows the patch's own envelope (see *deferred authority* under Architecture
-notes).
-
-Time range auto-switches between SHORT (0-2 s) and LONG (0-15 s,
-log-squashed) based on total envelope length. The transition has hysteresis
-(≥2000 ms switches to LONG; ≤1700 ms switches back).
-
----
-
-### Filter and LFO editors
-
-While the ADSR editor is open, press B3 to cycle to the **Filter editor**,
-then B3 again for the **LFO editor** (melodic / arp only - the drone has no
-LFO tab), then back to ADSR.
-
-**Filter parameters:** cutoff (20 Hz-8 kHz, log-scaled), resonance
-(Q 0.51-8.0), type (LPF / HPF / BPF / LPF24), enable. The screen plots the
-live frequency response. ENC long = commit, B0 long = cancel, B1 = instant
-enable toggle.
-
-**LFO parameters:** target, wave (Sine / Triangle / Saw up / Saw down / Square /
-Random sample-and-hold), rate (1/8 bar up to 4 bars, tempo-locked), depth
-(0-100 %), enable. Targets live on two tabs, switched with the **shoulder
-button**: tab 1 is **Filter / Amp / Pitch / Pan / Scan**, tab 2 is **Dist Drive /
-Dist Mix** (distortion pre-gain and wet/dry, active only when the track has a
-distortion type set). The **Scan** target sweeps the wavetable cycle position on
-wavetable patches (and pulse width on PULSE). ENC long = commit, B0 long = cancel.
-
-**How LFO depth maps to each target.** Depth is one 0-100 % knob, but what 100 %
-*means* is per-target, and splits two ways by the parameter's natural unit - so a
-given depth does **not** produce the same-sized effect on every target:
-
-- **Interval targets (multiplicative) - Pitch, Dist Drive.** Depth swings a fixed
-  musical interval *around the current value*, so the audible size scales with the
-  value you set. Pitch is anchored at one semitone per 100 %. Dist Drive is
-  denominated in octaves of pre-gain: full depth swings +-2 octaves (x4 / ÷4)
-  around the committed drive - subtle on a low drive, dramatic on a high one.
-- **Offset targets (additive) - Amp, Pan, Scan, Dist Mix.** Depth swings a fixed
-  *absolute* amount that does not scale with the current value, then clamps to the
-  legal range. Dist Mix at full depth swings +-0.5 of the 0-1 wet/dry range; set
-  near 0 % or 100 % it clips against the end, so one half of the LFO cycle flattens.
-- **Filter is the exception.** Its sweep *width* comes from the filter editor's
-  octave-range control, not the depth knob - turning depth up does nothing to a
-  filter sweep once an octave range is set. There, depth is only the Amp/Pitch/
-  Pan/Scan control.
-
-Native patches (wave / bass) evaluate this per audio block; PCM and other
-software-LFO tracks re-send it as a 20 Hz staircase - identical numbers and law,
-coarser stepping. ENC long = commit, B0 long = cancel.
-
----
 
 ### Non-obvious quirks
 
@@ -798,6 +730,101 @@ always resets to track 0, step 0, edit mode on. An in-progress patch-hold or
 pitch-hold gesture does not survive the switch.
 
 ---
+
+## Voice editors
+
+Four modal editors - ADSR, filter, LFO, distortion - reachable from any
+instrument screen with SHIFT + B1 and cycled with B3. They bind to whichever
+instrument opened them (a melodic row, the arp, either drone, or the BLE
+live-play voice), audition every change live, and commit either to the
+single track or the whole layer (SHIFT + 3 toggles the scope).
+
+### Envelope (ADSR) editor
+
+Press SHIFT + B1 from the sequencer, arp, or drone screen to open the graphical
+ADSR editor. The editor binds to whichever instrument opened it.
+
+**Controls:**
+
+| Input | Action |
+|---|---|
+| Encoder | Move / adjust the selected ADSR point |
+| ENC short | Toggle between point-select and value-adjust mode |
+| ENC long | **Commit** envelope and close |
+| B0 long | **Cancel** - close without saving |
+| B1 | Toggle apply scope: this track only vs. all tracks in the layer (melodic only) |
+| B2 | Toggle amp-edit mode (encoder adjusts amplitude trim 0-100 % instead of time/level) |
+| B3 short | Cycle to the Filter editor |
+| B3 long | Switch between the EG0 (amplitude) and EG1 breakpoint sets |
+
+Each voice carries **two envelopes**: EG0 shapes amplitude; EG1 is free for
+modulation and is what the custom bass presets use to sweep their filter.
+Both are edited on the same graph, switched with B3 long-press.
+
+**Points:** Attack peak → Sustain level → Release end. Decay time is
+auto-derived from attack time and sustain level - it is not a separately
+draggable point.
+
+A committed envelope persists across patch changes; an unedited row always
+follows the patch's own envelope (see *deferred authority* under Architecture
+notes).
+
+Time range auto-switches between SHORT (0-2 s) and LONG (0-15 s,
+log-squashed) based on total envelope length. The transition has hysteresis
+(≥2000 ms switches to LONG; ≤1700 ms switches back).
+
+---
+
+### Filter and LFO editors
+
+While the ADSR editor is open, press B3 to cycle to the **Filter editor**,
+then B3 again for the **LFO editor**, then the **Distortion editor**, then
+back to ADSR. The stutter drone has no LFO or distortion tab (the normal
+drone does), so its ring is ADSR → Filter → ADSR.
+
+**Filter parameters:** cutoff (20 Hz-8 kHz, log-scaled), resonance
+(Q 0.51-8.0), type (LPF24 / LPF / Phaser / Notch / HPF / BPF, in encoder
+order), enable. The screen plots the
+live frequency response. ENC long = commit, B0 long = cancel, B1 = instant
+enable toggle.
+
+**LFO parameters:** target, wave (Sine / Triangle / Saw up / Saw down / Square /
+Random sample-and-hold), rate (1/8 bar up to 4 bars, tempo-locked), depth
+(0-100 %), enable. Targets live on two tabs, switched with the **shoulder
+button**: tab 1 is **Filter / Amp / Pitch / Pan / Scan**, tab 2 is **Dist Drive /
+Dist Mix** (distortion pre-gain and wet/dry, active only when the track has a
+distortion type set). The **Scan** target sweeps the wavetable cycle position on
+wavetable patches (and pulse width on PULSE). ENC long = commit, B0 long = cancel.
+
+**How LFO depth maps to each target.** Depth is one 0-100 % knob, but what 100 %
+*means* is per-target, and splits two ways by the parameter's natural unit - so a
+given depth does **not** produce the same-sized effect on every target:
+
+- **Interval targets (multiplicative) - Pitch, Dist Drive.** Depth swings a fixed
+  musical interval *around the current value*, so the audible size scales with the
+  value you set. Pitch is anchored at one semitone per 100 %. Dist Drive is
+  denominated in octaves of pre-gain: full depth swings +-2 octaves (x4 / ÷4)
+  around the committed drive - subtle on a low drive, dramatic on a high one.
+- **Offset targets (additive) - Amp, Pan, Scan, Dist Mix.** Depth swings a fixed
+  *absolute* amount that does not scale with the current value, then clamps to the
+  legal range. Dist Mix at full depth swings +-0.5 of the 0-1 wet/dry range; set
+  near 0 % or 100 % it clips against the end, so one half of the LFO cycle flattens.
+- **Filter is the exception.** Its sweep *width* comes from the filter editor's
+  octave-range control, not the depth knob - turning depth up does nothing to a
+  filter sweep once an octave range is set. There, depth is only the Amp/Pitch/
+  Pan/Scan control.
+
+Native patches (wave / bass) evaluate this per audio block; PCM and other
+software-LFO tracks re-send it as a 20 Hz staircase - identical numbers and law,
+coarser stepping. ENC long = commit, B0 long = cancel.
+
+### Distortion editor
+
+B3 from the LFO tab. A per-voice distortion stage in front of the filter, with
+the same parameter set as the global bus stage on the FX page: stage set (OFF /
+CLIP / FOLD / C+F / CRSH / C+H / F+H / ALL), drive 1-16, bits 1-24, rate 1-64,
+mix 0-100 %. Every change auditions live on the bound instrument. Commit,
+cancel and the layer-vs-track apply scope work as in the LFO editor.
 
 ## Documentation
 

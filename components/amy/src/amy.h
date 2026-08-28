@@ -1188,6 +1188,17 @@ void amy_block_zero_blocks(SAMPLE *p, int nblocks);
 // table; the valid amy_event.algorithm range is [0, amy_num_algorithms-1] and
 // render_algo does NOT bounds-check it. See the definition in algorithms.c.
 extern const uint16_t amy_num_algorithms;
+// LOCAL EDIT (S3-Amysynth): app-authored operator programs. Algorithm indices
+// amy_num_algorithms + slot (slot < AMY_NUM_CUSTOM_ALGORITHMS) render the RAM
+// row written by amy_set_custom_algorithm(); indices past that clamp to the
+// last row. ops[] bytes use algorithms.c's FmOperatorFlags encoding:
+//   0x01 OUT_BUS_ONE  0x02 OUT_BUS_TWO  0x04 OUT_BUS_ADD (no bus bit = final out)
+//   0x10 IN_BUS_ONE   0x20 IN_BUS_TWO   0x40 FB_IN  0x80 FB_OUT
+// amy_algorithm_ops() returns the six bytes of any fixed or custom program
+// (NULL past both ranges). Neither takes amy_queue_lock; see algorithms.c.
+#define AMY_NUM_CUSTOM_ALGORITHMS 2
+void amy_set_custom_algorithm(uint8_t slot, const uint8_t ops[MAX_ALGO_OPS]);
+const uint8_t *amy_algorithm_ops(uint16_t index);
 void amy_oom(const char *fmt, ...);
 // Bus numbers arrive unchecked from the API and the wire protocol ('y9' is
 // just an atoi), and every one of them ends up subscripting amy_global.bus[]

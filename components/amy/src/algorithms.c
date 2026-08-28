@@ -195,8 +195,23 @@ void algo_init() {
                                 amy_global.config.ram_caps_fbl);
 }
 
+// LOCAL EDIT (S3-Amysynth): app-authored operator programs. Indices at and
+// past the fixed table select one of these RAM rows (amy_set_custom_algorithm);
+// out-of-range values clamp to the last row instead of reading past the table.
+static struct FmAlgorithm custom_algorithms[AMY_NUM_CUSTOM_ALGORITHMS] = {
+    { { 0xc1, 0x11, 0x11, 0x14, 0x01, 0x14 } },
+    { { 0xc1, 0x11, 0x11, 0x14, 0x01, 0x14 } },
+};
+
+static inline const struct FmAlgorithm *algorithm_for(uint8_t index) {
+    if (index < sizeof(algorithms) / sizeof(algorithms[0])) return &algorithms[index];
+    index -= sizeof(algorithms) / sizeof(algorithms[0]);
+    if (index >= AMY_NUM_CUSTOM_ALGORITHMS) index = AMY_NUM_CUSTOM_ALGORITHMS - 1;
+    return &custom_algorithms[index];
+}
+
 SAMPLE render_algo(SAMPLE* buf, uint16_t osc, uint8_t core) {
-    struct FmAlgorithm algo = algorithms[synth[osc]->algorithm];
+    struct FmAlgorithm algo = *algorithm_for(synth[osc]->algorithm);  // LOCAL EDIT: custom rows
     SAMPLE max_value = 0;
 
     // starts at op 6
@@ -288,3 +303,25 @@ void amy_block_zero_blocks(SAMPLE *p, int nblocks) {
 // extend the range automatically.
 const uint16_t amy_num_algorithms =
     sizeof(algorithms) / sizeof(algorithms[0]);
+
+// LOCAL EDIT (S3-Amysynth): custom operator programs, the RAM rows behind
+// algorithm indices amy_num_algorithms .. amy_num_algorithms+AMY_NUM_CUSTOM_ALGORITHMS-1.
+// ops[] uses the FmOperatorFlags encoding of the fixed table (one byte per
+// render slot, slot s renders algo_source[s]). The write is six plain byte
+// stores with no lock: callers double-buffer across the rows and only ever
+// rewrite a row no live osc references, so the render body never observes a
+// half-written program.
+void amy_set_custom_algorithm(uint8_t slot, const uint8_t ops[MAX_ALGO_OPS]) {
+    if (slot >= AMY_NUM_CUSTOM_ALGORITHMS || ops == NULL) return;
+    for (uint8_t i = 0; i < MAX_ALGO_OPS; i++) custom_algorithms[slot].ops[i] = ops[i];
+}
+
+// LOCAL EDIT (S3-Amysynth): read access to any program's ops[] bytes (fixed
+// table or custom row), so an editor can draw the routing of the algorithm a
+// voice is playing. NULL when index is past both ranges.
+const uint8_t *amy_algorithm_ops(uint16_t index) {
+    if (index < amy_num_algorithms) return algorithms[index].ops;
+    index -= amy_num_algorithms;
+    if (index >= AMY_NUM_CUSTOM_ALGORITHMS) return NULL;
+    return custom_algorithms[index].ops;
+}

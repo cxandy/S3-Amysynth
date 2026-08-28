@@ -34,6 +34,7 @@ flowchart TD
     Active --> DUAL["Skip the dead dual-core bus sum<br/>src/amy.c"]
     Active --> CLAMP["instrument_get_num_voices voice-list clamp<br/>src/instrument.c"]
     Active --> API["Read accessors: voice base osc, patch oscs per voice, gamma blob size, algorithm count<br/>src/patches.c, src/pcm.c, src/algorithms.c"]
+    Active --> CUST["Custom operator programs + algorithm_ops accessor<br/>src/algorithms.c, src/amy.h"]
 ```
 
 ## Dropped (merged upstream)
@@ -145,6 +146,25 @@ Shift+Turn algorithm stepper and the FM screen's ALGO row wrap.
 
 **Rollback:** drop the definition in `algorithms.c` and the `extern` in `amy.h`;
 consumers then need a local count define.
+
+### `algorithms.c` + `amy.h` — custom operator programs + `amy_algorithm_ops()` read accessor
+
+Two RAM rows (`custom_algorithms[AMY_NUM_CUSTOM_ALGORITHMS]`, `AMY_NUM_CUSTOM_ALGORITHMS = 2`)
+sit behind algorithm indices `amy_num_algorithms + slot`; `render_algo` resolves its
+row through `algorithm_for()` (fixed table below the count, custom rows above, clamped
+to the last row instead of an OOB read). `amy_set_custom_algorithm(slot, ops)` writes a
+row with six plain byte stores and no lock: the app double-buffers across the two rows
+and only rewrites the row no live osc references, then switches `algorithm` +
+`algo_source` in one FIFO event under `amy_queue_lock`. `amy_algorithm_ops(index)`
+returns any program's six routing bytes (NULL past both ranges) so the operator-graph
+editor can draw the table row a voice is playing. The `FmOperatorFlags` bit values are
+documented next to the prototypes in `amy.h` (the enum stays file-private upstream).
+App consumers: `custompatches/fm_voice.c` (publish/read), `custompatches/fm_graph.c`
+(compiler, mirrors the bit values).
+
+**Rollback:** drop the two functions + `custom_algorithms`/`algorithm_for` in
+`algorithms.c`, restore `algorithms[synth[osc]->algorithm]` in `render_algo`, drop the
+prototypes/define in `amy.h`; the FM custom-topology mode then has nowhere to render.
 
 ### `pcm.c` — retrig fade-restart (gated; replaces the zero-cross defer by default)
 

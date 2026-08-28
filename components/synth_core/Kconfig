@@ -357,10 +357,13 @@ config SEQ_ARP_DEFAULT_ENABLED
 config SEQ_ARP_DEFAULT_SCALE
 	int "Arp default scale index"
 	range 0 8
-	default 5
+	default 0
 	help
-		The arp's own (independent) quantizer scale. Note slots store raw
-		chromatic notes and are snapped to this scale at playback.
+		The arp's own quantizer scale, used while the ArpQ menu row is OWN.
+		Note slots store raw chromatic notes and are snapped to this scale at
+		playback. There is no on-device editor for it, so the default is
+		Chromatic: OWN then means "no snapping", the useful opposite of GLOB
+		(the chord progression still re-roots the arp while it is enabled).
 		0=Chromatic, 1=Major, 2=Natural Minor, 3=Dorian, 4=Phrygian,
 		5=Lydian, 6=Mixolydian, 7=Minor Pentatonic, 8=Major Pentatonic.
 

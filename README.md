@@ -604,7 +604,8 @@ Add Custom currently plays the organ default; it has no editor screen yet.
 
 Enabled via menu item **Quant**. Changing **Scale** or **Root** re-snaps all
 active melodic steps immediately - there is no undo. **ArpQ** chooses
-whether the arp follows the global scale (GLOB) or its own (OWN).
+whether the arp follows the global scale (GLOB) or plays its slots unsnapped
+(OWN, chromatic by default).
 
 ---
 
@@ -618,7 +619,7 @@ whether the arp follows the global scale (GLOB) or its own (OWN).
 | Quant | ON / OFF |
 | Scale | Chromatic, Major (Ionian), Natural Minor, Dorian, Phrygian, Lydian, Mixolydian, Minor Pentatonic, Major Pentatonic, Harmonic Minor, Locrian, Whole Tone |
 | Root | C ... B |
-| ArpQ | GLOB / OWN - the arp's quantizer source |
+| ArpQ | GLOB (follow the global quantizer) / OWN (the arp's own scale, chromatic by default = no snapping) |
 | Arp | ON / OFF |
 | Drone | ON / OFF - the free-running drone |
 | Stutter | ON / OFF - the stutter drone |
@@ -750,16 +751,17 @@ The arp is a normal patch voice like a sequencer row (any catalog patch,
 `MY_BUTTON_1` hold to cycle); the filter and LFO editors apply on top of it.
 
 **Quantization source (menu → ArpQ).** **GLOB** snaps the arp to the menu's
-Quant / Scale / Root like the grid (chromatic while Quant is OFF). **OWN**
-uses the arp's private scale and root, which have no editor on the device:
-they start from the Kconfig defaults, are restored from a loaded project,
-and are re-rooted by the chord progression while it is enabled (the
-progression wins in either mode, and the previous scale/root come back when
-it is turned off).
+Quant / Scale / Root like the grid. **OWN** uses the arp's private scale,
+which is Chromatic by default - so OWN is the "no snapping" setting: slots
+play exactly the pitches you wrote, whatever the global quantizer does. The
+private scale has no editor on the device (`CONFIG_SEQ_ARP_DEFAULT_SCALE`
+sets it; a loaded project restores its own), and the chord progression
+re-roots the arp while it is enabled in either mode, restoring the previous
+scale/root when turned off.
 
-Kconfig defaults at boot: disabled, Lydian scale, root E2, gate 75 %,
-1 octave, patch 138 (DX7 E.Piano 1). The arp produces no sound until enabled
-**and** at least one slot is filled.
+Kconfig defaults at boot: disabled, chromatic, root E2, gate 75 %, 1 octave,
+patch 138 (DX7 E.Piano 1). The arp produces no sound until enabled **and**
+at least one slot is filled.
 
 ---
 
@@ -876,10 +878,9 @@ global scale or root in the menu re-snaps all active melodic step pitches on the
 next sequencer tick. The stored pitches are updated in place - there is no undo.
 
 **The arp and drones can ignore the global quantizer.** With ArpQ = OWN the
-menu's Scale / Root do not affect the arp's pitch snapping (the chord
-progression, when enabled, still re-roots it); with ArpQ = GLOB and Quant OFF
-the arp is chromatic. The drones' chords follow their own ROOT and CHORD rows,
-always.
+arp plays its slots unsnapped (chromatic by default) whatever the menu's
+Quant / Scale / Root say; the chord progression, when enabled, still re-roots
+it. The drones' chords follow their own ROOT and CHORD rows, always.
 
 **Stutter drone PATCH mode disables the stutter.** In PATCH mode the PEAK /
 DUCK / STUTTER / GATE rows are hidden and the LFO gate is inactive. The

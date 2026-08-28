@@ -94,7 +94,7 @@ void arp_set_patch(uint16_t patch_number);
 /* Live FM voice edits: re-push s_fm_voice to the arp synth when the arp is
  * playing it (PATCH source, SEQ_PATCH_FM_CUSTOM); no-op otherwise. Called from
  * sequencer_core_fm_voice_changed() alongside the melodic-layer fanout. */
-void arp_core_fm_voice_changed(void);
+void arp_core_fm_voice_changed(uint8_t what);   /* FM_PUSH_* / op index */
 /* Same contract for s_additive_voice / SEQ_PATCH_ADDITIVE_CUSTOM. */
 void arp_core_additive_voice_changed(void);
 /* Set slot value to a chromatic MIDI note, -1 to clear, or ARP_REST for a

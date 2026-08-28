@@ -5,6 +5,7 @@ set(fm_srcs)
 if(CONFIG_SYNTH_CUSTOM_FM)
     list(APPEND fm_srcs
         "custompatches/fm_voice.c"
+        "custompatches/fm_graph.c"
         "custompatches/fm_presets.c"
         "synth_ui/ui_screen_fm.c")
 endif()

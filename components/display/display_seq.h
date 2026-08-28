@@ -23,7 +23,9 @@ typedef enum {
 
 /* algo_banner_value sentinel: Shift+Turn landed on a patch with no FM
  * algorithm; the banner says so instead of showing a number. */
-#define DISPLAY_ALGO_BANNER_NOFM 0xFF
+#define DISPLAY_ALGO_BANNER_NOFM   0xFF
+/* The FM_CUSTOM voice is on its authored (custom) topology. */
+#define DISPLAY_ALGO_BANNER_CUSTOM 0xFE
 
 /* ── Global sequencer display/UI state ── */
 typedef struct {

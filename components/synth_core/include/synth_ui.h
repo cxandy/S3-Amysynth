@@ -125,14 +125,19 @@ bool synth_ui_trackopts_handle_button(void);
 bool synth_ui_dev_handle_encoder(int delta);
 bool synth_ui_dev_handle_button(void);
 
-/* FM/ALGO voice editor — algorithm + per-operator ratio/level for the live
- * SEQ_PATCH_FM_CUSTOM voice (see custompatches/fm_voice.h). Active when
- * seq_state.ui_mode == UI_MODE_FM and no overlay is up. Reached via the menu
- * ("Screen: FM"). Encoder scrolls rows / edits the entered row's value;
- * encoder-click toggles edit on the focused row. */
-bool synth_ui_fm_is_active(void);
-bool synth_ui_fm_handle_encoder(int delta);
-bool synth_ui_fm_handle_button(void);
+/* FM/ALGO operator-graph editor for the live SEQ_PATCH_FM_CUSTOM voice (see
+ * custompatches/fm_voice.h). Active when seq_state.ui_mode == UI_MODE_FM and
+ * no overlay is up. Reached via the menu ("Screen: FM"). The encoder walks
+ * the six operator boxes (selecting) then the selected operator's panel rows;
+ * click on a box jumps to its rows, click on a row toggles adjust. SHOULDER
+ * toggles feedback on the selected operator; SHIFT+1 opens the ADSR editor
+ * bound to it (synth_ui_graph_open_envelope binds GRAPH_TGT_FM_OP off
+ * synth_ui_fm_selected_op()). All UI/input task. */
+bool    synth_ui_fm_is_active(void);
+bool    synth_ui_fm_handle_encoder(int delta);
+bool    synth_ui_fm_handle_button(void);
+bool    synth_ui_fm_toggle_feedback(void);
+uint8_t synth_ui_fm_selected_op(void);
 
 /* Global-FX reassert after a patch load (every Juno patch ends with global
  * EQ/chorus commands) is declared in amy_fx.h - include that header. */

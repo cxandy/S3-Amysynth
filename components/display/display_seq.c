@@ -192,6 +192,8 @@ void display_seq_draw_frame(u8g2_t *u8g2, const display_seq_state_t *state, uint
         char abuf[12];
         if (state->algo_banner_value == DISPLAY_ALGO_BANNER_NOFM) {
             snprintf(abuf, sizeof(abuf), "NOT FM");
+        } else if (state->algo_banner_value == DISPLAY_ALGO_BANNER_CUSTOM) {
+            snprintf(abuf, sizeof(abuf), "ALGO CUST");
         } else {
             snprintf(abuf, sizeof(abuf), "ALGO %u",
                      (unsigned)state->algo_banner_value);

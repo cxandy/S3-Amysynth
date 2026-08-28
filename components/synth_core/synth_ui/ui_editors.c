@@ -6,6 +6,9 @@
 #include "custompatches/drone_std_core.h"
 #if CONFIG_SYNTH_WIRELESS
 #include "live_play.h"     /* BLE MIDI live-play voice: GRAPH_TGT_LIVE target */
+#if CONFIG_SYNTH_CUSTOM_FM
+#include "custompatches/fm_voice.h"   /* s_fm_voice: GRAPH_TGT_FM_OP target */
+#endif
 #endif
 #include "graph_popup.h"
 #include "filter_graph.h"
@@ -52,8 +55,17 @@ typedef enum {
      * incl. the LFO split (native carrier on wave patches, 20 Hz software
      * stepper on patch strings via live_play_lfo_service). */
     GRAPH_TGT_LIVE      = 4,
+    /* One operator of the live FM_CUSTOM voice (s_fm_voice.op_env[op], the
+     * amp-trim sub-mode edits its level). Bound from the FM screen off
+     * synth_ui_fm_selected_op(); no layer/track scope, no EG1 page, no
+     * filter tab (the operator oscs render outside the per-osc filter). */
+    GRAPH_TGT_FM_OP     = 5,
 } graph_target_t;
 static graph_target_t s_graph_target = GRAPH_TGT_MELODIC;
+#if CONFIG_SYNTH_CUSTOM_FM
+static uint8_t   s_graph_fm_op = 0;         /* operator index bound at open */
+static seq_env_t s_graph_fm_env_open;       /* cancel restores this */
+#endif
 
 /* Which of the target's two AMY breakpoint generators is shown. 0 = EG0 (amp),
  * 1 = EG1 (typically the filter sweep, see sequencer_core_push_envelope_eg1()).
@@ -413,6 +425,8 @@ static bool graph_read_target_env_idx(seq_env_t *env, uint8_t eg_index)
                 live_play_get_envelope2(env);
                 return true;
 #endif
+            case GRAPH_TGT_FM_OP:
+                return false;           /* no EG1 page; caller seeds defaults */
             case GRAPH_TGT_MELODIC:
             default:
                 return sequencer_core_get_melodic_envelope2(s_graph_layer,
@@ -420,6 +434,11 @@ static bool graph_read_target_env_idx(seq_env_t *env, uint8_t eg_index)
         }
     }
     switch (s_graph_target) {
+#if CONFIG_SYNTH_CUSTOM_FM
+        case GRAPH_TGT_FM_OP:
+            *env = s_fm_voice.op_env[s_graph_fm_op];
+            return true;
+#endif
         case GRAPH_TGT_DRONE:
             drone_get_envelope(env);
             return true;
@@ -460,6 +479,8 @@ static void graph_write_target_env_idx(const seq_env_t *env, uint8_t eg_index)
                 live_play_set_envelope2(env);
                 break;
 #endif
+            case GRAPH_TGT_FM_OP:
+                break;                  /* no EG1 on an operator */
             case GRAPH_TGT_MELODIC:
             default:
                 if (s_editor_apply_all) {
@@ -473,6 +494,14 @@ static void graph_write_target_env_idx(const seq_env_t *env, uint8_t eg_index)
         return;
     }
     switch (s_graph_target) {
+#if CONFIG_SYNTH_CUSTOM_FM
+        case GRAPH_TGT_FM_OP:
+            /* The store IS the live voice: writing it and pushing the
+             * operator is both the preview and the commit. */
+            s_fm_voice.op_env[s_graph_fm_op] = *env;
+            sequencer_core_fm_voice_changed(s_graph_fm_op);
+            break;
+#endif
         case GRAPH_TGT_DRONE:
             drone_set_envelope(env);
             break;
@@ -526,6 +555,13 @@ void synth_ui_graph_open_envelope(void)
         s_graph_target = GRAPH_TGT_DRONE_STD;
     } else if (seq_state.ui_mode == UI_MODE_ARP) {
         s_graph_target = GRAPH_TGT_ARP;
+#if CONFIG_SYNTH_CUSTOM_FM
+    } else if (seq_state.ui_mode == UI_MODE_FM) {
+        s_graph_target = GRAPH_TGT_FM_OP;
+        s_graph_fm_op  = synth_ui_fm_selected_op();
+        if (s_graph_fm_op >= FM_NUM_OPS) s_graph_fm_op = 0;
+        s_graph_fm_env_open = s_fm_voice.op_env[s_graph_fm_op];
+#endif
     } else {
         s_graph_target = GRAPH_TGT_MELODIC;
     }
@@ -569,6 +605,11 @@ void synth_ui_graph_open_envelope(void)
 #if CONFIG_SYNTH_WIRELESS
         case GRAPH_TGT_LIVE:
             s_graph_amp_edit = live_play_get_amp_scale();
+            break;
+#endif
+#if CONFIG_SYNTH_CUSTOM_FM
+        case GRAPH_TGT_FM_OP:
+            s_graph_amp_edit = s_fm_voice.op_level[s_graph_fm_op];
             break;
 #endif
         case GRAPH_TGT_MELODIC:
@@ -676,6 +717,12 @@ static void graph_live_push_env(void)
             else                       live_play_preview_envelope(&env);
             break;
 #endif
+#if CONFIG_SYNTH_CUSTOM_FM
+        case GRAPH_TGT_FM_OP:
+            s_fm_voice.op_env[s_graph_fm_op] = env;
+            sequencer_core_fm_voice_changed(s_graph_fm_op);
+            break;
+#endif
         case GRAPH_TGT_MELODIC:
         default: {
             uint8_t t0 = s_editor_apply_all ? 0 : s_graph_track;
@@ -734,6 +781,12 @@ static void graph_amp_live_set(float v)
         case GRAPH_TGT_ARP:       arp_set_amp_scale(v);      break;
 #if CONFIG_SYNTH_WIRELESS
         case GRAPH_TGT_LIVE:      live_play_set_amp_scale(v); break;
+#endif
+#if CONFIG_SYNTH_CUSTOM_FM
+        case GRAPH_TGT_FM_OP:
+            s_fm_voice.op_level[s_graph_fm_op] = SEQ_CLAMP_F32(v, 0.0f, 1.0f);
+            sequencer_core_fm_voice_changed(s_graph_fm_op);
+            break;
 #endif
         case GRAPH_TGT_MELODIC:
         default: {
@@ -826,6 +879,18 @@ static void graph_live_cancel_restore(void)
         }
 #endif
         seq_env_t env;
+#if CONFIG_SYNTH_CUSTOM_FM
+        if (s_graph_target == GRAPH_TGT_FM_OP) {
+            /* The store was edited in place: put the open-time envelope back. */
+            if (s_graph_live_env) {
+                s_fm_voice.op_env[s_graph_fm_op] = s_graph_fm_env_open;
+                sequencer_core_fm_voice_changed(s_graph_fm_op);
+            }
+            s_graph_live_env  = false;
+            s_graph_live_fenv = false;
+            return;
+        }
+#endif
         if (s_graph_live_env && graph_read_target_env_idx(&env, s_graph_eg_index)) {
             if (s_graph_target == GRAPH_TGT_ARP) {
                 if (s_graph_eg_index == 1) arp_preview_envelope2(&env);
@@ -873,6 +938,14 @@ static void graph_commit_to_env(void)
 #if CONFIG_SYNTH_WIRELESS
         case GRAPH_TGT_LIVE:
             live_play_set_amp_scale(s_graph_amp_edit);
+            break;
+#endif
+#if CONFIG_SYNTH_CUSTOM_FM
+        case GRAPH_TGT_FM_OP:
+            if (s_fm_voice.op_level[s_graph_fm_op] != s_graph_amp_edit) {
+                s_fm_voice.op_level[s_graph_fm_op] = s_graph_amp_edit;
+                sequencer_core_fm_voice_changed(s_graph_fm_op);
+            }
             break;
 #endif
         case GRAPH_TGT_MELODIC:
@@ -993,7 +1066,8 @@ void synth_ui_graph_toggle_amp_mode(void)
  * cycle consults this so a hidden page is skipped, not dead-ended on EG0. */
 static bool graph_target_has_eg1(void)
 {
-    return s_graph_target != GRAPH_TGT_DRONE_STD;
+    return s_graph_target != GRAPH_TGT_DRONE_STD &&
+           s_graph_target != GRAPH_TGT_FM_OP;
 }
 
 /* Targets carrying an EG1->cutoff sweep DEPTH field (seq_filter_t's
@@ -2396,6 +2470,13 @@ bool synth_ui_toggle_editor_apply_scope(void)
 void synth_ui_cycle_editor(void)
 {
     if (graph_popup_is_active(&s_graph_popup)) {
+        if (s_graph_target == GRAPH_TGT_FM_OP) {
+            /* An operator has no filter/LFO/DIST of its own: the cycle is
+             * one page long, so Next re-opens the same editor (committed). */
+            synth_ui_graph_close_commit();
+            synth_ui_graph_open_envelope();
+            return;
+        }
         if (s_graph_eg_index == 0 && graph_target_has_eg1()) {
             /* EG0 -> EG1: same widget, next page. Targets without an EG1 page
              * fall straight through to the filter tab. */
@@ -2482,6 +2563,11 @@ static void graph_draw_topbar(u8g2_t *u8g2)
 #if CONFIG_SYNTH_WIRELESS
     } else if (s_graph_target == GRAPH_TGT_LIVE) {
         snprintf(buf, sizeof(buf), "LIVE %s", eg_tag);
+#endif
+#if CONFIG_SYNTH_CUSTOM_FM
+    } else if (s_graph_target == GRAPH_TGT_FM_OP) {
+        snprintf(buf, sizeof(buf), "FM OP%u %s",
+                 (unsigned)(FM_NUM_OPS - s_graph_fm_op), eg_tag);
 #endif
     } else {
         snprintf(buf, sizeof(buf), "L%u T%u %s%s",

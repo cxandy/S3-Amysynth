@@ -1,6 +1,7 @@
 #include "sequencer_core/seq_core_internal.h"
 #include "voice_config.h"
 #include "seq_clamp.h"
+#include "display_seq.h"   /* DISPLAY_ALGO_BANNER_CUSTOM */
 
 /* Defined with the FM-algorithm stepper below; the configure path reasserts
  * the layer's live algorithm override after every patch (re)load. */
@@ -753,18 +754,18 @@ void sequencer_core_reload_layer_synth(uint8_t layer_idx)
 /* ── Live FM voice edits ──────────────────────────────────────────────────── */
 
 #if CONFIG_SYNTH_CUSTOM_FM
-void sequencer_core_fm_voice_changed(void)
+void sequencer_core_fm_voice_changed(uint8_t what)
 {
     for (uint8_t i = 0; i < s_num_layers; i++) {
         seq_layer_t *layer = &s_layers[i];
         if (layer->type != SEQ_LAYER_MELODIC) continue;
         if (layer->patch != SEQ_PATCH_FM_CUSTOM) continue;
         for (uint8_t t = 0; t < SEQ_TRACKS; t++) {
-            fm_voice_push_live(layer->synth_id[t], &s_fm_voice);
+            fm_voice_push(layer->synth_id[t], &s_fm_voice, what);
         }
     }
     /* The arp can play FM_CUSTOM too; it checks its own source/patch state. */
-    arp_core_fm_voice_changed();
+    arp_core_fm_voice_changed(what);
 }
 #endif
 
@@ -843,11 +844,12 @@ int sequencer_core_cycle_layer_fm_algo(uint8_t layer_idx, int dir)
 #if CONFIG_SYNTH_CUSTOM_FM
     if (p == SEQ_PATCH_FM_CUSTOM) {
         /* The custom voice's algorithm is an authored field: step the voice
-         * store itself (shared with the FM screen and the arp), no shadow. */
-        int a = ((int)s_fm_voice.algorithm + step + n) % n;
-        s_fm_voice.algorithm = (uint8_t)a;
-        sequencer_core_fm_voice_changed();
-        return a;
+         * store itself (shared with the FM screen and the arp), no shadow.
+         * The ring is rows 1..N-1 then the authored custom topology, which
+         * the banner shows as DISPLAY_ALGO_BANNER_CUSTOM. */
+        uint8_t a = fm_voice_step_algorithm(&s_fm_voice, step);
+        sequencer_core_fm_voice_changed(FM_PUSH_ROUTING);
+        return (a == FM_ALGO_CUSTOM) ? DISPLAY_ALGO_BANNER_CUSTOM : (int)a;
     }
 #endif
     if (!seq_layer_patch_has_algo(p)) return -1;

@@ -97,8 +97,8 @@ static void draw_drone_vis(u8g2_t *g, ui_view_vw_t *vw)
 }
 
 #if CONFIG_SYNTH_CUSTOM_FM
-static uint32_t sig_fm(ui_view_vw_t *vw)  { return fm_view_signature(&vw->menu); }
-static void     draw_fm(u8g2_t *g, ui_view_vw_t *vw) { display_menu_draw_frame_titled(g, "FM ALGO", &vw->menu); }
+static uint32_t sig_fm(ui_view_vw_t *vw)  { return fm_view_signature(&vw->fm); }
+static void     draw_fm(u8g2_t *g, ui_view_vw_t *vw) { display_fm_draw_frame(g, &vw->fm); }
 #endif
 
 #if CONFIG_SYNTH_DEV_MENU
@@ -159,9 +159,9 @@ const ui_view_desc_t ui_view_table[UI_VIEW_COUNT] = {
     [UI_VIEW_PROG]      = { "PROG",   sig_prog,      draw_prog,      "Del",    "+Add",  "Menu",  NULL,               NULL,                   30 },
     [UI_VIEW_TRACKOPTS] = { "TRKOPT", sig_trackopts, draw_trackopts, "Patch",  "DelLy", "Menu",  NULL,               NULL,                    0 },
 #if CONFIG_SYNTH_CUSTOM_FM
-    [UI_VIEW_FM]        = { "FM",     sig_fm,        draw_fm,        "Patch",  "Pitch", "Menu",  NULL,               NULL,                   52 },
+    [UI_VIEW_FM]        = { "FM",     sig_fm,        draw_fm,        "Patch",  "-",     "Menu",  NULL,               NULL,                   64 },
 #else
-    [UI_VIEW_FM]        = { "FM",     NULL,          NULL,           "Patch",  "Pitch", "Menu",  NULL,               NULL,                   52 },
+    [UI_VIEW_FM]        = { "FM",     NULL,          NULL,           "Patch",  "-",     "Menu",  NULL,               NULL,                   64 },
 #endif
 #if CONFIG_SYNTH_DEV_MENU
     [UI_VIEW_DEV]       = { "DEV",    sig_dev,       draw_dev,       "-",      "-",     "Menu",  NULL,               NULL,                   30 },

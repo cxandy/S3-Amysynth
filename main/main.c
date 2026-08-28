@@ -259,6 +259,10 @@ static void dispatch_button_event(my_button_id_t button_id, button_event_t event
             } else if (sv == UI_VIEW_GRAPH) {
                 /* No-op on the EG0 page and for arp/drone targets. */
                 synth_ui_graph_flip_eg1_polarity();
+#if CONFIG_SYNTH_CUSTOM_FM
+            } else if (sv == UI_VIEW_FM) {
+                synth_ui_fm_toggle_feedback();
+#endif
             }
         } else if (event == BUTTON_SINGLE_CLICK && sv == UI_VIEW_LFO) {
             synth_ui_lfo_toggle_target_tab();
@@ -294,7 +298,7 @@ static void dispatch_button_event(my_button_id_t button_id, button_event_t event
         if (button_id == MY_BUTTON_1) {
             bool open_from_screen = (sv == UI_VIEW_SEQ || sv == UI_VIEW_ARP ||
                                      sv == UI_VIEW_DRONE || sv == UI_VIEW_DRONE_VIS ||
-                                     sv == UI_VIEW_DRONE_STD);
+                                     sv == UI_VIEW_DRONE_STD || sv == UI_VIEW_FM);
 #if CONFIG_SYNTH_WIRELESS
             /* Wireless overlay page: same chord, bound to the BLE live-play
              * voice (synth_ui_graph_open_envelope picks the target). */

@@ -535,12 +535,14 @@ void arp_set_patch(uint16_t patch_number)
     /* Patch reconfig does not change scheduling; no re-emit needed. */
 }
 
-void arp_core_fm_voice_changed(void)
+void arp_core_fm_voice_changed(uint8_t what)
 {
 #if CONFIG_SYNTH_CUSTOM_FM
     if (s_arp.patch == SEQ_PATCH_FM_CUSTOM) {
-        fm_voice_push_live(sequencer_core_arp_synth(), &s_fm_voice);
+        fm_voice_push(sequencer_core_arp_synth(), &s_fm_voice, what);
     }
+#else
+    (void)what;
 #endif
 }
 

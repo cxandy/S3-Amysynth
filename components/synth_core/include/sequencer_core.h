@@ -184,8 +184,10 @@ void     sequencer_core_set_layer_patch(uint8_t layer_idx, uint16_t patch_number
 uint16_t sequencer_core_get_layer_patch(uint8_t layer_idx);
 
 /* Re-push the live custom FM voice (s_fm_voice) to every melodic row on
- * SEQ_PATCH_FM_CUSTOM. Called by the FM UI screen after any edit. */
-void sequencer_core_fm_voice_changed(void);
+ * SEQ_PATCH_FM_CUSTOM (and the arp). `what` is an FM_PUSH_* scope or an
+ * operator index (fm_voice.h). Called by the FM UI screen / operator ADSR
+ * editor after any edit. UI task only. */
+void sequencer_core_fm_voice_changed(uint8_t what);
 
 /* Step the FM algorithm of layer_idx's patch by dir (+1/-1), wrapping over
  * AMY's full algorithm table (amy_num_algorithms), and push it live to every

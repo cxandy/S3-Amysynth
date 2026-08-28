@@ -476,32 +476,6 @@ int amy_parse_synth_layer_message(char *message, amy_event *e) {
     return skip_chars;
 }
 
-// Stage letters shared by the per-osc ('G') and per-bus ('J') distortion
-// grammars; the caller hands over whichever scope's event fields the letter
-// addresses. C<v> and F<v> enable clip and fold (0 turns the stage off);
-// H<bits>[,<rate>] enables the bitcrusher (H0 turns it off).  Stages are
-// independent - each letter touches only its own enable.  Returns 1 if cmd
-// was a stage letter.
-static int parse_dist_stage_message(char cmd, char *message, uint8_t *clip,
-                                    uint8_t *fold, uint8_t *crush,
-                                    uint8_t *bits, uint16_t *rate) {
-    if (cmd == 'C') { *clip = (atoff(message) != 0); return 1; }
-    if (cmd == 'F') { *fold = (atoff(message) != 0); return 1; }
-    if (cmd == 'H') {
-        uint16_t vals[2];
-        parse_list_uint16_t(message, vals, 2, AMY_UNSET_VALUE(vals[0]));
-        if (vals[0] == 0) {
-            *crush = 0;
-        } else {
-            *crush = 1;
-            if (AMY_IS_SET(vals[0])) *bits = (uint8_t)MIN(vals[0], 24);
-            if (AMY_IS_SET(vals[1])) *rate = vals[1];
-        }
-        return 1;
-    }
-    return 0;
-}
-
 // Parser for the 'G' prefix: a digit is filter_type as ever; a letter is a
 // distortion sub-command. GC<v> and GF<v> enable clip and fold (0 turns the
 // stage off), GH<bits>[,<rate>] enables the bitcrusher (GH0 turns it off),
@@ -509,7 +483,11 @@ static int parse_dist_stage_message(char cmd, char *message, uint8_t *clip,
 // every stage - a single value sets just the constant term, so scalar use
 // reads as before.  Stages are independent: enabled stages stack in
 // clip -> fold -> crush order, and each command touches only its own stage.
-static int amy_parse_dist_layer_message(char *message, amy_event *e) {
+// The commands say what to do, not where: an event carrying a 'v' shapes that
+// osc, one without shapes the bus the event addresses ('y', else the synth's
+// bus, else the default).  At bus scope only the constant term of GD/GM is
+// used, since a bus sum has no per-note modulation sources to combine.
+int amy_parse_dist_layer_message(char *message, amy_event *e) {
     if (message[0] >= '0' && message[0] <= '9') {
         // It's just the filter type.
         e->filter_type = atoi(message);
@@ -517,28 +495,22 @@ static int amy_parse_dist_layer_message(char *message, amy_event *e) {
     }
     char cmd = message[0];
     message++;
-    if (!parse_dist_stage_message(cmd, message, &e->dist_clip, &e->dist_fold,
-                                  &e->dist_crush, &e->dist_bits, &e->dist_rate)) {
-        if (cmd == 'D')  parse_coef_message(message, e->dist_drive_coefs);
-        else if (cmd == 'M')  parse_coef_message(message, e->dist_mix_coefs);
-        else fprintf(stderr, "Unrecognized distortion command '%s'\n", message - 1);
+    if (cmd == 'C')  e->dist_clip = (atoff(message) != 0);
+    else if (cmd == 'F')  e->dist_fold = (atoff(message) != 0);
+    else if (cmd == 'H') {
+        uint16_t vals[2];
+        parse_list_uint16_t(message, vals, 2, AMY_UNSET_VALUE(vals[0]));
+        if (vals[0] == 0) {
+            e->dist_crush = 0;
+        } else {
+            e->dist_crush = 1;
+            if (AMY_IS_SET(vals[0])) e->dist_bits = (uint8_t)MIN(vals[0], 24);
+            if (AMY_IS_SET(vals[1])) e->dist_rate = vals[1];
+        }
     }
-    return 1;  // skip the sub-command letter.
-}
-
-// Parser for the 'J' prefix: the per-osc 'G' stage grammar at bus scope
-// ('y' picks the bus).  JD<drive> and JM<mix> stay scalar - a bus has no
-// per-note modulation sources to feed a coef vector.
-static int amy_parse_bus_dist_layer_message(char *message, amy_event *e) {
-    char cmd = message[0];
-    message++;
-    if (!parse_dist_stage_message(cmd, message, &e->bus_dist_clip,
-                                  &e->bus_dist_fold, &e->bus_dist_crush,
-                                  &e->bus_dist_bits, &e->bus_dist_rate)) {
-        if (cmd == 'D')  e->bus_dist_drive = atoff(message);
-        else if (cmd == 'M')  e->bus_dist_mix = atoff(message);
-        else fprintf(stderr, "Unrecognized bus distortion command '%s'\n", message - 1);
-    }
+    else if (cmd == 'D')  parse_coef_message(message, e->dist_drive_coefs);
+    else if (cmd == 'M')  parse_coef_message(message, e->dist_mix_coefs);
+    else fprintf(stderr, "Unrecognized distortion command '%s'\n", message - 1);
     return 1;  // skip the sub-command letter.
 }
 
@@ -792,6 +764,7 @@ int amy_parse_message(char * message, amy_event *e) {
             }
             case 'b': e->feedback = atoff(arg); break;
             case 'c': e->chained_osc = atoi(arg); break;
+            /* C available */
             case 'd': parse_coef_message(arg, e->duty_coefs);break;
             case 'D': show_debug(atoi(arg)); break;
             case 'f': parse_coef_message(arg, e->freq_coefs);break;
@@ -813,9 +786,7 @@ int amy_parse_message(char * message, amy_event *e) {
             case 'i': pos += amy_parse_synth_layer_message(arg, e); break;  // Skip over second cmd letter, if any, or entire MIDI CC code string.
             case 'I': e->ratio = atoff(arg); break;
             case 'j': e->tempo = atoff(arg); break;
-            // Per-bus distortion: the 'G' stage grammar at bus scope
-            // ('y' picks the bus).
-            case 'J': pos += amy_parse_bus_dist_layer_message(arg, e); break;
+            /* J available */
             // chorus.level
             case 'k': if(AMY_HAS_CHORUS) {
                 float chorus_params[4];
@@ -844,7 +815,24 @@ int amy_parse_message(char * message, amy_event *e) {
             case 'N': e->latency_ms = atoi(arg);  break;
             case 'o': e->algorithm=atoi(arg); break;
             case 'O': parse_algo_source(arg, e->algo_source); break;
-            case 'p': e->preset=atoi(arg); break;
+            case 'p':
+                // 'p' is the preset/sampler layer: a bare number is the preset,
+                // a sub-letter addresses a PCM param.  Sampler params live here
+                // rather than at the top level because single letters are nearly
+                // exhausted (44 of 52 allocated) and this corner keeps growing.
+                if (arg[0] == 'o') {  // 'po' is PCM sample_offset.
+                    e->sample_offset = atoi(arg + 1);
+                    ++pos;
+                } else if (arg[0] == 'F') {  // 'pF' is PCM fit (ticks).
+                    e->fit_ticks = atoff(arg + 1);
+                    ++pos;
+                } else if (arg[0] == 'S') {  // 'pS' is PCM fit grain search half-width.
+                    e->fit_search = atoi(arg + 1);
+                    ++pos;
+                } else {
+                    e->preset = atoi(arg);
+                }
+                break;
             case 'P': e->trigger_phase=atoff(arg); break;
             /* q unused */
             case 'Q': parse_coef_message(arg, e->pan_coefs); break;
@@ -853,23 +841,28 @@ int amy_parse_message(char * message, amy_event *e) {
             case 's': e->pitch_bend = atoff(arg); break;
             case 'S':
                 e->reset_osc = atoi(arg);
-                // if we're resetting all of AMY, do it now
-                if (e->reset_osc & (RESET_AMY | RESET_TIMEBASE | RESET_EVENTS | RESET_SYNTHS)) {
+                // These two can only happen here, on the parse side, because
+                // neither survives being carried IN a delta: RESET_AMY tears
+                // AMY down and restarts it, and RESET_EVENTS empties the very
+                // queue the delta would be sitting in.  Every other reset bit
+                // -- RESET_TIMEBASE included -- travels as an ordinary delta,
+                // so it works identically from amy_add_event() and honours
+                // time=/ticks= like the rest of the API.
+                if (e->reset_osc & (RESET_AMY | RESET_EVENTS)) {
                     if(e->reset_osc & RESET_AMY) {
                         amy_stop();
                         amy_start(amy_global.config);
                     }
-                    // if we're resetting timebase, do it NOW
-                    if(e->reset_osc & RESET_TIMEBASE) {
-                        amy_reset_sysclock();
-                    }
                     if(e->reset_osc & RESET_EVENTS) {
                         amy_deltas_reset();
                     }
-                    if(e->reset_osc & RESET_SYNTHS) {
-                        amy_reset_oscs();
-                    }
-                    AMY_UNSET(e->reset_osc);
+                    // Clear only the bits handled here.  Unsetting the whole
+                    // field dropped everything it was combined with, so e.g.
+                    // RESET_EVENTS|RESET_ALL_OSCS silently skipped the osc
+                    // reset.  Unset it entirely if nothing is left, since a
+                    // reset_osc of 0 means "reset oscillator 0".
+                    e->reset_osc &= ~(uint32_t)(RESET_AMY | RESET_EVENTS);
+                    if (e->reset_osc == 0)  AMY_UNSET(e->reset_osc);
                 }
                 break;
             /* t no longer used (was time=) */
@@ -896,7 +889,6 @@ int amy_parse_message(char * message, amy_event *e) {
                 }
                 break;
             case 'y': e->bus = atoi(arg); break;
-            /* Y still available */
             case 'z': {
                 pos += amy_parse_transfer_layer_message(arg);
                 break;

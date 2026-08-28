@@ -186,17 +186,34 @@ void all_notes_off() {
     }
 }
 
-void add_deltas_to_queue_with_baseosc(struct delta *d, int base_osc, struct delta **queue, uint32_t time) {
+void add_deltas_to_queue_with_baseosc(struct delta *d, int base_osc, uint16_t oscs_per_voice, struct delta **queue, uint32_t time) {
     //fprintf(stderr, "add_deltas_to_queue_with_baseosc: added %d baseosc %d time %d\n", delta_list_len(d), base_osc, time);
     struct delta d_offset;
     while(d) {
         d_offset = *d;
+        // These deltas are voice-relative, so they answer to the same bound as
+        // a live event does (see osc_ref_within_voice): a stored patch that
+        // names more oscs than the voice it is being replayed into has, or
+        // points one of them outside it, must not write into the neighbours.
+        if (!osc_ref_within_voice((int)d_offset.osc, oscs_per_voice, "stored")) {
+            d = d->next;
+            continue;
+        }
         d_offset.osc += base_osc;
         if (d_offset.param == CHAINED_OSC || d_offset.param == RESET_OSC
             || (d_offset.param >= MOD_SOURCE_START && d_offset.param < MOD_SOURCE_END)
             || (d_offset.param >= ALGO_SOURCE_START && d_offset.param < ALGO_SOURCE_START + MAX_ALGO_OPS))
-            if (!(AMY_IS_UNSET((int16_t)d_offset.data.i) || AMY_IS_UNSET((uint16_t)d_offset.data.i)))  // CHAINED_OSC is uint16_t, but ALGO_SOURCE is int16_t.
+            if (!(AMY_IS_UNSET((int16_t)d_offset.data.i) || AMY_IS_UNSET((uint16_t)d_offset.data.i))) {  // CHAINED_OSC is uint16_t, but ALGO_SOURCE is int16_t.
+                // RESET_OSC's payload is a mask of RESET_* bits as often as it
+                // is an osc number, so it is not range-checked (as in
+                // EVENT_TO_DELTA_WITH_BASEOSC).
+                if (d_offset.param != RESET_OSC &&
+                    !osc_ref_within_voice((int)d_offset.data.i, oscs_per_voice, "stored reference")) {
+                    d = d->next;
+                    continue;
+                }
                 d_offset.data.i += base_osc;
+            }
         d_offset.time = time;
         // assume the d->time is 0 and that's good.
         add_delta_to_queue(&d_offset, &amy_global.delta_queue);
@@ -313,7 +330,8 @@ void snprintfloat3dp(char *s, size_t max_len, float val) {
     }                                                \
 }
 
-#define _EPRINT_VALS_BODY(NAME, WIRECODE) \
+#define _EPRINT_VALS_5(VAL1, VAL2, VAL3, VAL4, VAL5, NAME, WIRECODE)  {      \
+        float vals[] = {VAL1, VAL2, VAL3, VAL4, VAL5}; \
         int n_vals = sizeof(vals) / sizeof(float); \
         int last_one = -1; \
         for (int i = 0; i < n_vals; ++i) { \
@@ -332,16 +350,7 @@ void snprintfloat3dp(char *s, size_t max_len, float val) {
                     s += strlen(s); \
                 } \
             } \
-        }
-
-#define _EPRINT_VALS_3(VAL1, VAL2, VAL3, NAME, WIRECODE)  {      \
-        float vals[] = {VAL1, VAL2, VAL3}; \
-        _EPRINT_VALS_BODY(NAME, WIRECODE) \
-    }
-
-#define _EPRINT_VALS_5(VAL1, VAL2, VAL3, VAL4, VAL5, NAME, WIRECODE)  {      \
-        float vals[] = {VAL1, VAL2, VAL3, VAL4, VAL5}; \
-        _EPRINT_VALS_BODY(NAME, WIRECODE) \
+        } \
     }
 
 int sprint_event(amy_event *e, char *s, size_t len, bool wirecode) {
@@ -373,6 +382,9 @@ int sprint_event(amy_event *e, char *s, size_t len, bool wirecode) {
     _EPRINT_COEF(pan_coefs, "pan_coefs", "Q");
     _EPRINT_F(feedback, "feedback", "b");
     _EPRINT_F(trigger_phase, "phase", "P");
+    _EPRINT_I(sample_offset, "sample_offset", "po");
+    _EPRINT_F(fit_ticks, "fit", "pF");
+    _EPRINT_I(fit_search, "fit_search", "pS");
     _EPRINT_F(pitch_bend, "pitch_bend", "s");  // NOT osc-dep
     _EPRINT_F(tempo, "tempo", "j");  // NOT osc-dep
     _EPRINT_I(latency_ms, "latency_ms", "N");  // NOT osc-dep
@@ -385,7 +397,9 @@ int sprint_event(amy_event *e, char *s, size_t len, bool wirecode) {
     _EPRINT_I(filter_type, "filter_type", "G");
     // Distortion rides 'G' sub-commands; each stage prints its own toggle,
     // so state-to-wire is one field per command.  GH carries the crusher's
-    // bits,rate; a disabled crusher prints as GH0.
+    // bits,rate; a disabled crusher prints as GH0.  Whether the printed
+    // commands mean the osc or the bus is carried by the rest of the event -
+    // the 'v' printed above, or its absence - not by the letters.
     _EPRINT_I(dist_clip, "dist_clip", "GC");
     _EPRINT_I(dist_fold, "dist_fold", "GF");
     if (AMY_IS_SET(e->dist_crush)) {
@@ -408,27 +422,6 @@ int sprint_event(amy_event *e, char *s, size_t len, bool wirecode) {
     }
     _EPRINT_COEF(dist_drive_coefs, "dist_drive_coefs", "GD");
     _EPRINT_COEF(dist_mix_coefs, "dist_mix_coefs", "GM");
-    // Bus distortion rides 'J' with the same per-stage grammar; JD/JM stay
-    // scalar at bus scope.
-    _EPRINT_I(bus_dist_clip, "bus_dist_clip", "JC");
-    _EPRINT_I(bus_dist_fold, "bus_dist_fold", "JF");
-    if (AMY_IS_SET(e->bus_dist_crush)) {
-        if (!wirecode) {
-            snprintf(s, len - (size_t)(s - s_entry), " bus_dist_crush: %d", e->bus_dist_crush); s += strlen(s);
-        } else if (!e->bus_dist_crush) {
-            snprintf(s, len - (size_t)(s - s_entry), "JH0"); s += strlen(s);
-        } else {
-            snprintf(s, len - (size_t)(s - s_entry), "JH"); s += strlen(s);
-            if (AMY_IS_SET(e->bus_dist_bits)) { snprintf(s, len - (size_t)(s - s_entry), "%d", e->bus_dist_bits); s += strlen(s); }
-            if (AMY_IS_SET(e->bus_dist_rate)) { snprintf(s, len - (size_t)(s - s_entry), ",%d", e->bus_dist_rate); s += strlen(s); }
-        }
-    }
-    if (!wirecode) {
-        _EPRINT_I(bus_dist_bits, "bus_dist_bits", "");
-        _EPRINT_I(bus_dist_rate, "bus_dist_rate", "");
-    }
-    _EPRINT_F(bus_dist_drive, "bus_dist_drive", "JD");
-    _EPRINT_F(bus_dist_mix, "bus_dist_mix", "JM");
     _EPRINT_I_SEQ(bp_is_set, "bp_is_set", MAX_BREAKPOINT_SETS, "??");
     // Convert these two at least to vectors of ints, save several hundred bytes
     _EPRINT_I_SEQ(algo_source, "algo_source", MAX_ALGO_OPS, "O");
@@ -498,15 +491,19 @@ bool event_addresses_bus(amy_event *e) {
     _RET_TRUE_IF_5_F_SET(echo_level, echo_delay_ms, echo_max_delay_ms, echo_feedback, echo_filter_coef);
     _RET_TRUE_IF_5_F_SET(chorus_level, chorus_max_delay, chorus_lfo_freq, chorus_depth, chorus_depth);
     _RET_TRUE_IF_5_F_SET(reverb_level, reverb_liveness, reverb_damping, reverb_xover_hz, reverb_xover_hz);
+    // Distortion addresses a bus only when the event names no osc; naming one
+    // makes the same fields osc-scope (see event_addresses_oscs).
     // Not _RET_TRUE_IF_5_F_SET: the int fields' unset sentinels cast to
     // ordinary floats rather than NaN.
-    _RET_TRUE_IF_SET(bus_dist_clip);
-    _RET_TRUE_IF_SET(bus_dist_fold);
-    _RET_TRUE_IF_SET(bus_dist_crush);
-    _RET_TRUE_IF_SET(bus_dist_drive);
-    _RET_TRUE_IF_SET(bus_dist_bits);
-    _RET_TRUE_IF_SET(bus_dist_rate);
-    _RET_TRUE_IF_SET(bus_dist_mix);
+    if (AMY_IS_UNSET(e->osc)) {
+        _RET_TRUE_IF_SET(dist_clip);
+        _RET_TRUE_IF_SET(dist_fold);
+        _RET_TRUE_IF_SET(dist_crush);
+        _RET_TRUE_IF_SET(dist_bits);
+        _RET_TRUE_IF_SET(dist_rate);
+        _RET_TRUE_IF_SET_COEF(dist_drive_coefs);
+        _RET_TRUE_IF_SET_COEF(dist_mix_coefs);
+    }
     return false;
 }
 
@@ -540,6 +537,9 @@ bool event_addresses_oscs(amy_event *e) {
     _RET_TRUE_IF_SET_COEF(pan_coefs);
     _RET_TRUE_IF_SET(feedback);
     _RET_TRUE_IF_SET(trigger_phase);
+    _RET_TRUE_IF_SET(sample_offset);
+    _RET_TRUE_IF_SET(fit_ticks);
+    _RET_TRUE_IF_SET(fit_search);
     _RET_TRUE_IF_SET(pitch_bend);  // NOT osc-dep
     _RET_TRUE_IF_SET(tempo);  // NOT osc-dep
     _RET_TRUE_IF_SET(latency_ms);  // NOT osc-dep
@@ -550,13 +550,20 @@ bool event_addresses_oscs(amy_event *e) {
     _RET_TRUE_IF_SET_SEQ(mod_source, NUM_MOD_SOURCES);
     _RET_TRUE_IF_SET(algorithm);
     _RET_TRUE_IF_SET(filter_type);
-    _RET_TRUE_IF_SET(dist_clip);
-    _RET_TRUE_IF_SET(dist_fold);
-    _RET_TRUE_IF_SET(dist_crush);
-    _RET_TRUE_IF_SET(dist_bits);
-    _RET_TRUE_IF_SET(dist_rate);
-    _RET_TRUE_IF_SET_COEF(dist_drive_coefs);
-    _RET_TRUE_IF_SET_COEF(dist_mix_coefs);
+    // Distortion addresses oscs only when the event names one; with no osc
+    // named it is bus-scope (see event_addresses_bus), and answering true
+    // here would fan it out over the voice's oscs as well.
+    // Not _RET_TRUE_IF_5_F_SET: the enables and bits/rate are ints, and
+    // their unset sentinels cast to ordinary floats rather than NaN.
+    if (AMY_IS_SET(e->osc)) {
+        _RET_TRUE_IF_SET(dist_clip);
+        _RET_TRUE_IF_SET(dist_fold);
+        _RET_TRUE_IF_SET(dist_crush);
+        _RET_TRUE_IF_SET(dist_bits);
+        _RET_TRUE_IF_SET(dist_rate);
+        _RET_TRUE_IF_SET_COEF(dist_drive_coefs);
+        _RET_TRUE_IF_SET_COEF(dist_mix_coefs);
+    }
     _RET_TRUE_IF_SET_SEQ(bp_is_set, MAX_BREAKPOINT_SETS);
     // Convert these two at least to vectors of ints, save several hundred bytes
     _RET_TRUE_IF_SET_SEQ(algo_source, MAX_ALGO_OPS);
@@ -592,7 +599,6 @@ bool event_addresses_oscs(amy_event *e) {
                 event->FIELD[i] = queue->data.f; \
         }                                    \
     }
-
 // Const freq coef is in Hz, rest are linear.
 #define _TEST_FREQ_COEFS(FIELD, PARAM) \
     for (int i = 0; i < NUM_COMBO_COEFS; ++i) {      \
@@ -626,6 +632,9 @@ struct delta *deltas_to_event(struct delta *queue, struct amy_event *event) {
       _CASE_F(midi_note, MIDI_NOTE)
       _CASE_F(feedback, FEEDBACK)
       _CASE_F(trigger_phase, PHASE)
+      _CASE_I(sample_offset, SAMPLE_OFFSET)
+      _CASE_F(fit_ticks, FIT)
+      _CASE_I(fit_search, FIT_SEARCH)
       _CASE_F(pitch_bend, PITCH_BEND)
       _CASE_I(latency_ms, LATENCY)
       _CASE_F(tempo, TEMPO)
@@ -658,13 +667,16 @@ struct delta *deltas_to_event(struct delta *queue, struct amy_event *event) {
       _CASE_F(reverb_liveness, REVERB_LIVENESS)
       _CASE_F(reverb_damping, REVERB_DAMPING)
       _CASE_F(reverb_xover_hz, REVERB_XOVER_HZ)
-      _CASE_I(bus_dist_clip, BUS_DIST_CLIP_EN)
-      _CASE_I(bus_dist_fold, BUS_DIST_FOLD_EN)
-      _CASE_I(bus_dist_crush, BUS_DIST_CRUSH_EN)
-      _CASE_F(bus_dist_drive, BUS_DIST_DRIVE)
-      _CASE_I(bus_dist_bits, BUS_DIST_BITS)
-      _CASE_I(bus_dist_rate, BUS_DIST_RATE)
-      _CASE_F(bus_dist_mix, BUS_DIST_MIX)
+      // Bus distortion comes back through the same event fields the per-osc
+      // stage uses; the event's own osc says which scope it will be read at
+      // on the way back in, exactly as it does for VOLUME below.
+      _CASE_I(dist_clip, BUS_DIST_CLIP_EN)
+      _CASE_I(dist_fold, BUS_DIST_FOLD_EN)
+      _CASE_I(dist_crush, BUS_DIST_CRUSH_EN)
+      _CASE_I(dist_bits, BUS_DIST_BITS)
+      _CASE_I(dist_rate, BUS_DIST_RATE)
+      case BUS_DIST_DRIVE: event->dist_drive_coefs[COEF_CONST] = queue->data.f; break;
+      case BUS_DIST_MIX: event->dist_mix_coefs[COEF_CONST] = queue->data.f; break;
       _CASE_I(eg_type[0], EG0_TYPE)
       _CASE_I(eg_type[1], EG1_TYPE)
       _CASE_F(velocity, VELOCITY)
@@ -677,9 +689,9 @@ struct delta *deltas_to_event(struct delta *queue, struct amy_event *event) {
       _TEST_FREQ_COEFS(freq_coefs, FREQ)
       _TEST_FREQ_COEFS(filter_freq_coefs, FILTER_FREQ)
       _TEST_COEFS(duty_coefs, DUTY)
+      _TEST_COEFS(pan_coefs, PAN)
       _TEST_DRIVE_COEFS(dist_drive_coefs, DIST_LOGDRIVE)
       _TEST_COEFS(dist_mix_coefs, DIST_MIX)
-      _TEST_COEFS(pan_coefs, PAN)
       for (int i = 0; i < MAX_ALGO_OPS; ++i) {
           if ((int)queue->param == (int)ALGO_SOURCE_START + i)
               event->algo_source[i] = queue->data.i;
@@ -774,6 +786,16 @@ struct delta *deltas_to_event(struct delta *queue, struct amy_event *event) {
         }                                                                 \
     }
 
+#define EVENT_FROM_OSC_ARRAY_LOGDRIVE(SYNTH_FIELD, EVENT_FIELD, NUM_ELS)  \
+    for (int i = 0; i < NUM_ELS; ++i) {                                   \
+        if (synth[osc]->SYNTH_FIELD[i] != empty_synth.SYNTH_FIELD[i]) {   \
+            if (i == COEF_CONST)                                          \
+                event->EVENT_FIELD[i] = drive_of_logdrive(synth[osc]->SYNTH_FIELD[i]); \
+            else                                                          \
+                event->EVENT_FIELD[i] = synth[osc]->SYNTH_FIELD[i];       \
+        }                                                                 \
+    }
+
 void set_event_for_osc(int base_osc, int rel_osc, struct amy_event *event) {
     // Set fields in the event to configure the osc away from default.
     // We assume event has already been cleared.
@@ -811,6 +833,9 @@ void set_event_for_osc(int base_osc, int rel_osc, struct amy_event *event) {
     EVENT_FROM_OSC_ARRAY(pan_coefs, NUM_COMBO_COEFS);
     EVENT_FROM_OSC(feedback);
     EVENT_FROM_OSC(trigger_phase);
+    EVENT_FROM_OSC(sample_offset);
+    EVENT_FROM_OSC(fit_ticks);
+    EVENT_FROM_OSC(fit_search);
     EVENT_FROM_OSC_MAPPED(logratio, ratio, exp2f);
     EVENT_FROM_OSC(resonance);
     EVENT_FROM_OSC_MAPPED(portamento_alpha, portamento_ms, alpha_to_portamento_ms);
@@ -818,6 +843,16 @@ void set_event_for_osc(int base_osc, int rel_osc, struct amy_event *event) {
     EVENT_FROM_OSC_ARRAY_BASEOSC(mod_source, NUM_MOD_SOURCES);
     EVENT_FROM_OSC(algorithm);
     EVENT_FROM_OSC(filter_type);
+    // Distortion: one enable per stage that is on (a stage that is off is
+    // the default, and saying so would put GC0GF0GH0 on every osc), and the
+    // drive rail back in linear units, the way it was sent.
+    if (synth[osc]->dist_stages & DIST_CLIP)   event->dist_clip = 1;
+    if (synth[osc]->dist_stages & DIST_FOLD)   event->dist_fold = 1;
+    if (synth[osc]->dist_stages & DIST_CRUSH)  event->dist_crush = 1;
+    EVENT_FROM_OSC(dist_bits);
+    EVENT_FROM_OSC(dist_rate);
+    EVENT_FROM_OSC_ARRAY_LOGDRIVE(dist_logdrive_coefs, dist_drive_coefs, NUM_COMBO_COEFS);
+    EVENT_FROM_OSC_ARRAY2(dist_mix_coefs, dist_mix_coefs, NUM_COMBO_COEFS);
     EVENT_FROM_OSC_ARRAY_BASEOSC(algo_source, MAX_ALGO_OPS);
     EVENT_FROM_OSC_ARRAY_T(breakpoint_times[0], eg0_times, synth[osc]->max_num_breakpoints[0]);
     EVENT_FROM_OSC_ARRAY2(breakpoint_values[0], eg0_values, synth[osc]->max_num_breakpoints[0]);
@@ -856,6 +891,19 @@ void set_event_for_bus_fx(amy_event *event, uint16_t bus, global_state_t *state)
         event->echo_max_delay_ms = state->bus[bus]->echo.max_delay_samples * 1000.f / AMY_SAMPLE_RATE;
     event->echo_feedback = S2F(state->bus[bus]->echo.feedback);
     event->echo_filter_coef = S2F(state->bus[bus]->echo.filter_coef);
+    // Distortion, which shares its event fields with the per-osc stage: this
+    // event names no osc, and that is what makes the commands read back as
+    // bus-scope.  A bus with no stage enabled has nothing to restore, and
+    // saying so would put five commands on every bus line.
+    if (state->bus[bus]->dist.stages) {
+        event->dist_clip = (state->bus[bus]->dist.stages & DIST_CLIP) ? 1 : 0;
+        event->dist_fold = (state->bus[bus]->dist.stages & DIST_FOLD) ? 1 : 0;
+        event->dist_crush = (state->bus[bus]->dist.stages & DIST_CRUSH) ? 1 : 0;
+        event->dist_bits = state->bus[bus]->dist.bits;
+        event->dist_rate = state->bus[bus]->dist.rate;
+        event->dist_drive_coefs[COEF_CONST] = state->bus[bus]->dist.drive;
+        event->dist_mix_coefs[COEF_CONST] = state->bus[bus]->dist.mix;
+    }
 }
 
 
@@ -975,12 +1023,18 @@ void *yield_bus_commands(char *s, size_t len, void *state) {
 }
 
 
-void parse_patch_string_to_queue(char *message, int base_osc, struct delta **queue, uint8_t synth, uint32_t time, bool is_first_voice) {
+void parse_patch_string_to_queue(char *message, int base_osc, uint16_t oscs_per_voice, struct delta **queue, uint8_t synth, uint32_t time, bool is_first_voice) {
     // Work though the patch string and send to voices.
     // Now actually initialize the newly-allocated osc blocks with the patch
     //fprintf(stderr, "parse_patch_string: message %s base_osc %d synth %d time %d is_first_voice %d\n", message, base_osc, synth, time, is_first_voice);
     amy_event e;
     size_t pos = 0;
+    // A patch string can re-shape the voice it is being loaded into, partway
+    // through itself: the drum kits open with `if3iv1in38Z`, which turns the
+    // 1-osc voice patch_oscs promised into a 38-osc one before the per-drum
+    // commands that follow. So the bound the rest of the string is held to is
+    // whatever the string last said, not what we were told before it ran.
+    uint16_t voice_oscs = oscs_per_voice;
     do {
         amy_clear_event(&e);
         e.time = time;
@@ -990,6 +1044,11 @@ void parse_patch_string_to_queue(char *message, int base_osc, struct delta **que
         }
         pos = yield_event_from_message(message, &e, pos);
         if (pos > 0) {
+            // This event re-shapes the voice; everything after it answers to
+            // the new size. (Taking effect from this event on, not the next
+            // one, is right: the event that carries oscs_per_voice is
+            // synth-level and names no oscs of its own.)
+            if (AMY_IS_SET(e.oscs_per_voice))  voice_oscs = e.oscs_per_voice;
             // A patch's global FX phrase (a Juno patch's trailing
             // "x...k1..." -- 127 of the ROM Juno patches carry one) is
             // bus-directed but has no synth attached, so its params fell
@@ -998,7 +1057,7 @@ void parse_patch_string_to_queue(char *message, int base_osc, struct delta **que
             // had sent it itself.
             if (event_addresses_bus(&e))  e.synth = synth;
             if (event_addresses_oscs(&e) || is_first_voice)
-                amy_event_to_deltas_queue(&e, base_osc, queue);
+                amy_event_to_deltas_queue(&e, base_osc, voice_oscs, queue);
         }
     } while (pos > 0);
 }
@@ -1050,7 +1109,7 @@ void patches_store_patch(amy_event *e, char * patch_string) {
         patches_reset_patch(e->patch_number);
     memory_patch_auto[patch_index] = auto_assigned ? 1 : 0;
     // Store the patch as deltas and find out how many oscs this message uses
-    parse_patch_string_to_queue(patch_string, 0, &memory_patch_deltas[patch_index], e->synth, e->time, true);
+    parse_patch_string_to_queue(patch_string, 0, /* oscs_per_voice= */ 0, &memory_patch_deltas[patch_index], e->synth, e->time, true);
     update_num_oscs_for_patch_number(patch_index + _PATCHES_FIRST_USER_PATCH);
     //fprintf(stderr, "store_patch: patch %d max_osc %d patch %s #deltas %d (e->num_vx=%d)\n", patch_index, max_osc, patch_string, delta_list_len(memory_patch_deltas[patch_index]), e->num_voices);
 }
@@ -1260,16 +1319,17 @@ void patches_event_has_voices(amy_event *e, struct delta **queue) {
         for(uint8_t i = 0; i < num_voices; i++) {
             if(AMY_IS_SET(voice_to_base_osc[voices[i]])) {
                 uint16_t target_osc = voice_to_base_osc[voices[i]];
+                uint16_t voice_oscs = (uint16_t)num_oscs_for_voice(voices[i]);
                 if (AMY_IS_SET(e->osc) || !event_addresses_oscs(e)) {
                     // Osc is specified, or not osc-relevant so only needs writing once.
-                    amy_event_to_deltas_queue(e, target_osc, queue);
+                    amy_event_to_deltas_queue(e, target_osc, voice_oscs, queue);
                 } else {
                     // Osc-related but osc is not specified - send to all oscs in voice.
                     int num_oscs = num_oscs_for_voice(voices[i]);
                     for (int osc = 0; osc < num_oscs; ++osc) {
                         e->osc = osc;
                         //if (osc != 1)
-                        amy_event_to_deltas_queue(e, target_osc, queue);
+                        amy_event_to_deltas_queue(e, target_osc, voice_oscs, queue);
                     }
                     AMY_UNSET(e->osc);
                 }
@@ -1306,15 +1366,16 @@ void schedule_osc_reset(uint32_t time, uint16_t osc, struct delta **queue) {
 // already discards the state (the reset wiped it in place), so freeing is
 // behaviorally identical -- an unallocated osc reads as defaults, and the
 // next touch re-allocates lazily -- it just gives the memory back.
-static void schedule_osc_free(uint32_t time, uint16_t osc) {
+void schedule_osc_free(uint32_t time, uint16_t osc, struct delta **queue) {
+    if (queue == NULL)  queue = &amy_global.delta_queue;
     struct delta d = {
         .time = time,
         .osc = 0,
-        .param = RESET_OSC,
-        .data.i = (uint32_t)osc | RESET_FREE_OSC,
+        .param = FREE_OSC,
+        .data.i = osc,
         .next = NULL,
     };
-    add_delta_to_queue(&d, &amy_global.delta_queue);
+    add_delta_to_queue(&d, queue);
 }
 
 void release_voice_oscs(int32_t voice, uint32_t time) {
@@ -1326,7 +1387,7 @@ void release_voice_oscs(int32_t voice, uint32_t time) {
                 //fprintf(stderr, "Already set voice %d osc %d, removing it\n", voices[v], i);
                 AMY_UNSET(osc_to_voice[i]);
                 // Ownership ends here: clear the osc and return its storage.
-                schedule_osc_free(time, i);
+                schedule_osc_free(time, i, NULL);
             }
         }
         AMY_UNSET(voice_to_base_osc[voice]);
@@ -1355,7 +1416,7 @@ uint16_t snapshot_voice_config(uint8_t instr_num, struct delta **queue, uint32_t
         e.time = time;
         e.osc = rel_osc;
         set_event_for_osc(base_osc, rel_osc, &e);
-        amy_event_to_deltas_queue(&e, 0, queue);
+        amy_event_to_deltas_queue(&e, 0, /* oscs_per_voice= */ 0, queue);
     }
     return (uint16_t)num_oscs;
 }
@@ -1625,9 +1686,9 @@ void patches_load_patch(amy_event *e) {
     for(uint8_t v = 0; v < num_voices; v++) {
         if(AMY_IS_SET(voice_to_base_osc[voices[v]])) {
             if (deltas) {
-                add_deltas_to_queue_with_baseosc(deltas, voice_to_base_osc[voices[v]], &amy_global.delta_queue, e->time);
+                add_deltas_to_queue_with_baseosc(deltas, voice_to_base_osc[voices[v]], oscs_per_voice, &amy_global.delta_queue, e->time);
             } else if (message) {
-                parse_patch_string_to_queue(message, voice_to_base_osc[voices[v]], &amy_global.delta_queue, e->synth, e->time, is_first_voice);
+                parse_patch_string_to_queue(message, voice_to_base_osc[voices[v]], oscs_per_voice, &amy_global.delta_queue, e->synth, e->time, is_first_voice);
             }
             // Or maybe there's no deltas and no message, in which case we just set oscs_per_voice, waiting for config.
             is_first_voice = false;

@@ -41,7 +41,12 @@ AMY_IRAM_ATTR SAMPLE compute_mod_scale(uint16_t osc, uint16_t which_source) {
     // mod slots.
     uint16_t source = synth[osc]->mod_source[which_source];
     if(AMY_IS_SET(source)) {
-        if(source != osc) {  // belt-and-braces; assignment already rejects this
+        // synth[source] can be NULL: FREE_OSC returns a released voice's osc
+        // storage to the heap, while every osc that named it as a modulator
+        // still holds its number.  amy_render's own null skip doesn't cover
+        // this descent, so recheck here -- the same reason render_osc_wave
+        // rechecks before following chained_osc.
+        if(source != osc && synth[source] != NULL) {  // belt-and-braces; assignment already rejects self as source
             hold_and_modify(source);
             return compute_mod_value(source);
         }
@@ -171,8 +176,12 @@ AMY_IRAM_ATTR SAMPLE compute_breakpoint_scale(uint16_t osc, uint8_t bp_set, uint
 #define MIN_LEVEL_S 4.25f
 #define ATTACK_RANGE_S 9.375f
 #define MAP_ATTACK_LEVEL_S(level) (1 - MAX(level - MIN_LEVEL_S, 0) / ATTACK_RANGE_S)
-                SAMPLE mapped_current_level = F2S(MAP_ATTACK_LEVEL_S(LINEAR_SAMP_TO_DX7_LEVEL(v0)));
-                SAMPLE mapped_target_level = F2S(MAP_ATTACK_LEVEL_S(LINEAR_SAMP_TO_DX7_LEVEL(v1)));
+                // MAP_ATTACK_LEVEL_S reaches zero (and goes negative) once the
+                // DX7 level passes 13.625, which a breakpoint value above ~2.37
+                // does. log2_lut needs a positive argument, so floor these the
+                // same way v0/v1 are floored in the decay branch below.
+                SAMPLE mapped_current_level = MAX(F2S(MAP_ATTACK_LEVEL_S(LINEAR_SAMP_TO_DX7_LEVEL(v0))), F2S(BREAKPOINT_EPS));
+                SAMPLE mapped_target_level = MAX(F2S(MAP_ATTACK_LEVEL_S(LINEAR_SAMP_TO_DX7_LEVEL(v1))), F2S(BREAKPOINT_EPS));
                 float t_const = (t1 - t0) / S2F(log2_lut(mapped_current_level) - log2_lut(mapped_target_level));
                 float my_t0 = -t_const * S2F(log2_lut(mapped_current_level));
                 // This is the magic equation that shapes the DX7 attack envelopes.

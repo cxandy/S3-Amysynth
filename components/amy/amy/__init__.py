@@ -37,7 +37,6 @@ def _capi_resolve(py_name, mp_name):
 _send_wire = _capi_resolve('send_wire', 'amy_send')
 _send_wire_from_sysex = _capi_resolve('send_wire_from_sysex', 'amy_send_wire_from_sysex')
 _ticks_ms = _capi_resolve('ticks_ms', 'amy_ticks_ms')
-_reset_sysclock = _capi_resolve('reset_sysclock', 'amy_reset_sysclock')
 _render_load = _capi_resolve('render_load', 'amy_render_load')
 _set_render_load_threshold = _capi_resolve('set_render_load_threshold', 'amy_set_render_load_threshold')
 _bleep = _capi_resolve('bleep', 'amy_bleep')
@@ -60,10 +59,6 @@ def send_wire_from_sysex(message):
 def ticks_ms():
     """Read the AMY millisecond clock"""
     return _ticks_ms()
-
-def reset_sysclock():
-    """Reset the AMY millisecond clock to zero"""
-    return _reset_sysclock()
 
 def render_load():
     """Smoothed fraction of real time AMY spends rendering (0..1)"""
@@ -102,6 +97,14 @@ def get_input_buffer():
     return _get_input_buffer()
 
 # END GENERATED - scripts/gen_amy_c_api.py
+
+
+def reset_sysclock():
+    """Reset the AMY millisecond clock and sequencer tick count to zero"""
+    # Native rather than a C binding: RESET_TIMEBASE is an ordinary event, so
+    # this is just a send(), and the reset then follows the same path (and the
+    # same ordering with everything else you have sent) as any other event.
+    send(reset=RESET_TIMEBASE)
 
 
 # If set, calls this instead of amy.send()
@@ -235,12 +238,13 @@ _KW_MAP_LIST = [   # Order matters because patch_string must come last.
     # 'ticks' must come first: 'H' is recognized only as first char in wire message.
     ('ticks', 'HL'),
     ('osc', 'vI'), ('wave', 'wI'), ('note', 'nF'), ('vel', 'lF'), ('amp', 'aC'), ('freq', 'fC'), ('duty', 'dC'),
-    ('feedback', 'bF'), ('reset', 'SI'), ('phase', 'PF'), ('pan', 'QC'), ('client', 'gI'),
+    ('feedback', 'bF'), ('reset', 'SI'), ('phase', 'PF'), ('sample_offset', 'poI'), ('fit', 'pFF'), ('fit_search', 'pSI'), ('pan', 'QC'), ('client', 'gI'),
     ('volume', 'VF'), ('pitch_bend', 'sF'), ('filter_freq', 'FC'), ('resonance', 'RF'),
     ('bp0', 'AL'), ('bp1', 'BL'),
     ('eg0', 'AL'), ('eg1', 'BL'),  # Aliases for bp0 and bp1
     ('eg0_type', 'TI'), ('eg1_type', 'XI'), ('debug', 'DI'), ('chained_osc', 'cI'),
     ('mod_source', 'LL'),  ('eq', 'xL'), ('filter_type', 'GI'), ('ratio', 'IF'), ('latency_ms', 'NI'),
+    ('dist_clip', 'GCI'), ('dist_fold', 'GFI'), ('dist_crush', 'GHL'), ('dist_drive', 'GDC'), ('dist_mix', 'GMC'),
     ('algo_source', 'OL'), ('load_sample', 'zL'), ('transfer_file', 'zTL'), ('disk_sample', 'zFL'),
     ('algorithm', 'oI'), ('chorus', 'kL'), ('reverb', 'hL'), ('echo', 'ML'), ('patch', 'KI'),
     ('external_channel', 'WI'), ('portamento', 'mI'), ('tempo', 'jF'), ('sequencer_run', 'zYI'),

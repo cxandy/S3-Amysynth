@@ -1051,14 +1051,11 @@ void reset_parametric(uint16_t bus) {
 }
 
 
-// DIST_CRUSH's wet path is DC-blocked with a pole at DIST_HPF_POLE and a zero
-// at 1, placing the corner at DIST_HPF_HZ.  The sample-and-hold is a
-// downsampler with no anti-aliasing, so every partial near a multiple of
-// AMY_SAMPLE_RATE/rate folds down; when that product lands below a few Hz the
-// whole voice rides a slow DC swing measured at a third of full scale, and
-// nothing downstream removes it (distortion runs pre-filter, and an LPF passes
-// DC).  The corner sits below the lowest musical fundamental, so it takes the
-// sub-audio fold-down without touching the audible grit.
+// DIST_CRUSH's wet path is DC-blocked (pole at DIST_HPF_POLE, zero at 1,
+// corner at DIST_HPF_HZ): the sample-and-hold folds partials near multiples
+// of AMY_SAMPLE_RATE/rate down to sub-audio DC swings, and nothing downstream
+// removes DC.  The corner sits below the lowest musical fundamental, so only
+// the fold-down goes, not the audible grit.
 #define DIST_HPF_HZ 10.0f
 #define DIST_HPF_POLE (1.0f - 2 * (float)M_PI * DIST_HPF_HZ / AMY_SAMPLE_RATE)
 
@@ -1211,10 +1208,10 @@ AMY_IRAM_ATTR SAMPLE dist_block(SAMPLE * block, uint16_t len,
 
 // Per-osc entry point: the osc owns both its config and its hold state.
 AMY_IRAM_ATTR SAMPLE dist_process(SAMPLE * block, uint16_t osc) {
-    // Stages, bits and rate are authored on the osc; drive and mix are combined
-    // from their coef vectors once per block in hold_and_modify.  Composing
-    // the config here rather than storing one keeps modulated state in msynth,
-    // where the rest of the per-block values live.
+    // Stages, bits and rate are authored on the osc; drive and mix are
+    // combined from their coef vectors once per block in hold_and_modify.
+    // Composing the config here rather than storing one keeps modulated
+    // state in msynth, where the rest of the per-block values live.
     const dist_config_t cfg = {
         .stages = synth[osc]->dist_stages,
         .drive = msynth[osc]->dist_drive,

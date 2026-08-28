@@ -303,6 +303,9 @@ var _KW_MAP: Dictionary = {
 	"feedback":            ["b", "F"],
 	"reset":               ["S", "I"],
 	"phase":               ["P", "F"],
+	"sample_offset":       ["po", "I"],
+	"fit":                 ["pF", "F"],
+	"fit_search":          ["pS", "I"],
 	"pan":                 ["Q", "C"],
 	"client":              ["g", "I"],
 	"volume":              ["V", "F"],
@@ -322,6 +325,11 @@ var _KW_MAP: Dictionary = {
 	"filter_type":         ["G", "I"],
 	"ratio":               ["I", "F"],
 	"latency_ms":          ["N", "I"],
+	"dist_clip":           ["GC", "I"],
+	"dist_fold":           ["GF", "I"],
+	"dist_crush":          ["GH", "L"],
+	"dist_drive":          ["GD", "C"],
+	"dist_mix":            ["GM", "C"],
 	"algo_source":         ["O", "L"],
 	"load_sample":         ["z", "L"],
 	"transfer_file":       ["zT", "L"],
@@ -370,59 +378,67 @@ var _KW_PRIORITY: Dictionary = {
 	"feedback": 8,
 	"reset": 9,
 	"phase": 10,
-	"pan": 11,
-	"client": 12,
-	"volume": 13,
-	"pitch_bend": 14,
-	"filter_freq": 15,
-	"resonance": 16,
-	"bp0": 17,
-	"bp1": 18,
-	"eg0": 19,
-	"eg1": 20,
-	"eg0_type": 21,
-	"eg1_type": 22,
-	"debug": 23,
-	"chained_osc": 24,
-	"mod_source": 25,
-	"eq": 26,
-	"filter_type": 27,
-	"ratio": 28,
-	"latency_ms": 29,
-	"algo_source": 30,
-	"load_sample": 31,
-	"transfer_file": 32,
-	"disk_sample": 33,
-	"algorithm": 34,
-	"chorus": 35,
-	"reverb": 36,
-	"echo": 37,
-	"patch": 38,
-	"external_channel": 39,
-	"portamento": 40,
-	"tempo": 41,
-	"sequencer_run": 42,
-	"external_midi_sync": 43,
-	"synth": 44,
-	"pedal": 45,
-	"synth_flags": 46,
-	"num_voices": 47,
-	"oscs_per_voice": 48,
-	"synth_level": 49,
-	"to_synth": 50,
-	"grab_midi_notes": 51,
-	"note_source_channel": 52,
-	"synth_delay": 53,
-	"preset": 54,
-	"num_partials": 55,
-	"start_sample": 56,
-	"stop_sample": 57,
-	"bus": 58,
-	"mode": 59,
-	"midi_cc": 60,
-	"midi_note_cmd": 61,
-	"cv_trigger": 62,
-	"patch_string": 63,
+	"sample_offset": 11,
+	"fit": 12,
+	"fit_search": 13,
+	"pan": 14,
+	"client": 15,
+	"volume": 16,
+	"pitch_bend": 17,
+	"filter_freq": 18,
+	"resonance": 19,
+	"bp0": 20,
+	"bp1": 21,
+	"eg0": 22,
+	"eg1": 23,
+	"eg0_type": 24,
+	"eg1_type": 25,
+	"debug": 26,
+	"chained_osc": 27,
+	"mod_source": 28,
+	"eq": 29,
+	"filter_type": 30,
+	"ratio": 31,
+	"latency_ms": 32,
+	"dist_clip": 33,
+	"dist_fold": 34,
+	"dist_crush": 35,
+	"dist_drive": 36,
+	"dist_mix": 37,
+	"algo_source": 38,
+	"load_sample": 39,
+	"transfer_file": 40,
+	"disk_sample": 41,
+	"algorithm": 42,
+	"chorus": 43,
+	"reverb": 44,
+	"echo": 45,
+	"patch": 46,
+	"external_channel": 47,
+	"portamento": 48,
+	"tempo": 49,
+	"sequencer_run": 50,
+	"external_midi_sync": 51,
+	"synth": 52,
+	"pedal": 53,
+	"synth_flags": 54,
+	"num_voices": 55,
+	"oscs_per_voice": 56,
+	"synth_level": 57,
+	"to_synth": 58,
+	"grab_midi_notes": 59,
+	"note_source_channel": 60,
+	"synth_delay": 61,
+	"preset": 62,
+	"num_partials": 63,
+	"start_sample": 64,
+	"stop_sample": 65,
+	"bus": 66,
+	"mode": 67,
+	"midi_cc": 68,
+	"midi_note_cmd": 69,
+	"cv_trigger": 70,
+	"patch_string": 71,
 }
 
 ## The control coefficient inputs, in wire order.  Prefer naming these in a
@@ -434,17 +450,13 @@ const COEF_FIELDS: PackedStringArray = ["const", "note", "vel", "eg0", "eg1", "m
 const COEF_ALIASES: Dictionary = {"mod": "mod0"}
 # END GENERATED
 
+## Reset bit for the timebase, mirroring RESET_TIMEBASE in src/amy.h.
+const RESET_TIMEBASE: int = 16384
+
 # ============================================================
 #  Table-driven C API (native + web). Regenerate: make c-api
 # ============================================================
 # BEGIN GENERATED C API - scripts/gen_amy_c_api.py
-## Reset the AMY millisecond clock to zero
-func reset_sysclock() -> void:
-	if _is_web:
-		JavaScriptBridge.eval("amy_c_api && amy_c_api.reset_sysclock()")
-	elif _synth:
-		_synth.call("reset_sysclock")
-
 ## Smoothed fraction of real time AMY spends rendering (0..1)
 func render_load() -> float:
 	if _is_web:
@@ -487,3 +499,10 @@ func dump_state() -> String:
 	return ""
 
 # END GENERATED C API
+
+
+## Reset the AMY millisecond clock and sequencer tick count to zero.
+## Native rather than a C binding: RESET_TIMEBASE is an ordinary event, so this
+## is just a send(), and the reset follows the same path as anything else sent.
+func reset_sysclock() -> void:
+	send({"reset": RESET_TIMEBASE})

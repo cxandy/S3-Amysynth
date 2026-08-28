@@ -106,19 +106,22 @@ void fx_push_reverb(void)
 
 void fx_push_dist(void)
 {
-    /* The full config travels together (like the per-osc 'C' wire): the type
-     * delta restarts the crusher/DC-blocker state, which recaptures within
-     * one hold period - inaudible at menu-edit rate. */
+    /* One set of dist fields serves both scopes; the event decides which.
+     * Naming no osc puts them at bus scope, and with synth and bus unset too
+     * that bus is AMY_DEFAULT_BUS, where everything here renders. Naming a
+     * synth would instead fan them out over that synth's voices. */
     amy_event *e = amy_helpers_event_begin();
     /* bus_dist_type is a stage mask; author all three enables explicitly
      * so a mask change turns dropped stages off. */
-    e->bus_dist_clip  = !!(s_fx.bus_dist_type & 1u);
-    e->bus_dist_fold  = !!(s_fx.bus_dist_type & 2u);
-    e->bus_dist_crush = !!(s_fx.bus_dist_type & 4u);
-    e->bus_dist_drive = (float)s_fx.bus_dist_drive;
-    e->bus_dist_bits  = (uint8_t)s_fx.bus_dist_bits;
-    e->bus_dist_rate  = (uint16_t)s_fx.bus_dist_rate;
-    e->bus_dist_mix   = (float)s_fx.bus_dist_mix / 100.0f;
+    e->dist_clip  = !!(s_fx.bus_dist_type & 1u);
+    e->dist_fold  = !!(s_fx.bus_dist_type & 2u);
+    e->dist_crush = !!(s_fx.bus_dist_type & 4u);
+    e->dist_bits  = (uint8_t)s_fx.bus_dist_bits;
+    e->dist_rate  = (uint16_t)s_fx.bus_dist_rate;
+    /* A bus sum has no per-note modulation sources, so only the CONST coef
+     * of each rail reaches it: drive linear 1..16, mix linear 0..1. */
+    e->dist_drive_coefs[COEF_CONST] = (float)s_fx.bus_dist_drive;
+    e->dist_mix_coefs[COEF_CONST]   = (float)s_fx.bus_dist_mix / 100.0f;
     amy_helpers_event_send(e);
 }
 

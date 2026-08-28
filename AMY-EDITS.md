@@ -1,22 +1,11 @@
 # AMY Local Edits
 
 Edits applied on top of the upstream `shorepine/amy` submodule.
-Upstream commit: `55e044d` (v1.2.145, vendored 2026-08-14) plus two of our
-own PRs vendored ahead of their merge - see "Pending upstream" below.
-Previous bases: v1.2.121 `85a7025`, v1.2.104 `fd09bd2`, v1.2.31 `1e23c70`. The submodule tracks upstream `main`
+Upstream commit: `a89df0c` (v1.2.160, vendored 2026-08-28). The vendor base is
+upstream `main` as is - nothing is carried ahead of a merge here.
+Previous bases: v1.2.145 `55e044d`, v1.2.121 `85a7025`, v1.2.104 `fd09bd2`,
+v1.2.31 `1e23c70`. The submodule tracks upstream `main`
 (`.gitmodules` `branch = main`; refresh with `git submodule update --remote amy`).
-
-## Pending upstream (vendored ahead of merge, 2026-08-14)
-
-Two of our PRs are part of this vendor base before upstream has merged
-them. They carry NO `LOCAL EDIT` markers (written upstream-native); if a
-PR is rejected, re-mark its diff as a LOCAL EDIT here instead.
-
-| PR | What |
-|----|------|
-| [#1106](https://github.com/shorepine/amy/pull/1106) | Free a released voice's oscs (`RESET_FREE_OSC`); describe-paths (patch store, voice snapshot) no longer allocate oscs; deletion takes no snapshot. |
-| [#1107](https://github.com/shorepine/amy/pull/1107) | `ram_caps_oscs` config field: per-osc state arena caps, defaults to `ram_caps_events`. Replaces the former af10219 LOCAL EDIT; `main/main.c` sets it to PSRAM explicitly. |
-| [#1135](https://github.com/shorepine/amy/pull/1135) | `amy_update_handle` registered in `amy_platform_init()` gated on the audio config (`#ifdef ARDUINO` OR `!AMY_HAS_I2S`), fixing the multithread + non-I2S first-block deadlock. Vendored 2026-08-24 in the reworked shape (init-time registration per review; the original lazy-registration diff was never vendored). Contract: `amy_start()` must run on the task that calls `amy_update()`. Our config (`audio = AMY_AUDIO_IS_NONE`, `multithread = 0`) registers the init task's handle but nothing notifies it - benign; revisit if multithread ever flips on. |
 
 All edits are marked `// LOCAL EDIT` in the source. ESP32-S3-specific edits are
 permanent (upstream has no concept of IRAM/DRAM placement or FreeRTOS task
@@ -31,17 +20,20 @@ flowchart TD
     Submodule -.diff baseline only.-> Active
 
     Active --> SR["48 kHz sample rate on ESP<br/>src/amy.h"]
-    Active --> FP["Kconfig-gated fixed-point toggle<br/>src/amy.h, src/amy_fixedpoint.h"]
+    Active --> FP["Kconfig-gated fixed-point toggle, ldexpf shifts<br/>src/amy.h, src/amy_fixedpoint.h"]
     Active --> LOCK["Render lock + lock accessor prototypes<br/>src/amy.c, src/amy.h"]
     Active --> PIE["PIE block clears in amy_render<br/>src/algorithms.c, src/amy.c, src/amy.h"]
     Active --> POOL["Delta-pool PSRAM spill, no-abort cap<br/>src/amy.c"]
     Active --> HOT["Residual IRAM attrs upstream lacks<br/>src/filters.c x2, src/oscillators.c x1"]
     Active --> TASK["IDF 6.0 task-signature fixes<br/>src/i2s.c, src/amy_midi.c"]
     Active --> SEQ["sequencer_init OOM guard<br/>src/sequencer.c"]
+    Active --> CAPS["ram_caps_sequencer knob + pool fallbacks<br/>src/amy.h, src/api.c, src/parse.c, src/sequencer.c"]
     Active --> PROF["COARSE profiler mode<br/>src/amy.h, src/amy.c"]
-    Active --> SPLIT["Ingest/tick split: flush_due_deltas<br/>src/amy.c - PR candidate #1049"]
-    Active --> FOLD["Master bus fold - PR candidate<br/>src/amy.c, src/amy.h, src/api.c<br/>(feat/fx-bus-split only)"]
-    Active --> API["Read accessors: voice base osc, gamma blob size, algorithm count<br/>src/patches.c, src/pcm.c, src/instrument.c, src/algorithms.c"]
+    Active --> KS["Per-osc Karplus-Strong ring binding<br/>src/oscillators.c, src/amy.c, src/amy.h"]
+    Active --> PCM["PCM retrig fade-restart (gated)<br/>src/pcm.c"]
+    Active --> DUAL["Skip the dead dual-core bus sum<br/>src/amy.c"]
+    Active --> CLAMP["instrument_get_num_voices voice-list clamp<br/>src/instrument.c"]
+    Active --> API["Read accessors: voice base osc, patch oscs per voice, gamma blob size, algorithm count<br/>src/patches.c, src/pcm.c, src/algorithms.c"]
 ```
 
 ## Dropped (merged upstream)
@@ -67,25 +59,14 @@ flowchart TD
 | upstream sequencer rework (#1017 lineage, 1.2.104->1.2.121) | `SEQ_LOCK` mutex + active-tag dense index (sequencer.c) - superseded wholesale. Upstream rewrote the sequencer: entries store raw wire strings, all link/string mutations run under `amy_queue_lock` (taken inside `sequencer_add_wire` and the tick fire path, released around `amy_play_message` because the parser can re-enter), and the tick walk is lock-free over index links threaded through a fixed array (single aligned-store splices, ascending order - a stale link can skip/revisit one tick, never walk freed memory). That closes the same use-after-free our SEQ_LOCK guarded and replaces the O(highest_tag) sweep with an active-only list, so both local edits retire. The int16 index-array shrink retires with them. |
 | upstream (1.2.104->1.2.121 interval) | UART MIDI poll guard in `amy_update_tasks()` (i2s.c) - upstream adopted the same `AMY_MIDI_IS_UART` gate with its own comment. |
 | upstream (1.2.104->1.2.121 interval) | `AMY_RENDER_TASK_PRIORITY`/`AMY_FILL_BUFFER_TASK_PRIORITY` = `ESP_TASK_PRIO_MAX - 1` (amy.h) - upstream now carries the fix (Arduino gets `- 5`), retiring the 2026-03-22 edit. |
+| [#1049](https://github.com/shorepine/amy/pull/1049) (v1.2.122) | Ingest/tick split: `flush_due_deltas()` settles due deltas without running the rendering-context-only sequencer tick service (amy.c) - our own PR, merged upstream. |
+| [#1106](https://github.com/shorepine/amy/pull/1106) + [#1107](https://github.com/shorepine/amy/pull/1107) (v1.2.149) | Free a released voice's oscs (`RESET_FREE_OSC`, non-allocating describe paths) and the `ram_caps_oscs` config field for the per-osc state arena. Ours, vendored ahead of merge in the v1.2.145 base; `main/main.c` still points `ram_caps_oscs` at PSRAM. |
+| [#1116](https://github.com/shorepine/amy/pull/1116) (v1.2.157) | Per-osc distortion stage: the `dist_block`/`dist_process` kernels and `dist_config_t`/`dist_state_t` split, the `G` wire sub-commands, distortion on the SILENT chained-osc head, the 10 Hz DC blocker on `DIST_CRUSH`'s wet path, the `SMULR6` pre-gain. |
+| [#1134](https://github.com/shorepine/amy/pull/1134) (v1.2.160) | Distortion follow-ups: stage stacking (`dist_stages` bitmask), drive/mix on the control-coef rail, the per-bus stage. Merged in its POST-review shape - one set of `dist_*` event fields serves both scopes and the event decides which (an osc named means that osc, none means the bus the event addresses), so the separate `bus_dist_*` event fields, the `J` bus wire letter and `DIST_OFF` are gone. `fx_push_dist()` (amy_fx.c) authors the shared fields with no osc named. |
+| [#1135](https://github.com/shorepine/amy/pull/1135) (v1.2.158) | `amy_update_handle` registered in `amy_platform_init()` gated on the audio config, fixing the multithread + non-I2S first-block deadlock. Contract: `amy_start()` must run on the task that calls `amy_update()`. Our config (`audio = AMY_AUDIO_IS_NONE`, `multithread = 0`) registers the init task's handle but nothing notifies it - benign. |
+| [#1137](https://github.com/shorepine/amy/pull/1137) (v1.2.158) | Second-core render-done semaphore in `i2s.c`'s fill task; dormant here (`multicore = 0`). |
 
 ## Active local edits
-
-### 2026-08-21 status — distortion edits re-ported to the upstream `dist-followups` shape
-
-Upstream #1116 merged (per-osc distortion, 'G' wire, SILENT-head scope, crush
-DC blocker, SMULR6 pre-gain), and the follow-on work was assembled as the
-upstream PR branch `dist-followups` (stage-stacking bitmask, drive/mix coef
-vectors on GD/GM, per-bus 'J' stage). The vendored tree now carries that
-exact layout: per-stage enables (`dist_clip/fold/crush` + bus twins,
-`*_EN` param ids), `dist_stages` bitmask, int-typed bits/rate, a shared G/J
-stage parser, per-stage 1:1 printers. The old 'C' + 'U'/'W' wire and the
-single-type 'J' are retired. Firmware callers (`voice_config.c`,
-`amy_fx.c`) map their single-type UI model onto the enables.
-
-The four distortion sections below describe how the edits were built and
-remain accurate as history; as code, the SILENT-osc and DC-blocker parts are
-upstream now, and the rest should diff clean against `dist-followups` -
-reconcile by re-vendor once that PR merges.
 
 ### `oscillators.c` — Karplus-Strong ring-index init + sample-rate-derived buffer length (upstream PR candidate)
 
@@ -135,7 +116,7 @@ all simultaneous KS voices landed on the same one. Measured consequences
 
 **Fix.** `synth[].ks_index` (amy.h) records the ring, chosen in `ks_note_on()`
 and read by `render_ks()`. Ownership is a two-way claim - `ks_row_owner[r] ==
-osc` and `synth[osc]->ks_index == r` - so `reset_osc_by_pointer()` setting
+osc` and `synth[osc]->ks_index == r` - so `reset_osc_state()` setting
 `ks_index = KS_NO_ROW` (amy.c) releases the ring with no explicit free path.
 `ks_alloc_row()` prefers the ring this osc already owns (a retrigger re-excites
 its own string and disturbs nobody), then any idle ring, then steals the
@@ -166,153 +147,6 @@ Shift+Turn algorithm stepper and the FM screen's ALGO row wrap.
 **Rollback:** drop the definition in `algorithms.c` and the `extern` in `amy.h`;
 consumers then need a local count define.
 
-### `filters.c` + `amy.c` + `amy.h` — distortion on the SILENT control osc (upstream PR candidate)
-
-Follow-up to the per-osc distortion stage (#1116), extending the SILENT control
-osc to carry distortion alongside the envelope and filter it already applies.
-Two parts:
-
-**1. `dist_process` split into a scope-agnostic kernel.** `dist_block(block,
-len, cfg, st)` takes an explicit `dist_config_t` and `dist_state_t` instead of
-reading both off `synth[osc]`; `dist_process(block, osc)` remains as the per-osc
-wrapper with identical behaviour. `synthinfo`'s five loose `dist_*` fields
-become `dist_config_t dist`, and `dist_hold`/`dist_hold_count` become
-`dist_state_t dist_state`. `amy_event` was untouched at this stage — its flat
-`dist_*` fields were the wire/API surface — but the coef-rail edit below then
-moves drive and mix onto control-coef vectors (see next section).
-
-**2. Distortion on the SILENT chained-osc head.** `dist_process` was called only
-inside the `if (wave != SILENT)` branch, which runs *before* chained oscs are
-summed; the SILENT branch that runs after applies `render_envelope` and
-`filter_process` and nothing else. So SILENT — "a control osc for applying
-filter and env without contributing waveform" — carried two of the three
-processing stages. A SILENT head is a per-voice node (`chained_osc` is
-base-osc-relative via `EVENT_TO_DELTA_WITH_BASEOSC`, so each voice has its own
-head, buffer and state), which makes it the natural place to shape a summed
-voice. The new call sits after the envelope (so note dynamics drive the shaper,
-as per-osc) and before the filter (keeping dist -> filter order).
-
-This is a feature extension, not a fix — per-osc distortion works correctly on
-every osc that renders a waveform, and a preset is a preconfigured topology
-rather than a contract about what osc 0 means. What it buys is a defined
-per-voice summing node for SILENT-headed voices: the same node they already
-apply their envelope and filter at.
-
-Host-simulation proof (fixed-point build, replaying the same event sequence
-against both revisions), Juno patch 0 = SILENT head, DX7 patch 138 = ALGO head:
-
-| case | before | after |
-|---|---|---|
-| SILENT, dist off | rms 755.6 / peak 3043 | rms 755.6 / peak 3043 |
-| SILENT, CLIP on head | **rms 755.6 / peak 3043 (unprocessed)** | **rms 2069.0 / peak 4620** |
-| ALGO, dist off | rms 1048.3 / peak 2906 | rms 1048.3 / peak 2906 |
-| ALGO, CLIP on head | rms 1503.5 / peak 1592 | rms 1503.5 / peak 1592 |
-
-The three unchanged rows are byte-identical across the two builds, so the
-kernel split is behaviour-preserving; only the SILENT row moves. A control case
-setting the same shaper on the chain's sounding members instead of its head
-gives rms 1019.0 / peak 2972 — nowhere near the head result, confirming the tap
-shapes the summed voice rather than being a rename of per-osc.
-
-
-### `amy.c` + `amy.h` + `filters.c` + `parse.c` + `api.c` + `patches.c` — distortion drive/mix on the control-coef rail (upstream PR candidate)
-
-Follow-up to the two distortion edits above and to #1116. Distortion drive is a
-timbre control, so it earns the same control-coefficient rail every other timbre
-control in AMY has — velocity, EG and a mod source into drive are what make a
-waveshaper part of a *voice* rather than an insert effect, and none of them are
-reachable while `dist.drive` is a scalar fixed at delta-apply. This is what lets
-the S3-Amysynth firmware modulate distortion natively (COEF_MOD off the reserved
-LFO carrier) instead of stepping it from a 20 Hz software task.
-
-- **Drive on a log2 rail, like freq and filter freq.** The wire and the `COEF_CONST`
-  term carry linear drive (1 = unity); the modulation coefs carry octaves, so a
-  coef of 1 doubles the drive. `EVENT_TO_DELTA_COEFS_COEF0_SPECIAL(..., logdrive_of_drive)`
-  converts the constant on the way in (mirroring the freq rail), new
-  `logdrive_of_drive`/`drive_of_logdrive` do the log2<->linear map. The rail spans
-  2^-4..2^4 (the old 0..16 with the degenerate zero replaced by a floor); **mix,
-  not drive, turns the stage down.**
-- **Mix follows duty:** linear combine, clamped 0..1.
-- **Combined in `hold_and_modify` into `msynth`,** gated on `dist_type != DIST_OFF`,
-  so an osc with the stage off pays one compare. `dist_block` already hoists drive
-  and mix above its sample loops, so the per-sample loops are untouched and stay
-  zero-overhead; the clamps move from delta-apply to the combine, still once per
-  block, preserving the "`dist_block` receives a checked config, never range-checks
-  per sample" property.
-- **`synthinfo` stores authored coefs, not a ready-made `dist_config_t`;**
-  `dist_process` composes the config from the authored scalars plus `msynth`.
-  `dist_config_t` stays purely the kernel's input contract (what a per-bus/global
-  caller with static parameters wants).
-- **Wire:** `'C'` now carries `[type, bits, rate]`; drive coefs ride `'U'`, mix
-  coefs `'W'`. `DIST_BITS`/`DIST_RATE` hold the two scalar ids (75, 76), and
-  `DIST_LOGDRIVE`/`DIST_MIX` claim ten param ids each (77..86, 87..96) out of
-  the freed block-VOLUME range, leaving 97..98.
-
-Ported from fork branch `dist-voice-scope` (`35fd69b`), which pins the octave
-scale in both directions in `tests/test_dist_coefs.c` (a VEL coef of 2 octaves at
-full velocity renders identically to a stated drive of 4; a coef of 1 does not)
-and is behaviour-neutral where dist is off (full suite byte-identical to its
-parent). The three edits above plus this one are the standing local distortion
-stack, staged as follow-up PRs after #1116 lands.
-
-
-### `filters.c` + `amy.h` + `amy.c` — DC blocker on DIST_CRUSH's wet path (upstream PR candidate)
-
-`DIST_CRUSH`'s sample-and-hold is a downsampler with no anti-aliasing, so every
-partial near a multiple of `AMY_SAMPLE_RATE / rate` folds down to the difference
-frequency. When that product lands below a few Hz the result is not heard as
-aliasing at all — the voice rides a slow DC swing, measured at a third of full
-scale with a saw whose 6th harmonic sits 0.5 Hz off twice the hold rate. Nothing
-downstream removes it: distortion runs pre-filter, an LPF passes DC, and the
-global output high-pass is `#ifdef AMY_HPF_OUTPUT`, which no build defines.
-
-- **One pole, one zero on the wet path only** (`DIST_HPF_HZ` = 10 Hz, corner
-  below the lowest musical fundamental). The dry path stays bit-exact, so `mix`
-  still crossfades to the true input; only the held staircase is filtered.
-- **`dist_state_t` carries `hpf_yn1`,** cleared everywhere `hold` is
-  (`reset_osc_by_pointer`, and the `DIST_TYPE` delta — the blocker's state
-  belongs to the shaper being left behind).
-- **The x[n] - x[n-1] term is folded into the capture.** A held signal only moves
-  when the sample-and-hold reloads, so the difference is zero on every other
-  sample: the loop advances the pole unconditionally and a capture injects
-  `v - hold`. That is exact (bit-identical to the explicit two-state form in
-  simulation), drops the `xn1` state word, and — the reason it is written this
-  way — keeps the crusher loop inside the Xtensa zero-overhead form. The direct
-  transcription spilled and demoted it; this one costs 9 instructions per sample
-  (25 -> 34 in the loop body) with all four `dist_block` ZOL loops intact.
-
-Measured off-target on the exact C: sub-20 Hz energy drops 28 dB in the
-pathological case with the 200 Hz - 20 kHz band unchanged to 0.1 %, i.e. the
-grit survives and only the fold-down goes. CLIP and FOLD are memoryless and
-odd-symmetric, so they generate no DC and are left alone.
-
-
-### `filters.c` + `amy.h` + `amy.c` + `parse.c` + `api.c` + `patches.c` — per-bus distortion stage (upstream PR candidate)
-
-Port of the `dist-bus-stage` branch on the fork: one distortion stage per bus,
-FIRST in the bus FX chain (before EQ/chorus/echo/reverb in `amy_fill_buffer`),
-so the delays and reverb take clean tails of the shaped signal. `bus_state_t`
-carries a `dist_config_t` (static drive/mix - bus params have no coef rail)
-plus `dist_state_t dist_state[AMY_MAX_CHANNELS]`.
-
-- **Pre-gain moved from `MUL6A_SS` to `SMULR6`** in `dist_block` (all three
-  types): a bus sum runs several times full scale, so drive * x can pass
-  MUL6A's [-64, 64) product range and wrap sign. SMULR6 is exact on
-  64-bit-mul hardware (S3, desktop); the 32x32 fallback's [-128, 128) sizes
-  the bus stage's +/-8 FS input wrap guard (`DIST_BUS_MAX`).
-- Params: `BUS_DIST_TYPE/DRIVE/BITS/RATE/MIX` in the bus-directed family
-  (bus in `delta.osc`); event fields `bus_dist_*`; clamps once at delta
-  apply. Bus drive is linear, capped at 16 (= `drive_of_logdrive(4)`).
-- Wire: `'J'` takes a 5-float list `[type,drive,bits,rate,mix]`, matching
-  this tree's `'C'` list style for the per-osc stage (the fork/upstream
-  branch uses `G`-style sub-commands instead - the wire converges at the
-  next re-vendor). `sprint_event` parity deliberately skipped here for the
-  same reason; `event_addresses_bus` and delta readback are wired.
-
-Everything defaults off (`bus_reset`); with the stage unset the render path
-is untouched.
-
-
 ### `pcm.c` — retrig fade-restart (gated; replaces the zero-cross defer by default)
 
 Upstream's retrig-into-active-PCM path (#1070) defers the new onset to the
@@ -332,6 +166,13 @@ The edit replaces the defer with a **fade-restart**: play `PCM_RETRIG_FADE_FRAME
 machinery, same click-free splice, but CONSTANT latency. Host A/B: onset
 spread 27.4 ms -> 5.4 ms (= pure block quantization, identical to an
 idle-start control); no click-energy regression.
+
+Placement: the gated block sits inside upstream's `want_stretch` /
+`fresh_start` restart branch of `pcm_note_on()`, so a `fit=` note never takes
+it - the fit engine renders through `render_pcm_stretch()`, whose grains are
+windowed and click-free by construction, and only the non-stretch branch arms
+`PCM_LOOP_ONCE_INTERNAL`. The `render_pcm()` gain ramp is likewise unreachable
+from a stretched note.
 
 Gate: `AMY_PCM_RETRIG_ZERO_CROSS` (pcm.c) - define to 1 to restore the
 upstream defer verbatim (host-verified to reproduce the pre-edit behavior
@@ -498,8 +339,8 @@ remains the product mode on this target.
 
 ### `src/amy.c` — Render lock
 
-`amy_render()` annotated with `AMY_IRAM_ATTR` and wrapped with
-`amy_grab_lock()` / `amy_release_lock()` spanning the entire function body.
+`amy_render()` wrapped with `amy_grab_lock()` / `amy_release_lock()` spanning
+the entire function body (the `AMY_IRAM_ATTR` on it is upstream's own).
 
 **Why:** `synth[]` / `msynth[]` arrays are structurally mutated by
 `free_osc` / `alloc_osc` / `reset_osc` / patch loads on Core 0, while the
@@ -659,6 +500,34 @@ PSRAM fallback copy. Upstream PR candidate (tiny, platform-neutral).
 
 Track local, project-specific changes made against the upstream AMY component here.
 
+## 2026-08-28 — Upstream sync v1.2.145 -> v1.2.160
+
+- **Full vendor sync** of `components/amy` to upstream `a89df0c` (v1.2.160, 67
+  commits since v1.2.145); `amy/` submodule gitlink bumped to match.
+  - **Method:** the standard overlay-rebase, with the vendored distortion port
+    stripped from the overlay first - upstream merged #1134 in a different
+    (post-review) shape, so every dist hunk resolved to "take upstream" and
+    stripping avoided the leftover sweep. New vendor base = upstream `main` as
+    is; no PR pre-merges.
+  - **Retired** (see the Dropped table): per-osc distortion #1116, the dist
+    follow-ups #1134, `amy_update_handle` init registration #1135, the
+    second-core render semaphore #1137. #1106/#1107 were already in the
+    previous base and are upstream since v1.2.149.
+  - **Kept:** everything in the diagram at the top of this file. The PCM
+    retrig fade-restart moved inside #1129's `want_stretch`/`fresh_start`
+    branch of `pcm_note_on()`; every other edit rebased unchanged.
+  - **First-party fallout:** `fx_push_dist()` (`components/synth_core/amy_fx.c`)
+    rewritten to the scope-by-event rule - the shared `dist_*` event fields
+    with no osc named, so the event lands at bus scope. `voice_config.c`
+    already used the per-osc shape and is unchanged.
+  - **Upstream behavior new to this build:** #1127 drops osc references that
+    reach outside the voice being configured, #1123 rechecks `synth[]` before
+    following osc references, #1129 adds `sample_offset`/`fit` and grows
+    `synthinfo` by roughly 56 B per osc in the PSRAM arena.
+  - **Verification:** `build_project` green; `AMY_SAMPLE_RATE` ESP branch
+    confirmed 48000. Residual over upstream: 17 files, +580/-59. HW verify
+    pending (see `HW-VERIFY.md`).
+
 ## 2026-08-07 — `amy_patch_oscs_per_voice()` read accessor
 
 - **`src/patches.c` + `src/amy.h`** (commit 30264d3): returns a patch's
@@ -701,8 +570,8 @@ Track local, project-specific changes made against the upstream AMY component he
   `ram_caps_oscs` at `MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT`: the blocks are
   per-BLOCK control state, not per-sample buffers (those stay internal via
   `ram_caps_fbl`/`ram_caps_block`).
-  **Upstream PR candidate** (same shape as `ram_caps_sequencer`, pairs with
-  it). HW verify pending (heap delta + render budget on piano apply).
+  Merged upstream as #1107 (v1.2.149) and no longer a local edit; `main.c`
+  keeps pointing the field at PSRAM.
 
 ## 2026-08-07 — `ram_caps_sequencer` config knob (PSRAM-first wire storage)
 
@@ -761,7 +630,7 @@ Track local, project-specific changes made against the upstream AMY component he
   - **What:** the due-delta flush (lock, play deltas whose time has arrived, unlock) is split out of `amy_execute_deltas()` into a static `flush_due_deltas()`, and the pre-patch-load call in `amy_event_to_deltas_queue()` now calls the flush instead of the full function. `amy_execute_deltas()` itself is unchanged in behaviour (tick service + CV poll + flush) and keeps running in rendering contexts (`amy_render_audio()`, `amy_simple_fill_buffer()`).
   - **Motivation:** `amy_event_to_deltas_queue()` runs in whatever thread sent the event, so any patch/voice event executed the sequencer tick service (`sequencer_check_and_fill()`) in that thread. Two concrete defects: (1) the tick decision is an unguarded 64-bit read-modify-write of `amy_global.next_amy_tick_us`, so an ingest-thread call racing the audio thread's per-block call can process the same tick twice (audible double step-advance) or tear the accumulator; (2) the app's `amy_external_sequencer_hook` runs on a thread the app never registered for it - this project's hook (`sequencer_core_service_tick()`) reads sequencer layer state lock-free under a documented "render task only" contract, and it was the root entanglement behind the decorated-step re-entry assert family (an event *send* could re-enter event *emission*). The flush before a patch load only ever wanted "settle pending deltas so the load sees applied state" - that half is thread-agnostic (everything under `amy_queue_lock`) and is all that remains on the ingest path.
   - **Risk:** Low. Rendering-context behaviour is bit-identical; the only change is that a patch load no longer advances the sequencer clock early from the sender's thread - ticks now advance solely at the per-block cadence, which is the designed clock. A tick that would have fired during the load fires at most one block (5.33 ms) later, exactly as it does when no event is in flight.
-  - **Upstream:** PR candidate (universal logic bug, not ESP-specific): any multithreaded embedder that calls `amy_add_event()` for patch events from a non-audio thread has the same double-tick race and hook-on-wrong-thread hazard. Framing for upstream: "event ingest should not run the sequencer".
+  - **Upstream:** merged as #1049 (v1.2.122), so this is upstream code now, not a local edit - see the Dropped table. Framing that carried it: "event ingest should not run the sequencer".
   - **Rollback:** revert the call in `amy_event_to_deltas_queue()` to `amy_execute_deltas()` and fold `flush_due_deltas()` back into it.
 
 - **PCM index fractional bits 8 -> 12** (`components/amy/src/pcm.c`; merged to Sync 2026-08-07 via e1f40d7. **RETIRED 2026-08-09**: superseded by upstream #1064 (`42a1876b2`, merged 1.2.121+1), adopted into the vendor tree - dpwe's approach computes the step at 16 fractional bits via a block-local phase (`PCM_INDEX_STEP_EXTRA_BITS`) while keeping S23.8 storage, so there is no length cap; the fold-back is lossless at our 256-sample block. Both hunks (FRAC_BITS 12, pcm_load length guard) reverted to upstream. The declick compensator was re-threaded into the restructured loop; its past-end-of-sample decay path was dropped in favor of upstream's `break` - with 1.2.121's hard-stop note-offs the compensator can only ring within ~1.3 ms of a retrigger, never at natural sample end.)

@@ -41,6 +41,7 @@ const char* profile_tag_name(enum itags tag) {
         case FILTER_PROCESS: return "FILTER_PROCESS";
         case FILTER_PROCESS_STAGE0: return "FILTER_PROCESS_STAGE0";
         case FILTER_PROCESS_STAGE1: return "FILTER_PROCESS_STAGE1";
+        case DIST_PROCESS: return "DIST_PROCESS";
         case ADD_DELTA_TO_QUEUE: return "ADD_DELTA_TO_QUEUE";
         case AMY_ADD_DELTA: return "AMY_ADD_DELTA";
         case PLAY_DELTA: return "PLAY_DELTA";
@@ -563,6 +564,7 @@ int8_t global_init(amy_config_t c) {
     amy_global.sequencer_tick_count = 0;
     amy_global.next_amy_tick_us = 0;
     amy_global.us_per_tick = 0;
+    amy_global.reset_timebase_pending = 0;
 
     struct bus_state *bus_configs = malloc_caps(sizeof(struct bus_state) * amy_global.config.max_buses,
                                                 amy_global.config.ram_caps_synth);
@@ -594,19 +596,6 @@ void global_deinit(void) {
     amy_global.volume = NULL;
 }
 
-// Convert to and from the log-frequency scale.
-// A log-frequency scale is good for summing control inputs.
-float logfreq_of_freq(float freq) {
-    // logfreq is defined as log_2(freq / 8.18 Hz)
-    //if (freq==0) return ZERO_HZ_LOG_VAL;
-    // Actually, special-case zero to mean middle C, for convenience.
-    // Negative frequencies (possible from wire messages) get the same
-    // treatment; log2 of them is undefined.
-    if (freq<=0) return 0;  // i.e. == logfreq_of_freq(ZERO_LOGFREQ_IN_HZ).
-    //return log2f(freq / ZERO_LOGFREQ_IN_HZ);
-    return 2.0f + S2F(log2_lut(F2S(freq / (4 * ZERO_LOGFREQ_IN_HZ))));
-}
-
 // Drive rides a log2 rail, like freq and filter freq.  The wire and the CONST
 // coef carry linear drive; the modulation coefs carry octaves of it, so a
 // velocity or LFO coef of 1 doubles the drive.  The clamp is the rail's range:
@@ -627,6 +616,19 @@ float drive_of_logdrive(float logdrive) {
     if (logdrive < MIN_DIST_LOGDRIVE) logdrive = MIN_DIST_LOGDRIVE;
     if (logdrive > MAX_DIST_LOGDRIVE) logdrive = MAX_DIST_LOGDRIVE;
     return exp2f(logdrive);
+}
+
+// Convert to and from the log-frequency scale.
+// A log-frequency scale is good for summing control inputs.
+float logfreq_of_freq(float freq) {
+    // logfreq is defined as log_2(freq / 8.18 Hz)
+    //if (freq==0) return ZERO_HZ_LOG_VAL;
+    // Actually, special-case zero to mean middle C, for convenience.
+    // Negative frequencies (possible from wire messages) get the same
+    // treatment; log2 of them is undefined.
+    if (freq<=0) return 0;  // i.e. == logfreq_of_freq(ZERO_LOGFREQ_IN_HZ).
+    //return log2f(freq / ZERO_LOGFREQ_IN_HZ);
+    return 2.0f + S2F(log2_lut(F2S(freq / (4 * ZERO_LOGFREQ_IN_HZ))));
 }
 
 float freq_of_logfreq(float logfreq) {
@@ -688,9 +690,18 @@ void add_delta_to_queue(struct delta *d, struct delta **queue) {
 
 }
 
+// The smallest amplitude this maps rather than treating as silence. log2_lut
+// requires a strictly positive argument -- it normalizes by shifting, so zero
+// shifts to zero forever -- and `lin == 0` did not cover everything that
+// reaches it as zero or worse: a negative amplitude, a NaN, or (in fixed-point
+// builds, 23 fractional bits) any amplitude that underflows the conversion.
+// This is 60 dB below the quietest amplitude the mapping describes, so
+// nothing audible changes. Written as !(lin > MIN) so NaN takes the guard too.
+#define MAP_60DB_MIN_LIN 1e-6f
+
 float map_60dB_to_01f(float lin) {
     // Map .001 to 0, 1 to 1 logarithmically.
-    if (lin == 0) return -10.0f;
+    if (!(lin > MAP_60DB_MIN_LIN)) return -10.0f;
     // Use AMY's fast log2 LUT instead of libm log2f (called per-osc per-block).
     float result = 1.0f + 0.10034333188799373f * S2F(log2_lut(F2S(lin)));  // 0.100343 = 1 / (3 * log2(10))
     return result;
@@ -706,7 +717,29 @@ float map_01_to_60dBf(float log) {
 
 #define EVENT_TO_DELTA_F(FIELD, FLAG) if(AMY_IS_SET(e->FIELD)) { d.param=FLAG; d.data.f = e->FIELD; add_delta_to_queue(&d, queue); }
 #define EVENT_TO_DELTA_I(FIELD, FLAG) if(AMY_IS_SET(e->FIELD)) { d.param=FLAG; d.data.i = e->FIELD; add_delta_to_queue(&d, queue); }
-#define EVENT_TO_DELTA_WITH_BASEOSC(FIELD, FLAG)    if(AMY_IS_SET(e->FIELD)) { d.param=FLAG; d.data.i = e->FIELD + base_osc; if (FLAG != RESET_OSC && queue == &amy_global.delta_queue && d.data.i < (uint32_t)AMY_OSCS + amy_global.config.max_buses) ensure_osc_allocd(d.data.i, NULL); add_delta_to_queue(&d, queue);}
+// An osc reference written while configuring a synth's voices is
+// voice-relative: base_osc is added to reach the real osc. oscs_per_voice is
+// how many oscs that voice has, so a reference at or past it names an osc
+// belonging to some other voice (or to another synth entirely) -- the caller
+// meant something inside this voice and there is nothing sensible to point at,
+// so say so and drop that one parameter rather than reaching into a stranger.
+// oscs_per_voice == 0 means there is no voice context (base_osc is 0 and the
+// osc numbers are absolute, or we are describing a patch rather than playing
+// it), and nothing is checked.
+bool osc_ref_within_voice(int rel_osc, uint16_t oscs_per_voice, const char *what) {
+    if (oscs_per_voice == 0)  return true;
+    if (rel_osc >= 0 && rel_osc < (int)oscs_per_voice)  return true;
+    fprintf(stderr, "%s osc %d is outside this voice's %" PRIu16 " osc%s, ignored\n",
+            what, rel_osc, oscs_per_voice, oscs_per_voice == 1 ? "" : "s");
+    return false;
+}
+
+// For a field naming another osc within the voice (chained_osc, mod_source,
+// and reset_osc when it carries an osc number): range-check it, then offset it
+// by base_osc to reach the real osc. Resets don't allocate what they are about
+// to clear -- reset_osc() is a no-op on an unallocated osc, which is already
+// at its defaults.
+#define EVENT_TO_DELTA_OSC_REF(FIELD, FLAG, WHAT)    if(AMY_IS_SET(e->FIELD)) { if (osc_ref_within_voice((int)e->FIELD, oscs_per_voice, WHAT)) { d.param=FLAG; d.data.i = e->FIELD + base_osc; if (FLAG != RESET_OSC && queue == &amy_global.delta_queue && d.data.i < (uint32_t)AMY_OSCS + amy_global.config.max_buses) ensure_osc_allocd(d.data.i, NULL); add_delta_to_queue(&d, queue); } }
 #define EVENT_TO_DELTA_LOG(FIELD, FLAG)             if(AMY_IS_SET(e->FIELD)) { d.param=FLAG; d.data.f = log2f(e->FIELD); add_delta_to_queue(&d, queue);}
 #define EVENT_TO_DELTA_COEFS(FIELD, FLAG)  \
     for (int i = 0; i < NUM_COMBO_COEFS; ++i) \
@@ -728,8 +761,23 @@ float map_01_to_60dBf(float log) {
 
 static void flush_due_deltas();  // definition next to amy_execute_deltas()
 
+// Take the distortion fields out of an event once they have been turned into
+// deltas, so no later pass over the same event can spend them a second time
+// at the other scope.
+static void clear_dist_fields(amy_event *e) {
+    AMY_UNSET(e->dist_clip);
+    AMY_UNSET(e->dist_fold);
+    AMY_UNSET(e->dist_crush);
+    AMY_UNSET(e->dist_bits);
+    AMY_UNSET(e->dist_rate);
+    for (int i = 0; i < NUM_COMBO_COEFS; ++i) {
+        AMY_UNSET(e->dist_drive_coefs[i]);
+        AMY_UNSET(e->dist_mix_coefs[i]);
+    }
+}
+
 // Add a API facing event, convert into delta directly
-void amy_event_to_deltas_queue(amy_event *e, uint16_t base_osc, struct delta **queue) {
+void amy_event_to_deltas_queue(amy_event *e, uint16_t base_osc, uint16_t oscs_per_voice, struct delta **queue) {
     // fprintf(stderr, "time %.3f amy_event_to_deltas: base_osc %d\n", amy_global.time, base_osc);
     // fprintf_event_stderr(e);
     AMY_PROFILE_START(AMY_ADD_DELTA)
@@ -764,17 +812,29 @@ void amy_event_to_deltas_queue(amy_event *e, uint16_t base_osc, struct delta **q
         EVENT_TO_DELTA_F(reverb_liveness, REVERB_LIVENESS)
         EVENT_TO_DELTA_F(reverb_damping, REVERB_DAMPING)
         EVENT_TO_DELTA_F(reverb_xover_hz, REVERB_XOVER_HZ)
-        EVENT_TO_DELTA_I(bus_dist_clip, BUS_DIST_CLIP_EN)
-        EVENT_TO_DELTA_I(bus_dist_fold, BUS_DIST_FOLD_EN)
-        EVENT_TO_DELTA_I(bus_dist_crush, BUS_DIST_CRUSH_EN)
-        EVENT_TO_DELTA_F(bus_dist_drive, BUS_DIST_DRIVE)
-        EVENT_TO_DELTA_I(bus_dist_bits, BUS_DIST_BITS)
-        EVENT_TO_DELTA_I(bus_dist_rate, BUS_DIST_RATE)
-        EVENT_TO_DELTA_F(bus_dist_mix, BUS_DIST_MIX)
+        // The distortion fields serve both scopes; naming no osc is what
+        // puts them at bus scope.  Only the CONST coef of drive and mix
+        // reaches a bus - the modulation coefs need per-note sources a bus
+        // sum doesn't have.
+        if (AMY_IS_UNSET(e->osc)) {
+            EVENT_TO_DELTA_I(dist_clip, BUS_DIST_CLIP_EN)
+            EVENT_TO_DELTA_I(dist_fold, BUS_DIST_FOLD_EN)
+            EVENT_TO_DELTA_I(dist_crush, BUS_DIST_CRUSH_EN)
+            EVENT_TO_DELTA_F(dist_drive_coefs[COEF_CONST], BUS_DIST_DRIVE)
+            EVENT_TO_DELTA_I(dist_bits, BUS_DIST_BITS)
+            EVENT_TO_DELTA_I(dist_rate, BUS_DIST_RATE)
+            EVENT_TO_DELTA_F(dist_mix_coefs[COEF_CONST], BUS_DIST_MIX)
+            // Spent at bus scope.  The per-voice fan-out in
+            // patches_event_has_voices names an osc for each voice osc, and
+            // would otherwise offer the same fields again at osc scope.
+            clear_dist_fields(e);
+        }
     }
     // Hereafter, d.osc refers to an osc
     d.osc = e->osc;
     if(AMY_IS_UNSET(e->osc)) { d.osc = 0; }
+    // The osc this event addresses has to be one of the voice's own.
+    if (!osc_ref_within_voice((int)d.osc, oscs_per_voice, "addressed"))  goto end;
     // First, adapt the osc in this event with base_osc offsets for voices
     d.osc += base_osc;
     // The osc's synthinfo is allocated below, once the destination queue is
@@ -842,28 +902,44 @@ void amy_event_to_deltas_queue(amy_event *e, uint16_t base_osc, struct delta **q
     EVENT_TO_DELTA_COEFS(pan_coefs, PAN)
     EVENT_TO_DELTA_F(feedback, FEEDBACK)
     EVENT_TO_DELTA_F(trigger_phase, PHASE)
+    EVENT_TO_DELTA_I(sample_offset, SAMPLE_OFFSET)
+    EVENT_TO_DELTA_F(fit_ticks, FIT)
+    EVENT_TO_DELTA_I(fit_search, FIT_SEARCH)
     EVENT_TO_DELTA_F(pitch_bend, PITCH_BEND)
     EVENT_TO_DELTA_I(latency_ms, LATENCY)
     EVENT_TO_DELTA_F(tempo, TEMPO)
     EVENT_TO_DELTA_LOG(ratio, RATIO)
     EVENT_TO_DELTA_F(resonance, RESONANCE)
     EVENT_TO_DELTA_I(portamento_ms, PORTAMENTO)
-    EVENT_TO_DELTA_WITH_BASEOSC(chained_osc, CHAINED_OSC)
-    EVENT_TO_DELTA_WITH_BASEOSC(reset_osc, RESET_OSC)
+    EVENT_TO_DELTA_OSC_REF(chained_osc, CHAINED_OSC, "chained_osc")
+    // reset_osc's payload is an osc number sometimes and a mask of RESET_*
+    // bits the rest of the time -- play_delta tells them apart by the same
+    // test. Only the osc-number form is voice-relative, so only it gets
+    // base_osc added and the voice's range enforced; a mask goes through
+    // untouched (adding base_osc to one, as we used to, was meaningless).
+    if (AMY_IS_SET(e->reset_osc) && e->reset_osc < (uint32_t)AMY_OSCS + amy_global.config.max_buses) {
+        EVENT_TO_DELTA_OSC_REF(reset_osc, RESET_OSC, "reset")
+    } else {
+        EVENT_TO_DELTA_I(reset_osc, RESET_OSC)
+    }
     // One delta per mod source slot, and only for the slots this event actually
     // names, so `mod_source=3` still means "slot 0 = osc 3, leave slot 1 alone".
     for (int i = 0; i < NUM_MOD_SOURCES; ++i) {
-        EVENT_TO_DELTA_WITH_BASEOSC(mod_source[i], MOD_SOURCE_START + i)
+        EVENT_TO_DELTA_OSC_REF(mod_source[i], MOD_SOURCE_START + i, "mod_source")
     }
     EVENT_TO_DELTA_I(note_source_channel, NOTE_SOURCE_CHANNEL)
     EVENT_TO_DELTA_I(filter_type, FILTER_TYPE)
-    EVENT_TO_DELTA_I(dist_clip, DIST_CLIP_EN)
-    EVENT_TO_DELTA_I(dist_fold, DIST_FOLD_EN)
-    EVENT_TO_DELTA_I(dist_crush, DIST_CRUSH_EN)
-    EVENT_TO_DELTA_I(dist_bits, DIST_BITS)
-    EVENT_TO_DELTA_I(dist_rate, DIST_RATE)
-    EVENT_TO_DELTA_COEFS_COEF0_SPECIAL(dist_drive_coefs, DIST_LOGDRIVE, logdrive_of_drive)
-    EVENT_TO_DELTA_COEFS(dist_mix_coefs, DIST_MIX)
+    // Only an event that named an osc distorts one: with no osc named, d.osc
+    // above defaulted to 0, and these fields have already gone to a bus.
+    if (AMY_IS_SET(e->osc)) {
+        EVENT_TO_DELTA_I(dist_clip, DIST_CLIP_EN)
+        EVENT_TO_DELTA_I(dist_fold, DIST_FOLD_EN)
+        EVENT_TO_DELTA_I(dist_crush, DIST_CRUSH_EN)
+        EVENT_TO_DELTA_I(dist_bits, DIST_BITS)
+        EVENT_TO_DELTA_I(dist_rate, DIST_RATE)
+        EVENT_TO_DELTA_COEFS_COEF0_SPECIAL(dist_drive_coefs, DIST_LOGDRIVE, logdrive_of_drive)
+        EVENT_TO_DELTA_COEFS(dist_mix_coefs, DIST_MIX)
+    }
     EVENT_TO_DELTA_I(algorithm, ALGORITHM)
     EVENT_TO_DELTA_I(eg_type[0], EG0_TYPE)
     EVENT_TO_DELTA_I(eg_type[1], EG1_TYPE)
@@ -879,6 +955,8 @@ void amy_event_to_deltas_queue(amy_event *e, uint16_t base_osc, struct delta **q
         for(uint8_t i = 0; i < MAX_ALGO_OPS; i++) {
             d.param = ALGO_SOURCE_START + i;
             if (AMY_IS_SET(e->algo_source[i])) {
+                if (!osc_ref_within_voice((int)e->algo_source[i], oscs_per_voice, "algo_source"))
+                    continue;   // leave this operator's source as it was
                 d.data.i = e->algo_source[i] + base_osc;
             } else{
                 d.data.i = e->algo_source[i];
@@ -960,6 +1038,7 @@ void reset_modosc(struct mod_synthinfo *pmsynth) {
         pmsynth->dist_drive = 1.0f;
         pmsynth->dist_mix = 1.0f;
         pmsynth->state = 0;
+        pmsynth->pcm_delay = 0;
     }
 }
 
@@ -987,6 +1066,9 @@ void reset_osc_params(struct synthinfo *psynth) {
     psynth->pan_coefs[COEF_CONST] = 0.5f;
     psynth->feedback = F2S(0); //.996; todo ks feedback is v different from fm feedback
     AMY_UNSET(psynth->trigger_phase);
+    AMY_UNSET(psynth->sample_offset);
+    AMY_UNSET(psynth->fit_ticks);
+    AMY_UNSET(psynth->fit_search);
     AMY_UNSET(psynth->logratio);
     psynth->portamento_alpha = 0;
     psynth->resonance = 0.7f;
@@ -1035,6 +1117,7 @@ void reset_osc_state(struct synthinfo *psynth) {
     for(uint8_t j=0;j<MAX_BREAKPOINT_SETS;j++) { psynth->last_scale[j] = 0; }
     psynth->last_two[0] = 0;
     psynth->last_two[1] = 0;
+    memset(&psynth->stretch, 0, sizeof(psynth->stretch));
     for(int j = 0; j < 2 * FILT_NUM_DELAYS; ++j) psynth->filter_delay[j] = 0;
     psynth->last_filt_norm_bits = 0;
     psynth->dist_state.hold = 0;
@@ -1441,8 +1524,10 @@ int chained_osc_would_cause_loop(uint16_t osc, uint16_t chained_osc) {
     // Check to see if chaining this osc would cause a loop.
     uint16_t next_osc = chained_osc;
     do {
-        // An osc we can't allocate can't be linked.
-        if (!ensure_osc_allocd(next_osc, NULL)) return true;
+        // Walk without allocating: an osc with no storage is at its defaults,
+        // so its chained_osc is unset and the chain ends here -- no loop. The
+        // link site allocates what it is about to write to.
+        if (synth[next_osc] == NULL) return false;
         if (next_osc == osc) {
             fprintf(stderr, "chaining osc %d to osc %d would cause loop.\n",
                     chained_osc, osc);
@@ -1462,8 +1547,9 @@ int chained_osc_would_cause_loop(uint16_t osc, uint16_t chained_osc) {
 static bool mod_osc_reaches(uint16_t from, uint16_t target, int *budget) {
     if (!AMY_IS_SET(from)) return false;
     if ((*budget)-- <= 0) return true;
-    // An osc we can't allocate can't be linked.
-    if (!ensure_osc_allocd(from, NULL)) return true;
+    // Walk without allocating (see chained_osc_would_cause_loop): an osc with
+    // no storage has no mod_sources, so it reaches nothing.
+    if (synth[from] == NULL) return false;
     if (from == target) return true;
     for (int i = 0; i < NUM_MOD_SOURCES; ++i)
         if (mod_osc_reaches(synth[from]->mod_source[i], target, budget)) return true;
@@ -1495,6 +1581,10 @@ uint16_t alpha_to_portamento_ms(float alpha) {
 
 #define DELTA_TO_SYNTH_I(FLAG, FIELD)  if (d->param == FLAG) synth[d->osc]->FIELD = d->data.i;
 #define DELTA_TO_SYNTH_F(FLAG, FIELD)  if (d->param == FLAG) synth[d->osc]->FIELD = d->data.f;
+#define DELTA_TO_SYNTH_F_CLAMPED(FLAG, FIELD, MINVAL, MAXVAL) \
+    if (d->param == FLAG) { synth[d->osc]->FIELD = MAX(MINVAL, MIN(MAXVAL, d->data.f)); }
+#define DELTA_TO_SYNTH_I_CLAMPED(FLAG, FIELD, MINVAL, MAXVAL) \
+    if (d->param == FLAG) { synth[d->osc]->FIELD = MAX(MINVAL, MIN(MAXVAL, (int32_t)d->data.i)); }
 #define DELTA_TO_COEFS(FLAG, FIELD) \
     if (PARAM_IS_COMBO_COEF(d->param, FLAG)) \
         synth[d->osc]->FIELD[d->param - FLAG] = d->data.f;
@@ -1505,6 +1595,18 @@ void play_delta(struct delta *d) {
     //fprintf(stderr,"play_delta: time %d osc %d param %d val 0x%x, qsize %d\n", amy_global.total_blocks, d->osc, d->param, d->data.i, amy_global.delta_qsize);
     //uint8_t trig=0;
     // todo: delta-only side effect, remove
+
+    if (d->param == FREE_OSC) {
+        // Voice release: ownership has ended and the state is discarded either
+        // way, so return the storage too. Reading an unallocated osc yields
+        // defaults, and the next touch re-allocates lazily. Handled before the
+        // ensure below so we don't allocate an osc on the way to freeing it.
+        if(d->data.i < (uint32_t)AMY_OSCS + amy_global.config.max_buses) {
+            free_osc(d->data.i);
+        }
+        AMY_PROFILE_STOP(PLAY_DELTA)
+        return;
+    }
 
     if (d->param != RESET_OSC) {
         // On OOM drop the delta; every branch below dereferences synth[d->osc].
@@ -1524,7 +1626,7 @@ void play_delta(struct delta *d) {
               || synth[osc]->role == SYNTH_IS_ALGO_SOURCE
               || synth[osc]->role == SYNTH_IS_CHAINED
               || synth[osc]->wave == PARTIAL)) {
-            while(AMY_IS_SET(osc)) {
+            while(AMY_IS_SET(osc) && synth[osc] != NULL) {  // a freed link ends the chain
                 synth[osc]->midi_note = d->data.f;
                 osc = synth[osc]->chained_osc;
             }
@@ -1578,21 +1680,11 @@ void play_delta(struct delta *d) {
         synth[d->osc]->dist_state.hold_count = 0;
         synth[d->osc]->dist_state.hpf_yn1 = 0;
     }
-    // Drive and mix are clamped in hold_and_modify instead, where the coefs
+    // Drive and mix are clamped in hold_and_modify instead, where their coefs
     // are combined; bits and rate have no coef rail, so they clamp here and
     // dist_block still gets a fully checked config.
-    if (d->param == DIST_BITS) {
-        int32_t bits = (int32_t)d->data.i;
-        if (bits < 1) bits = 1;
-        if (bits > 24) bits = 24;  // > S_FRAC_BITS: quantization off
-        synth[d->osc]->dist_bits = (uint8_t)bits;
-    }
-    if (d->param == DIST_RATE) {
-        int32_t rate = (int32_t)d->data.i;
-        if (rate < 1) rate = 1;
-        if (rate > 1024) rate = 1024;
-        synth[d->osc]->dist_rate = (uint16_t)rate;
-    }
+    DELTA_TO_SYNTH_I_CLAMPED(DIST_BITS, dist_bits, 1, 24)  // > S_FRAC_BITS: quantization off
+    DELTA_TO_SYNTH_I_CLAMPED(DIST_RATE, dist_rate, 1, 1024)
     DELTA_TO_SYNTH_I(NOTE_SOURCE_CHANNEL, s_note_source_channel)
     DELTA_TO_SYNTH_I(EG0_TYPE, eg_type[0])
     DELTA_TO_SYNTH_I(EG1_TYPE, eg_type[1])
@@ -1605,6 +1697,14 @@ void play_delta(struct delta *d) {
         if (!AMY_WAVE_IS_PCM(synth[d->osc]->wave))
             synth[d->osc]->phase = F2P(synth[d->osc]->trigger_phase);
     }
+    DELTA_TO_SYNTH_I(SAMPLE_OFFSET, sample_offset)
+    if (d->param == FIT) {
+        // Negative fit turns the feature back off; 0 means "pitch-shift at
+        // original length"; > 0 is a target duration in sequencer ticks.
+        if (d->data.f < 0) AMY_UNSET(synth[d->osc]->fit_ticks);
+        else synth[d->osc]->fit_ticks = d->data.f;
+    }
+    DELTA_TO_SYNTH_I(FIT_SEARCH, fit_search)
     DELTA_TO_COEFS(AMP, amp_coefs)
     DELTA_TO_COEFS(FREQ, logfreq_coefs)
     DELTA_TO_COEFS(FILTER_FREQ, filter_logfreq_coefs)
@@ -1658,7 +1758,8 @@ void play_delta(struct delta *d) {
     if(d->param == CHAINED_OSC) {
         int chained_osc = d->data.i;
         if (chained_osc >=0 && chained_osc < AMY_OSCS &&
-            !chained_osc_would_cause_loop(d->osc, chained_osc)) {
+            !chained_osc_would_cause_loop(d->osc, chained_osc) &&
+            ensure_osc_allocd(chained_osc, NULL)) {
             synth[d->osc]->chained_osc = chained_osc;
             synth[chained_osc]->role = SYNTH_IS_CHAINED;
         } else {
@@ -1668,9 +1769,24 @@ void play_delta(struct delta *d) {
             AMY_UNSET(synth[d->osc]->chained_osc);
         }
     }
-    if(d->param == RESET_OSC) { 
-        // Remember that RESET_AMY, RESET_TIMEBASE and RESET_EVENTS happens immediately in the parse, so we don't deal with it here.
-        if(d->data.i & RESET_ALL_OSCS) {
+    if(d->param == RESET_OSC) {
+        // Remember that RESET_AMY and RESET_EVENTS are handled at parse time -- they can't be
+        // carried in a delta -- so we don't deal with them here.
+        if(d->data.i & RESET_TIMEBASE) {
+            // Raise the flag only; the render thread re-zeroes the counters at
+            // the next block boundary.  That is what lets the timebase reset be
+            // an ordinary delta at all: play_delta is reachable from parse
+            // threads too (patch/transfer loads), and a flag is safe to raise
+            // from any of them, where the zeroing would not be.
+            // NOT amy_reset_sysclock(): we are inside flush_due_deltas(), which
+            // holds the amy lock that it grabs -- that self-deadlocks (a hang,
+            // not a crash).  Setting the flag here is already ordered by that
+            // same lock.
+            amy_global.reset_timebase_pending = 1;
+        }
+        // RESET_SYNTHS is a deprecated alias: it always did exactly this,
+        // just from the parse instead of from here.
+        if(d->data.i & (RESET_ALL_OSCS | RESET_SYNTHS)) {
             amy_reset_oscs();
         }
         if(d->data.i & RESET_SEQUENCER) {
@@ -1683,15 +1799,7 @@ void play_delta(struct delta *d) {
             // If we got here, it's a full reset of patches.
             patches_reset();
         }
-        if(d->data.i & RESET_FREE_OSC) {
-            // Voice release: ownership ended and the state is discarded
-            // either way, so return the storage too. Reading an unallocated
-            // osc yields defaults, and the next touch re-allocates lazily.
-            uint32_t osc = d->data.i & ~(uint32_t)RESET_FREE_OSC;
-            if(osc < (uint32_t)AMY_OSCS + amy_global.config.max_buses) {
-                free_osc(osc);
-            }
-        } else if(d->data.i < (uint32_t)AMY_OSCS + amy_global.config.max_buses) {
+        if(d->data.i < (uint32_t)AMY_OSCS + amy_global.config.max_buses) {
             reset_osc(d->data.i);
         }
     }
@@ -1704,11 +1812,11 @@ void play_delta(struct delta *d) {
         // CHAINED_OSC above - a cycle must be rejected before it is stored or
         // the recursion never terminates.
         if (mod_osc >= 0 && mod_osc < AMY_OSCS &&
-            !mod_osc_would_cause_loop(d->osc, mod_osc)) {
+            !mod_osc_would_cause_loop(d->osc, mod_osc) &&
+            ensure_osc_allocd(mod_osc, NULL)) {
             synth[d->osc]->mod_source[which_source] = mod_osc;
             // NOTE: These are delta-only side effects.  A purist would strive to remove them.
             // When an oscillator is named as a modulator, we change its state.
-            ensure_osc_allocd(mod_osc, NULL);
             synth[mod_osc]->role = SYNTH_IS_MOD_SOURCE;
             // Remove default amplitude dependence on velocity when an oscillator is made a modulator.
             synth[mod_osc]->amp_coefs[COEF_VEL] = 0;
@@ -1794,10 +1902,9 @@ void play_delta(struct delta *d) {
             amy_global.bus[bus]->dist_state[c].hpf_yn1 = 0;
         }
     }
-    // Bus drive is linear (no coef rail); 16 = drive_of_logdrive(MAX_DIST_LOGDRIVE).
-    if(d->param == BUS_DIST_DRIVE) { float v = d->data.f; if (v < 0.0f) v = 0.0f; if (v > 16.0f) v = 16.0f; amy_global.bus[bus]->dist.drive = v; }
-    if(d->param == BUS_DIST_BITS)  { int32_t v = (int32_t)d->data.i; if (v < 1) v = 1; if (v > 24) v = 24; amy_global.bus[bus]->dist.bits = (uint8_t)v; }
-    if(d->param == BUS_DIST_RATE)  { int32_t v = (int32_t)d->data.i; if (v < 1) v = 1; if (v > 1024) v = 1024; amy_global.bus[bus]->dist.rate = (uint16_t)v; }
+    if(d->param == BUS_DIST_DRIVE) { float v = d->data.f; if (v < 0.0f) v = 0.0f; if (v > DIST_MAX_DRIVE) v = DIST_MAX_DRIVE; amy_global.bus[bus]->dist.drive = v; }
+    if(d->param == BUS_DIST_BITS)  { int32_t v = (int32_t)d->data.i; if (v < 1) v = 1; if (v > 24) v = 24; amy_global.bus[bus]->dist.bits = v; }
+    if(d->param == BUS_DIST_RATE)  { int32_t v = (int32_t)d->data.i; if (v < 1) v = 1; if (v > 1024) v = 1024; amy_global.bus[bus]->dist.rate = v; }
     if(d->param == BUS_DIST_MIX)   { float v = d->data.f; if (v < 0.0f) v = 0.0f; if (v > 1.0f) v = 1.0f; amy_global.bus[bus]->dist.mix = v; }
 
     // triggers / envelopes
@@ -1815,7 +1922,7 @@ void play_delta(struct delta *d) {
             // Loop through chained oscs
             uint16_t osc = d->osc;
             //fprintf(stderr, "t %.3f: delta note_on: osc %d vel %.3f\n\r", amy_global.time, osc, d->data.f);
-            while(AMY_IS_SET(osc)) {
+            while(AMY_IS_SET(osc) && synth[osc] != NULL) {  // a freed link ends the chain
                 //fprintf(stderr, "osc: %d wave %d role %d\n\r", osc, synth[osc]->wave, synth[osc]->role);
                 // Ignore velocity events for mod source / algo / partial notes.
                 if (!(synth[osc]->role == SYNTH_IS_MOD_SOURCE
@@ -1851,7 +1958,8 @@ void play_delta(struct delta *d) {
                     // trigger the mod sources, for however many we have
                     for (int m = 0; m < NUM_MOD_SOURCES; ++m) {
                         uint16_t mod_osc = synth[osc]->mod_source[m];
-                        if(AMY_IS_SET(mod_osc)) {
+                        // A modulator named by this osc may have been freed.
+                        if(AMY_IS_SET(mod_osc) && synth[mod_osc] != NULL) {
                             if (AMY_IS_SET(synth[mod_osc]->trigger_phase))
                                 synth[mod_osc]->phase = F2P(synth[mod_osc]->trigger_phase);
                             synth[mod_osc]->note_on_clock = amy_global.total_samples;  // Need a note_on_clock to have envelope work correctly.
@@ -1878,7 +1986,7 @@ void play_delta(struct delta *d) {
             }
         } else if(synth[d->osc]->velocity > 0 && d->data.f == 0) { // new note off
             uint16_t osc = d->osc;
-            while(AMY_IS_SET(osc)) {
+            while(AMY_IS_SET(osc) && synth[osc] != NULL) {  // a freed link ends the chain
                 if (!(synth[osc]->role == SYNTH_IS_MOD_SOURCE
                       || synth[osc]->role == SYNTH_IS_ALGO_SOURCE
                       || synth[osc]->wave == PARTIAL)) {
@@ -2194,7 +2302,7 @@ SAMPLE render_osc_wave(uint16_t osc, uint8_t core, SAMPLE* buf) {
             //printf("h&m: time %.3f osc %d OFF\n", amy_global.time, osc);
             // Oscillator has fallen silent, stop executing it.
             uint16_t osc_to_stop = osc;  // Type must match synthinfo.chained_osc
-            while (AMY_IS_SET(osc_to_stop)) {
+            while (AMY_IS_SET(osc_to_stop) && synth[osc_to_stop] != NULL) {  // a freed link ends the chain
                 synth[osc_to_stop]->status = SYNTH_INAUDIBLE;  // It *could* come back...
                 // 2026-03-22: It's necessary to reset these two fields in msynth to get OwBass to restart without click...
                 msynth[osc_to_stop]->filter_logfreq = 0;  // (a)
@@ -2365,6 +2473,34 @@ void amy_block_processed(void) {
 
 int16_t * amy_fill_buffer() {
     AMY_PROFILE_START(AMY_FILL_BUFFER)
+    // A requested timebase reset lands here, between blocks on the render
+    // thread, so it cannot race this thread's own sequencer pacing
+    // (sequencer_check_and_fill's read-modify-write of next_amy_tick_us) or
+    // the block counting below.  The lock orders it against a concurrent
+    // amy_reset_sysclock().
+    if (amy_global.reset_timebase_pending) {
+        amy_grab_lock();
+        // Rebase queued deltas onto the new timeline so their relative timing
+        // survives the reset: a delta due 200 ms from now is still due 200 ms
+        // from now, and one already due plays on this block.  (RESET_EVENTS is
+        // the way to drop them instead.)  Doing this here rather than when the
+        // reset was requested also covers deltas queued in between, which were
+        // scheduled against the clock as it still read then.
+        uint32_t old_sysclock = (uint32_t)amy_sysclock64();
+        struct delta *d = amy_global.delta_queue;
+        while (d != NULL) {
+            if (AMY_TIME_GEQ(old_sysclock, d->time)) d->time = 0;
+            else d->time = d->time - old_sysclock;  // unsigned wrap keeps "in the future by k ms"
+            d = d->next;
+        }
+        amy_global.total_blocks = 0;
+        amy_global.total_samples = 0;
+        amy_global.time = 0;
+        amy_global.sequencer_tick_count = 0;
+        sequencer_recompute();
+        amy_global.reset_timebase_pending = 0;
+        amy_release_lock();
+    }
     #ifdef __EMSCRIPTEN__
     // post a message to the main thread of the audioworklet (amy main, in this case) that a block has been finished
     //emscripten_audio_worklet_post_function_v(0, amy_block_processed);
@@ -2549,12 +2685,19 @@ int16_t * amy_fill_buffer() {
     return output_block;
 }
 
+// Request a timebase reset: the millisecond clock and the sequencer tick
+// count restart from zero, and queued events keep their relative timing.
+// The render thread applies it at the next block boundary (amy_fill_buffer()),
+// within a few ms.  Zeroing the counters here -- this runs on whichever
+// thread called amy_add_message() -- raced the render thread:
+// sequencer_check_and_fill() had already computed now_us against the old
+// clock, this call re-anchored next_amy_tick_us near zero underneath it, and
+// its catch-up loop then replayed thousands of ticks in one block, smearing
+// every periodic sequence into a continuous roll for seconds.
 void amy_reset_sysclock() {
-    amy_global.total_blocks = 0;
-    amy_global.total_samples = 0;
-    amy_global.time = 0;
-    amy_global.sequencer_tick_count = 0;
-    sequencer_recompute();
+    amy_grab_lock();
+    amy_global.reset_timebase_pending = 1;
+    amy_release_lock();
 }
 
 

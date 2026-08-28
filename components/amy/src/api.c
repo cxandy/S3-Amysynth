@@ -131,6 +131,9 @@ void amy_clear_event(amy_event *e) {
     AMY_UNSET(e->mode);
     AMY_UNSET(e->patch_number);
     AMY_UNSET(e->trigger_phase);
+    AMY_UNSET(e->sample_offset);
+    AMY_UNSET(e->fit_ticks);
+    AMY_UNSET(e->fit_search);
     AMY_UNSET(e->feedback);
     AMY_UNSET(e->velocity);
     AMY_UNSET(e->midi_note);
@@ -145,8 +148,6 @@ void amy_clear_event(amy_event *e) {
         AMY_UNSET(e->filter_freq_coefs[i]);
         AMY_UNSET(e->duty_coefs[i]);
         AMY_UNSET(e->pan_coefs[i]);
-        AMY_UNSET(e->dist_drive_coefs[i]);
-        AMY_UNSET(e->dist_mix_coefs[i]);
     }
     AMY_UNSET(e->resonance);
     AMY_UNSET(e->portamento_ms);
@@ -156,13 +157,10 @@ void amy_clear_event(amy_event *e) {
     AMY_UNSET(e->dist_crush);
     AMY_UNSET(e->dist_bits);
     AMY_UNSET(e->dist_rate);
-    AMY_UNSET(e->bus_dist_clip);
-    AMY_UNSET(e->bus_dist_fold);
-    AMY_UNSET(e->bus_dist_crush);
-    AMY_UNSET(e->bus_dist_drive);
-    AMY_UNSET(e->bus_dist_bits);
-    AMY_UNSET(e->bus_dist_rate);
-    AMY_UNSET(e->bus_dist_mix);
+    for (int i = 0; i < NUM_COMBO_COEFS; ++i) {
+        AMY_UNSET(e->dist_drive_coefs[i]);
+        AMY_UNSET(e->dist_mix_coefs[i]);
+    }
     AMY_UNSET(e->chained_osc);
     for (int i = 0; i < NUM_MOD_SOURCES; ++i) AMY_UNSET(e->mod_source[i]);
     AMY_UNSET(e->algorithm);
@@ -359,7 +357,7 @@ void amy_add_event(amy_event *e) {
         // event doesn't read back as having no time at all.
         if(AMY_IS_UNSET(playback_time)) playback_time++;
         e->time = playback_time;
-        amy_event_to_deltas_queue(e, 0, &amy_global.delta_queue);
+        amy_event_to_deltas_queue(e, 0, /* oscs_per_voice= */ 0, &amy_global.delta_queue);
     }
 }
 

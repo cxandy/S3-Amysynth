@@ -65,7 +65,7 @@ not:
   (voice_config.c), matching the native law exactly.
 
 Either way the shaper being OFF makes the target inert - the LFO never switches
-distortion on (native combine is gated on `dist_type`; the stepper checks
+distortion on (native combine is gated on `synthinfo.dist_stages`; the stepper checks
 `base->type`). Restore on disable is the committed dist block via
 `voice_apply_dist()`: there is no context-free neutral, so
 `lfo_push_target_neutral()` skips DIST (same shape as FILTER). Native disable

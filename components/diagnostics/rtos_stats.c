@@ -30,7 +30,8 @@ void rtos_stats_report(void)
     // On-demand profiling dump (AMYSYNTH_RTOS_STATS, default n). The IRQ-mask
     // window is acceptable ONLY because this never runs in release builds and
     // profiling sessions accept stream artifacts; never wire this into a
-    // default-on periodic path (see docs/agent/periodic-actors.md).
+    // default-on periodic path: the TCB walk masks IRQs for milliseconds and
+    // beats against the USB frame clock.
     // ast-grep-ignore
     num_tasks = uxTaskGetSystemState(tasks, num_tasks, &total_runtime);
     if (num_tasks == 0 || total_runtime == 0) {

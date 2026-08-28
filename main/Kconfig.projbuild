@@ -79,8 +79,8 @@ config RENDER_CLOCK_I2S_ENABLE
 
         Leave this off (default) to keep the proven GPTimer path fully
         intact. This is a prototype for deliberate, opt-in evaluation, not
-        a proven replacement -- see docs/handoff/i2s-clock-source.md for the
-        full design rationale and impact trace before enabling on hardware.
+        a proven replacement; trace the full clock/DMA impact before
+        enabling on hardware.
 
 config RENDER_CLOCK_I2S_DMA_DESC_NUM
     int "I2S TX DMA buffer count (buffer depth)"

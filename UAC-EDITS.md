@@ -146,7 +146,7 @@ On any usb_device_uac re-vendor or tinyusb version bump:
 4. Update the tinyusb pin note in `main/idf_component.yml`.
 5. Acceptance: capture-morphology check for ~1-2 ms inserted-silence
    holes (host silence insertion is DITHERED - strict consecutive-zero
-   scans are blind; use the near-zero template scan in
-   docs/tools-src). 0.19 baseline on the bench host: <=0.1 holes/s, no
+   scans are blind; use a near-zero template scan). 0.19 baseline on the
+   bench host: <=0.1 holes/s, no
    metronomic ~1 s trains; the frame-service rate (~999.25/s there) is
    the correction-cadence reference, not a pass/fail number.

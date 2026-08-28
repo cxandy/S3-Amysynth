@@ -71,7 +71,7 @@ flowchart TD
 ### `oscillators.c` — Karplus-Strong ring-index init + sample-rate-derived buffer length (upstream PR candidate)
 
 Two universal bugs, found 2026-08-25 while surveying the delay/comb machinery
-and measured with `docs/tools-src/ks_poly_sim.c` (host sim, fixed-point build).
+and measured with a host sim of the vendored tree (fixed-point build).
 Both are target-agnostic, so they belong upstream rather than here.
 
 1. **`ks_note_on()` now zeroes `synth[osc]->phase`.** `render_ks()` uses
@@ -93,8 +93,7 @@ Both are target-agnostic, so they belong upstream rather than here.
    872. At 44.1 kHz the value is still exactly 802, so no behaviour changes there.
 
 The larger shared-ring defect these two sat next to is fixed by the entry
-above. Measurements: `docs/reports/2026-08-25-flanger-comb-feasibility.md`
-Appendix A.
+above.
 
 ### `oscillators.c` + `amy.h` + `amy.c` — per-osc Karplus-Strong ring binding (upstream PR candidate)
 
@@ -102,7 +101,7 @@ Appendix A.
 single module-global cursor (`ks_polyphony_index`) that every KS osc
 dereferenced at render time. Nothing recorded "this osc plays that ring", so
 all simultaneous KS voices landed on the same one. Measured consequences
-(host sim, `docs/tools-src/`):
+(host sim):
 
 - voices sharing a ring damp each other every sample, so three KS notes were as
   loud as one (1.12x where independent voices give 1.73x) and decayed ~2.6x

@@ -7,8 +7,7 @@ menu "DEV Serial Harness"
             Compiles in the agent/script-drivable test harness: a low-priority
             command task reading line commands from UART0 (H> prefix) to
             inject input events, drive the transport and dump state, for the
-            headless test board (docs/plans/2026-08-11-serial-test-harness.md
-            in the overlay repo). No harness code is compiled in when off;
+            headless test board. No harness code is compiled in when off;
             the playable firmware is unaffected.
 
 endmenu

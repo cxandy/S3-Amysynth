@@ -16,10 +16,7 @@ SHIFT chord layer and a shoulder button) and a 128x64 OLED, and everything
 is edited live: patterns, patches, envelopes, filters, LFOs and FM operator
 graphs change while the music keeps running.
 
-Nothing is precomputed and nothing streams down from the host. Every voice
-is rendered on-device, one 256-sample block every 5.3 ms, on a core that
-dense polyphony can push to nearly full load - which is what makes the
-firmware side of this project interesting.
+Everything is synthesized on the chip: nothing is precomputed and nothing streams down from the host - the USB link carries the finished mix out.
 
 > USB audio is the active output today: most S3 dev boards have a second
 > USB port, so audio and the serial diagnostics run side by side during

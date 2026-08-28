@@ -36,7 +36,7 @@ config OUTPUT_WATCHDOG
 
 config FILTER_SCOPE
     bool "Live filter overlay in the filter editor (filter scope)"
-    default n
+    default y
     help
         Draws a live band on the filter editor's response curve showing where
         the filter cutoff is actually travelling, so EG1 sweeps and filter LFO
@@ -48,8 +48,6 @@ config FILTER_SCOPE
         min/max of it into a small cell that the UI drains at 20 Hz. The
         accumulator is armed only while the filter editor is open; when it is
         closed the render task does one load and one branch per block.
-
-        Default off until hardware-verified.
 
 endmenu
 

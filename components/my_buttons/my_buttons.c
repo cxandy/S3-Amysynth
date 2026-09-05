@@ -17,15 +17,18 @@ static const char *TAG = "my_buttons";
 
 // Button GPIO assignments (active low, internal pull-up). This list is the
 // WIRING: entry N is the pin of the Nth member of my_button_id_t, so reordering
-// that enum is what reassigns roles. Keep the names below in step with it.
+// that enum is what reassigns roles. Values come from the User Hardware Kconfig
+// menu (main/Kconfig.projbuild); defaults are the devkit layout, override the
+// differences for your board in sdkconfig.defaults. Keep the names below in
+// step with this list AND the matching Kconfig symbols.
 static const int32_t s_button_gpios[MY_BUTTON_MAX] = {
-    15,  // MY_BUTTON_SHOULDER → per-view bindings (step toggle on the grid)
-    18,  // MY_BUTTON_1        → patch-select hold
-    8,   // MY_BUTTON_2
-    42,  // MY_BUTTON_3 (avoiding GPIO3 strapping pin)
-    16,  // MY_BUTTON_ENC      → encoder push button
-    17,  // MY_BUTTON_0        → layer cycle / play-stop
-    47,  // MY_BUTTON_SHIFT    → hold modifier
+    CONFIG_AMYSYNTH_BTN_SHOULDER_GPIO, // MY_BUTTON_SHOULDER → per-view bindings (step toggle on the grid)
+    CONFIG_AMYSYNTH_BTN_1_GPIO,        // MY_BUTTON_1        → patch-select hold
+    CONFIG_AMYSYNTH_BTN_2_GPIO,        // MY_BUTTON_2
+    CONFIG_AMYSYNTH_BTN_3_GPIO,        // MY_BUTTON_3
+    CONFIG_AMYSYNTH_BTN_ENC1_GPIO,     // MY_BUTTON_ENC      → encoder push button
+    CONFIG_AMYSYNTH_BTN_0_GPIO,        // MY_BUTTON_0        → layer cycle / play-stop
+    CONFIG_AMYSYNTH_BTN_SHIFT_GPIO,    // MY_BUTTON_SHIFT    → hold modifier
 };
 
 static button_handle_t s_button_handles[MY_BUTTON_MAX] = {NULL};

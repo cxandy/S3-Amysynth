@@ -1,3 +1,75 @@
+menu "User Hardware"
+
+comment "Board pin mapping. Defaults match the upstream devkit layout;"
+
+comment "override the ones that differ on YOUR board in sdkconfig.defaults."
+
+config AMYSYNTH_BTN_SHOULDER_GPIO
+    int "Button SW-L / SHOULDER GPIO"
+    default 15
+
+config AMYSYNTH_BTN_1_GPIO
+    int "Button SW-U / 1 GPIO"
+    default 18
+
+config AMYSYNTH_BTN_2_GPIO
+    int "Button SW-D / 2 GPIO"
+    default 8
+
+config AMYSYNTH_BTN_3_GPIO
+    int "Button NAV-1 / 3 (menu) GPIO"
+    default 42
+
+config AMYSYNTH_BTN_ENC1_GPIO
+    int "Encoder push / ENC confirm GPIO"
+    default 16
+
+config AMYSYNTH_BTN_0_GPIO
+    int "Button NAV-2 / 0 GPIO"
+    default 17
+
+config AMYSYNTH_BTN_SHIFT_GPIO
+    int "Button SHIFT GPIO (note: GPIO0 = BOOT strapping)"
+    default 47
+
+config AMYSYNTH_ENCODER_A_GPIO
+    int "Encoder phase A GPIO"
+    default 40
+
+config AMYSYNTH_ENCODER_B_GPIO
+    int "Encoder phase B GPIO"
+    default 41
+
+comment "OLED SCL/SDA, DAC and status LED pins stay in their own"
+
+comment "menus: Display, Audio (I2S DAC), and Status LED component."
+
+endmenu
+
+menu "Encoder Input"
+
+config AMYSYNTH_ENCODER_TICKS_PER_STEP
+    int "Encoder raw PCNT ticks per UI step"
+    default 1
+    range 1 8
+    help
+        How many raw PCNT counts the encoder must accumulate before the UI sees
+        one step action. The driver decodes X1 (only the A-phase rising edge
+        counts, direction from the B phase) so a standard mechanical encoder
+        reports exactly 1 count per detent - 1 gives one clean UI move per
+        notch. Leave 1 unless your encoder is a 2 or 4-count-per-detent type
+        (high-resolution / dual-cycle-per-detent), then raise to match.
+
+config AMYSYNTH_ENCODER_FLIP_DIRECTION
+    bool "Flip encoder direction"
+    default n
+    help
+        Useful when a rotated-right encoder detent is reported as a step but
+        the firmware moves the cursor the wrong way (different A/B wiring or
+        reversed A/B pins).
+
+endmenu
+
 menu "Audio Diagnostics"
 
 config USB_AUDIO_DIAGNOSTICS

@@ -424,6 +424,14 @@ void synth_ui_menu_toggle(void)
 #endif
         if (seq_state.menu_cursor >= MI_COUNT) seq_state.menu_cursor = 0;
     }
+#if CONFIG_SYNTH_DEV_MENU
+    /* DEV has no screen of its own under the overlay: once its menu closes,
+     * leave it for the sequencer grid. Otherwise NAV-1 just bounced
+     * menu<->DEV and the menu looked like it "can't be closed". */
+    if (!seq_state.menu_open && seq_state.ui_mode == UI_MODE_DEV) {
+        seq_state.ui_mode = UI_MODE_SEQUENCER;
+    }
+#endif
     s_force_redraw = true;
     ESP_LOGI(TAG, "menu %s", seq_state.menu_open ? "open" : "closed");
 }

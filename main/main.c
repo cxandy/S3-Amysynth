@@ -45,16 +45,27 @@
 #include "live_play.h"
 #endif
 #include "harness.h"
+#if CONFIG_AMYSYNTH_I2S_DAC
+#include "i2s_dac.h"
+#endif
 
 #ifndef CONFIG_AMYSYNTH_INPUT_DIAGNOSTICS
 #define CONFIG_AMYSYNTH_INPUT_DIAGNOSTICS 0
 #endif
 
+#ifndef CONFIG_AMYSYNTH_ENCODER_TICKS_PER_STEP
+#define CONFIG_AMYSYNTH_ENCODER_TICKS_PER_STEP 2
+#endif
+
+#ifndef CONFIG_AMYSYNTH_ENCODER_FLIP_DIRECTION
+#define CONFIG_AMYSYNTH_ENCODER_FLIP_DIRECTION 0
+#endif
+
 static const char *TAG = "main"; // For ESP_LOG and related logs in this file
 
-// Rotary encoder pins
-#define ENCODER_PIN_A GPIO_NUM_40
-#define ENCODER_PIN_B GPIO_NUM_41
+// Rotary encoder pins (User Hardware Kconfig, defaults = devkit layout)
+#define ENCODER_PIN_A ((gpio_num_t)CONFIG_AMYSYNTH_ENCODER_A_GPIO)
+#define ENCODER_PIN_B ((gpio_num_t)CONFIG_AMYSYNTH_ENCODER_B_GPIO)
 static i2c_u8g2_handle_t s_display;
 static u8g2_t *s_u8g2 = NULL;
 static volatile uint32_t s_last_seq_tick = 0;
@@ -75,6 +86,10 @@ static volatile bool s_drum_select_held = false;
 // task reads it for the Shift+Turn gesture (same as s_patch_held).
 static volatile bool s_shift_held = false;
 static bool s_shift_chord_latched[MY_BUTTON_MAX] = { false };
+
+// Software bounce guard for the menu key (NAV-1): last PRESS_DOWN tick, used
+// to reject a re-trigger from one physical press's contact bounce.
+static volatile uint32_t s_btn3_last_down = 0;
 
 static QueueHandle_t s_button_queue = NULL;
 
@@ -146,6 +161,15 @@ static void amy_usb_render_task(void *arg) {
             // Runtime PCM sampler: non-blocking no-op unless a recording is
             // armed. Must run after amy_update() releases amy_queue_lock.
             sample_rec_render_tick(block, AMY_BLOCK_SIZE);
+
+#if CONFIG_AMYSYNTH_I2S_DAC
+            // Standalone PCM5102 output: feed the DAC the same rendered
+            // block. A full I2S DMA queue drops the block (like the USB
+            // ring) — the GPTimer owns the clock, the DAC only consumes.
+            if (unlikely(i2s_dac_write_stereo(block, AMY_BLOCK_SIZE) == ESP_ERR_NO_MEM)) {
+                dropout_count_ring_overrun();
+            }
+#endif
 
 #if CONFIG_FILTER_SCOPE
             // Filter-editor overlay: reads msynth[]/synth[], so it too must
@@ -495,25 +519,28 @@ static void dispatch_button_event(my_button_id_t button_id, button_event_t event
         return;
     }
 
-    // MY_BUTTON_3: inside an editor, click cycles editor pages (EG0 -> EG1 ->
-    // filter -> LFO -> DIST); in STEPEDIT it closes; otherwise it is the menu
-    // toggle.
+    // MY_BUTTON_3 (NAV-1): the MENU / page toggle fires on PRESS_DOWN - the
+    // instant the key makes contact - so it never depends on the single/double
+    // click classifier that a bouncy key can mis-trigger. A software bounce
+    // guard rejects any re-trigger within BUTTON3_GUARD_MS, so a single
+    // physical press can never fire the toggle twice (open->close = "no
+    // response"). Inside an editor a down still cycles pages
+    // (EG0 -> EG1 -> filter -> LFO -> DIST); in STEPEDIT it closes.
     if (button_id == MY_BUTTON_3) {
-        if (v == UI_VIEW_GRAPH || v == UI_VIEW_FILTER || v == UI_VIEW_LFO ||
-            v == UI_VIEW_DIST) {
-            if (event == BUTTON_SINGLE_CLICK) {
-                synth_ui_cycle_editor();
+        if (event == BUTTON_PRESS_DOWN) {
+            uint32_t now = (uint32_t)xTaskGetTickCount();
+#define BUTTON3_GUARD_MS 90
+            if (now - s_btn3_last_down >= pdMS_TO_TICKS(BUTTON3_GUARD_MS)) {
+                s_btn3_last_down = now;
+                if (v == UI_VIEW_GRAPH || v == UI_VIEW_FILTER || v == UI_VIEW_LFO ||
+                    v == UI_VIEW_DIST) {
+                    synth_ui_cycle_editor();
+                } else if (v == UI_VIEW_STEPEDIT) {
+                    synth_ui_stepedit_close();
+                } else {
+                    synth_ui_menu_toggle();
+                }
             }
-            return;
-        }
-        if (v == UI_VIEW_STEPEDIT) {
-            if (event == BUTTON_SINGLE_CLICK) {
-                synth_ui_stepedit_close();
-            }
-            return;
-        }
-        if (event == BUTTON_SINGLE_CLICK) {
-            synth_ui_menu_toggle();
         }
         return;
     }
@@ -702,9 +729,24 @@ static void encoder_task(void *pvParameters)
 #endif
             prev = cur;
 
+#if CONFIG_AMYSYNTH_ENCODER_FLIP_DIRECTION
+            delta = -delta;
+#endif
             enc_accum += delta;
-            long steps = enc_accum / 2; // require 2 raw ticks per action
-            enc_accum %= 2;
+            /* Exact, direction-symmetric tally: count a UI step per
+             * TICKS_PER_STEP accumulated counts in EITHER direction. The old
+             * `+/- % ticks` (C truncation) kept a stale signed remainder
+             * across a direction change, which wobble on a worn encoder
+             * turned into the "sometimes jumps, sometimes dead" feel. */
+            long steps = 0;
+            while (enc_accum >= (long)CONFIG_AMYSYNTH_ENCODER_TICKS_PER_STEP) {
+                steps++;
+                enc_accum -= (long)CONFIG_AMYSYNTH_ENCODER_TICKS_PER_STEP;
+            }
+            while (enc_accum <= -(long)CONFIG_AMYSYNTH_ENCODER_TICKS_PER_STEP) {
+                steps--;
+                enc_accum += (long)CONFIG_AMYSYNTH_ENCODER_TICKS_PER_STEP;
+            }
             if (steps != 0) {
                 encoder_process_steps(steps);
             }
@@ -929,6 +971,13 @@ void app_main(void)
     amy_start(amy_cfg);
     DIAG_HEAP_CHECK("after amy_start");
 
+#if CONFIG_AMYSYNTH_I2S_DAC
+    ESP_LOGI(TAG, "[startup] before i2s_dac_init");
+    if (i2s_dac_init(AMY_SAMPLE_RATE, AMY_BLOCK_SIZE) != ESP_OK) {
+        ESP_LOGW(TAG, "i2s_dac_init failed; continuing without DAC output");
+    }
+#endif
+
     // Characterize profiler timestamp cost before the dumps below; compiles
     // out unless AMY profiling is on.
     amy_profile_overhead_selftest();
@@ -1009,7 +1058,8 @@ void app_main(void)
 
     ESP_LOGI(TAG, "AMY + USB Audio ready (48 kHz stereo to PC)");
 
-    // Initialize push buttons (GPIO15, GPIO18, GPIO8, GPIO42)
+    // Initialize push buttons (wiring/GPIos come from the User Hardware Kconfig
+    // menu via components/my_buttons; defaults are the devkit layout)
     ESP_LOGI(TAG, "[startup] before my_buttons_init");
     s_button_queue = xQueueCreate(BUTTON_QUEUE_DEPTH, sizeof(button_msg_t));
     if (s_button_queue == NULL) {

@@ -441,10 +441,9 @@ void synth_ui_cycle_active_layer(void)
              ? "drum" : "melodic");
 }
 
-/* Move the step cursor by `delta` in edit mode; outside it the encoder is a
- * live tempo dial (BPM also remains adjustable from the main menu). Running
- * off either end wraps to the adjacent track, so a long turn scans the whole
- * grid. */
+/* Move the step cursor by `delta` in edit mode; outside it a bare turn is
+ * deliberately a no-op (BPM lives in the main menu only). Running off either
+ * end wraps to the adjacent track, so a long turn scans the whole grid. */
 void synth_ui_handle_encoder(long delta)
 {
     if (delta == 0) return;
@@ -472,11 +471,6 @@ void synth_ui_handle_encoder(long delta)
         if (num_steps == SEQ_MAX_STEPS) {
             seq_state.layers[li].step_page = (uint8_t)(new_step / 16);
         }
-    } else {
-        /* Bare turn outside edit mode: the encoder is the tempo dial. The
-         * SEQ header already live-renders "BPM nnn"; the main menu's BPM row
-         * stays as the coarse/fine companion. */
-        synth_ui_set_bpm((uint16_t)((int)seq_get_bpm() + (int)delta));
     }
 }
 

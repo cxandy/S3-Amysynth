@@ -83,10 +83,6 @@ static volatile bool s_drum_select_held = false;
 static volatile bool s_shift_held = false;
 static bool s_shift_chord_latched[MY_BUTTON_MAX] = { false };
 
-// Software bounce guard for the menu key: last PRESS_DOWN tick, used
-// to reject a re-trigger from one physical press's contact bounce.
-static volatile uint32_t s_btn3_last_down = 0;
-
 static QueueHandle_t s_button_queue = NULL;
 
 // One press yields up to three queued events across five buttons; the queue
@@ -526,28 +522,25 @@ static void dispatch_button_event(my_button_id_t button_id, button_event_t event
         return;
     }
 
-    // MY_BUTTON_3 (menu key): the MENU / page toggle fires on PRESS_DOWN - the
-    // instant the key makes contact - so it never depends on the single/double
-    // click classifier that a bouncy key can mis-trigger. A software bounce
-    // guard rejects any re-trigger within BUTTON3_GUARD_MS, so a single
-    // physical press can never fire the toggle twice (open->close = "no
-    // response"). Inside an editor a down still cycles pages
-    // (EG0 -> EG1 -> filter -> LFO -> DIST); in STEPEDIT it closes.
+    // MY_BUTTON_3: inside an editor, click cycles editor pages (EG0 -> EG1 ->
+    // filter -> LFO -> DIST); in STEPEDIT it closes; otherwise it is the menu
+    // toggle.
     if (button_id == MY_BUTTON_3) {
-        if (event == BUTTON_PRESS_DOWN) {
-            uint32_t now = (uint32_t)xTaskGetTickCount();
-#define BUTTON3_GUARD_MS 90
-            if (now - s_btn3_last_down >= pdMS_TO_TICKS(BUTTON3_GUARD_MS)) {
-                s_btn3_last_down = now;
-                if (v == UI_VIEW_GRAPH || v == UI_VIEW_FILTER || v == UI_VIEW_LFO ||
-                    v == UI_VIEW_DIST) {
-                    synth_ui_cycle_editor();
-                } else if (v == UI_VIEW_STEPEDIT) {
-                    synth_ui_stepedit_close();
-                } else {
-                    synth_ui_menu_toggle();
-                }
+        if (v == UI_VIEW_GRAPH || v == UI_VIEW_FILTER || v == UI_VIEW_LFO ||
+            v == UI_VIEW_DIST) {
+            if (event == BUTTON_SINGLE_CLICK) {
+                synth_ui_cycle_editor();
             }
+            return;
+        }
+        if (v == UI_VIEW_STEPEDIT) {
+            if (event == BUTTON_SINGLE_CLICK) {
+                synth_ui_stepedit_close();
+            }
+            return;
+        }
+        if (event == BUTTON_SINGLE_CLICK) {
+            synth_ui_menu_toggle();
         }
         return;
     }

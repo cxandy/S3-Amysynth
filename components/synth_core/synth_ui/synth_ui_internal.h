@@ -209,6 +209,13 @@ void     chords_menu_edit_value(uint8_t idx, int delta);
 void     chords_menu_reset(void);
 const char *chords_menu_title(void);
 
+/* ─── DEMOS page: built-in demo picker (item model in ui_screen_demos.c;
+ *     page state and input routing live in ui_screen_menu.c, same split as
+ *     the FX/Chords/Projects/Wireless pages). One row per demo in the registry
+ *     plus a Back row; each demo row queues a load and closes the overlay. ── */
+const menu_item_view_t *demos_menu_build_items(void);
+uint8_t  demos_menu_item_count(void);
+
 /* Editor live-preview service: flushes any pending throttled apply (the graph
  * editor's amp trim, whose melodic apply re-emits the track's steps). Called
  * from synth_ui_task's 50 ms loop; no-op when nothing is pending. */

@@ -67,6 +67,7 @@ typedef enum {
     MI_VOLUME,
     MI_SAMPLE,
     MI_SAMPLE_CANCEL,
+    MI_DEMOS,
     MI_COUNT
 } menu_item_id_t;
 
@@ -85,6 +86,8 @@ static bool    s_projects_page = false;
 #endif
 /* Chord-preset editor page (item model in ui_screen_chords.c). */
 static bool    s_chords_page = false;
+/* Built-in demo picker page (item model in ui_screen_demos.c). */
+static bool    s_demos_page = false;
 #if CONFIG_SYNTH_WIRELESS
 /* BLE MIDI session page (item model in ui_screen_wireless.c). */
 static bool    s_wireless_page = false;
@@ -108,6 +111,7 @@ const char *menu_page_title(void)
     if (s_projects_page) return "PROJECTS";
 #endif
     if (s_chords_page) return chords_menu_title();
+    if (s_demos_page) return "DEMOS";
 #if CONFIG_SYNTH_WIRELESS
     if (s_wireless_page) return "WIRELESS";
 #endif
@@ -157,6 +161,13 @@ void menu_build_view(menu_view_t *out)
     if (s_chords_page) {
         out->items   = chords_menu_build_items();
         out->count   = chords_menu_item_count();
+        out->cursor  = seq_state.menu_cursor;
+        out->editing = seq_state.menu_editing;
+        return;
+    }
+    if (s_demos_page) {
+        out->items   = demos_menu_build_items();
+        out->count   = demos_menu_item_count();
         out->cursor  = seq_state.menu_cursor;
         out->editing = seq_state.menu_editing;
         return;
@@ -297,6 +308,11 @@ void menu_build_view(menu_view_t *out)
     }
     snprintf(s_menu_items[MI_SAMPLE_CANCEL].label, MENU_LABEL_LEN, "Smp Cancel");
 
+    /* Built-in demos live on their own page (ui_screen_demos.c); each demo
+     * registers a row and queues its load there. */
+    snprintf(s_menu_items[MI_DEMOS].label, MENU_LABEL_LEN, "DEMOS");
+    snprintf(s_menu_items[MI_DEMOS].value, MENU_VALUE_LEN, ">");
+
     out->items   = s_menu_items;
     out->count   = MI_COUNT;
     out->cursor  = seq_state.menu_cursor;
@@ -419,11 +435,20 @@ void synth_ui_menu_toggle(void)
         s_projects_page = false;
 #endif
         s_chords_page = false;
+        s_demos_page = false;
 #if CONFIG_SYNTH_WIRELESS
         s_wireless_page = false;
 #endif
         if (seq_state.menu_cursor >= MI_COUNT) seq_state.menu_cursor = 0;
     }
+#if CONFIG_SYNTH_DEV_MENU
+    /* DEV has no screen of its own under the overlay: once its menu closes,
+     * leave it for the sequencer grid. Otherwise NAV-1 just bounced
+     * menu<->DEV and the menu looked like it "can't be closed". */
+    if (!seq_state.menu_open && seq_state.ui_mode == UI_MODE_DEV) {
+        seq_state.ui_mode = UI_MODE_SEQUENCER;
+    }
+#endif
     s_force_redraw = true;
     ESP_LOGI(TAG, "menu %s", seq_state.menu_open ? "open" : "closed");
 }
@@ -487,6 +512,7 @@ bool synth_ui_menu_handle_encoder(long delta)
     } else {
         int n = s_notefx_page ? (int)notefx_menu_item_count() :
                 s_fx_page ? (int)fx_menu_item_count() :
+                s_demos_page ? (int)demos_menu_item_count() :
 #if CONFIG_SYNTH_PROJECT_STORE
                 s_projects_page ? (int)projects_menu_item_count() :
 #endif
@@ -559,6 +585,31 @@ bool synth_ui_menu_handle_button(void)
         return true;
     }
 #endif
+
+    if (s_demos_page) {
+        uint8_t idx = seq_state.menu_cursor;
+        uint8_t n   = demos_menu_item_count();
+        if (idx >= n) idx = (uint8_t)(n - 1u);   /* paranoia: always in range */
+        if (idx + 1u == n) {
+            /* Back row returns to the main list it was dived from. */
+            s_demos_page = false;
+            seq_state.menu_cursor  = s_main_cursor;
+        } else {
+            /* Demo row: queue the load and close the overlay so the sound is
+             * heard immediately (the load itself runs on the seq_ui task
+             * drain, per the layer-applier contract). Restore the main-page
+             * cursor like Back does, otherwise the stale demo-page row index
+             * (0..n-2) leaks into the re-opened main list, where row 0 is the
+             * DEV item under CONFIG_SYNTH_DEV_MENU. */
+            synth_ui_request_demo(idx);
+            s_demos_page   = false;
+            seq_state.menu_cursor = s_main_cursor;
+            seq_state.menu_open = false;
+        }
+        seq_state.menu_editing = false;
+        s_force_redraw = true;
+        return true;
+    }
 
     if (s_chords_page) {
         uint8_t idx = seq_state.menu_cursor;
@@ -697,6 +748,12 @@ bool synth_ui_menu_handle_button(void)
             case MI_SAMPLE_CANCEL:
                 sample_rec_cancel();
                 seq_state.menu_open = false;
+                break;
+            case MI_DEMOS:
+                /* Dive into the built-in demo picker; the menu stays open. */
+                s_main_cursor = seq_state.menu_cursor;
+                s_demos_page = true;
+                seq_state.menu_cursor = 0;
                 break;
             default:
                 break;

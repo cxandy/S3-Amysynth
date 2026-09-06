@@ -157,6 +157,85 @@ static void live_apply_lfo(void)
                                 sequencer_core_get_bpm(), carrier, coupled);
 }
 
+/* ── Expressive controls from the MIDI sink ─────────────────────────────
+ * CC64 rides AMY's native per-instrument sustain (instrument_sustain): held
+ * note-offs are deferred while the pedal is down and released in one burst on
+ * pedal-up - zero changes to the note path. CC7 maps to the instrument level
+ * (iV), pushed via synth_level and applied live to every sounding voice. Pitch
+ * bend sets the global AMY bend, exactly the engine's own MIDI conversion
+ * (full wheel = ±1/6 octave = ±2 semitones). Channel is ignored (omni).
+ *
+ * These are patch-independent session state: a slot rebuild (patch change)
+ * resets the AMY instrument's level and sustain, so the last received value
+ * is re-asserted by live_apply_authored after every configure. */
+static bool    s_sustain_down = false;
+static bool    s_sustain_seen = false;
+static uint8_t s_vol          = 127;
+static bool    s_vol_seen     = false;
+
+static void live_push_sustain(void)
+{
+    amy_event *e = amy_helpers_event_begin();
+    e->synth = LIVE_SYNTH;
+    e->pedal = s_sustain_down;
+    amy_helpers_event_send(e);
+}
+
+static void live_push_volume(void)
+{
+    amy_event *e = amy_helpers_event_begin();
+    e->synth       = LIVE_SYNTH;
+    e->synth_level = (float)s_vol * (1.0f / 127.0f);
+    amy_helpers_event_send(e);
+}
+
+/* ── CC1 mod wheel -> live-slot osc-0 vibrato ──────────────────────────────
+ * Self-contained; the wheel position and its ~4 Hz sine LFO live here, not in
+ * the sequencer core (the wheel drives the live voice only). Same
+ * absolute-Hz/osc-0 rail as the PITCH LFO steppers: freq COEF_CONST is
+ * absolute Hz, and since 440 Hz (SEQ_LFO_PITCH_BASE_HZ) maps to the +0 logfreq
+ * offset, wrapping in 2^oct swings a note around its own centre. Each 20 Hz
+ * service tick calls live_mod_wheel_step once: it advances the sine and
+ * reports whether the caller must re-push the rail (outer "while the wheel is
+ * down" no-op), and on the tick the wheel drops to 0 it returns oct = 0 once
+ * so the rail parks back at 440 Hz instead of leaving a stuck offset. */
+static uint8_t s_mod_wheel  = 0;
+static bool    s_mod_active = false;
+static float   s_mod_phase  = 0.0f;
+
+#define LIVE_MOD_WHEEL_VIB_HZ          4.0f
+#define LIVE_MOD_WHEEL_DEPTH_SEMITONES 1.0f
+
+static bool live_mod_wheel_step(float *octaves_out)
+{
+    if (s_mod_wheel > 0) {
+        s_mod_active = true;
+        s_mod_phase += LIVE_MOD_WHEEL_VIB_HZ * 0.05f;
+        if (s_mod_phase >= 1.0f) s_mod_phase -= 1.0f;
+        float depth = (float)s_mod_wheel * (1.0f / 127.0f)
+                      * (LIVE_MOD_WHEEL_DEPTH_SEMITONES / 12.0f);
+        *octaves_out = depth * sinf(s_mod_phase * 2.0f * (float)M_PI);
+        return true;
+    }
+    if (s_mod_active) {
+        s_mod_active = false;
+        *octaves_out = 0.0f;
+        return true;
+    }
+    return false;
+}
+
+static void live_mod_wheel_push(void)
+{
+    float oct = 0.0f;
+    if (!live_mod_wheel_step(&oct)) return;
+    amy_event *pe = amy_helpers_event_begin();
+    pe->synth = LIVE_SYNTH;
+    pe->osc   = 0;
+    pe->freq_coefs[COEF_CONST] = SEQ_LFO_PITCH_BASE_HZ * powf(2.0f, oct);
+    amy_helpers_event_send(pe);
+}
+
 /* Re-push whatever the user has authored. Called after every slot configure,
  * since a patch load rebuilds the voice and drops our overrides. */
 static void live_apply_authored(void)
@@ -174,6 +253,10 @@ static void live_apply_authored(void)
     /* Patch loads reset per-osc portamento_alpha; reassert unconditionally
      * (0 is a valid "off" reassert) - the arp_rebuild discipline. */
     live_push_glide();
+    /* Session controls: the rebuild just reset the instrument's level and
+     * sustain state, so re-assert what the MIDI sink last received. */
+    if (s_sustain_seen) live_push_sustain();
+    if (s_vol_seen)     live_push_volume();
 }
 
 void live_play_ensure_ready(void)
@@ -218,6 +301,40 @@ void live_play_all_notes_off(void)
             live_note((uint8_t)(w * 32u + bit), 0.0f);
         }
     }
+}
+
+/* midi_sink_t entry points; omni like the notes. Record even when the slot is
+ * not ready so a later ensure_ready / patch change re-asserts (see above). */
+void live_play_cc(uint8_t channel, uint8_t cc, uint8_t value)
+{
+    (void)channel;
+    switch (cc) {
+        case 64:                       /* sustain pedal */
+            s_sustain_down = value >= 64;
+            s_sustain_seen = true;
+            if (s_ready) live_push_sustain();
+            break;
+        case 7:                        /* channel volume */
+            s_vol          = value;
+            s_vol_seen     = true;
+            if (s_ready) live_push_volume();
+            break;
+        case 1:                        /* mod wheel -> live-slot vibrato */
+            s_mod_wheel = value;
+            break;
+        default:
+            break;
+    }
+}
+
+void live_play_pitch_bend(uint8_t channel, uint16_t value)
+{
+    (void)channel;
+    if (!s_ready) return;
+    amy_event *e = amy_helpers_event_begin();
+    e->synth      = LIVE_SYNTH;
+    e->pitch_bend = ((float)value - 8192.0f) / (6.0f * 8192.0f);
+    amy_helpers_event_send(e);
 }
 
 uint16_t live_play_get_patch(void)
@@ -328,6 +445,10 @@ void live_play_lfo_service(void)
     bool native = live_play_lfo_native_eligible();
     bool want = s_ready && s_vp.lfo_authored && lfo->enabled &&
                 lfo->targets != 0 && !native;
+
+    /* CC1 mod wheel runs independent of an authored LFO, so it steps before
+     * the want-check can early-return. */
+    live_mod_wheel_push();
 
     if (!want) {
         if (s_swlfo_active) {

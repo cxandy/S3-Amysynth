@@ -1,0 +1,23 @@
+menu "MIDI Clock Slave"
+
+config AMYSYNTH_MIDI_CLOCK_SLAVE
+    bool "Follow external MIDI Clock (slave mode)"
+    default n
+    help
+        When a master (DAW, drum machine, or a MIDI keyboard) sends a
+        running MIDI timing clock on the DIN port or via BLE MIDI, the
+        sequencer locks its tempo to the master instead of the internal
+        BPM. The inter-tick interval (24 ticks per quarter note) is
+        EMA-smoothed and fits the sequencer's BPM range (40..300).
+
+        Song start/continue (0xFA / 0xFB) and stop (0xFC) drive the local
+        transport, but only while a live clock stream has been seen, so a
+        keyboard that never sends clock cannot hijack the transport.
+
+        Disabled by default so the stock devkit behaviour is unchanged;
+        the board enables it in sdkconfig.defaults.
+
+        Tempo lock only - song position pointer (0xF2) and sample-accurate
+        re-phase of the sequencer steps are not implemented.
+
+endmenu

@@ -22,6 +22,12 @@ void live_play_ensure_ready(void);
 void live_play_note_on(uint8_t channel, uint8_t note, uint8_t velocity);
 void live_play_note_off(uint8_t channel, uint8_t note);
 
+/* midi_sink_t-compatible expressive controls. CC64 = AMY-native sustain,
+ * CC7 = live-slot volume (scale of every sounding voice); pitch bend is the
+ * global AMY bend, ±2 semitones at full travel. All omni. */
+void live_play_cc(uint8_t channel, uint8_t cc, uint8_t value);
+void live_play_pitch_bend(uint8_t channel, uint16_t value);
+
 /* Release every held note (session stop / central disconnect - stuck-note
  * safety). Cross-task safe. */
 void live_play_all_notes_off(void);

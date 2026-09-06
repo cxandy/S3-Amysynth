@@ -52,7 +52,7 @@ dependencies:
   idf:
     source:
       type: idf
-    version: 6.1.0
+    version: 6.0.3
   joltwallet/littlefs:
     component_hash: 3af20a3d75c49db9dc2286fd50862c34055c9f578419ad1f2bf7ed3ed01391fe
     dependencies:
@@ -70,6 +70,6 @@ direct_dependencies:
 - espressif/tinyusb
 - idf
 - joltwallet/littlefs
-manifest_hash: f98fa392ee28fd3c10cba3cbedc824f7be66adea1c02ab10f2253c02d1d85935
+manifest_hash: 8423fc379d7235926308e8b14f179617e44dcdc11bb10b27eccbaca5c0bb95c2
 target: esp32s3
 version: 3.0.0

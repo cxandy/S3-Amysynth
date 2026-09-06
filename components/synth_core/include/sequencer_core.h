@@ -625,6 +625,16 @@ void sequencer_core_clear_all_solos(void);
 typedef void (*seq_solo_change_cb_t)(bool any_solo);
 void sequencer_core_set_solo_change_cb(seq_solo_change_cb_t cb);
 
+/* Current transport state. */
+bool sequencer_core_get_playing(void);
+
+/* Fired whenever playback starts or pauses; `playing` is the new state.
+ * Runs on the caller's task (the UI task), synchronously after the state
+ * change. A single subscriber (the app layer) may mirror the transport to
+ * external gear here, e.g. start/stop a MIDI clock stream. */
+typedef void (*seq_play_change_cb_t)(bool playing);
+void sequencer_core_set_play_change_cb(seq_play_change_cb_t cb);
+
 /* Re-apply the current solo state to every layer and to the hook. For paths
  * that write layer->solo[] wholesale rather than through the setter - snapshot
  * load being the only one - so the audible result matches what was loaded. */

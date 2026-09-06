@@ -171,6 +171,10 @@ float sequencer_step_velocity(const seq_layer_t *layer,
  * (and testable) with no arp/drone modules linked in at all. */
 static seq_solo_change_cb_t s_solo_change_cb = NULL;
 
+/* Set once at init by the app layer (mirrors the transport to MIDI clock / etc);
+ * NULL until then, so the core stays usable with no subscriber at all. */
+static seq_play_change_cb_t s_play_change_cb = NULL;
+
 /* True when any track of any layer has solo engaged. Solo is a GLOBAL mode, not
  * a per-layer one: soloing a row on one layer has to silence the other layers
  * too, or the feature cannot do the one job it exists for. Scans all
@@ -588,6 +592,17 @@ void sequencer_core_set_playing(bool p)
         }
         sequencer_kill_synth_voices(SEQ_ARP_SYNTH);
     }
+    if (s_play_change_cb) s_play_change_cb(s_playing);
+}
+
+bool sequencer_core_get_playing(void)
+{
+    return s_playing;
+}
+
+void sequencer_core_set_play_change_cb(seq_play_change_cb_t cb)
+{
+    s_play_change_cb = cb;
 }
 
 void sequencer_core_set_track_midi_note(uint8_t layer_idx, uint8_t track,

@@ -568,6 +568,18 @@ esp_err_t uac_device_init(uac_device_config_t *config)
             ESP_LOGE(TAG, "USB Device Stack Init Fail");
             return ESP_FAIL;
         }
+        // LOCAL EDIT (S3-Amysynth): deterministic Serial/JTAG -> OTG handover.
+        // The S3 ROM powers up with D+/D- muxed to the USB-Serial/JTAG
+        // controller, so a fast host that enumerated it during the boot
+        // window keeps the stale PID_1001 node even though OTG/TinyUSB is now
+        // live (timing race, tinyusb#2943 / IDFGH-12995). Forcing a software
+        // disconnect-reconnect cycle makes the host re-enumerate the device as
+        // its real composite (PID 0x8000) instead of freezing on the native
+        // serial-jtag. Plain replug alone is not enough: test board enumerates
+        // PID_1001 on most boots unless this cycle runs.
+        tud_disconnect();
+        vTaskDelay(pdMS_TO_TICKS(50));
+        tud_connect();
         ret_val = xTaskCreatePinnedToCore(tusb_device_task, "TinyUSB", 4096, NULL, CONFIG_UAC_TINYUSB_TASK_PRIORITY,
                                           NULL, CONFIG_UAC_TINYUSB_TASK_CORE == -1 ? tskNO_AFFINITY : CONFIG_UAC_TINYUSB_TASK_CORE);
         ESP_RETURN_ON_FALSE(ret_val == pdPASS, ESP_FAIL, TAG, "Failed to create TinyUSB task");

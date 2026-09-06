@@ -1,6 +1,5 @@
 #include "sdkconfig.h"
 #include "synth_ui/synth_ui_internal.h"
-#include "synth_ui.h"              /* synth_ui_demo_count / _demo_label */
 #include <stdio.h>
 #include <string.h>
 
@@ -17,7 +16,7 @@
  *
  * Adding a demo to the registry is all that is needed to get a row here - this
  * file never changes for that, and the registry's compile-time slot budget
- * lives in synth_ui.h (SYNTH_UI_DEMOS_MAX). */
+ * lives in synth_ui_internal.h (SYNTH_UI_DEMOS_MAX). */
 
 #define DEMOS_ITEMS_MAX (SYNTH_UI_DEMOS_MAX + 1)   /* demos + Back row */
 

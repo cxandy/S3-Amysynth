@@ -217,11 +217,17 @@ const menu_item_view_t *demos_menu_build_items(void);
 uint8_t  demos_menu_item_count(void);
 
 /* ─── Demo registry + deferred loader (ui_demo_load.c) ─────────────────────
- * Registry/request/count/label are public via synth_ui.h; the drain and the
- * JukeBox live service must be called from synth_ui_task's loop (the single
- * layer applier) after its add/delete drains. */
-void     synth_ui_demo_drain(void);
-void     synth_ui_demo_service(void);
+ * Registry, request, count and label are internal to synth_core (only the
+ * DEMOS submenu and the loader use them); the drain and the JukeBox live
+ * service must be called from synth_ui_task's loop (the single layer
+ * applier) after its add/delete drains. SYNTH_UI_DEMOS_MAX is the registry's
+ * compile-time slot budget - bump it when registering more demos. */
+#define SYNTH_UI_DEMOS_MAX 8
+void        synth_ui_request_demo(uint8_t which);
+uint8_t     synth_ui_demo_count(void);
+const char *synth_ui_demo_label(uint8_t idx);
+void        synth_ui_demo_drain(void);
+void        synth_ui_demo_service(void);
 
 /* Editor live-preview service: flushes any pending throttled apply (the graph
  * editor's amp trim, whose melodic apply re-emits the track's steps). Called

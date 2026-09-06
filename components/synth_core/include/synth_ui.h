@@ -21,24 +21,6 @@ uint8_t synth_ui_add_layer(seq_layer_type_t type, uint8_t num_steps);
 void    synth_ui_request_add_layer(void);
 void    synth_ui_request_delete_to_layer(void);
 
-/* Request a built-in demo load by its demo-registry index (0-based; enumerate
- * the registry with synth_ui_demo_count / synth_ui_demo_label - the DEMOS
- * submenu is built straight from those, so a demo added to the registry shows
- * up there and is selectable with its index). Out-of-range indices are
- * ignored. The load rebuilds layer topology (core add/delete), so like the
- * add/delete requests it runs on the seq_ui task - the single layers applier
- * - never on the button task (menu demand). Safe from any Core-0 context;
- * latest request wins. */
-void synth_ui_request_demo(uint8_t which);
-
-/* Demo registry, read-only. synth_ui_demo_count() returns how many demos are
- * selectable and synth_ui_demo_label(idx) their display labels; indices feed
- * synth_ui_request_demo. SYNTH_UI_DEMOS_MAX is the registry's compile-time
- * slot budget - bump it when registering more demos than it currently holds. */
-#define SYNTH_UI_DEMOS_MAX 8
-uint8_t     synth_ui_demo_count(void);
-const char *synth_ui_demo_label(uint8_t idx);
-
 /* Advance the active layer displayed/edited on screen.
  * Resets the cursor to track 0, step 0, edit_mode = true. */
 void synth_ui_cycle_active_layer(void);

@@ -2,8 +2,8 @@
  *
  * Field order IS the format: every ser_ writer and its de_/parse_ reader must
  * walk fields in the same sequence or saved projects corrupt on load. The
- * shared env/filter/lfo helpers keep LAYR's voice_params_t and the ARP/DRON
- * sections from drifting apart.
+ * shared env/filter/lfo helpers keep LAYR's voice_params_t, the ARP/DRON
+ * sections, and the FMVC voice from drifting apart.
  *
  * Two-phase load: parse_* stages into heap scratch, never touching live state;
  * apply runs only after every section parses clean. Any failure frees scratch
@@ -19,6 +19,7 @@
 #include "seq_core_config.h"   /* SEQ_SWING_MAX - same-component engine limits */
 #include "arp_core.h"
 #include "custompatches/drone_core.h"
+#include "custompatches/fm_voice.h"
 #include "amy_fx.h"
 #include "amy.h"               /* amy_num_algorithms - fm_algo_override clamp */
 #include "quantizer.h"
@@ -39,6 +40,7 @@ static const char *TAG = "project_snapshot";
 #define TAG_DRON 0x4E4F5244u
 #define TAG_PROG 0x474F5250u
 #define TAG_CHRD 0x44524843u
+#define TAG_FMVC 0x43564D46u
 
 #define PROJECT_SER_BUF_CAP (64 * 1024)
 
@@ -955,6 +957,65 @@ static bool parse_chrd(tlv_reader_t *b, seq_chord_t slots[SEQ_CHORD_SLOTS])
     return true;
 }
 
+/* ── FM_CUSTOM voice block (patch 276) ────────────────────────────────────
+ * s_fm_voice is the single live custom FM voice; its routing/topology lives
+ * only here, so a project load would otherwise leave patch-276 tracks playing
+ * whatever the previous session (or boot default) last had. Field order:
+ * algorithm, fb_op, op_to[6], op_ratio[6], op_level[6], op_env[6] (shared
+ * ser_env), feedback. Only compiled when the FM editor stack is enabled. */
+
+#if CONFIG_SYNTH_CUSTOM_FM
+
+static void ser_fmvc(tlv_writer_t *w)
+{
+    tlv_put_u8(w, s_fm_voice.algorithm);
+    tlv_put_u8(w, s_fm_voice.fb_op);
+    for (uint8_t i = 0; i < FM_NUM_OPS; i++) tlv_put_u8(w, s_fm_voice.op_to[i]);
+    for (uint8_t i = 0; i < FM_NUM_OPS; i++) tlv_put_f32(w, s_fm_voice.op_ratio[i]);
+    for (uint8_t i = 0; i < FM_NUM_OPS; i++) tlv_put_f32(w, s_fm_voice.op_level[i]);
+    for (uint8_t i = 0; i < FM_NUM_OPS; i++) ser_env(w, &s_fm_voice.op_env[i]);
+    tlv_put_f32(w, s_fm_voice.feedback);
+}
+
+static bool parse_fmvc(tlv_reader_t *r, fm_voice_t *v)
+{
+    /* Corrupt files must not push garbage routing/values onto AMY: sanitize
+     * every field the way the live editors would. */
+    if (!tlv_get_u8(r, &v->algorithm)) return false;
+    if (!tlv_get_u8(r, &v->fb_op))    return false;
+    if (v->fb_op != FM_OP_NONE)       v->fb_op = SEQ_CLAMP_U8(v->fb_op, 0, FM_NUM_OPS - 1);
+    for (uint8_t i = 0; i < FM_NUM_OPS; i++) {
+        if (!tlv_get_u8(r, &v->op_to[i])) return false;
+        if (v->op_to[i] != FM_TO_OUT) v->op_to[i] = SEQ_CLAMP_U8(v->op_to[i], 0, FM_NUM_OPS - 1);
+    }
+    for (uint8_t i = 0; i < FM_NUM_OPS; i++) {
+        if (!tlv_get_f32(r, &v->op_ratio[i])) return false;
+        v->op_ratio[i] = SEQ_CLAMP_F32(v->op_ratio[i], 0.5f, 16.0f);
+    }
+    for (uint8_t i = 0; i < FM_NUM_OPS; i++) {
+        if (!tlv_get_f32(r, &v->op_level[i])) return false;
+        v->op_level[i] = SEQ_CLAMP_F32(v->op_level[i], 0.0f, 1.0f);
+    }
+    for (uint8_t i = 0; i < FM_NUM_OPS; i++) {
+        if (!de_env(r, &v->op_env[i])) return false;
+        if (v->op_env[i].eg_type > ENVELOPE_TRUE_EXPONENTIAL) v->op_env[i].eg_type = ENVELOPE_NORMAL;
+    }
+    if (!tlv_get_f32(r, &v->feedback)) return false;
+    v->feedback = SEQ_CLAMP_F32(v->feedback, 0.0f, 1.2f);
+    return true;
+}
+
+static void apply_fmvc(const fm_voice_t *v)
+{
+    if (!v) return;
+    /* Pure capture: the layer imports below configure every FM_CUSTOM synth
+     * from s_fm_voice, and the trailing FM_PUSH_ALL re-asserts it on the arp
+     * too, so no AMY traffic is owed here. */
+    s_fm_voice = *v;
+}
+
+#endif /* CONFIG_SYNTH_CUSTOM_FM */
+
 /* ── Public API ───────────────────────────────────────────────────────────── */
 
 bool project_snapshot_save(uint8_t slot, const char *name)
@@ -981,6 +1042,9 @@ bool project_snapshot_save(uint8_t slot, const char *name)
     ser_drone(&w);
     ser_prog(&w);
     ser_chrd(&w);
+#if CONFIG_SYNTH_CUSTOM_FM
+    ser_fmvc(&w);
+#endif
 
     bool ok = !w.err && project_store_write(slot, name, buf, w.len);
 
@@ -1015,6 +1079,10 @@ bool project_snapshot_load(uint8_t slot)
     uint8_t staged_layer_count = 0;
     bool got_glob = false, got_arp = false, got_drone = false, got_prog = false;
     bool got_chrd = false;
+#if CONFIG_SYNTH_CUSTOM_FM
+    fm_voice_t staged_fmvc;  memset(&staged_fmvc, 0, sizeof staged_fmvc);
+    bool got_fmvc = false;
+#endif
 
     tlv_reader_t r;
     tlv_reader_init(&r, payload, len);
@@ -1055,6 +1123,13 @@ bool project_snapshot_load(uint8_t slot)
             ok = parse_chrd(&body, staged_chords);
             got_chrd = ok;
             break;
+#if CONFIG_SYNTH_CUSTOM_FM
+        case TAG_FMVC:
+            if (got_fmvc || ver != 1) { ok = false; break; }
+            ok = parse_fmvc(&body, &staged_fmvc);
+            got_fmvc = ok;
+            break;
+#endif
         default:
             break;   /* unknown section: ignore (forward-compat) */
         }
@@ -1083,6 +1158,13 @@ bool project_snapshot_load(uint8_t slot)
     sequencer_core_set_playing(false);
     arp_core_clear_all();
 
+#if CONFIG_SYNTH_CUSTOM_FM
+    /* Capture the loaded FM voice BEFORE the layer imports: import configures
+     * every FM_CUSTOM synth from s_fm_voice, so patch-276 tracks must already
+     * see the file's voice. Old files without a FMVC section keep the live one. */
+    if (got_fmvc) apply_fmvc(&staged_fmvc);
+#endif
+
     /* Chord table BEFORE the layer imports: import sizes each row's voice
      * count from the chord a loaded sentinel references (seq_track_num_voices),
      * so the table must already hold the file's voicings. A file without a
@@ -1104,6 +1186,13 @@ bool project_snapshot_load(uint8_t slot)
     if (got_arp)   apply_arp(&staged_arp);
     if (got_drone) apply_drone(&staged_drone);
     if (got_prog)  apply_prog(&staged_prog);
+
+#if CONFIG_SYNTH_CUSTOM_FM
+    /* Re-assert the loaded voice on every FM_CUSTOM layer and (if it uses it)
+     * the arp, in case a project re-applied patches of its own or the arp kept
+     * its pre-load FM voice. No-op when nothing FM is live. */
+    if (got_fmvc) sequencer_core_fm_voice_changed(FM_PUSH_ALL);
+#endif
 
     /* The layer import writes solo[] wholesale rather than through the setter,
      * so nothing has applied the loaded solo state yet. Do it after the arp and

@@ -180,3 +180,12 @@
 
 /* ── Global chord progression ────────────────────────────────────────────── */
 #define CHORD_PROG_MAX_ENTRIES 8
+
+/* ── Song mode (mute-scene chain) ──────────────────────────────────────────
+ * An arranger-style section chain: each scene is (duration_bars, layer_mask)
+ * and the song auto-advances at bar boundaries while the quintessential
+ * sequencer loop keeps rolling underneath - no transport restart, sections
+ * are just layer-mute changes re-applied through the existing mute/resync
+ * path. layer_mask bit n = layer n sounds. */
+#define SONG_MAX_SCENES 16
+#define SONG_DEFAULT_BARS 4

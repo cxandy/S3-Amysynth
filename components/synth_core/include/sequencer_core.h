@@ -674,6 +674,29 @@ bool    sequencer_core_progression_add_entry(void);
 void    sequencer_core_progression_delete_entry(uint8_t idx);
 void    sequencer_core_progression_service(void);
 
+/* ── Song mode (mute-scene chain) ──────────────────────────────────────────
+ * An arranger-style section chain: each scene is (duration_bars, layer_mask,
+ * bit n = layer n sounds) and the song auto-advances at bar boundaries while
+ * the sequencer loop keeps rolling - sections are layer-mute changes re-applied
+ * through the existing mute/resync path, never a transport restart. Runs
+ * independently of the chord progression (scenes shape texture, the
+ * progression shapes harmony). song_service() must be called at ~20 Hz from
+ * the UI task, alongside progression_service(). */
+void    sequencer_core_song_set_enabled(bool en);
+bool    sequencer_core_song_get_enabled(void);
+void    sequencer_core_song_set_loop(bool loop);
+bool    sequencer_core_song_get_loop(void);
+void    sequencer_core_song_set_scene(uint8_t idx, uint8_t bars, uint8_t layer_mask);
+void    sequencer_core_song_get_scene(uint8_t idx, uint8_t *bars, uint8_t *layer_mask);
+void    sequencer_core_song_set_count(uint8_t count);
+uint8_t sequencer_core_song_get_count(void);
+uint8_t sequencer_core_song_get_current(void);
+uint8_t sequencer_core_song_get_max(void);
+uint8_t sequencer_core_song_bars_in_current(void);
+bool    sequencer_core_song_add_scene(void);
+void    sequencer_core_song_delete_scene(uint8_t idx);
+void    sequencer_core_song_service(void);
+
 /* Manual per-layer chord override (used when global progression is off). */
 void sequencer_core_progression_set_layer_chord(uint8_t layer_idx,
                                                 uint8_t root,

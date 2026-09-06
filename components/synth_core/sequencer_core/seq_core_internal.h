@@ -25,6 +25,9 @@
 /* Private config — included after sdkconfig.h so CONFIG_* are resolved first */
 #include "seq_core_config.h"
 
+/* Song-mode internal state (mute-scene chain engine), owned by seq_core_song.c */
+#include "seq_core_song.h"
+
 /* ── Logging tag — static per TU, one copy each, no ODR conflict ────── */
 static const char * const TAG = "seq_core";
 
@@ -114,6 +117,7 @@ extern volatile bool  s_layers_mutating;   /* guards delete_layer's compaction v
 extern uint8_t        s_cached_step[];
 extern uint8_t        s_track_source_note[][SEQ_TRACKS];
 extern uint32_t       s_bar_baseline;
+extern song_state_t   s_song;
 /* Last PLAIN (non-sentinel) source note per track: the fallback when the chord
  * slot a track references is deleted. Runtime only; 0 = unset, in which case
  * the fallback is C4. */

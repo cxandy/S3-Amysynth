@@ -19,6 +19,7 @@ typedef enum {
     UI_MODE_FM        = 5,
     UI_MODE_DRONE_STD = 6,   /* normal (free-running) drone screen */
     UI_MODE_DEV       = 7,   /* DEV menu (CONFIG_SYNTH_DEV_MENU) */
+    UI_MODE_SONG      = 8,   /* song mode: mute-scene chain editor */
 } ui_mode_t;
 
 /* algo_banner_value sentinel: Shift+Turn landed on a patch with no FM

@@ -75,6 +75,9 @@ static void synth_ui_task(void *pvParameters)
         drone_std_core_service();
         sequencer_core_lfo_service();
         sequencer_core_progression_service();
+        /* Song mode: auto-advance the mute-scene chain at bar boundaries and
+         * drain deferred scene applies. Cheap no-op while disabled. */
+        sequencer_core_song_service();
 #if CONFIG_SEQ_OOM_RESYNC
         /* Re-emit schedules once an AMY OOM burst settles (dropped wire
          * events otherwise leave tracks mute); cheap counter poll otherwise. */

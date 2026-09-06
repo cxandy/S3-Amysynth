@@ -395,6 +395,13 @@ static void dispatch_button_event(my_button_id_t button_id, button_event_t event
             }
             return;
         }
+        /* SONG screen: delete the scene at the cursor. */
+        if (synth_ui_song_is_active()) {
+            if (event == BUTTON_PRESS_DOWN) {
+                synth_ui_song_delete_scene();
+            }
+            return;
+        }
         if (event == BUTTON_PRESS_DOWN) {
             s_patch_held = true;
             synth_ui_set_patch_select_mode(true);
@@ -436,6 +443,27 @@ static void dispatch_button_event(my_button_id_t button_id, button_event_t event
                 synth_ui_set_drum_select_mode(false);
                 if (event == BUTTON_PRESS_DOWN) {
                     synth_ui_prog_add_entry();
+                }
+                return;
+            case MY_BUTTON_0:
+                if (event == BUTTON_LONG_PRESS_START) {
+                    synth_ui_toggle_playing();
+                }
+                return;
+            default:
+                break;
+        }
+    }
+
+    /* SONG screen: same isolation; MY_BUTTON_2 is repurposed as "+scene"
+     * (MY_BUTTON_1 "del" handled above). */
+    if (synth_ui_song_is_active()) {
+        switch (button_id) {
+            case MY_BUTTON_2:
+                s_drum_select_held = false;
+                synth_ui_set_drum_select_mode(false);
+                if (event == BUTTON_PRESS_DOWN) {
+                    synth_ui_song_add_scene();
                 }
                 return;
             case MY_BUTTON_0:
@@ -581,6 +609,9 @@ static void dispatch_button_event(my_button_id_t button_id, button_event_t event
             case UI_VIEW_PROG:
                 if (event == BUTTON_PRESS_DOWN) synth_ui_prog_handle_button();
                 return;
+            case UI_VIEW_SONG:
+                if (event == BUTTON_PRESS_DOWN) synth_ui_song_handle_button();
+                return;
             case UI_VIEW_TRACKOPTS:
                 if (event == BUTTON_PRESS_DOWN) synth_ui_trackopts_handle_button();
                 return;
@@ -693,6 +724,8 @@ static void encoder_process_steps(long steps)
         synth_ui_arp_handle_encoder(steps);
     } else if (v == UI_VIEW_PROG) {
         synth_ui_prog_handle_encoder((int)steps);
+    } else if (v == UI_VIEW_SONG) {
+        synth_ui_song_handle_encoder((int)steps);
     } else if (v == UI_VIEW_TRACKOPTS) {
         synth_ui_trackopts_handle_encoder((int)steps);
 #if CONFIG_SYNTH_DEV_MENU

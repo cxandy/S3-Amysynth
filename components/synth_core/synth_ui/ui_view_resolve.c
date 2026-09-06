@@ -24,6 +24,7 @@ ui_view_id_t synth_ui_active_view(void)
         case UI_MODE_DRONE:     return s_drone_vis_open ? UI_VIEW_DRONE_VIS : UI_VIEW_DRONE;
         case UI_MODE_DRONE_STD: return UI_VIEW_DRONE_STD;
         case UI_MODE_PROG:      return UI_VIEW_PROG;
+        case UI_MODE_SONG:      return UI_VIEW_SONG;
         case UI_MODE_TRACKOPTS: return UI_VIEW_TRACKOPTS;
 #if CONFIG_SYNTH_CUSTOM_FM
         case UI_MODE_FM:        return UI_VIEW_FM;
@@ -46,6 +47,7 @@ static uint32_t sig_arp(ui_view_vw_t *vw)       { return arp_view_signature(&vw-
 static uint32_t sig_drone(ui_view_vw_t *vw)     { return drone_view_signature(&vw->drone); }
 static uint32_t sig_drone_std(ui_view_vw_t *vw) { return drone_std_view_signature(&vw->drone); }
 static uint32_t sig_prog(ui_view_vw_t *vw)      { return prog_view_signature(&vw->prog); }
+static uint32_t sig_song(ui_view_vw_t *vw)      { return song_view_signature(&vw->song); }
 static uint32_t sig_trackopts(ui_view_vw_t *vw) { return trackopts_view_signature(&vw->trackopts); }
 static uint32_t sig_seq(ui_view_vw_t *vw)       { (void)vw; return seq_view_signature(); }
 
@@ -60,6 +62,7 @@ static void draw_arp(u8g2_t *g, ui_view_vw_t *vw)       { display_arp_draw_frame
 static void draw_drone(u8g2_t *g, ui_view_vw_t *vw)     { display_drone_draw_frame_titled(g, "STUTTER", &vw->drone); }
 static void draw_drone_std(u8g2_t *g, ui_view_vw_t *vw) { display_drone_draw_frame_titled(g, "DRONE", &vw->drone); }
 static void draw_prog(u8g2_t *g, ui_view_vw_t *vw)      { display_prog_draw_frame(g, &vw->prog); }
+static void draw_song(u8g2_t *g, ui_view_vw_t *vw)      { display_song_draw_frame(g, &vw->song); }
 static void draw_trackopts(u8g2_t *g, ui_view_vw_t *vw) { display_trackopts_draw_frame(g, &vw->trackopts); }
 static void draw_seq(u8g2_t *g, ui_view_vw_t *vw)       { (void)vw; display_seq_draw_frame(g, &seq_state, seq_get_bpm()); }
 
@@ -157,6 +160,7 @@ const ui_view_desc_t ui_view_table[UI_VIEW_COUNT] = {
     [UI_VIEW_DRONE]     = { "DRONE",  sig_drone,     draw_drone,     "Patch",  "-",     "Menu",  NULL,               NULL,                   52 },
     [UI_VIEW_DRONE_STD] = { "DRONST", sig_drone_std, draw_drone_std, "Patch",  "-",     "Menu",  NULL,               NULL,                   52 },
     [UI_VIEW_PROG]      = { "PROG",   sig_prog,      draw_prog,      "Del",    "+Add",  "Menu",  NULL,               NULL,                   30 },
+    [UI_VIEW_SONG]      = { "SONG",   sig_song,      draw_song,      "Del",    "+Add",  "Menu",  NULL,               NULL,                   30 },
     [UI_VIEW_TRACKOPTS] = { "TRKOPT", sig_trackopts, draw_trackopts, "Patch",  "DelLy", "Menu",  NULL,               NULL,                    0 },
 #if CONFIG_SYNTH_CUSTOM_FM
     [UI_VIEW_FM]        = { "FM",     sig_fm,        draw_fm,        "Patch",  "-",     "Menu",  NULL,               NULL,                   64 },

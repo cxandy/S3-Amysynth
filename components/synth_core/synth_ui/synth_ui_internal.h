@@ -5,6 +5,7 @@
 #include "synth_ui.h"          /* synth_ui_state_t, seq_layer_type_t */
 #include "display_drone.h"     /* drone_view_t */
 #include "display_prog.h"      /* prog_view_t */
+#include "display_song.h"      /* song_view_t */
 #include "display_trackopts.h" /* trackopts_view_t */
 #include "display_dev.h"       /* dev_view_t (CONFIG_SYNTH_DEV_MENU) */
 #include "display_menu.h"      /* menu_view_t */
@@ -74,7 +75,8 @@ uint32_t menu_view_signature(menu_view_t *out);
 uint32_t drone_view_signature(drone_view_t *out);
 uint32_t drone_std_view_signature(drone_view_t *out);
 uint32_t prog_view_signature(prog_view_t *out);
-uint32_t trackopts_view_signature(trackopts_view_t *out);
+    uint32_t song_view_signature(song_view_t *out);
+    uint32_t trackopts_view_signature(trackopts_view_t *out);
 uint32_t stepedit_view_signature(stepedit_view_t *out);
 uint32_t fm_view_signature(fm_view_t *out);
 uint32_t dev_view_signature(dev_view_t *out);       /* CONFIG_SYNTH_DEV_MENU */
@@ -106,6 +108,7 @@ typedef union {
     arp_view_t       arp;
     drone_view_t     drone;      /* DRONE and DRONE_VIS */
     prog_view_t      prog;
+    song_view_t      song;
     trackopts_view_t trackopts;
     stepedit_view_t  stepedit;
     dev_view_t       dev;
@@ -137,7 +140,8 @@ const char *synth_ui_graph_hint_b2(void);
 void     drone_build_view(drone_view_t *out);
 void     drone_std_build_view(drone_view_t *out);
 void     prog_build_view(prog_view_t *out);
-void     trackopts_build_view(trackopts_view_t *out);
+    void     song_build_view(song_view_t *out);
+    void     trackopts_build_view(trackopts_view_t *out);
 void     menu_build_view(menu_view_t *out);
 void     arp_build_view(arp_view_t *out);
 void     stepedit_build_view(stepedit_view_t *out);

@@ -114,6 +114,15 @@ bool synth_ui_prog_handle_button(void);
 bool synth_ui_prog_add_entry(void);
 bool synth_ui_prog_delete_entry(void);
 
+/* Song-mode screen — mute-scene chain (arranger sections). Active when
+ * seq_state.ui_mode == UI_MODE_SONG and no overlay is up. Runs independently
+ * of the chord progression: scenes shape texture, the progression harmony. */
+bool synth_ui_song_is_active(void);
+bool synth_ui_song_handle_encoder(int delta);
+bool synth_ui_song_handle_button(void);
+bool synth_ui_song_add_scene(void);
+bool synth_ui_song_delete_scene(void);
+
 /* Track Options screen — per-track repeat rate + per-layer manual chord mode.
  * Active when seq_state.ui_mode == UI_MODE_TRACKOPTS and no overlay is up. */
 bool synth_ui_trackopts_is_active(void);
@@ -273,6 +282,7 @@ typedef enum {
     UI_VIEW_DRONE,
     UI_VIEW_DRONE_STD,
     UI_VIEW_PROG,
+    UI_VIEW_SONG,
     UI_VIEW_TRACKOPTS,
     UI_VIEW_FM,
     UI_VIEW_DEV,

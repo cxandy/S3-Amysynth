@@ -1,0 +1,76 @@
+name: Build
+
+on:
+  push:
+    paths-ignore:
+      - '*.md'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Ensure CMake >= 4.0
+        run: python -m pip install "cmake>=4.0"
+
+      - name: Cache IDF tools
+        uses: actions/cache@v4
+        with:
+          path: |
+            $HOME/.espressif
+            .idf/esp-idf-v6.0.3
+            .idf/esp-idf-v6.0.3.zip
+          key: esp-idf-v6.0.3-${{ runner.os }}
+
+      - name: Install ESP-IDF v6.0.3
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/.idf"
+          cd "$GITHUB_WORKSPACE/.idf"
+          if [ ! -f esp-idf-v6.0.3.zip ]; then
+            curl -L --fail -o esp-idf-v6.0.3.zip \
+              https://dl.espressif.com/github_assets/espressif/esp-idf/releases/download/v6.0.3/esp-idf-v6.0.3.zip
+          fi
+          if [ ! -d esp-idf-v6.0.3/tools ]; then
+            unzip -q esp-idf-v6.0.3.zip
+          fi
+          cd esp-idf-v6.0.3
+          ./install.sh esp32s3
+
+      - name: Build
+        env:
+          IDF_PATH: ${{ github.workspace }}/.idf/esp-idf-v6.0.3
+        run: |
+          source "$IDF_PATH/export.sh"
+          idf.py build
+          python -m esptool --chip esp32s3 merge-bin \
+            -o S3-Amysynth-merged.bin \
+            0x0 build/bootloader/bootloader.bin \
+            0x8000 build/partition_table/partition-table.bin \
+            0x10000 build/S3-Amysynth.bin
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: S3-Amysynth-firmware
+          path: |
+            build/S3-Amysynth.bin
+            build/bootloader/bootloader.bin
+            build/partition_table/partition-table.bin
+            build/flash_args
+            S3-Amysynth-merged.bin
+          if-no-files-found: error

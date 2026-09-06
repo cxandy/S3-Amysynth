@@ -34,6 +34,8 @@ typedef enum {
     MY_BUTTON_0,        // GPIO17 → layer cycle (tap) / play-stop (long); commit
                         //          or cancel an open editor
     MY_BUTTON_SHIFT,    // GPIO47 → hold modifier for the SHIFT+1/2/3 chords
+    MY_BUTTON_TRANSPORT, // optional dedicated play/stop pad (no default pin;
+                         //          -1 disables it, see CONFIG_AMYSYNTH_BTN_TRANSPORT_GPIO)
     MY_BUTTON_MAX
 } my_button_id_t;
 

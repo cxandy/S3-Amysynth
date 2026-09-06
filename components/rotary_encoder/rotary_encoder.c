@@ -1,5 +1,6 @@
 #include "rotary_encoder.h"
 #include "driver/pulse_cnt.h"
+#include "driver/gpio.h"
 #include "esp_check.h"
 #include "esp_log.h"
 #include <stdlib.h>
@@ -55,8 +56,13 @@ static esp_err_t rotary_encoder_create_channels(pcnt_unit_handle_t unit, gpio_nu
         return ret;
     }
 
+    /* X1 decode, Aciduino-style: only the A rising edge increments the
+     * counter, so one detent = exactly one count; direction comes from the B
+     * level sampled at that edge. Bounce on the falling edge / contact
+     * chatter can no longer multiply counts (which X4 did: 3-5 counts per
+     * detent, and dividing them ran alternately dead or jumping). */
     ret = pcnt_channel_set_edge_action(chan_a,
-        PCNT_CHANNEL_EDGE_ACTION_DECREASE, PCNT_CHANNEL_EDGE_ACTION_INCREASE);
+        PCNT_CHANNEL_EDGE_ACTION_INCREASE, PCNT_CHANNEL_EDGE_ACTION_HOLD);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "pcnt_channel_set_edge_action A failed: %s", esp_err_to_name(ret));
         goto err_cleanup;
@@ -69,17 +75,11 @@ static esp_err_t rotary_encoder_create_channels(pcnt_unit_handle_t unit, gpio_nu
         goto err_cleanup;
     }
 
+    /* channel B is created only to hold the second pull-up; it never counts */
     ret = pcnt_channel_set_edge_action(chan_b,
-        PCNT_CHANNEL_EDGE_ACTION_INCREASE, PCNT_CHANNEL_EDGE_ACTION_DECREASE);
+        PCNT_CHANNEL_EDGE_ACTION_HOLD, PCNT_CHANNEL_EDGE_ACTION_HOLD);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "pcnt_channel_set_edge_action B failed: %s", esp_err_to_name(ret));
-        goto err_cleanup;
-    }
-
-    ret = pcnt_channel_set_level_action(chan_b,
-        PCNT_CHANNEL_LEVEL_ACTION_KEEP, PCNT_CHANNEL_LEVEL_ACTION_INVERSE);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "pcnt_channel_set_level_action B failed: %s", esp_err_to_name(ret));
         goto err_cleanup;
     }
 
@@ -154,6 +154,13 @@ esp_err_t rotary_encoder_new_with_config(const rotary_encoder_config_t *config, 
     ret = pcnt_unit_start(encoder->pcnt_unit);
     if (ret != ESP_OK) { ESP_LOGE(TAG, "pcnt_unit_start failed: %s", esp_err_to_name(ret)); goto err; }
     encoder->pcnt_started = true;
+
+    /* Pull the quadrature lines to a defined level while a mechanical
+     * contact is open. With the pins floating, noise and shaft coupling
+     * read as phantom counts (menu scrolling on its own) - the chip's
+     * internal pull makes an open contact read solidly high. */
+    gpio_pullup_en(config->pin_a);
+    gpio_pullup_en(config->pin_b);
 
     *out_handle = encoder;
     return ESP_OK;

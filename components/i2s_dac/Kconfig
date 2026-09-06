@@ -1,0 +1,55 @@
+menu "I2S DAC Output"
+
+config AMYSYNTH_I2S_DAC
+	bool "PCM5102 I2S DAC output"
+	default n
+	help
+		Drives the board's PCM5102 DAC as the active audio egress. With this
+		on, every rendered AMY block is also written to the I2S TX channel
+		(BCK / LRCK / DIN), so the synth sounds standalone without a USB
+		host. USB audio (UAC2) is not affected and keeps working alongside
+		it. Off by default so the upstream devkit (OLED on SCL=5) is not
+		affected; enable it on boards that route these pins to a DAC.
+
+config AMYSYNTH_I2S_DAC_BCLK_GPIO
+	int "I2S BCK (bit clock) GPIO"
+	depends on AMYSYNTH_I2S_DAC
+	default 5
+	help
+		PCM5102 BCK pin. Hardware wiring "DAC PCM5102": BCK = IO5.
+
+config AMYSYNTH_I2S_DAC_WS_GPIO
+	int "I2S WS / LRCK (word select) GPIO"
+	depends on AMYSYNTH_I2S_DAC
+	default 7
+	help
+		PCM5102 LRCK pin. Hardware wiring "DAC PCM5102": LRCK = IO7.
+
+config AMYSYNTH_I2S_DAC_DOUT_GPIO
+	int "I2S DOUT (serial data) GPIO"
+	depends on AMYSYNTH_I2S_DAC
+	default 6
+	help
+		PCM5102 DIN pin. Hardware wiring "DAC PCM5102": DIN = IO6.
+
+config AMYSYNTH_I2S_DAC_MCLK_GPIO
+	int "I2S MCLK (system clock) GPIO, -1 = unused"
+	depends on AMYSYNTH_I2S_DAC
+	default -1
+	help
+		Optional MCLK line. Most PCM5102 modules auto-detect SCK from BCK,
+		so this is left unconnected by default (-1 = I2S_GPIO_UNUSED). If
+		your module needs a real SCK, wire SCK to a spare GPIO and set it
+		here.
+
+config AMYSYNTH_I2S_DAC_DMA_DESC_NUM
+	int "I2S TX DMA descriptor count (buffer depth)"
+	depends on AMYSYNTH_I2S_DAC
+	default 4
+	range 2 8
+	help
+		Number of DMA descriptors in the I2S TX ring, each sized to one AMY
+		render block. More descriptors tolerate transient render jitter
+		before a write drops a block, at the cost of extra output latency.
+
+endmenu

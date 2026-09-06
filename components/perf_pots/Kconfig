@@ -1,0 +1,37 @@
+menu "Performance Pots"
+
+config AMYSYNTH_POT_CUTOFF_GPIO
+    int "Filter-cutoff pot GPIO (ADC1 channel, -1 = disabled)"
+    default -1
+    range -1 10
+    help
+        Analog performance controls read from the ESP32-S3 ADC1 unit
+        (GPIO1..10; one channel per pot). A low-priority task samples each
+        enabled pin at ~20 Hz, smooths it, and pushes the value into the
+        synth only when it moves past a small deadband.
+        -1 (the default) disables the role, so the upstream devkit is
+        unaffected; boards with spare ADC1 pads set the pins here.
+        Each symbol defaults to -1; all three can coexist.
+
+config AMYSYNTH_POT_FX_GPIO
+    int "FX pot GPIO (ADC1 channel, -1 = disabled)"
+    default -1
+    range -1 10
+    help
+        Acts as a MIDI CC1 mod wheel into the wireless live-play slot when
+        the wireless synth is compiled in: the 20 Hz live_play LFO stepper
+        turns the position into a ~4 Hz osc-0 vibrato (depth ramps up to +-1
+        semitone at full travel, 0 = no vibrato). Without the wireless synth
+        (upstream devkit) it maps onto the global echo + reverb sends
+        (0..100%) instead.
+
+config AMYSYNTH_POT_VOLUME_GPIO
+    int "Master-volume pot GPIO (ADC1 channel, -1 = disabled)"
+    default -1
+    range -1 10
+    help
+        Maps the pot onto AMY's global master volume (0..2x, unity in the
+        middle). Directly scales the rendered mix before it reaches any
+        output.
+
+endmenu

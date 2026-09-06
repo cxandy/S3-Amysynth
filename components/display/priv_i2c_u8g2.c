@@ -229,7 +229,11 @@ esp_err_t i2c_u8g2_init(i2c_u8g2_handle_t *handle, const i2c_u8g2_config_t *conf
 
     i2c_u8g2_setup_fn_t setup_fn = config->setup_fn;
     if (setup_fn == NULL) {
+#if CONFIG_I2C_U8G2_PANEL_SH1106
+        setup_fn = u8g2_Setup_sh1106_i2c_128x64_noname_f;
+#else
         setup_fn = u8g2_Setup_ssd1315_i2c_128x64_noname_f;
+#endif
     }
 
     setup_fn(&handle->u8g2,

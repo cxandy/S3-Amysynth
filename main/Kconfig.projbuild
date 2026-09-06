@@ -1,3 +1,111 @@
+menu "User Hardware"
+
+comment "Board pin mapping. Defaults match the upstream devkit layout;"
+
+comment "override the ones that differ on YOUR board in sdkconfig.defaults."
+
+config AMYSYNTH_BTN_SHOULDER_GPIO
+    int "Button SW-L / SHOULDER GPIO"
+    default 15
+
+config AMYSYNTH_BTN_1_GPIO
+    int "Button SW-U / 1 GPIO"
+    default 18
+
+config AMYSYNTH_BTN_2_GPIO
+    int "Button SW-D / 2 GPIO"
+    default 8
+
+config AMYSYNTH_BTN_3_GPIO
+    int "Button 3 / menu key GPIO"
+    default 42
+
+config AMYSYNTH_BTN_ENC1_GPIO
+    int "Encoder push / ENC confirm GPIO"
+    default 16
+
+config AMYSYNTH_BTN_0_GPIO
+    int "Button NAV-2 / 0 GPIO"
+    default 17
+
+config AMYSYNTH_BTN_SHIFT_GPIO
+    int "Button SHIFT GPIO (note: GPIO0 = BOOT strapping)"
+    default 47
+
+config AMYSYNTH_BTN_TRANSPORT_GPIO
+    int "Button transport / play-stop GPIO (-1 = disabled)"
+    default -1
+    help
+        Optional dedicated play/stop pad that toggles playback with a single
+        tap in every view. -1 (the default) disables it, and transport stays
+        on MY_BUTTON_0's long-press only. Boards with a spare pad set this to
+        its GPIO to gain a second, tap-to-toggle key.
+
+config AMYSYNTH_ENCODER_A_GPIO
+    int "Encoder phase A GPIO"
+    default 40
+
+config AMYSYNTH_ENCODER_B_GPIO
+    int "Encoder phase B GPIO"
+    default 41
+
+config AMYSYNTH_MIDI_CLOCK_TX_GPIO
+    int "MIDI clock TX GPIO (UART, -1 = disabled)"
+    default -1
+    range -1 48
+    help
+        Emits classic DIN MIDI clock on this GPIO: AMY runs as the sync
+        master and its sequencer streams realtime 0xF8 (24 PPQN, tempo-locked
+        to the pattern) over a UART TX at 31250 baud 8-N-1, with 0xFA/0xFC
+        transport messages following the play/pause key. External gear
+        (drum machines, sequencers, EFX) can then follow the groove.
+        -1 (the default) disables the role entirely, so the upstream devkit
+        is unaffected. Boards with a MIDI-out jack set this to its pin
+        (e.g. GPIO15).
+
+config AMYSYNTH_MIDI_IN_GPIO
+    int "MIDI in GPIO (UART, -1 = disabled)"
+    default -1
+    range -1 48
+    help
+        Reads DIN-5 MIDI on this GPIO (same UART, 31250 baud 8-N-1) and plays
+        incoming notes on the live-play voice - the same single performance
+        slot BLE MIDI uses. External keyboards / sequencers / DAWs can then
+        play the box in real time.
+        -1 (the default) disables the role entirely, so the upstream devkit
+        is unaffected. Boards with a MIDI-in jack set this to its pin
+        (e.g. GPIO4).
+
+comment "OLED SCL/SDA, DAC and status LED pins stay in their own"
+
+comment "menus: Display, Audio (I2S DAC), and Status LED component."
+
+endmenu
+
+menu "Encoder Input"
+
+config AMYSYNTH_ENCODER_TICKS_PER_STEP
+    int "Encoder raw PCNT ticks per UI step"
+    default 1
+    range 1 8
+    help
+        How many raw PCNT counts the encoder must accumulate before the UI sees
+        one step action. The driver decodes X1 (only the A-phase rising edge
+        counts, direction from the B phase) so a standard mechanical encoder
+        reports exactly 1 count per detent - 1 gives one clean UI move per
+        notch. Leave 1 unless your encoder is a 2 or 4-count-per-detent type
+        (high-resolution / dual-cycle-per-detent), then raise to match.
+
+config AMYSYNTH_ENCODER_FLIP_DIRECTION
+    bool "Flip encoder direction"
+    default n
+    help
+        Useful when a rotated-right encoder detent is reported as a step but
+        the firmware moves the cursor the wrong way (different A/B wiring or
+        reversed A/B pins).
+
+endmenu
+
 menu "Audio Diagnostics"
 
 config USB_AUDIO_DIAGNOSTICS

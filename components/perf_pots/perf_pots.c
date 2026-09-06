@@ -14,12 +14,13 @@
  * player actually moves a knob, so a power-on demo keeps AMY's default sound
  * regardless of where the knobs happen to sit.
  *
- * Cutoff sweeps every melodic layer's filter (engaging each on first known
- * movement, like opening its filter editor would), so the knob stays audible
- * no matter which layer is armed. Volume drives AMY's global master (unity at
- * 50%). The FX knob acts as a MIDI CC1 mod wheel into the wireless live-play
- * slot (osc-0 vibrato) when the wireless synth is compiled in, and falls back
- * to the global echo + reverb sends otherwise.
+ * Cutoff is a tone knob: it sweeps every melodic layer's low-pass filter AND
+ * the live-play slot (so it stays audible however you play - even a drum-only
+ * song with a keyboard over DIN), and resonance rides up as the cutoff
+ * closes, giving the sweep an unmistakable "wow". Volume drives AMY's global
+ * master (unity at 50%). The FX knob is a space knob: global echo + reverb
+ * send, audible on every voice the moment you turn it - sequencer, live slot
+ * and demos all route through AMY's effect bus.
  */
 
 #include "perf_pots.h"
@@ -34,10 +35,10 @@
 #include <stdint.h>
 
 #include "sequencer_core.h"
+#include "amy.h"            /* amy_event / FILTER_* / COEF_* */
+#include "amy_helpers.h"    /* amy_helpers_event_begin/send */
 #include "amy_fx.h"
-#ifdef CONFIG_SYNTH_WIRELESS
-#include "live_play.h"
-#endif
+#include "synth_slots.h"    /* LIVE_SYNTH */
 
 static const char *TAG = "perf_pots";
 
@@ -54,6 +55,11 @@ enum { P_CUTOFF = 0, P_VOLUME, P_FX, P_COUNT };
  * start at 80 so the closed end stays audible, end at the setter's max. */
 #define POT_CUTOFF_MIN_HZ   80.0f
 #define POT_CUTOFF_MAX_HZ   8000.0f
+/* Resonance rides 0.51 (flat) .. 4.0 (ringing) as the knob closes the
+ * cutoff, so the sweep reads as a filter "wow" instead of a mild bright
+ * change; capped well under AMY's 8.0 to avoid self-oscillation. */
+#define POT_RES_MIN   0.51f
+#define POT_RES_SPAN  3.49f
 
 static const int s_pot_pins[P_COUNT] = {
     CONFIG_AMYSYNTH_POT_CUTOFF_GPIO,
@@ -74,13 +80,16 @@ static void pot_push(int idx, float v)
 {
     switch (idx) {
     case P_CUTOFF: {
-        /* Sweep every melodic layer/track so the knob always audibly tracks
-         * the playing content, regardless of which layer is armed (a boot
-         * pass with the drum layer armed would otherwise be silent). */
-        uint8_t n = sequencer_core_get_num_layers();
-        bool    did = false;
+        /* Tone knob: sweep every melodic layer's low-pass filter AND the
+         * live-play slot, so the knob always audibly tracks the playing
+         * content (a boot pass with a drum layer armed, or a keyboard over
+         * DIN, no longer leaves it silent). Resonance closes with the filter
+         * for an audible filter sweep on any patch. */
         float cutoff = POT_CUTOFF_MIN_HZ *
                        powf(POT_CUTOFF_MAX_HZ / POT_CUTOFF_MIN_HZ, v);
+        float res    = POT_RES_MIN + POT_RES_SPAN * powf(v, 1.5f);
+
+        uint8_t n = sequencer_core_get_num_layers();
         for (uint8_t li = 0; li < n; li++) {
             if (sequencer_core_get_layer_type(li) != SEQ_LAYER_MELODIC)
                 continue;
@@ -88,42 +97,43 @@ static void pot_push(int idx, float v)
                 seq_filter_t f;
                 if (!sequencer_core_get_melodic_filter(li, t, &f)) continue;
                 f.cutoff_hz = cutoff;
+                f.resonance = res;
                 f.enabled   = true;   /* first known turn engages the filter */
                 sequencer_core_set_melodic_filter(li, t, &f);
-                did = true;
             }
         }
-        if (!did) {
-            ESP_LOGD(TAG, "cutoff: no melodic layer present, idle");
-            return;
-        }
-        ESP_LOGD(TAG, "cutoff sweep -> %.0f Hz (layers=%u)", cutoff, n);
+
+        /* Live-play slot (DIN/BLE/USB keyboard): independent of any melodic
+         * layer. Pushing FILTER_LPF24 overrides the patch for the sounding
+         * voice; the knob re-asserts on every move. */
+        amy_event *e = amy_helpers_event_begin();
+        e->synth                    = LIVE_SYNTH;
+        e->filter_type              = FILTER_LPF24;
+        e->filter_freq_coefs[COEF_CONST] = cutoff;
+        e->resonance                = res;
+        amy_helpers_event_send(e);
+
+        ESP_LOGD(TAG, "tone sweep -> %.0f Hz, res %.2f (layers=%u)", cutoff, res, n);
         break;
     }
     case P_VOLUME:
         amy_fx_set_master_volume(v * 2.0f);   /* unity at v=0.5 */
         ESP_LOGD(TAG, "master volume -> %.2f", v * 2.0f);
         break;
-    case P_FX: {
-#if CONFIG_SYNTH_WIRELESS
-        /* CC1 mod wheel -> live-slot osc-0 vibrato. The 20 Hz live_play LFO
-         * stepper reads the value into a ~4 Hz sine while it stays nonzero
-         * and pushes a neutral once it returns to 0, so the knob acts like a
-         * MIDI mod wheel; the deadband/EMA in the task becomes the wheel's
-         * own smoothing. */
-        live_play_cc(0, 1u, (uint8_t)(v * 127.0f));
-        ESP_LOGD(TAG, "mod wheel CC1 -> %u", (uint8_t)(v * 127.0f));
+    case P_FX:
+        /* Space knob: global echo + reverb send amount on every voice - the
+         * sequencer, the live slot and the built-in demos all route through
+         * AMY's effect bus, so turning it up is unmistakable regardless of
+         * what is playing (unlike a per-voice patch/CC mapping). */
+        {
+            uint8_t lvl = (uint8_t)(v * 100.0f);
+            s_fx.echo_level   = lvl;
+            s_fx.reverb_level = lvl;
+            fx_push_echo();
+            fx_push_reverb();
+            ESP_LOGD(TAG, "space send -> %u%%", lvl);
+        }
         break;
-#else
-        uint8_t lvl = (uint8_t)(v * 100.0f);
-        s_fx.echo_level   = lvl;
-        s_fx.reverb_level = lvl;
-        fx_push_echo();
-        fx_push_reverb();
-        ESP_LOGD(TAG, "fx send -> %u%%", lvl);
-        break;
-#endif
-    }
     }
 }
 

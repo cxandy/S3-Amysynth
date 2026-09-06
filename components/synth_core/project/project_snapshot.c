@@ -17,6 +17,7 @@
 
 #include "sequencer_core.h"
 #include "seq_core_config.h"   /* SEQ_SWING_MAX - same-component engine limits */
+#include "seq_core_song.h"     /* song scene table (SONG_MAX_SCENES/DEFAULT_BARS) */
 #include "arp_core.h"
 #include "custompatches/drone_core.h"
 #include "custompatches/fm_voice.h"
@@ -40,6 +41,7 @@ static const char *TAG = "project_snapshot";
 #define TAG_DRON 0x4E4F5244u
 #define TAG_PROG 0x474F5250u
 #define TAG_CHRD 0x44524843u
+#define TAG_SONG 0x474E4F53u
 #define TAG_FMVC 0x43564D46u
 
 #define PROJECT_SER_BUF_CAP (64 * 1024)
@@ -1016,6 +1018,72 @@ static void apply_fmvc(const fm_voice_t *v)
 
 #endif /* CONFIG_SYNTH_CUSTOM_FM */
 
+/* ── Song-mode block ─────────────────────────────────────────────────────
+ * The scene composition (count, per-scene bars/layer mask, loop, armed) is
+ * session state owned by the song module, so a load would otherwise leave
+ * the song table at whatever the previous session had - same gap FMVC just
+ * closed for the FM voice. Playback position (current scene / bar anchor) is
+ * deliberately not persisted: the service self-heals from scene 0 on the
+ * next play-start. Field order: count, enabled, loop, then per scene bars +
+ * layer_mask. */
+
+typedef struct {
+    song_scene_t scenes[SONG_MAX_SCENES];
+    uint8_t      count;
+    uint8_t      enabled;
+    uint8_t      loop;
+} staged_song_t;
+
+static void ser_song(tlv_writer_t *w)
+{
+    uint8_t n = sequencer_core_song_get_count();
+    tlv_put_u8(w, n);
+    tlv_put_u8(w, sequencer_core_song_get_enabled() ? 1 : 0);
+    tlv_put_u8(w, sequencer_core_song_get_loop() ? 1 : 0);
+    for (uint8_t i = 0; i < n; i++) {
+        uint8_t bars = 0, mask = 0;
+        sequencer_core_song_get_scene(i, &bars, &mask);
+        tlv_put_u8(w, bars);
+        tlv_put_u8(w, mask);
+    }
+}
+
+static bool parse_song(tlv_reader_t *r, staged_song_t *s)
+{
+    uint8_t v;
+    if (!tlv_get_u8(r, &s->count)) return false;
+    if (!tlv_get_u8(r, &v))        return false;
+    s->enabled = (v != 0);
+    if (!tlv_get_u8(r, &v))        return false;
+    s->loop    = (v != 0);
+    if (s->count < 1) s->count = 1;
+    if (s->count > SONG_MAX_SCENES) s->count = SONG_MAX_SCENES;
+    for (uint8_t i = 0; i < s->count; i++) {
+        if (!tlv_get_u8(r, &s->scenes[i].bars))       return false;
+        if (!tlv_get_u8(r, &s->scenes[i].layer_mask)) return false;
+        if (s->scenes[i].bars == 0) s->scenes[i].bars = SONG_DEFAULT_BARS;
+        s->scenes[i].layer_mask &= 0x0F;
+    }
+    return true;
+}
+
+static void apply_song(const staged_song_t *s)
+{
+    if (!s) return;
+    /* Rebuild through the public accessors (the song table's ownership
+     * contract): disable first so scene edits can't spur the live-service
+     * apply against the pre-load table, then re-enable from the file so the
+     * 20 Hz service re-applies the active scene's mask. */
+    sequencer_core_song_set_enabled(false);
+    sequencer_core_song_set_count(s->count);
+    for (uint8_t i = 0; i < s->count; i++) {
+        sequencer_core_song_set_scene(i, s->scenes[i].bars,
+                                      s->scenes[i].layer_mask);
+    }
+    sequencer_core_song_set_loop(s->loop);
+    if (s->enabled) sequencer_core_song_set_enabled(true);
+}
+
 /* ── Public API ───────────────────────────────────────────────────────────── */
 
 bool project_snapshot_save(uint8_t slot, const char *name)
@@ -1042,6 +1110,7 @@ bool project_snapshot_save(uint8_t slot, const char *name)
     ser_drone(&w);
     ser_prog(&w);
     ser_chrd(&w);
+    ser_song(&w);
 #if CONFIG_SYNTH_CUSTOM_FM
     ser_fmvc(&w);
 #endif
@@ -1078,7 +1147,8 @@ bool project_snapshot_load(uint8_t slot)
     memset(staged_chords, 0, sizeof staged_chords);
     uint8_t staged_layer_count = 0;
     bool got_glob = false, got_arp = false, got_drone = false, got_prog = false;
-    bool got_chrd = false;
+    bool got_chrd = false, got_song = false;
+    staged_song_t staged_song;  memset(&staged_song, 0, sizeof staged_song);
 #if CONFIG_SYNTH_CUSTOM_FM
     fm_voice_t staged_fmvc;  memset(&staged_fmvc, 0, sizeof staged_fmvc);
     bool got_fmvc = false;
@@ -1122,6 +1192,11 @@ bool project_snapshot_load(uint8_t slot)
             if (got_chrd || ver != 1) { ok = false; break; }
             ok = parse_chrd(&body, staged_chords);
             got_chrd = ok;
+            break;
+        case TAG_SONG:
+            if (got_song || ver != 1) { ok = false; break; }
+            ok = parse_song(&body, &staged_song);
+            got_song = ok;
             break;
 #if CONFIG_SYNTH_CUSTOM_FM
         case TAG_FMVC:
@@ -1198,6 +1273,11 @@ bool project_snapshot_load(uint8_t slot)
      * so nothing has applied the loaded solo state yet. Do it after the arp and
      * drone applies, or their duck would be undone by the enable that follows. */
     sequencer_core_notify_solo_changed();
+
+    /* Song scene masks reference the just-imported layer indices, so the
+     * song table must be restored last: re-enabling from the file lets the
+     * 20 Hz service re-apply the active scene's mask against the new layers. */
+    if (got_song) apply_song(&staged_song);
 
     synth_ui_reload_mirror_from_core();
 

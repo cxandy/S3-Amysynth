@@ -57,14 +57,6 @@
 #define CONFIG_AMYSYNTH_INPUT_DIAGNOSTICS 0
 #endif
 
-#ifndef CONFIG_AMYSYNTH_ENCODER_TICKS_PER_STEP
-#define CONFIG_AMYSYNTH_ENCODER_TICKS_PER_STEP 2
-#endif
-
-#ifndef CONFIG_AMYSYNTH_ENCODER_FLIP_DIRECTION
-#define CONFIG_AMYSYNTH_ENCODER_FLIP_DIRECTION 0
-#endif
-
 static const char *TAG = "main"; // For ESP_LOG and related logs in this file
 
 // Rotary encoder pins (User Hardware Kconfig, defaults = devkit layout)
@@ -989,23 +981,10 @@ void app_main(void)
      * strict 1:1 GPTimer render pacing plus the USB output-level watchdog.
      * threshold 0 => overload_threshold_us 0 => amy_overload_check no-ops. */
     amy_cfg.overload_threshold = 0.0f;
-    /* MIDI in/out (CONFIG_AMYSYNTH_MIDI_CLOCK_TX_GPIO / MIDI_IN_GPIO): AMY owns
-     * the transport clock and the UART device layer, so point it at a spare
-     * UART as the DIN MIDI port. UART_NUM_1 keeps clear of the console and the
-     * serial harness (both UART0). The AMY_MIDI_IS_UART flag makes run_midi()
-     * install the driver and wire the pins; each role is off when its pin is
-     * -1. Inbound bytes are drained by the midi_din component into midi_core
-     * (same live-play sink as BLE MIDI); the clock-out stream is AMY's own. */
-#if (CONFIG_AMYSYNTH_MIDI_CLOCK_TX_GPIO >= 0) || (CONFIG_AMYSYNTH_MIDI_IN_GPIO >= 0)
-    amy_cfg.midi_uart  = 1;              /* UART_NUM_1 */
-    amy_cfg.midi_out   = CONFIG_AMYSYNTH_MIDI_CLOCK_TX_GPIO;
-    amy_cfg.midi_in    = CONFIG_AMYSYNTH_MIDI_IN_GPIO;
-    amy_cfg.midi      |= AMY_MIDI_IS_UART;
-#else
-    amy_cfg.midi_uart  = -1;
-    amy_cfg.midi_out   = -1;
-    amy_cfg.midi_in    = -1;
-#endif
+    /* MIDI in/out on a spare UART (UART_NUM_1, clear of console and serial
+     * harness): AMY owns the DIN port and clock-out stream; midi_din_prepare
+     * maps the User Hardware Kconfig pins into amy_cfg (each -1 = off). */
+    midi_din_prepare(&amy_cfg);
 #ifdef GAMMA9001
     gamma9001_pcm_mount();
 #endif
@@ -1146,35 +1125,25 @@ void app_main(void)
         my_buttons_register_cb(main_button_event_cb, NULL);
     }
 
-    /* Analog performance knobs (cutoff / volume / FX): a self-contained
-     * low-priority task; no-ops when every pot pin is disabled (-1). */
-    esp_err_t pots_err = perf_pots_init();
-    if (pots_err != ESP_OK) {
-        ESP_LOGW(TAG, "perf_pots_init failed: %s", esp_err_to_name(pots_err));
-    }
+    /* One-liner for the optional peripheral inits below: each component is a
+     * self-contained no-op unless its Kconfig pins are enabled. */
+#define AMYSYNTH_INIT_LOGGED(fn)                                              \
+    do {                                                                       \
+        esp_err_t e_ = (fn)();                                                 \
+        if (e_ != ESP_OK) ESP_LOGW(TAG, #fn " failed: %s", esp_err_to_name(e_)); \
+    } while (0)
 
-    /* MIDI clock out follows the transport: subscribe to play state and push
-     * the current one immediately (synth_ui_init already started playback, so
-     * the subscriber would otherwise miss the boot start). Squelched by the
+    AMYSYNTH_INIT_LOGGED(perf_pots_init);    /* analog cutoff/volume/FX knobs */
+    AMYSYNTH_INIT_LOGGED(midi_din_init);     /* DIN-5 in -> live-play voice */
+
+    /* MIDI clock out mirrors the transport (master): subscribe to play state
+     * and push it once now - synth_ui_init already started playback, so the
+     * subscriber would otherwise miss the boot start. Squelched by the
      * sync-mode check inside AMY when no MIDI UART is configured. */
     sequencer_core_set_play_change_cb(midi_clock_transport_cb);
     midi_clock_transport_cb(sequencer_core_get_playing());
 
-    /* DIN MIDI in: drains the UART RX AMY wired and feeds midi_core (the same
-     * live-play voice BLE uses). No-op when the pin is -1; must run after
-     * amy_start() installed the UART driver. */
-    esp_err_t din_err = midi_din_init();
-    if (din_err != ESP_OK) {
-        ESP_LOGW(TAG, "midi_din_init failed: %s", esp_err_to_name(din_err));
-    }
-
-    /* MIDI clock slave: locks the sequencer tempo + transport to an external
-     * master's 0xF8/0xFA/0xFC stream (same sinks the DIN port and BLE feed).
-     * No-op when the Kconfig switch is off. */
-    esp_err_t mcs_err = midi_clock_slave_init();
-    if (mcs_err != ESP_OK) {
-        ESP_LOGW(TAG, "midi_clock_slave_init failed: %s", esp_err_to_name(mcs_err));
-    }
+    AMYSYNTH_INIT_LOGGED(midi_clock_slave_init); /* external-tempo lock (off by default) */
 
     // Serial harness last among input paths: hooks need the button queue
     // above; degrade to "harness absent" on any failure. Compiles to nothing

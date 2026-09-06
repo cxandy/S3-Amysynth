@@ -26,6 +26,20 @@ static const char *TAG = "midi_din";
 #define MIDI_DIN_TASK_STACK_WORDS 2048
 #define MIDI_DIN_TASK_PRIO   5
 
+void midi_din_prepare(amy_config_t *cfg)
+{
+#if (CONFIG_AMYSYNTH_MIDI_CLOCK_TX_GPIO >= 0) || (CONFIG_AMYSYNTH_MIDI_IN_GPIO >= 0)
+    cfg->midi_uart = 1;              /* UART_NUM_1, clear of console/harness */
+    cfg->midi_out  = CONFIG_AMYSYNTH_MIDI_CLOCK_TX_GPIO;
+    cfg->midi_in   = CONFIG_AMYSYNTH_MIDI_IN_GPIO;
+    cfg->midi     |= AMY_MIDI_IS_UART;
+#else
+    cfg->midi_uart = -1;
+    cfg->midi_out  = -1;
+    cfg->midi_in   = -1;
+#endif
+}
+
 static void midi_din_task(void *arg)
 {
     (void)arg;

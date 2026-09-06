@@ -216,6 +216,13 @@ const char *chords_menu_title(void);
 const menu_item_view_t *demos_menu_build_items(void);
 uint8_t  demos_menu_item_count(void);
 
+/* ─── Demo registry + deferred loader (ui_demo_load.c) ─────────────────────
+ * Registry/request/count/label are public via synth_ui.h; the drain and the
+ * JukeBox live service must be called from synth_ui_task's loop (the single
+ * layer applier) after its add/delete drains. */
+void     synth_ui_demo_drain(void);
+void     synth_ui_demo_service(void);
+
 /* Editor live-preview service: flushes any pending throttled apply (the graph
  * editor's amp trim, whose melodic apply re-emits the track's steps). Called
  * from synth_ui_task's 50 ms loop; no-op when nothing is pending. */

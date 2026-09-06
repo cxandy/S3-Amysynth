@@ -7,9 +7,6 @@
 #include "custompatches/fm_voice.h"
 #include "custompatches/additive_voice.h"
 #include "custompatches/sample_rec.h"
-#include "custompatches/demo_billiejean.h"
-#include "custompatches/demo_aurora.h"
-#include "custompatches/jukebox_demo.h"
 #include "priv_i2c_u8g2.h"   /* i2c_u8g2_service - absent-panel recovery */
 #include "display_seq.h"
 #include "display_drone.h"
@@ -52,34 +49,6 @@ static volatile uint8_t s_layer_delete_idx     = 0;
  * path (memset + patch-string parse via amy_send_patch) is too heavy for the
  * esp_timer task's 3584-byte stack, so it defers here like delete. */
 static volatile bool    s_layer_add_pending    = false;
-
-/* Deferred built-in demo load (registry index +1, so 0 still means none and
- * the drain's truthy check can't skip registry slot 0), consumed by
- * synth_ui_task: a demo rebuilds layer topology via core add/delete, which
- * only this task - the single s_layers applier - may call. Menu clicks run
- * on the button task, so they only set this flag; the drain runs the loader. */
-static volatile uint8_t s_demo_pending = 0;
-
-/* Demo registry: labels drive the DEMOS submenu (ui_screen_demos.c reads them
- * via synth_ui_demo_label), the loader runs on this task's drain. Registering
- * a demo here is all it takes to get a selectable row; keep the count within
- * SYNTH_UI_DEMOS_MAX. */
-typedef bool (*demo_loader_fn)(void);
-
-typedef struct {
-    const char    *label;
-    demo_loader_fn load;
-} demo_entry_t;
-
-static const demo_entry_t s_demos[] = {
-    { "Aurora",             demo_aurora_load },
-    { "JukeBox",            jukebox_demo_load },
-    { "Billie Jean",        demo_billiejean_load },
-    { "BJ Chords + Juno",   demo_billiejean_scheduled_load },
-};
-#define DEMO_COUNT ((uint8_t)(sizeof(s_demos) / sizeof(s_demos[0])))
-_Static_assert(DEMO_COUNT <= SYNTH_UI_DEMOS_MAX,
-               "demo registry exceeds SYNTH_UI_DEMOS_MAX; bump it in synth_ui.h");
 
 static void synth_ui_task(void *pvParameters)
 {
@@ -157,31 +126,11 @@ static void synth_ui_task(void *pvParameters)
             }
         }
 
-        /* Deferred demo load: the same applier discipline as the add/delete
-         * drains above (a demo clears and rebuilds layers via sequencer_core
-         * add/delete). After those drains, so pending structural edits resolve
-         * before the demo replaces them; the loader starts the transport, so
-         * re-sync the UI mirror to the rebuilt topology and mark it playing. */
-        if (s_demo_pending) {
-            uint8_t demo = (uint8_t)(s_demo_pending - 1u);
-            s_demo_pending = 0;
-            bool ok = false;
-            if (demo < DEMO_COUNT) ok = s_demos[demo].load();
-            if (!ok) ESP_LOGW(TAG_TASK, "demo: load failed (which=%u)", (unsigned)demo);
-            /* A non-jukebox load hands the layers back to the player: drop the
-             * running generator so it never rewrites the new song's steps. */
-            if (s_demos[demo].load != jukebox_demo_load) {
-                jukebox_demo_deactivate();
-            }
-            synth_ui_reload_mirror_from_core();
-            seq_state.playing = true;   /* sample_rec/project loads stop; a demo plays */
-        }
-
-        /* JukeBox demo: live re-rolls of the demo's steps; when it rewrote a
-         * bar this frame, re-sync the UI mirror so the grid follows the sound. */
-        if (jukebox_demo_service()) {
-            synth_ui_reload_mirror_from_core();
-        }
+        /* Deferred demo load + JukeBox live re-rolls: registry, loader and
+         * service live in ui_demo_load.c; both must run on this task (the
+         * single layer applier) after the add/delete drains above. */
+        synth_ui_demo_drain();
+        synth_ui_demo_service();
 
 #if CONFIG_SYNTH_PROJECT_STORE
         /* Project load/save queued by the Projects menu (clicks run on the
@@ -459,24 +408,6 @@ void synth_ui_request_add_layer(void)
 {
     if (seq_state.num_layers >= MAX_LAYERS) return;
     s_layer_add_pending = true;
-}
-
-/* Queue a built-in demo load for the seq_ui task drain (see s_demo_pending).
- * `which` is the demo-registry index (synth_ui_demo_count/label). */
-void synth_ui_request_demo(uint8_t which)
-{
-    if (which < DEMO_COUNT) s_demo_pending = (uint8_t)(which + 1u);
-}
-
-uint8_t synth_ui_demo_count(void)
-{
-    return DEMO_COUNT;
-}
-
-const char *synth_ui_demo_label(uint8_t idx)
-{
-    if (idx >= DEMO_COUNT) return "";
-    return s_demos[idx].label;
 }
 
 /* Schedule a delete of the layer targeted by the Track Options screen

@@ -35,10 +35,11 @@
 #include <string.h>
 
 #if CONFIG_SYNTH_WIFI_IMPORT
-/* Forward decl instead of wifi_importer.h: that component links synth_core
+/* Forward decls instead of wifi_importer.h: that component links synth_core
  * (for song_import), so pulling its header in here would create a REQUIRES
  * cycle between components. */
 void wifi_import_service(void);
+const char *wifi_import_status_line(void);
 #endif
 
 static const char *TAG_TASK = "synth_ui";
@@ -238,6 +239,16 @@ static void synth_ui_task(void *pvParameters)
                 } else
 #endif
                 if (synth_ui_hint_visible()) {
+#if CONFIG_SYNTH_WIFI_IMPORT
+                    /* While the import AP is bringing its radio up (own task,
+                     * may take a second or fail outright) the hint strip
+                     * reports its progress so a radio problem is visible on
+                     * screen instead of silently absent. */
+                    const char *wline = wifi_import_status_line();
+                    if (wline) {
+                        display_hint_draw(s_u8g2, wline);
+                    } else
+#endif
                     display_hint_draw(s_u8g2, synth_ui_hint_text());
                 }
                 /* Output-level warning badge, top-right, composited last so it

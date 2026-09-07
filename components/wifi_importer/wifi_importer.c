@@ -15,6 +15,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
 
 #if CONFIG_SYNTH_WIFI_IMPORT
 
@@ -23,6 +24,39 @@ static const char *TAG = "wifi_import";
 #define IMP_MAX_BODY  (60 * 1024)          /* AMYSONG text cap        */
 #define IMP_HEAD_CAP  (2048)               /* HTTP head cap           */
 #define IMP_RESULT_WAIT_MS (12000)
+#define IMP_STATUS_LINGER_MS (6000)        /* show "ap up" line this long */
+
+/* ── boot-status pipeline ───────────────────────────────────────────────────
+ * The AP brings WiFi up on its own task so a dead radio can never stall boot.
+ * Each step stamps s_state*/text; the UI hint strip renders it until the AP
+ * has been up for a while (or the run failed). */
+
+typedef enum {
+    IMP_ST_IDLE = 0,
+    IMP_ST_NETIF,
+    IMP_ST_WIFI_INIT,
+    IMP_ST_MODE,
+    IMP_ST_START,
+    IMP_ST_READY,
+    IMP_ST_FAIL,
+} imp_dir_state_t;
+
+static imp_dir_state_t s_dir_state;
+static char            s_state_text[64];
+static TickType_t      s_ready_tick = 0;
+
+static void imp_set_state(imp_dir_state_t st, const char *fmt, ...)
+{
+    char msg[48];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(msg, sizeof msg, fmt, ap);
+    va_end(ap);
+    s_dir_state = st;
+    if (st == IMP_ST_READY) s_ready_tick = xTaskGetTickCount();
+    snprintf(s_state_text, sizeof s_state_text, "%s", msg);
+    ESP_LOGI(TAG, "imp AP: %s", msg);
+}
 
 /* ── pending-upload handoff ────────────────────────────────────────────────
  * The socket task receives the body and parks it; wifi_import_service()
@@ -35,6 +69,7 @@ typedef struct {
     uint8_t          slot;
     volatile bool    pending;     /* release-published by the socket task     */
     SemaphoreHandle_t done_sem;
+    bool             task_created;
     char             result[256];
 } imp_state_t;
 
@@ -190,12 +225,86 @@ static void handle_conn(int fd)
     http_reply(fd, "404 Not Found", "ERR:not found");
 }
 
-static void ap_server_task(void *arg)
+static void wifi_import_task(void *arg)
 {
     (void)arg;
+    esp_err_t err;
+
+    s_imp.done_sem = xSemaphoreCreateBinary();
+    if (!s_imp.done_sem) {
+        imp_set_state(IMP_ST_FAIL, "WiFi: no mem");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    err = nvs_flash_init();
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        esp_err_t erase = nvs_flash_erase();
+        if (erase != ESP_OK) ESP_LOGW(TAG, "nvs erase: %s", esp_err_to_name(erase));
+        nvs_flash_init();
+    }
+
+    err = esp_event_loop_create_default();
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGW(TAG, "event loop: %s", esp_err_to_name(err));
+    }
+    if (esp_netif_init() != ESP_OK) {
+        ESP_LOGW(TAG, "netif init failed");
+    }
+
+    imp_set_state(IMP_ST_NETIF, "WiFi: netif");
+    esp_netif_t *ap = esp_netif_create_default_wifi_ap();
+    if (!ap) {
+        imp_set_state(IMP_ST_FAIL, "WiFi: fail netif");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    imp_set_state(IMP_ST_WIFI_INIT, "WiFi: driver");
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    err = esp_wifi_init(&cfg);
+    if (err != ESP_OK) {
+        imp_set_state(IMP_ST_FAIL, "WiFi: fail init %s", esp_err_to_name(err));
+        vTaskDelete(NULL);
+        return;
+    }
+    esp_wifi_set_storage(WIFI_STORAGE_RAM);
+
+    wifi_config_t wc = { 0 };
+    strncpy((char *)wc.ap.ssid, CONFIG_SYNTH_WIFI_AP_SSID, sizeof(wc.ap.ssid) - 1);
+    wc.ap.channel         = CONFIG_SYNTH_WIFI_AP_CHANNEL;
+    wc.ap.max_connection  = 2;
+    wc.ap.authmode        = WIFI_AUTH_OPEN;
+    wc.ap.ssid_hidden     = 0;
+
+    imp_set_state(IMP_ST_MODE, "WiFi: boot AP");
+    err = esp_wifi_set_mode(WIFI_MODE_AP);
+    if (err != ESP_OK) {
+        imp_set_state(IMP_ST_FAIL, "WiFi: fail mode %s", esp_err_to_name(err));
+        vTaskDelete(NULL);
+        return;
+    }
+    err = esp_wifi_set_config(WIFI_IF_AP, &wc);
+    if (err != ESP_OK) {
+        imp_set_state(IMP_ST_FAIL, "WiFi: fail cfg %s", esp_err_to_name(err));
+        vTaskDelete(NULL);
+        return;
+    }
+    imp_set_state(IMP_ST_START, "WiFi: start...");
+    err = esp_wifi_start();
+    if (err != ESP_OK) {
+        imp_set_state(IMP_ST_FAIL, "WiFi: fail start %s", esp_err_to_name(err));
+        vTaskDelete(NULL);
+        return;
+    }
+
+    /* Give the AP a moment to assign 192.168.4.1 before the socket binds. */
+    vTaskDelay(pdMS_TO_TICKS(400));
+    imp_set_state(IMP_ST_READY, "WiFi: AP %s", CONFIG_SYNTH_WIFI_AP_SSID);
+
     int listen_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (listen_fd < 0) {
-        ESP_LOGE(TAG, "socket failed");
+        imp_set_state(IMP_ST_FAIL, "WiFi: socket fail");
         vTaskDelete(NULL);
         return;
     }
@@ -209,7 +318,7 @@ static void ap_server_task(void *arg)
     addr.sin_addr.s_addr = htonl(INADDR_ANY);
     if (bind(listen_fd, (struct sockaddr *)&addr, sizeof addr) < 0 ||
         listen(listen_fd, 2) < 0) {
-        ESP_LOGE(TAG, "bind/listen failed");
+        imp_set_state(IMP_ST_FAIL, "WiFi: bind fail");
         close(listen_fd);
         vTaskDelete(NULL);
         return;
@@ -258,69 +367,33 @@ void wifi_import_service(void)
     if (s_imp.done_sem) xSemaphoreGive(s_imp.done_sem);
 }
 
+const char *wifi_import_status_line(void)
+{
+    if (s_dir_state == IMP_ST_FAIL) {
+        return s_state_text;                  /* keep showing the failure   */
+    }
+    if (s_dir_state == IMP_ST_READY) {
+        if (s_ready_tick &&
+            (xTaskGetTickCount() - s_ready_tick) < pdMS_TO_TICKS(IMP_STATUS_LINGER_MS)) {
+            return s_state_text;              /* "WiFi: AP AMYSYNTH" briefly */
+        }
+        return NULL;                          /* done: restore normal hints  */
+    }
+    if (s_dir_state == IMP_ST_IDLE) return NULL;
+    return s_state_text;                      /* mid bring-up               */
+}
+
 esp_err_t wifi_importer_init(void)
 {
-    esp_err_t err = nvs_flash_init();
-    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        esp_err_t erase = nvs_flash_erase();
-        if (erase != ESP_OK) ESP_LOGW(TAG, "nvs erase: %s", esp_err_to_name(erase));
-        nvs_flash_init();
-    }
-
-    s_imp.done_sem = xSemaphoreCreateBinary();
-    if (!s_imp.done_sem) return ESP_ERR_NO_MEM;
-
-    err = esp_event_loop_create_default();
-    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-        ESP_LOGW(TAG, "event loop: %s", esp_err_to_name(err));
-    }
-    if (esp_netif_init() != ESP_OK) {
-        ESP_LOGW(TAG, "netif init failed");
-    }
-
-    esp_netif_t *ap = esp_netif_create_default_wifi_ap();
-    if (!ap) {
-        ESP_LOGW(TAG, "wifi ap netif failed");
-        return ESP_FAIL;
-    }
-
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    err = esp_wifi_init(&cfg);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "wifi init: %s", esp_err_to_name(err));
-        return err;
-    }
-    esp_wifi_set_storage(WIFI_STORAGE_RAM);
-
-    wifi_config_t wc = { 0 };
-    strncpy((char *)wc.ap.ssid, CONFIG_SYNTH_WIFI_AP_SSID, sizeof(wc.ap.ssid) - 1);
-    wc.ap.channel         = CONFIG_SYNTH_WIFI_AP_CHANNEL;
-    wc.ap.max_connection  = 2;
-    wc.ap.authmode        = WIFI_AUTH_OPEN;
-    wc.ap.ssid_hidden     = 0;
-
-    err = esp_wifi_set_mode(WIFI_MODE_AP);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "wifi mode: %s", esp_err_to_name(err));
-        return err;
-    }
-    err = esp_wifi_set_config(WIFI_IF_AP, &wc);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "wifi config: %s", esp_err_to_name(err));
-        return err;
-    }
-    err = esp_wifi_start();
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "wifi start: %s", esp_err_to_name(err));
-        return err;
-    }
-
-    /* Give the AP a moment to come up before binding 192.168.4.1. */
-    vTaskDelay(pdMS_TO_TICKS(400));
-
-    xTaskCreatePinnedToCore(ap_server_task, "wifi_import", 4096, NULL, 5, NULL, 0);
-    ESP_LOGI(TAG, "SoftAP '%s' up - browse http://192.168.4.1/",
-             CONFIG_SYNTH_WIFI_AP_SSID);
+    /* Never block the caller (app_main): all WiFi/radio bring-up runs on the
+     * task below, which - being unregistered - cannot trip the task WDT even
+     * if the driver stalls. The boot screen therefore always proceeds to the
+     * normal UI; the hint strip reports the AP state via status_line. */
+    if (s_imp.task_created) return ESP_OK;
+    BaseType_t ok = xTaskCreatePinnedToCore(wifi_import_task, "wifi_import",
+                                            8192, NULL, 5, NULL, 0);
+    if (ok != pdPASS) return ESP_ERR_NO_MEM;
+    s_imp.task_created = true;
     return ESP_OK;
 }
 

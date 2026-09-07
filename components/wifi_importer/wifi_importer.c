@@ -81,6 +81,14 @@ typedef struct {
 static imp_state_t s_imp;
 static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
 
+/* The task tears itself down on every failure path; clear task_created first
+ * so an on-demand start can retry. */
+static void imp_self_delete(void)
+{
+    s_imp.task_created = false;
+    vTaskDelete(NULL);
+}
+
 /* ── embedded page ── */
 
 static const char s_page[] =
@@ -312,7 +320,7 @@ static void wifi_import_task(void *arg)
     s_imp.done_sem = xSemaphoreCreateBinary();
     if (!s_imp.done_sem) {
         imp_set_state(IMP_ST_FAIL, "WiFi: no mem");
-        vTaskDelete(NULL);
+        imp_self_delete();
         return;
     }
 
@@ -335,7 +343,7 @@ static void wifi_import_task(void *arg)
     esp_netif_t *ap = esp_netif_create_default_wifi_ap();
     if (!ap) {
         imp_set_state(IMP_ST_FAIL, "WiFi: fail netif");
-        vTaskDelete(NULL);
+        imp_self_delete();
         return;
     }
 
@@ -344,7 +352,7 @@ static void wifi_import_task(void *arg)
     err = esp_wifi_init(&cfg);
     if (err != ESP_OK) {
         imp_set_state(IMP_ST_FAIL, "WiFi: fail init %s", esp_err_to_name(err));
-        vTaskDelete(NULL);
+        imp_self_delete();
         return;
     }
     esp_wifi_set_storage(WIFI_STORAGE_RAM);
@@ -360,20 +368,20 @@ static void wifi_import_task(void *arg)
     err = esp_wifi_set_mode(WIFI_MODE_AP);
     if (err != ESP_OK) {
         imp_set_state(IMP_ST_FAIL, "WiFi: fail mode %s", esp_err_to_name(err));
-        vTaskDelete(NULL);
+        imp_self_delete();
         return;
     }
     err = esp_wifi_set_config(WIFI_IF_AP, &wc);
     if (err != ESP_OK) {
         imp_set_state(IMP_ST_FAIL, "WiFi: fail cfg %s", esp_err_to_name(err));
-        vTaskDelete(NULL);
+        imp_self_delete();
         return;
     }
     imp_set_state(IMP_ST_START, "WiFi: start...");
     err = esp_wifi_start();
     if (err != ESP_OK) {
         imp_set_state(IMP_ST_FAIL, "WiFi: fail start %s", esp_err_to_name(err));
-        vTaskDelete(NULL);
+        imp_self_delete();
         return;
     }
 
@@ -384,7 +392,7 @@ static void wifi_import_task(void *arg)
     int listen_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (listen_fd < 0) {
         imp_set_state(IMP_ST_FAIL, "WiFi: socket fail");
-        vTaskDelete(NULL);
+        imp_self_delete();
         return;
     }
     int one = 1;
@@ -399,7 +407,7 @@ static void wifi_import_task(void *arg)
         listen(listen_fd, 2) < 0) {
         imp_set_state(IMP_ST_FAIL, "WiFi: bind fail");
         close(listen_fd);
-        vTaskDelete(NULL);
+        imp_self_delete();
         return;
     }
     ESP_LOGI(TAG, "listening on 192.168.4.1:80");
@@ -492,18 +500,40 @@ const char *wifi_import_status_line(void)
     return s_state_text;                      /* mid bring-up               */
 }
 
-esp_err_t wifi_importer_init(void)
+esp_err_t wifi_importer_start(void)
 {
-    /* Never block the caller (app_main): all WiFi/radio bring-up runs on the
-     * task below, which - being unregistered - cannot trip the task WDT even
-     * if the driver stalls. The boot screen therefore always proceeds to the
-     * normal UI; the hint strip reports the AP state via status_line. */
+    /* Never block the caller (app_main or the Projects-menu click): all
+     * WiFi/radio bring-up runs on the task below, which - being unregistered -
+     * cannot trip the task WDT even if the driver stalls. The task is pinned
+     * to core 1 (the AMY DSP core): RF/PHY bring-up may disable scheduling on
+     * its own core for bursts, which must never touch the core 0 UI/input. The
+     * boot screen therefore always proceeds to the normal UI; the hint strip
+     * reports the AP state via status_line. */
     if (s_imp.task_created) return ESP_OK;
     BaseType_t ok = xTaskCreatePinnedToCore(wifi_import_task, "wifi_import",
-                                            8192, NULL, 5, NULL, 0);
+                                            8192, NULL, 5, NULL, 1);
     if (ok != pdPASS) return ESP_ERR_NO_MEM;
     s_imp.task_created = true;
     return ESP_OK;
+}
+
+bool wifi_import_ap_running(void)
+{
+    return s_imp.task_created && s_dir_state == IMP_ST_READY;
+}
+
+const char *wifi_import_ap_state(void)
+{
+    static char short_text[16];
+    switch (s_dir_state) {
+        case IMP_ST_READY:
+            snprintf(short_text, sizeof short_text, "AP %s",
+                     CONFIG_SYNTH_WIFI_AP_SSID);
+            return short_text;
+        case IMP_ST_FAIL:  return "FAIL";
+        case IMP_ST_IDLE:  return "Off";
+        default:           return "Start";
+    }
 }
 
 #endif /* CONFIG_SYNTH_WIFI_IMPORT */

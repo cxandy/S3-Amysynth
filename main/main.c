@@ -1072,10 +1072,12 @@ void app_main(void)
 #if CONFIG_SYNTH_PROJECT_SELFTEST
     project_store_selftest();
 #endif
-#if CONFIG_SYNTH_WIFI_IMPORT
-    /* AMYSONG import AP + web server; non-fatal on radio failure. */
+#if CONFIG_SYNTH_WIFI_IMPORT_AUTOSTART
+    /* AMYSONG import AP + web server; non-fatal on radio failure. Off by
+     * default - bring-up on the UI core starves/locks synth_ui_init - so the
+     * AP normally starts on demand from the Projects menu instead. */
     boot_banner("boot: wifi");
-    wifi_importer_init();
+    wifi_importer_start();
 #endif
 
     /* synth_ui_init adds the boot layers (drum + first melodic) itself,

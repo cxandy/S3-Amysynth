@@ -6,6 +6,9 @@
 #include "project_store.h"
 #include "project_fs.h"
 #include "project_snapshot.h"
+#if CONFIG_SYNTH_WIFI_IMPORT
+#include "wifi_importer.h"
+#endif
 #include "esp_log.h"
 #include <stdio.h>
 #include <string.h>
@@ -38,9 +41,19 @@ static const char PROJ_NAME_CHARS[] =
 
 static const char *TAG = "proj_menu";
 
-static menu_item_view_t     s_items[2 + CONFIG_SYNTH_PROJECT_MAX_SLOTS];
+static menu_item_view_t     s_items[2 + CONFIG_SYNTH_PROJECT_MAX_SLOTS
+#if CONFIG_SYNTH_WIFI_IMPORT
+                                    + 1
+#endif
+                                   ];
 static project_slot_info_t  s_info[CONFIG_SYNTH_PROJECT_MAX_SLOTS];
 static bool                 s_dirty = true;   /* rebuild s_info from the FS */
+
+#if CONFIG_SYNTH_WIFI_IMPORT
+/* Index of the "WiFi AP" on-demand row, appended after the slot rows so the
+ * slot-to-item mapping (slot = idx - 2) stays untouched. */
+#define PROJ_WIFI_IDX (2 + CONFIG_SYNTH_PROJECT_MAX_SLOTS)
+#endif
 
 static proj_action_t s_action   = PA_LOAD;
 static bool          s_armed    = false;      /* Save/overwrite second-click */
@@ -200,7 +213,11 @@ void projects_menu_reset(void)
 
 uint8_t projects_menu_item_count(void)
 {
-    return (uint8_t)(2 + CONFIG_SYNTH_PROJECT_MAX_SLOTS);
+    return (uint8_t)(2 + CONFIG_SYNTH_PROJECT_MAX_SLOTS
+#if CONFIG_SYNTH_WIFI_IMPORT
+                     + 1
+#endif
+                     );
 }
 
 bool projects_menu_item_is_back(uint8_t idx)
@@ -210,6 +227,9 @@ bool projects_menu_item_is_back(uint8_t idx)
 
 bool projects_menu_item_is_value(uint8_t idx)
 {
+#if CONFIG_SYNTH_WIFI_IMPORT
+    if (idx == PROJ_WIFI_IDX) return true;
+#endif
     return idx >= 2 && idx < 2 + (uint8_t)CONFIG_SYNTH_PROJECT_MAX_SLOTS;
 }
 
@@ -267,12 +287,28 @@ const menu_item_view_t *projects_menu_build_items(void)
         }
     }
 
+#if CONFIG_SYNTH_WIFI_IMPORT
+    {
+        uint8_t idx = PROJ_WIFI_IDX;
+        snprintf(s_items[idx].label, MENU_LABEL_LEN, "WiFi AP");
+        if (s_status_active && s_status_idx == idx) {
+            snprintf(s_items[idx].value, MENU_VALUE_LEN, "%s", s_status_msg);
+        } else {
+            snprintf(s_items[idx].value, MENU_VALUE_LEN, "%s",
+                     wifi_import_ap_state());
+        }
+    }
+#endif
+
     return s_items;
 }
 
 void projects_menu_edit_value(uint8_t idx, int delta)
 {
     if (!projects_menu_item_is_value(idx)) return;
+#if CONFIG_SYNTH_WIFI_IMPORT
+    if (idx == PROJ_WIFI_IDX) return;   /* click-only row: no delta action */
+#endif
     int dir = (delta > 0) ? 1 : (delta < 0 ? -1 : 0);
     if (dir == 0) return;
 
@@ -296,6 +332,20 @@ void projects_menu_edit_value(uint8_t idx, int delta)
 bool projects_menu_handle_click(uint8_t idx)
 {
     if (!projects_menu_item_is_value(idx)) return false;
+#if CONFIG_SYNTH_WIFI_IMPORT
+    if (idx == PROJ_WIFI_IDX) {
+        /* On-demand SoftAP: click starts it, state shows in the value field.
+         * Never enters the per-slot editing sub-state. */
+        if (wifi_import_ap_running()) {
+            set_status(idx, "AP UP");
+        } else if (wifi_importer_start() == ESP_OK) {
+            set_status(idx, "START..");
+        } else {
+            set_status(idx, "NO MEM");
+        }
+        return false;
+    }
+#endif
     /* A queued load/save is still in flight: ignore clicks so a second request
      * cannot clobber the pending one's fields. */
     if (s_req != PREQ_NONE) return seq_state.menu_editing;

@@ -9,6 +9,18 @@ config SYNTH_WIFI_IMPORT
 		single-applier ui task) and saves it into a project slot for
 		later Load. Compiles in the ESP-IDF wifi + netif + lwIP stacks.
 
+config SYNTH_WIFI_IMPORT_AUTOSTART
+	bool "Start the import SoftAP automatically at boot"
+	depends on SYNTH_WIFI_IMPORT
+	default n
+	help
+		Bring WiFi up on the import task as soon as the device boots. Off
+		by default: the AP starts on demand from a row in the Projects
+		menu, so boot is identical to a build without WiFi. Auto-start once
+		lived here but starved/locked the UI's core during RF bring-up and
+		froze boot; the dedicated task (pinned to the DSP core) plus an
+		on-demand trigger are the supported path.
+
 config SYNTH_WIFI_AP_SSID
 	string "AMYSYNTH SoftAP SSID"
 	depends on SYNTH_WIFI_IMPORT

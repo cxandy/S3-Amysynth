@@ -349,8 +349,24 @@ static void wifi_import_task(void *arg)
 
     imp_set_state(IMP_ST_WIFI_INIT, "WiFi: driver");
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    /* On-demand bring-up runs against a heap the synth has already allocated
+     * from and fragmented, whereas every earlier release initialized at boot
+     * into an empty heap. Shrink the static (DMA-internal) buffer demand to
+     * fit one small contiguous chunk: an import AP only moves a single HTTP
+     * POST. The static pool stays on WIFI_INIT_CONFIG_DEFAULT's tx_buf_type. */
+    cfg.static_rx_buf_num    = 4;
+    cfg.dynamic_rx_buf_num   = 8;
+    cfg.static_tx_buf_num    = 4;
+    cfg.cache_tx_buf_num     = 4;
     err = esp_wifi_init(&cfg);
     if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_wifi_init %s: internal free=%u largest=%u min_free=%u "
+                      "psram free=%u",
+                 esp_err_to_name(err),
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
         imp_set_state(IMP_ST_FAIL, "WiFi: fail init %s", esp_err_to_name(err));
         imp_self_delete();
         return;

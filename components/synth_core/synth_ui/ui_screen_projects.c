@@ -7,6 +7,7 @@
 #include "project_fs.h"
 #include "project_snapshot.h"
 #include "esp_log.h"
+#include "esp_err.h"
 #if CONFIG_SYNTH_WIFI_IMPORT
 /* Forward decls instead of wifi_importer.h: that component links synth_core
  * (for song_import), so pulling its header in here would create a REQUIRES

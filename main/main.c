@@ -854,6 +854,16 @@ static void encoder_init_task(void *pvParameters)
     // so once here beats polling.
     diag_mem_report();
 
+#ifdef CONFIG_SYNTH_WIFI_IMPORT
+    // Take the WiFi driver's control blocks + static buffers NOW, against the
+    // whole internal heap measured above. esp_wifi_init() only allocates; the
+    // radio stays off until the Projects menu calls wifi_importer_start(), so
+    // boot behaviour is unchanged (the fw52 boot freeze was radio bring-up
+    // starving the UI on core 0, not allocation).
+    ESP_LOGI(TAG, "wifi driver init: %s",
+             esp_err_to_name(wifi_importer_driver_init()));
+#endif
+
     vTaskDelete(NULL);
 }
 

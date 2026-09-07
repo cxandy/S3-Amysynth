@@ -44,6 +44,7 @@ typedef enum {
 
 static imp_dir_state_t s_dir_state;
 static char            s_state_text[64];
+static bool            s_driver_up = false;
 static TickType_t      s_ready_tick = 0;
 
 static void imp_set_state(imp_dir_state_t st, const char *fmt, ...)
@@ -312,19 +313,17 @@ static void handle_conn(int fd)
     http_reply(fd, "404 Not Found", "ERR:not found");
 }
 
-static void wifi_import_task(void *arg)
+/* Bring up every WiFi/netif allocation. Deliberately NEVER starts the radio:
+ * esp_wifi_init() only takes the driver's control blocks and static buffers,
+ * the RF is switched on later by esp_wifi_start(). main() calls this once at
+ * boot, right after the heap baseline, when the internal heap is still whole -
+ * allocating at that point is what every pre-fw53 release did implicitly. The
+ * task re-calls it on demand; the second call is a no-op. */
+esp_err_t wifi_importer_driver_init(void)
 {
-    (void)arg;
-    esp_err_t err;
+    if (s_driver_up) return ESP_OK;
 
-    s_imp.done_sem = xSemaphoreCreateBinary();
-    if (!s_imp.done_sem) {
-        imp_set_state(IMP_ST_FAIL, "WiFi: no mem");
-        imp_self_delete();
-        return;
-    }
-
-    err = nvs_flash_init();
+    esp_err_t err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         esp_err_t erase = nvs_flash_erase();
         if (erase != ESP_OK) ESP_LOGW(TAG, "nvs erase: %s", esp_err_to_name(erase));
@@ -339,21 +338,16 @@ static void wifi_import_task(void *arg)
         ESP_LOGW(TAG, "netif init failed");
     }
 
-    imp_set_state(IMP_ST_NETIF, "WiFi: netif");
     esp_netif_t *ap = esp_netif_create_default_wifi_ap();
     if (!ap) {
-        imp_set_state(IMP_ST_FAIL, "WiFi: fail netif");
-        imp_self_delete();
-        return;
+        ESP_LOGW(TAG, "wifi ap netif create failed");
+        return ESP_ERR_NO_MEM;
     }
 
-    imp_set_state(IMP_ST_WIFI_INIT, "WiFi: driver");
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    /* On-demand bring-up runs against a heap the synth has already allocated
-     * from and fragmented, whereas every earlier release initialized at boot
-     * into an empty heap. Shrink the static (DMA-internal) buffer demand to
-     * fit one small contiguous chunk: an import AP only moves a single HTTP
-     * POST. The static pool stays on WIFI_INIT_CONFIG_DEFAULT's tx_buf_type. */
+    /* Trim the static (DMA-internal) buffer demand to one small contiguous
+     * chunk: an import AP only moves a single HTTP POST. The static pool in
+     * the INIT_CONFIG_DEFAULT tx_buf_type stays untouched. */
     cfg.static_rx_buf_num    = 4;
     cfg.dynamic_rx_buf_num   = 8;
     cfg.static_tx_buf_num    = 4;
@@ -367,11 +361,35 @@ static void wifi_import_task(void *arg)
                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
                  (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
-        imp_set_state(IMP_ST_FAIL, "WiFi: fail init %s", esp_err_to_name(err));
+        return err;
+    }
+    esp_wifi_set_storage(WIFI_STORAGE_RAM);
+    s_driver_up = true;
+    return ESP_OK;
+}
+
+static void wifi_import_task(void *arg)
+{
+    (void)arg;
+    esp_err_t err;
+
+    s_imp.done_sem = xSemaphoreCreateBinary();
+    if (!s_imp.done_sem) {
+        imp_set_state(IMP_ST_FAIL, "WiFi: no mem");
         imp_self_delete();
         return;
     }
-    esp_wifi_set_storage(WIFI_STORAGE_RAM);
+
+    imp_set_state(IMP_ST_WIFI_INIT, "WiFi: driver");
+    err = wifi_importer_driver_init();
+    if (err != ESP_OK) {
+        unsigned ifree  = (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+        unsigned ilarge = (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+        imp_set_state(IMP_ST_FAIL, "WiFi:init no mem i=%uKB lg=%uKB",
+                      ifree / 1024, ilarge / 1024);
+        imp_self_delete();
+        return;
+    }
 
     wifi_config_t wc = { 0 };
     strncpy((char *)wc.ap.ssid, CONFIG_SYNTH_WIFI_AP_SSID, sizeof(wc.ap.ssid) - 1);

@@ -14,6 +14,14 @@ extern "C" {
  * install. The AP is ON DEMAND (Projects menu) and OFF at boot by default:
  * boot is therefore identical to a build without WiFi. */
 
+/* Allocate the WiFi driver's control blocks and static buffers WITHOUT
+ * switching the radio on. main() calls this once at boot (right after the
+ * heap baseline) so esp_wifi_init() runs against the whole internal heap;
+ * the import task re-calls it on demand and it is then a no-op. Radio
+ * bring-up still only happens via wifi_importer_start(), so boot behaviour
+ * (no RF, no stall) is unchanged. */
+esp_err_t wifi_importer_driver_init(void);
+
 /* Start the import AP. The whole WiFi bring-up (RF init, PHY calibration,
  * SoftAP) happens on a dedicated task pinned to the DSP core - never on
  * the caller or the UI core - so a radio that cannot start can never stall

@@ -40,7 +40,7 @@ idf_component_register(SRCS "live_play.c" "amy_helpers.c" "amy_fx.c" "arp_core.c
                             "synth_ui/ui_screen_menu.c"
                             "synth_ui/ui_screen_fxmenu.c"
                             "synth_ui/ui_screen_notefx.c"
-                            "synth_ui/ui_screen_projects.c"
+"synth_ui/ui_screen_projects.c"
                             "synth_ui/ui_screen_arp.c"
                             "synth_ui/ui_screen_drone.c"
                             "synth_ui/ui_screen_drone_std.c"
@@ -52,6 +52,7 @@ idf_component_register(SRCS "live_play.c" "amy_helpers.c" "amy_fx.c" "arp_core.c
 "synth_ui/ui_screen_wireless.c"
                             "synth_ui/ui_screen_trackopts.c"
                             "synth_ui/ui_screen_stepedit.c"
+                            "project/song_import.c"
                             "sequencer_core/seq_core_state.c"
                             "sequencer_core/seq_core_engine.c"
                             "sequencer_core/seq_core_synth.c"
@@ -71,15 +72,13 @@ idf_component_register(SRCS "live_play.c" "amy_helpers.c" "amy_fx.c" "arp_core.c
 "custompatches/demo_aurora.c"
 "custompatches/jukebox_demo.c"
                             "project/project_snapshot.c"
-                            "project/song_import.c"
                             ${fm_srcs}
                             ${additive_srcs}
                             ${dev_srcs}
                        INCLUDE_DIRS "include" "sequencer_core" "project"
                        PRIV_INCLUDE_DIRS "."
                        REQUIRES u8g2 display amy
-                       PRIV_REQUIRES seq_clamp project_store usb_audio wireless diagnostics esp_app_format
-                       WHOLE_ARCHIVE)
+                       PRIV_REQUIRES seq_clamp project_store usb_audio wireless diagnostics esp_app_format)
 # -Wstack-usage is GCC-only; clang rejects the unknown warning option under -Werror.
 if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
     target_compile_options(${COMPONENT_LIB} PRIVATE "-Wstack-usage=1024")

@@ -6,8 +6,14 @@
 #include "project_store.h"
 #include "project_fs.h"
 #include "project_snapshot.h"
+#include "esp_log.h"
 #if CONFIG_SYNTH_WIFI_IMPORT
-#include "wifi_importer.h"
+/* Forward decls instead of wifi_importer.h: that component links synth_core
+ * (for song_import), so pulling its header in here would create a REQUIRES
+ * cycle between components. */
+esp_err_t wifi_importer_start(void);
+bool wifi_import_ap_running(void);
+const char *wifi_import_ap_state(void);
 #endif
 #include "esp_log.h"
 #include <stdio.h>

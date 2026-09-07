@@ -19,7 +19,12 @@ if(NOT CONFIG_USB_DEVICE_UAC_AS_PART)
 
     idf_component_get_property(tusb_lib ${tinyusb_name} COMPONENT_LIB)
     target_include_directories(${tusb_lib} PUBLIC "${COMPONENT_DIR}/tusb" "${COMPONENT_DIR}/tusb_uac")
-    target_sources(${tusb_lib} PUBLIC "${COMPONENT_DIR}/tusb/usb_descriptors.c")
+    # PRIVATE so usb_descriptors.c is compiled only into the tinyusb archive
+    # itself. PUBLIC propagates it into every consumer (usb_audio, display,
+    # synth_core, harness, the project elfs' own objects...), and the 6
+    # descriptor symbols it defines then collide with libsynth_core.a, which is
+    # force-linked via WHOLE_ARCHIVE.
+    target_sources(${tusb_lib} PRIVATE "${COMPONENT_DIR}/tusb/usb_descriptors.c")
 endif()
 
 include(package_manager)

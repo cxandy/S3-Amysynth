@@ -78,17 +78,12 @@ idf_component_register(SRCS "live_play.c" "amy_helpers.c" "amy_fx.c" "arp_core.c
                        INCLUDE_DIRS "include" "sequencer_core" "project"
                        PRIV_INCLUDE_DIRS "."
                        REQUIRES u8g2 display amy
-                       PRIV_REQUIRES seq_clamp project_store usb_audio wireless diagnostics esp_app_format)
+                       PRIV_REQUIRES seq_clamp project_store usb_audio wireless diagnostics esp_app_format
+                       WHOLE_ARCHIVE)
 # -Wstack-usage is GCC-only; clang rejects the unknown warning option under -Werror.
 if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
     target_compile_options(${COMPONENT_LIB} PRIVATE "-Wstack-usage=1024")
 endif()
-# Open the --start-group here so the GCC LTO linker-plugin re-scans the
-# component archives: wifi_importer pulls song_import.o in late and its
-# seq_core/project_snapshot providers otherwise can never be extracted from
-# this archive. main closes the group in its own CMakeLists. Placed as a link
-# LIBRARY item (not link option) so it sits at this archive's token in pass A.
-target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--start-group")
 set_source_files_properties(
     "${CMAKE_CURRENT_LIST_DIR}/synth_ui/synth_ui_state.c"
     "${CMAKE_CURRENT_LIST_DIR}/synth_ui/synth_ui_task.c"

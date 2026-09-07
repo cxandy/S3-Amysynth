@@ -990,6 +990,7 @@ static bool parse_chrd(tlv_reader_t *b, seq_chord_t slots[SEQ_CHORD_SLOTS])
 
 static void ser_fmvc(tlv_writer_t *w)
 {
+    size_t h = tlv_begin_section(w, TAG_FMVC, 1);
     tlv_put_u8(w, s_fm_voice.algorithm);
     tlv_put_u8(w, s_fm_voice.fb_op);
     for (uint8_t i = 0; i < FM_NUM_OPS; i++) tlv_put_u8(w, s_fm_voice.op_to[i]);
@@ -997,6 +998,7 @@ static void ser_fmvc(tlv_writer_t *w)
     for (uint8_t i = 0; i < FM_NUM_OPS; i++) tlv_put_f32(w, s_fm_voice.op_level[i]);
     for (uint8_t i = 0; i < FM_NUM_OPS; i++) ser_env(w, &s_fm_voice.op_env[i]);
     tlv_put_f32(w, s_fm_voice.feedback);
+    tlv_end_section(w, h);
 }
 
 static bool parse_fmvc(tlv_reader_t *r, fm_voice_t *v)
@@ -1056,6 +1058,7 @@ typedef struct {
 
 static void ser_song(tlv_writer_t *w)
 {
+    size_t h = tlv_begin_section(w, TAG_SONG, 1);
     uint8_t n = sequencer_core_song_get_count();
     tlv_put_u8(w, n);
     tlv_put_u8(w, sequencer_core_song_get_enabled() ? 1 : 0);
@@ -1066,6 +1069,7 @@ static void ser_song(tlv_writer_t *w)
         tlv_put_u8(w, bars);
         tlv_put_u8(w, mask);
     }
+    tlv_end_section(w, h);
 }
 
 static bool parse_song(tlv_reader_t *r, staged_song_t *s)

@@ -83,12 +83,12 @@ idf_component_register(SRCS "live_play.c" "amy_helpers.c" "amy_fx.c" "arp_core.c
 if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
     target_compile_options(${COMPONENT_LIB} PRIVATE "-Wstack-usage=1024")
 endif()
-# Open the --start-group here so the LTO linker-plugin can retro-extract
-# synth_core archive members (seq_core/project_snapshot providers used by
-# song_import.c, which wifi_importer pulls in late); main closes the group in
-# its CMakeLists. A plain single archive scan cannot pull those providers once
-# song_import.o is selected during the LTO pass.
-target_link_options(${COMPONENT_LIB} INTERFACE "-Wl,--start-group")
+# Open the --start-group here so the GCC LTO linker-plugin re-scans the
+# component archives: wifi_importer pulls song_import.o in late and its
+# seq_core/project_snapshot providers otherwise can never be extracted from
+# this archive. main closes the group in its own CMakeLists. Placed as a link
+# LIBRARY item (not link option) so it sits at this archive's token in pass A.
+target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--start-group")
 set_source_files_properties(
     "${CMAKE_CURRENT_LIST_DIR}/synth_ui/synth_ui_state.c"
     "${CMAKE_CURRENT_LIST_DIR}/synth_ui/synth_ui_task.c"

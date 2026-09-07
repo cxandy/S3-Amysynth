@@ -78,7 +78,8 @@ idf_component_register(SRCS "live_play.c" "amy_helpers.c" "amy_fx.c" "arp_core.c
                        INCLUDE_DIRS "include" "sequencer_core" "project"
                        PRIV_INCLUDE_DIRS "."
                        REQUIRES u8g2 display amy
-                       PRIV_REQUIRES seq_clamp project_store usb_audio wireless diagnostics esp_app_format)
+                       PRIV_REQUIRES seq_clamp project_store usb_audio wireless diagnostics esp_app_format
+                       WHOLE_ARCHIVE)
 # -Wstack-usage is GCC-only; clang rejects the unknown warning option under -Werror.
 if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
     target_compile_options(${COMPONENT_LIB} PRIVATE "-Wstack-usage=1024")
@@ -120,4 +121,3 @@ set_source_files_properties(
 # component (wifi_importer); under GCC LTO + --gc-sections, archive-member
 # selection then depends on link order and drops the defining members.
 # --gc-sections still prunes the dead code, so whole-archive adds no flash.
-set_property(TARGET ${COMPONENT_LIB} PROPERTY WHOLE_ARCHIVE ON)

@@ -114,3 +114,11 @@ set_source_files_properties(
     "${CMAKE_CURRENT_LIST_DIR}/sequencer_core/seq_core_trig.c"
     PROPERTIES COMPILE_OPTIONS "-O2"
 )
+
+# Link the whole archive: members of this lib cross-reference each other
+# (song_import -> seq_core/project_snapshot) and are pulled in from a later
+# component (wifi_importer); under GCC LTO + --gc-sections, archive-member
+# selection then depends on link order and drops the defining members.
+# --gc-sections still prunes the dead code, so whole-archive adds no flash.
+target_link_libraries(${COMPONENT_LIB} INTERFACE
+    -Wl,--whole-archive $<LINK_ONLY:${COMPONENT_LIB}> -Wl,--no-whole-archive)

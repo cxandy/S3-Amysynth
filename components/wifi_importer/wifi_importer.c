@@ -1,4 +1,5 @@
 #include "wifi_importer.h"
+#include "midi_import.h"
 #include "song_import.h"
 #include "project_store.h"
 #include "esp_wifi.h"
@@ -66,7 +67,11 @@ static void imp_set_state(imp_dir_state_t st, const char *fmt, ...)
 
 typedef struct {
     char            *body;
+    size_t           len;         /* bytes in body (SMF is binary)          */
     uint8_t          slot;
+    uint8_t          is_midi;     /* page gave us a .mid instead of text    */
+    uint8_t          bars;        /* loop bars requested (page select)      */
+    char             song_name[PROJECT_NAME_LEN];
     volatile bool    pending;     /* release-published by the socket task     */
     SemaphoreHandle_t done_sem;
     bool             task_created;
@@ -84,24 +89,35 @@ static const char s_page[] =
     "<h2>AMYSYNTH song import</h2>"
     "<form id=f>"
     "Slot <input type=number name=slot min=1 max=64 value=1 style=width:4em>"
+    "&nbsp;Loop <select id=bars><option value=1>1 bar</option>"
+    "<option value=2 selected>2 bars</option></select>"
     "&nbsp;&nbsp;<b id=st>idle</b><br><br>"
-    "File: <input type=file id=file accept=.txt,.amysong><br><br>"
-    "<i>or paste a song below:</i><br>"
-    "<textarea id=txt rows=14 cols=56 placeholder=\"amysong 1\nname &quot;Demo&quot;\nbpm 120\npattern 32\nlayer melodic 256\nnotes 0 . +4 . . . +7 . . . . . . . . .\nlayer drum\nhit 0 x . . . x . . . x . . . x . . .\n\"></textarea><br>"
+    "File: <input type=file id=file accept=.mid,.midi,.txt,.amysong><br><br>"
+    "<i>.mid gets converted on the device (first loop bars become the song);"
+    "<br>or paste AMYSONG text below:</i><br>"
+    "<textarea id=txt rows=10 cols=56 placeholder=\"amysong 1\nname &quot;Demo&quot;\nbpm 120\npattern 32\nlayer melodic 256\nnotes 0 . +4 . . . +7 . . . . . . . . .\nlayer drum\nhit 0 x . . . x . . . x . . . x . . .\n\"></textarea><br>"
     "<button type=button onclick=go()>Import</button>"
     "</form>"
     "<script>"
-    "function go(){"
-    "var f=document.getElementById('file').files[0],txt=document.getElementById('txt');"
-    "if(f){var rd=new FileReader();"
-    "rd.onload=function(){send(rd.result)};rd.readAsText(f);return;}"
-    "send(txt.value);"
-    "}"
-    "function send(text){"
+    "function basename(n){n=n.replace(/\\.[^.]*$/,'');return n;}"
+    "function send(body,fmt,name,bars){"
     "var s=document.getElementById('slot').value||'1';"
-    "fetch('/upload?slot='+s,{method:'POST',body:text}).then(function(r){return r.text()}).then(function(t){"
+    "var u='/upload?slot='+s+'&fmt='+fmt+'&bars='+bars"
+    "+(name?'&name='+encodeURIComponent(basename(name)):'');"
+    "fetch(u,{method:'POST',body:body}).then(function(r){return r.text()}).then(function(t){"
     "document.getElementById('st').textContent=t;"
     "}).catch(function(){document.getElementById('st').textContent='NET ERR';});"
+    "}"
+    "function go(){"
+    "var f=document.getElementById('file').files[0],txt=document.getElementById('txt'),"
+    "bars=document.getElementById('bars').value;"
+    "if(f){"
+    "if(/\\.[mM][iI][dD][iI]?$/.test(f.name)){var rd=new FileReader();"
+    "rd.onload=function(){send(rd.result,'mid',f.name,bars)};rd.readAsArrayBuffer(f);return;}"
+    "var r=new FileReader();"
+    "r.onload=function(){send(r.result,'txt',f.name,bars)};r.readAsText(f);return;"
+    "}"
+    "send(txt.value,'txt','',bars);"
     "}"
     "</script></body></html>";
 
@@ -160,6 +176,64 @@ static int http_read_body(int fd, size_t content_len, char **out)
     return (got == content_len) ? 0 : -3;
 }
 
+static void url_decode(char *s)
+{
+    char *d = s;
+    while (*s) {
+        if (*s == '+') {
+            *d++ = ' ';
+            s++;
+        } else if (*s == '%' && s[1] && s[2]) {
+            int hi = (s[1] >= 'A' && s[1] <= 'F') ? (s[1] - 'A' + 10)
+                   : (s[1] >= 'a' && s[1] <= 'f') ? (s[1] - 'a' + 10)
+                   : (s[1] - '0');
+            int lo = (s[2] >= 'A' && s[2] <= 'F') ? (s[2] - 'A' + 10)
+                   : (s[2] >= 'a' && s[2] <= 'f') ? (s[2] - 'a' + 10)
+                   : (s[2] - '0');
+            *d++ = (char)((hi << 4) | lo);
+            s += 3;
+        } else {
+            *d++ = *s++;
+        }
+    }
+    *d = '\0';
+}
+
+/* Parse /upload?key=val&key=val... into an upload request struct. */
+static void upload_query_parse(const char *q, uint8_t *slot, uint8_t *is_midi,
+                               uint8_t *bars, char *name, size_t name_cap)
+{
+    char pair[128];
+    const char *p = q;
+    while (*p) {
+        const char *amp = strchr(p, '&');
+        size_t plen = amp ? (size_t)(amp - p) : strlen(p);
+        if (plen >= sizeof pair) plen = sizeof pair - 1;
+        memcpy(pair, p, plen);
+        pair[plen] = '\0';
+        char *eq = strchr(pair, '=');
+        if (eq) {
+            *eq = '\0';
+            char *val = eq + 1;
+            url_decode(val);
+            if (strcmp(pair, "slot") == 0) {
+                int v = atoi(val);
+                if (v >= 1 && v <= 64) *slot = (uint8_t)v;
+            } else if (strcmp(pair, "fmt") == 0) {
+                *is_midi = (strcmp(val, "mid") == 0);
+            } else if (strcmp(pair, "bars") == 0) {
+                int v = atoi(val);
+                if (v == 1 || v == 2) *bars = (uint8_t)v;
+            } else if (strcmp(pair, "name") == 0) {
+                strncpy(name, val, name_cap - 1);
+                name[name_cap - 1] = '\0';
+            }
+        }
+        if (!amp) break;
+        p = amp + 1;
+    }
+}
+
 static void handle_conn(int fd)
 {
     char head[IMP_HEAD_CAP];
@@ -176,13 +250,14 @@ static void handle_conn(int fd)
     }
 
     if (strcmp(method, "POST") == 0 && strncmp(path, "/upload", 7) == 0) {
-        /* Drain request headers, find slot + Content-Length. */
-        uint8_t slot = 1;
+        /* Drain request headers, find Content-Length. */
+        uint8_t slot = 1, is_midi = 0, bars = 2;
         char    name[PROJECT_NAME_LEN];
         memset(name, 0, sizeof name);
         const char *q = strchr(path, '?');
-        if (q && sscanf(q + 1, "slot=%hhu", &slot) == 1 && slot < 1) slot = 1;
-        if (slot >= CONFIG_SYNTH_PROJECT_MAX_SLOTS) slot = (uint8_t)(CONFIG_SYNTH_PROJECT_MAX_SLOTS - 1);
+        if (q) upload_query_parse(q + 1, &slot, &is_midi, &bars, name, sizeof name);
+        if (slot >= CONFIG_SYNTH_PROJECT_MAX_SLOTS)
+            slot = (uint8_t)(CONFIG_SYNTH_PROJECT_MAX_SLOTS - 1);
 
         size_t content_len = 0;
         char lhead[256];
@@ -209,7 +284,11 @@ static void handle_conn(int fd)
         /* Park the upload, wait for the ui task to apply it. */
         portENTER_CRITICAL(&s_mux);
         s_imp.body    = body;
+        s_imp.len     = content_len;
         s_imp.slot    = slot;
+        s_imp.is_midi = is_midi;
+        s_imp.bars    = bars;
+        memcpy(s_imp.song_name, name, sizeof s_imp.song_name);
         s_imp.pending = true;
         portEXIT_CRITICAL(&s_mux);
 
@@ -340,7 +419,9 @@ static void wifi_import_task(void *arg)
 void wifi_import_service(void)
 {
     char *body;
-    uint8_t slot;
+    uint8_t slot, is_midi, bars;
+    char song_name[PROJECT_NAME_LEN];
+    size_t len;
 
     portENTER_CRITICAL(&s_mux);
     if (!s_imp.pending) {
@@ -348,13 +429,41 @@ void wifi_import_service(void)
         return;
     }
     body     = s_imp.body;
+    len      = s_imp.len;
     slot     = s_imp.slot;
+    is_midi  = s_imp.is_midi;
+    bars     = s_imp.bars;
+    memcpy(song_name, s_imp.song_name, sizeof song_name);
     s_imp.pending = false;
     portEXIT_CRITICAL(&s_mux);
 
     char out[sizeof s_imp.result];
     out[0] = '\0';
-    bool ok = song_import_apply(slot, body, NULL, out, sizeof out);
+    bool ok = false;
+
+    if (is_midi) {
+        /* Convert the raw SMF stream to an AMYSONG text on the fly (mirror of
+         * tools/midi2amysong.py), then save/apply it like a pasted song. */
+        char *text = heap_caps_malloc(2048, MALLOC_CAP_SPIRAM);
+        if (!text) {
+            snprintf(s_imp.result, sizeof s_imp.result, "ERR:no mem");
+            free(body);
+            if (s_imp.done_sem) xSemaphoreGive(s_imp.done_sem);
+            return;
+        }
+        char cvt_err[96];
+        if (midi_amysong_convert((const uint8_t *)body, len,
+                                 (int)bars, 256, song_name,
+                                 text, 2048, cvt_err, sizeof cvt_err) != 0) {
+            snprintf(s_imp.result, sizeof s_imp.result, "ERR:%s",
+                     cvt_err[0] ? cvt_err : "midi parse failed");
+        } else {
+            ok = song_import_apply(slot, text, NULL, out, sizeof out);
+        }
+        free(text);
+    } else {
+        ok = song_import_apply(slot, body, NULL, out, sizeof out);
+    }
 
     free(body);
     if (ok) {
@@ -362,7 +471,7 @@ void wifi_import_service(void)
                  "OK:saved to slot %u", (unsigned)(slot + 1));
     } else {
         snprintf(s_imp.result, sizeof s_imp.result, "ERR:%s",
-                 out[0] ? out : "parse failed");
+                 out[0] ? out : "import failed");
     }
     if (s_imp.done_sem) xSemaphoreGive(s_imp.done_sem);
 }

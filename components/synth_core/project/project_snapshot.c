@@ -46,6 +46,26 @@ static const char *TAG = "project_snapshot";
 
 #define PROJECT_SER_BUF_CAP (64 * 1024)
 
+/* Last load attempt's classification reason ('' when it succeeded). Logged
+ * and surfaced on the OLED / Projects page so a refused load names its own
+ * culprit without serial. Written from the synth_ui (single applier) task. */
+static const char *s_last_load_why = NULL;
+
+const char *project_snapshot_last_load_error(void)
+{
+    return s_last_load_why;
+}
+
+#if CONFIG_SYNTH_PROJECT_SELFTEST
+static bool         s_st_ran  = false;
+static bool         s_st_pass = false;
+static const char  *s_st_why  = NULL;
+
+bool project_snapshot_selftest_ran(void)  { return s_st_ran;  }
+bool project_snapshot_selftest_pass(void) { return s_st_pass; }
+const char *project_snapshot_selftest_why(void) { return s_st_why ? s_st_why : ""; }
+#endif
+
 _Static_assert(SEQ_TRACKS == 4 && SEQ_MAX_STEPS == 32,
                "LAYR v1 format assumes 4x32; bump section version");
 
@@ -1126,10 +1146,12 @@ bool project_snapshot_save(uint8_t slot, const char *name)
 
 bool project_snapshot_load(uint8_t slot)
 {
+    s_last_load_why = NULL;
     uint8_t *payload = NULL;
     size_t   len = 0;
     char     name[PROJECT_NAME_LEN];
     if (!project_store_read(slot, &payload, &len, name)) {
+        s_last_load_why = "STORE REFUSED";
         ESP_LOGW(TAG, "load slot %u: store read refused (corrupt/CRC)", slot);
         return false;
     }
@@ -1138,6 +1160,7 @@ bool project_snapshot_load(uint8_t slot)
         heap_caps_malloc(sizeof(seq_layer_t) * MAX_LAYERS, MALLOC_CAP_SPIRAM);
     if (!staged_layers) {
         free(payload);
+        s_last_load_why = "NO SPIRAM";
         ESP_LOGE(TAG, "load slot %u: SPIRAM allocation failed (free=%u)",
                  slot, (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
         return false;
@@ -1239,6 +1262,7 @@ bool project_snapshot_load(uint8_t slot)
     if (!ok) {
         free(staged_layers);
         free(payload);
+        s_last_load_why = why;
         ESP_LOGW(TAG, "load slot %u: validation failed (%s), no changes made", slot, why);
         return false;
     }
@@ -1308,12 +1332,22 @@ void project_snapshot_selftest(void)
     uint8_t slot = CONFIG_SYNTH_PROJECT_MAX_SLOTS - 1;
     project_slot_info_t info;
     if (project_store_slot_info(slot, &info) && info.used) {
+        s_st_ran  = true;
+        s_st_pass = false;
+        s_st_why  = "SLOT BUSY";
         ESP_LOGW(TAG, "SNAPSHOT SELFTEST SKIPPED (slot P%02u in use)", (unsigned)slot);
         return;
     }
     bool pass = project_snapshot_save(slot, "st2");
-    pass = pass && project_snapshot_load(slot);
+    s_st_why = pass ? "" : "SAVE FAILED";
+    if (pass) {
+        pass = project_snapshot_load(slot);
+        if (!pass) s_st_why = project_snapshot_last_load_error();
+    }
     project_store_delete(slot);
-    ESP_LOGI(TAG, "SNAPSHOT SELFTEST %s", pass ? "PASS" : "FAIL");
+    s_st_ran  = true;
+    s_st_pass = pass;
+    ESP_LOGI(TAG, "SNAPSHOT SELFTEST %s (%s)", pass ? "PASS" : "FAIL",
+             pass ? "" : s_st_why);
 }
 #endif

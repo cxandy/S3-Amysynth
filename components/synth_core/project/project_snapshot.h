@@ -18,6 +18,10 @@ extern "C" {
  * (keeps "P<nn>"). Returns false on any failure (nothing partially saved). */
 bool project_snapshot_save(uint8_t slot, const char *name);
 
+/* Short human-readable reason for the most recent failed load ("" when the
+ * last load succeeded). Stable pointer, lifespan until the next load. */
+const char *project_snapshot_last_load_error(void);
+
 /* Load + apply slot. Validates fully before touching live state.
  * Stops the transport. Returns false and leaves the session untouched on
  * any validation failure. */
@@ -27,6 +31,10 @@ bool project_snapshot_load(uint8_t slot);
 /* Full serialize -> parse -> apply -> delete round-trip against live
  * boot-default state. Logs SNAPSHOT SELFTEST PASS/FAIL. */
 void project_snapshot_selftest(void);
+/* Result capture for on-boot OLED surfacing (no serial needed). */
+bool project_snapshot_selftest_ran(void);
+bool project_snapshot_selftest_pass(void);
+const char *project_snapshot_selftest_why(void);
 #endif
 
 #ifdef __cplusplus

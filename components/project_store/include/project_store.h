@@ -50,6 +50,9 @@ void project_store_cleanup_tmp(void);
 #if CONFIG_SYNTH_PROJECT_SELFTEST
 /* TLV round-trip + slot round-trip selftest. */
 void project_store_selftest(void);
+bool project_store_selftest_ran(void);
+bool project_store_selftest_pass(void);
+const char *project_store_selftest_why(void);
 #endif
 
 #ifdef __cplusplus

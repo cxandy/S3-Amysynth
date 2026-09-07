@@ -217,6 +217,14 @@ void project_store_cleanup_tmp(void)
 }
 
 #if CONFIG_SYNTH_PROJECT_SELFTEST
+static bool         s_store_st_ran  = false;
+static bool         s_store_st_pass = false;
+static const char  *s_store_st_why  = "?";
+
+bool project_store_selftest_ran(void)  { return s_store_st_ran;  }
+bool project_store_selftest_pass(void) { return s_store_st_pass; }
+const char *project_store_selftest_why(void) { return s_store_st_why; }
+
 void project_store_selftest(void)
 {
     /* TLV round-trip */
@@ -227,6 +235,7 @@ void project_store_selftest(void)
     tlv_put_f32(&w, 0.5f); tlv_put_u32(&w, 0xDEADBEEFu);
     tlv_end_section(&w, h);
     bool pass = !w.err;
+    s_store_st_why = pass ? "" : "TLV WRITE";
 
     tlv_reader_t r, body; uint32_t tag; uint8_t ver;
     tlv_reader_init(&r, buf, w.len);
@@ -237,24 +246,33 @@ void project_store_selftest(void)
         && tlv_get_i16(&body, &b) && b == -1234
         && tlv_get_f32(&body, &c) && c == 0.5f
         && tlv_get_u32(&body, &d) && d == 0xDEADBEEFu;
+    if (!pass && s_store_st_why[0] == '\0') s_store_st_why = "TLV READ";
 
     /* Slot round-trip in the top slot - but never over a real project:
      * the test deletes the slot afterwards, so an occupied slot means skip. */
     uint8_t slot = CONFIG_SYNTH_PROJECT_MAX_SLOTS - 1;
     project_slot_info_t info;
     if (project_store_slot_info(slot, &info) && info.used) {
+        s_store_st_ran  = true;
+        s_store_st_pass = false;
+        s_store_st_why  = "SLOT BUSY";
         ESP_LOGW(TAG, "SELFTEST SKIPPED (slot P%02u in use)", (unsigned)slot);
         return;
     }
     pass = pass && project_store_write(slot, "selftest", buf, w.len);
+    if (!pass && s_store_st_why[0] == '\0') s_store_st_why = "WRITE";
     uint8_t *rb = NULL; size_t rlen = 0; char nm[PROJECT_NAME_LEN];
     pass = pass && project_store_read(slot, &rb, &rlen, nm)
         && rlen == w.len && memcmp(rb, buf, rlen) == 0
         && strcmp(nm, "selftest") == 0;
+    if (!pass && s_store_st_why[0] == '\0') s_store_st_why = "READ/CRC";
     free(rb);
     project_store_delete(slot);
 
-    ESP_LOGI("project_store", "SELFTEST %s", pass ? "PASS" : "FAIL");
+    s_store_st_ran  = true;
+    s_store_st_pass = pass;
+    ESP_LOGI("project_store", "SELFTEST %s (%s)", pass ? "PASS" : "FAIL",
+             pass ? "" : s_store_st_why);
 }
 #endif
 
@@ -283,6 +301,9 @@ void project_store_cleanup_tmp(void)
 #if CONFIG_SYNTH_PROJECT_SELFTEST
 void project_store_selftest(void)
 { }
+bool project_store_selftest_ran(void)  { return false; }
+bool project_store_selftest_pass(void) { return false; }
+const char *project_store_selftest_why(void) { return ""; }
 #endif
 
 #endif /* CONFIG_SYNTH_PROJECT_STORE */

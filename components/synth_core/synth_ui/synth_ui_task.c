@@ -20,6 +20,7 @@
 #include "usb_audio_watchdog.h"
 #include "amy_helpers.h"
 #include "project_snapshot.h"
+#include "project_store.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
@@ -345,6 +346,32 @@ void synth_ui_init(u8g2_t *u8g2)
     project_snapshot_selftest();
     sequencer_core_set_playing(true);
     seq_state.playing = true;
+
+    /* On-screen boot-check: the results would previously need serial (which
+     * the USB UAC init steals the port for) - draw them big on the OLED
+     * instead. Pass boots get no extra delay; a failure holds the message
+     * for a few seconds so it is readable before the Seq screen takes over. */
+    {
+        bool store_ok = project_store_selftest_ran()
+                     && project_store_selftest_pass();
+        bool snap_ok  = project_snapshot_selftest_ran()
+                     && project_snapshot_selftest_pass();
+        bool ok = store_ok && snap_ok;
+        char why[24];
+        snprintf(why, sizeof why, "%s", ok ? ""
+                 : (snap_ok ? project_store_selftest_why()
+                            : project_snapshot_selftest_why()));
+        u8g2_ClearBuffer(s_u8g2);
+        u8g2_SetDrawColor(s_u8g2, 1);
+        u8g2_SetFont(s_u8g2, u8g2_font_6x10_tf);
+        u8g2_DrawStr(s_u8g2, 2, 12, ok ? "BOOT CHECK: PASS"
+                                     : "BOOT CHECK: FAIL");
+        u8g2_DrawStr(s_u8g2, 2, 24, snap_ok ? "SNAP: PASS" : "SNAP: FAIL");
+        u8g2_DrawStr(s_u8g2, 2, 36, store_ok ? "STORE: PASS" : "STORE: FAIL");
+        u8g2_DrawStr(s_u8g2, 2, 48, why);
+        u8g2_SendBuffer(s_u8g2);
+        if (!ok) vTaskDelay(pdMS_TO_TICKS(3000));
+    }
 #endif
 
     /* Pin to Core 0: the OLED refresh does blocking I2C and is not latency

@@ -392,7 +392,15 @@ void projects_menu_service(void)
 
     if (s_req == PREQ_LOAD) {
         bool ok = project_snapshot_load(s_req_slot);
-        set_status(s_req_idx, ok ? "LOADED" : "LOAD FAIL");
+        if (ok) {
+            set_status(s_req_idx, "LOADED");
+        } else {
+            /* Name the refusing stage right on the slot row (no serial). */
+            const char *e = project_snapshot_last_load_error();
+            char m[MENU_VALUE_LEN];
+            snprintf(m, sizeof m, "FAIL:%.8s", e ? e : "?");
+            set_status(s_req_idx, m);
+        }
     } else {
         bool ok = project_snapshot_save(s_req_slot,
                                         s_req_has_name ? s_req_name : NULL);

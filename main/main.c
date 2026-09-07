@@ -65,6 +65,24 @@ static const char *TAG = "main"; // For ESP_LOG and related logs in this file
 #define ENCODER_PIN_B ((gpio_num_t)CONFIG_AMYSYNTH_ENCODER_B_GPIO)
 static i2c_u8g2_handle_t s_display;
 static u8g2_t *s_u8g2 = NULL;
+
+/* On-screen boot breadcrumb. With no serial console on this project, a boot
+ * hang/crash/reboot-cycle shows only as the stuck "Init OK" splash - unlike
+ * "after i2c begin" no evidence of how far app_main got. This writes each
+ * startup stage straight to the panel (over the Init OK splash) so whatever
+ * step is last-reaching is what the user sees frozen, and so we can tell a
+ * plain hang from a panic-reboot cycle (the latter restarts and re-draws
+ * Init OK, so the flash pattern differs). No-op until the scratch u8g2 handle
+ * exists and the display is present. */
+static void boot_banner(const char *stage)
+{
+    if (s_u8g2 == NULL || !i2c_u8g2_display_present()) return;
+    u8g2_ClearBuffer(s_u8g2);
+    u8g2_SetFont(s_u8g2, u8g2_font_6x10_tf);
+    u8g2_DrawStr(s_u8g2, 0, 12, stage);
+    u8g2_SendBuffer(s_u8g2);
+    ESP_LOGI(TAG, "[startup] stage: %s", stage);
+}
 static volatile uint32_t s_last_seq_tick = 0;
 static volatile uint32_t s_seq_tick_hook_count = 0;
 static volatile uint32_t s_render_block_count = 0;
@@ -938,6 +956,7 @@ void app_main(void)
         return;
     }
     ESP_LOGI(TAG, "[startup] after i2c_u8g2_init");
+    boot_banner("boot: audio");
 
   
     // Configure and start AMY
@@ -1040,12 +1059,14 @@ void app_main(void)
     amy_profile_overhead_selftest();
 
     // Our USB Audio (must be after TinyUSB init)
+    boot_banner("boot: usbaudio");
     ESP_ERROR_CHECK(usb_audio_init());
     DIAG_HEAP_CHECK("after usb_audio_init");
 
     /* Project storage: non-fatal if absent/corrupt. Mounted before
      * synth_ui_init so the snapshot selftest runs single-threaded against the
      * boot layers. */
+    boot_banner("boot: fs");
     project_fs_init();
     if (project_fs_ok()) project_store_cleanup_tmp();
 #if CONFIG_SYNTH_PROJECT_SELFTEST
@@ -1053,11 +1074,13 @@ void app_main(void)
 #endif
 #if CONFIG_SYNTH_WIFI_IMPORT
     /* AMYSONG import AP + web server; non-fatal on radio failure. */
+    boot_banner("boot: wifi");
     wifi_importer_init();
 #endif
 
     /* synth_ui_init adds the boot layers (drum + first melodic) itself,
      * single-threaded on this task's stack, before the UI task starts. */
+    boot_banner("boot: ui");
     synth_ui_init(s_u8g2);
     DIAG_HEAP_CHECK("after synth_ui_init");
 

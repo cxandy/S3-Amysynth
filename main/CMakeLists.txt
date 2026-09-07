@@ -18,3 +18,6 @@ if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
     target_compile_options(${COMPONENT_LIB} PRIVATE "-Wstack-usage=1024")
 endif()
 # `amy.c` needs relaxed strict-aliasing warnings; handled by the `amy` component.
+# main links last, so it closes the --start-group that synth_core opens
+# (see components/synth_core/CMakeLists.txt).
+target_link_options(${COMPONENT_LIB} INTERFACE "-Wl,--end-group")

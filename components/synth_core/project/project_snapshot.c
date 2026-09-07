@@ -1129,13 +1129,17 @@ bool project_snapshot_load(uint8_t slot)
     uint8_t *payload = NULL;
     size_t   len = 0;
     char     name[PROJECT_NAME_LEN];
-    if (!project_store_read(slot, &payload, &len, name)) return false;
+    if (!project_store_read(slot, &payload, &len, name)) {
+        ESP_LOGW(TAG, "load slot %u: store read refused (corrupt/CRC)", slot);
+        return false;
+    }
 
     seq_layer_t *staged_layers =
         heap_caps_malloc(sizeof(seq_layer_t) * MAX_LAYERS, MALLOC_CAP_SPIRAM);
     if (!staged_layers) {
         free(payload);
-        ESP_LOGE(TAG, "load slot %u: SPIRAM allocation failed", slot);
+        ESP_LOGE(TAG, "load slot %u: SPIRAM allocation failed (free=%u)",
+                 slot, (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
         return false;
     }
 
@@ -1157,75 +1161,85 @@ bool project_snapshot_load(uint8_t slot)
     tlv_reader_t r;
     tlv_reader_init(&r, payload, len);
     bool ok = true;
+    const char *why = "staging";
     uint32_t tag; uint8_t ver; tlv_reader_t body;
     while (ok && tlv_next_section(&r, &tag, &ver, &body)) {
         switch (tag) {
         case TAG_GLOB:
-            if (got_glob || ver != 1) { ok = false; break; }
+            if (got_glob || ver != 1) { ok = false; why = "GLOB dup/ver"; break; }
             ok = parse_glob(&body, &staged_glob);
             got_glob = ok;
+            if (!ok) why = "GLOB parse";
             break;
         case TAG_LAYR:
             /* Ceiling must track ser_layer()'s version or the firmware
              * rejects its own files. */
-            if (ver < 1 || ver > 13 || staged_layer_count >= MAX_LAYERS) { ok = false; break; }
+            if (ver < 1 || ver > 13 || staged_layer_count >= MAX_LAYERS) { ok = false; why = "LAYR ver/cap"; break; }
             ok = parse_layer(&body, &staged_layers[staged_layer_count], ver);
             if (ok) staged_layer_count++;
+            else why = "LAYR parse";
             break;
         case TAG_ARP:
             /* Ceiling must track ser_arp()'s version (see TAG_LAYR). */
-            if (got_arp || ver < 1 || ver > 9) { ok = false; break; }
+            if (got_arp || ver < 1 || ver > 9) { ok = false; why = "ARP dup/ver"; break; }
             ok = parse_arp(&body, &staged_arp, ver);
             got_arp = ok;
+            if (!ok) why = "ARP parse";
             break;
         case TAG_DRON:
-            if (got_drone || ver != 1) { ok = false; break; }
+            if (got_drone || ver != 1) { ok = false; why = "DRON dup/ver"; break; }
             ok = parse_drone(&body, &staged_drone);
             got_drone = ok;
+            if (!ok) why = "DRON parse";
             break;
         case TAG_PROG:
-            if (got_prog || ver != 1) { ok = false; break; }
+            if (got_prog || ver != 1) { ok = false; why = "PROG dup/ver"; break; }
             ok = parse_prog(&body, &staged_prog);
             got_prog = ok;
+            if (!ok) why = "PROG parse";
             break;
         case TAG_CHRD:
-            if (got_chrd || ver != 1) { ok = false; break; }
+            if (got_chrd || ver != 1) { ok = false; why = "CHRD dup/ver"; break; }
             ok = parse_chrd(&body, staged_chords);
             got_chrd = ok;
+            if (!ok) why = "CHRD parse";
             break;
         case TAG_SONG:
-            if (got_song || ver != 1) { ok = false; break; }
+            if (got_song || ver != 1) { ok = false; why = "SONG dup/ver"; break; }
             ok = parse_song(&body, &staged_song);
             got_song = ok;
+            if (!ok) why = "SONG parse";
             break;
 #if CONFIG_SYNTH_CUSTOM_FM
         case TAG_FMVC:
-            if (got_fmvc || ver != 1) { ok = false; break; }
+            if (got_fmvc || ver != 1) { ok = false; why = "FMVC dup/ver"; break; }
             ok = parse_fmvc(&body, &staged_fmvc);
             got_fmvc = ok;
+            if (!ok) why = "FMVC parse";
             break;
 #endif
         default:
             break;   /* unknown section: ignore (forward-compat) */
         }
     }
-    if (r.err) ok = false;   /* truncated/corrupt outer stream */
+    if (r.err) { ok = false; why = "TLV outer stream err"; }   /* truncated/corrupt outer stream */
 
     if (ok && (!got_glob || staged_layer_count < 1 ||
                staged_layers[0].type != SEQ_LAYER_DRUM)) {
         ok = false;
+        why = (!got_glob) ? "val: no GLOB" : "val: bad layer0";
     }
     /* Exactly one drum layer, and only at index 0: add_layer(DRUM) always
      * binds the fixed SEQ_DRUM_SYNTH_BASE slots, so a second drum layer
      * would alias the first one's AMY synths. */
     for (uint8_t i = 1; ok && i < staged_layer_count; i++) {
-        if (staged_layers[i].type == SEQ_LAYER_DRUM) ok = false;
+        if (staged_layers[i].type == SEQ_LAYER_DRUM) { ok = false; why = "val: drum not layer0"; }
     }
 
     if (!ok) {
         free(staged_layers);
         free(payload);
-        ESP_LOGW(TAG, "load slot %u: validation failed, no changes made", slot);
+        ESP_LOGW(TAG, "load slot %u: validation failed (%s), no changes made", slot, why);
         return false;
     }
 

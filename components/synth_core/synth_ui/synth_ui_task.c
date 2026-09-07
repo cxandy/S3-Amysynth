@@ -34,6 +34,13 @@
 #endif
 #include <string.h>
 
+#if CONFIG_SYNTH_WIFI_IMPORT
+/* Forward decl instead of wifi_importer.h: that component links synth_core
+ * (for song_import), so pulling its header in here would create a REQUIRES
+ * cycle between components. */
+void wifi_import_service(void);
+#endif
+
 static const char *TAG_TASK = "synth_ui";
 
 static u8g2_t *s_u8g2 = NULL;
@@ -143,6 +150,13 @@ static void synth_ui_task(void *pvParameters)
          * call. After the drains above, so pending structural edits resolve
          * before a load replaces them. */
         projects_menu_service();
+#endif
+
+#if CONFIG_SYNTH_WIFI_IMPORT
+        /* Song uploads from the WiFi import AP. Must run here: applying one
+         * rebuilds layers via core add/delete and saves the project - same
+         * single-applier contract as project load above. */
+        wifi_import_service();
 #endif
 
 #if CONFIG_SYNTH_WIRELESS

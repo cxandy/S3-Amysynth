@@ -40,6 +40,7 @@
 #include "project_fs.h"
 #include "project_store.h"
 #include "project_snapshot.h"
+#include "wifi_importer.h"
 #if CONFIG_SYNTH_WIRELESS
 #include "midi_core.h"
 #include "radio_manager.h"
@@ -1049,6 +1050,10 @@ void app_main(void)
     if (project_fs_ok()) project_store_cleanup_tmp();
 #if CONFIG_SYNTH_PROJECT_SELFTEST
     project_store_selftest();
+#endif
+#if CONFIG_SYNTH_WIFI_IMPORT
+    /* AMYSONG import AP + web server; non-fatal on radio failure. */
+    wifi_importer_init();
 #endif
 
     /* synth_ui_init adds the boot layers (drum + first melodic) itself,

@@ -1,0 +1,27 @@
+config SYNTH_WIFI_IMPORT
+	bool "Song import over WiFi (SoftAP + web upload)"
+	depends on SYNTH_PROJECT_STORE
+	default n
+	help
+		Runs a Wireless SoftAP ("AMYSYNTH") with a bare HTTP server on
+		http://192.168.4.1/. The page uploads or pastes an AMYSONG text
+		file; the firmware parses it into the sequencer (through the
+		single-applier ui task) and saves it into a project slot for
+		later Load. Compiles in the ESP-IDF wifi + netif + lwIP stacks.
+
+config SYNTH_WIFI_AP_SSID
+	string "AMYSYNTH SoftAP SSID"
+	depends on SYNTH_WIFI_IMPORT
+	default "AMYSYNTH"
+	help
+		Network name broadcast by the song-import access point. Open
+		(no password): the page only writes project slots on the local
+		link, so an open AP saves the code from holding a PSK.
+
+config SYNTH_WIFI_AP_CHANNEL
+	int "AMYSYNTH SoftAP channel"
+	depends on SYNTH_WIFI_IMPORT
+	default 1
+	range 1 13
+	help
+		Wi-Fi channel for the import AP.

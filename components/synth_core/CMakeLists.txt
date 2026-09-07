@@ -120,5 +120,4 @@ set_source_files_properties(
 # component (wifi_importer); under GCC LTO + --gc-sections, archive-member
 # selection then depends on link order and drops the defining members.
 # --gc-sections still prunes the dead code, so whole-archive adds no flash.
-target_link_libraries(${COMPONENT_LIB} INTERFACE
-    -Wl,--whole-archive $<LINK_ONLY:${COMPONENT_LIB}> -Wl,--no-whole-archive)
+set_property(TARGET ${COMPONENT_LIB} PROPERTY WHOLE_ARCHIVE ON)

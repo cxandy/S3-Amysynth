@@ -28,7 +28,7 @@ static const char *TAG = "wifi_import";
 
 /* ── boot-status pipeline ───────────────────────────────────────────────────
  * The AP brings WiFi up on its own task so a dead radio can never stall boot.
- * Each step stamps s_state*/text; the UI hint strip renders it until the AP
+ * Each step stamps s_state_text; the UI hint strip renders it until the AP
  * has been up for a while (or the run failed). */
 
 typedef enum {

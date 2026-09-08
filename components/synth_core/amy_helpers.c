@@ -176,6 +176,14 @@ void amy_helpers_set_render_task(TaskHandle_t render_task)
     s_render_task = render_task;
 }
 
+/* The main render task (set once at boot before any user interaction, so a
+ * plain read is race-free). Other components pause it around their own CPU
+ * bursts (e.g. radio bring-up) without having to know where it lives. */
+TaskHandle_t amy_helpers_get_render_task(void)
+{
+    return s_render_task;
+}
+
 amy_event *amy_helpers_event_begin(void)
 {
     amy_helpers_init();

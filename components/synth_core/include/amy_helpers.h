@@ -15,6 +15,9 @@ void amy_helpers_init(void);
  * pump task; the render body holds amy_queue_lock and must not re-enter this
  * seam. */
 void amy_helpers_set_render_task(TaskHandle_t render_task);
+/* Inverse of set: the handle of the AMY render task, NULL before set. Read at
+ * boot after set_render_task, safe single-threaded. */
+TaskHandle_t amy_helpers_get_render_task(void);
 amy_event *amy_helpers_event_begin(void);
 /* Hands the event to the ingest pump: a send is NOT an apply. Ordering between
  * sends is preserved, but the engine applies them asynchronously - never read

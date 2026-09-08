@@ -71,6 +71,13 @@ CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
 CONFIG_SPIRAM_ALLOW_NOINIT_SEG_EXTERNAL_MEMORY=y
 CONFIG_RINGBUF_PLACE_ISR_FUNCTIONS_INTO_FLASH=y
 CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+# Console to the USB-Serial-JTAG port (the USB-C to the PC): the built-in
+# serial is the only debug channel here, since GPIO44/43 are not wired to a
+# UART header. Note: the USB audio/MIDI gadget (tinyusb) shares the PHY, so
+# the serial drops once the gadget initialises and only returns during boot/
+# after a reset - which is exactly when we need it, since the app stamps the
+# previous boot's reset reason at that point. Keep this on at all times.
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 # PERF (2026-06): double the ESP32-S3 instruction cache from 16KB to 32KB.
 # Most AMY DSP code still executes from flash through this cache (only the

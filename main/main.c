@@ -992,6 +992,11 @@ void app_main(void)
             char b[64];
             snprintf(b, sizeof b, "boot: audio RST:%s", rr_name);
             boot_banner(b);
+            /* Hold the reason on the panel long enough to be read - the very
+             * next boot stage overwrites it in a blink. Boot has not started
+             * AMY yet, so this stall is just a few seconds of idle. */
+            vTaskDelay(pdMS_TO_TICKS(5000));
+            boot_banner("boot: audio");
         } else {
             boot_banner("boot: audio");
         }

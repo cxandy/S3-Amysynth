@@ -2,6 +2,7 @@
 #include "midi_import.h"
 #include "song_import.h"
 #include "project_store.h"
+#include "amy_helpers.h"
 #include "esp_wifi.h"
 #include "esp_netif.h"
 #include "esp_event.h"
@@ -51,24 +52,19 @@ static unsigned        s_fail_in_kb, s_fail_lg_kb;   /* heap snapshot at FAIL   
 static StackType_t     s_wifi_task_stack[8192 / sizeof(StackType_t)];
 static StaticTask_t    s_wifi_task_tcb;
 
-/* AMY's audio tasks live at the highest FreeRTOS priority (one per core). Its
- * i2s.c holds the handles as plain (non-static) globals, but amy.h does not
- * declare them, so redeclare here. NULL when a task was never created. */
-extern TaskHandle_t amy_render_handle;
-extern TaskHandle_t amy_fill_buffer_handle;
-
 /* Park/unpark the AMY audio pipeline so radio bring-up can own both cores.
- * Suspended tasks hold no CPU and are ignored by the task watchdog (they are
- * not runnable), so this cannot itself tickle a WDT */
+ * The DSP runs in the single render task registered via
+ * amy_helpers_set_render_task() (main.c): a highest-priority task pinned to
+ * the DSP core that would otherwise preempt this prio-5 task mid-bring-up
+ * and slice the PHY bring-up into fragments. Suspended tasks hold no CPU and
+ * are not runnable, so they cannot tickle a watchdog (the sub-second audio
+ * gap during AP setup is invisible). */
 static void imp_quiet_audio(bool quiet)
 {
-    if (quiet) {
-        if (amy_fill_buffer_handle != NULL) vTaskSuspend(amy_fill_buffer_handle);
-        if (amy_render_handle != NULL)      vTaskSuspend(amy_render_handle);
-    } else {
-        if (amy_fill_buffer_handle != NULL) vTaskResume(amy_fill_buffer_handle);
-        if (amy_render_handle != NULL)      vTaskResume(amy_render_handle);
-    }
+    TaskHandle_t rt = amy_helpers_get_render_task();
+    if (rt == NULL) return;
+    if (quiet) vTaskSuspend(rt);
+    else       vTaskResume(rt);
 }
 
 static void imp_set_state(imp_dir_state_t st, const char *fmt, ...)

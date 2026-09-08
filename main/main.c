@@ -25,6 +25,8 @@
 #include "esp_timer.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include "esp_reset_reason.h"
+#include <stdio.h>
 #include "render_clock.h"
 #include "render_stats.h"
 #include "dropout_stats.h"
@@ -966,7 +968,34 @@ void app_main(void)
         return;
     }
     ESP_LOGI(TAG, "[startup] after i2c_u8g2_init");
-    boot_banner("boot: audio");
+
+    /* If the previous boot ended in a watchdog/panic reboot (our WiFi-on-
+     * demand bring-up used to do exactly that), say why right on the panel so
+     * the reason is visible without a serial cable. Silent for clean power-on
+     * boots so normal startup stays uncluttered. */
+    {
+        esp_reset_reason_t rr = esp_reset_reason();
+        static const char *rr_name = "?";
+        switch (rr) {
+        case ESP_RST_POWERON:  rr_name = "POWERON";  break;
+        case ESP_RST_PANIC:    rr_name = "PANIC";    break;
+        case ESP_RST_INT_WDT:  rr_name = "INT_WDT";  break;
+        case ESP_RST_TASK_WDT: rr_name = "TASK_WDT"; break;
+        case ESP_RST_WDT:      rr_name = "WDT";      break;
+        case ESP_RST_SW:       rr_name = "SW";       break;
+        case ESP_RST_BROWNOUT: rr_name = "BROWNOUT"; break;
+        case ESP_RST_DEEPSLEEP: rr_name = "DEEPSLEEP"; break;
+        default: break;
+        }
+        ESP_LOGI(TAG, "[startup] last reset: %s", rr_name);
+        if (rr != ESP_RST_POWERON) {
+            char b[64];
+            snprintf(b, sizeof b, "boot: audio RST:%s", rr_name);
+            boot_banner(b);
+        } else {
+            boot_banner("boot: audio");
+        }
+    }
 
   
     // Configure and start AMY

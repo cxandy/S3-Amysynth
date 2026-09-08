@@ -51,6 +51,26 @@ static unsigned        s_fail_in_kb, s_fail_lg_kb;   /* heap snapshot at FAIL   
 static StackType_t     s_wifi_task_stack[8192 / sizeof(StackType_t)];
 static StaticTask_t    s_wifi_task_tcb;
 
+/* AMY's audio tasks live at the highest FreeRTOS priority (one per core). Its
+ * i2s.c holds the handles as plain (non-static) globals, but amy.h does not
+ * declare them, so redeclare here. NULL when a task was never created. */
+extern TaskHandle_t amy_render_handle;
+extern TaskHandle_t amy_fill_buffer_handle;
+
+/* Park/unpark the AMY audio pipeline so radio bring-up can own both cores.
+ * Suspended tasks hold no CPU and are ignored by the task watchdog (they are
+ * not runnable), so this cannot itself tickle a WDT */
+static void imp_quiet_audio(bool quiet)
+{
+    if (quiet) {
+        if (amy_fill_buffer_handle != NULL) vTaskSuspend(amy_fill_buffer_handle);
+        if (amy_render_handle != NULL)      vTaskSuspend(amy_render_handle);
+    } else {
+        if (amy_fill_buffer_handle != NULL) vTaskResume(amy_fill_buffer_handle);
+        if (amy_render_handle != NULL)      vTaskResume(amy_render_handle);
+    }
+}
+
 static void imp_set_state(imp_dir_state_t st, const char *fmt, ...)
 {
     char msg[48];
@@ -420,6 +440,14 @@ static void wifi_import_task(void *arg)
         imp_self_delete();
         return;
     }
+
+    /* Radio bring-up owns this core for bursts (PHY calibration, RF on) and
+     * must not be sliced up by the highest-priority AMY DSP tasks sharing
+     * both cores, or the device trips a watchdog and reboots. Suspend the
+     * two AMY audio tasks for the bring-up window (a sub-second audio gap
+     * during AP setup is invisible and harmless); they are resumed the
+     * moment the radio is up and the socket is listening. */
+    imp_quiet_audio(true);
     imp_set_state(IMP_ST_START, "WiFi: start...");
     err = esp_wifi_start();
     if (err != ESP_OK) {
@@ -431,6 +459,7 @@ static void wifi_import_task(void *arg)
                  (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
         s_fail_kind = 2;
+        imp_quiet_audio(false);
         imp_set_state(IMP_ST_FAIL, "WiFi: fail start %s", esp_err_to_name(err));
         imp_self_delete();
         return;
@@ -438,6 +467,7 @@ static void wifi_import_task(void *arg)
 
     /* Give the AP a moment to assign 192.168.4.1 before the socket binds. */
     vTaskDelay(pdMS_TO_TICKS(400));
+    imp_quiet_audio(false);
     imp_set_state(IMP_ST_READY, "WiFi: AP %s", CONFIG_SYNTH_WIFI_AP_SSID);
 
     int listen_fd = socket(AF_INET, SOCK_STREAM, 0);

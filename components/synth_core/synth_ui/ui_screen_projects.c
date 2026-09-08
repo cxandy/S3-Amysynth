@@ -350,9 +350,11 @@ bool projects_menu_handle_click(uint8_t idx)
             set_status(idx, "START..");
         } else {
             char m[MENU_VALUE_LEN];
-            unsigned fr = (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024);
-            unsigned lg = (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) / 1024);
-            snprintf(m, sizeof m, "NM %u/%u", fr, lg);
+            unsigned frq = (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024);
+            unsigned lgq = (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) / 1024);
+            uint8_t  fr = (frq > 255) ? 255 : (uint8_t)frq;
+            uint8_t  lg = (lgq > 255) ? 255 : (uint8_t)lgq;
+            snprintf(m, sizeof m, "NM %u/%u", (unsigned)fr, (unsigned)lg);
             set_status(idx, m);
         }
         return false;

@@ -216,7 +216,7 @@ void usb_import_service(void)
             if (!ok) {
                 snprintf(ctext, sizeof ctext, "%.127s", text);
                 snprintf(s_imp.result, sizeof s_imp.result,
-                         "ERR:apply failed out='%.120s' conv='%.127s'",
+                         "ERR:apply failed out='%.50s' conv='%.100s'",
                          out, ctext);
             }
         }

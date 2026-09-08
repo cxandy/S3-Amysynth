@@ -414,6 +414,13 @@ static void wifi_import_task(void *arg)
     imp_set_state(IMP_ST_START, "WiFi: start...");
     err = esp_wifi_start();
     if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_wifi_start %s: internal free=%u largest=%u min_free=%u "
+                      "psram free=%u",
+                 esp_err_to_name(err),
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
         imp_set_state(IMP_ST_FAIL, "WiFi: fail start %s", esp_err_to_name(err));
         imp_self_delete();
         return;

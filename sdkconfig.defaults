@@ -71,11 +71,6 @@ CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
 CONFIG_SPIRAM_ALLOW_NOINIT_SEG_EXTERNAL_MEMORY=y
 CONFIG_RINGBUF_PLACE_ISR_FUNCTIONS_INTO_FLASH=y
 CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
-# DEBUG (2026-09): route the app console to USB-Serial-JTAG so the web
-# terminal (Connect) shows app logs; UART0 is no longer the primary console.
-# Temporary: revert before any normal release.
-# CONFIG_ESP_CONSOLE_UART_DEFAULT is not set
-CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 # PERF (2026-06): double the ESP32-S3 instruction cache from 16KB to 32KB.
 # Most AMY DSP code still executes from flash through this cache (only the

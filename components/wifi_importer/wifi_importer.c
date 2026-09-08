@@ -46,6 +46,8 @@ static imp_dir_state_t s_dir_state;
 static char            s_state_text[64];
 static bool            s_driver_up = false;
 static TickType_t      s_ready_tick = 0;
+static uint8_t         s_fail_kind;   /* 0 generic, 1 init no-mem, 2 start no-mem */
+static unsigned        s_fail_in_kb, s_fail_lg_kb;   /* heap snapshot at FAIL     */
 
 static void imp_set_state(imp_dir_state_t st, const char *fmt, ...)
 {
@@ -56,6 +58,10 @@ static void imp_set_state(imp_dir_state_t st, const char *fmt, ...)
     va_end(ap);
     s_dir_state = st;
     if (st == IMP_ST_READY) s_ready_tick = xTaskGetTickCount();
+    if (st == IMP_ST_FAIL) {
+        s_fail_in_kb = (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024);
+        s_fail_lg_kb = (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) / 1024);
+    }
     snprintf(s_state_text, sizeof s_state_text, "%s", msg);
     ESP_LOGI(TAG, "imp AP: %s", msg);
 }
@@ -385,6 +391,7 @@ static void wifi_import_task(void *arg)
     if (err != ESP_OK) {
         unsigned ifree  = (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
         unsigned ilarge = (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+        s_fail_kind = 1;
         imp_set_state(IMP_ST_FAIL, "WiFi:init no mem i=%uKB lg=%uKB",
                       ifree / 1024, ilarge / 1024);
         imp_self_delete();
@@ -421,6 +428,7 @@ static void wifi_import_task(void *arg)
                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
                  (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+        s_fail_kind = 2;
         imp_set_state(IMP_ST_FAIL, "WiFi: fail start %s", esp_err_to_name(err));
         imp_self_delete();
         return;
@@ -571,7 +579,17 @@ const char *wifi_import_ap_state(void)
             snprintf(short_text, sizeof short_text, "AP %s",
                      CONFIG_SYNTH_WIFI_AP_SSID);
             return short_text;
-        case IMP_ST_FAIL:  return "FAIL";
+        case IMP_ST_FAIL:
+            if (s_fail_kind == 1) {
+                snprintf(short_text, sizeof short_text, "IN%u/%u",
+                         s_fail_in_kb, s_fail_lg_kb);
+            } else if (s_fail_kind == 2) {
+                snprintf(short_text, sizeof short_text, "ST%u/%u",
+                         s_fail_in_kb, s_fail_lg_kb);
+            } else {
+                snprintf(short_text, sizeof short_text, "FAIL");
+            }
+            return short_text;
         case IMP_ST_IDLE:  return "Off";
         default:           return "Start";
     }

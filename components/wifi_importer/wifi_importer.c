@@ -52,6 +52,10 @@ static unsigned        s_fail_in_kb, s_fail_lg_kb;   /* heap snapshot at FAIL   
 static StackType_t     s_wifi_task_stack[8192 / sizeof(StackType_t)];
 static StaticTask_t    s_wifi_task_tcb;
 
+#if CONFIG_SYNTH_WIFI_IMPORT_AUTOTEST_DELAY_MS > 0
+static void imp_autotest_arm(void);
+#endif
+
 /* Park/unpark the AMY audio pipeline so radio bring-up can own both cores.
  * The DSP runs in the single render task registered via
  * amy_helpers_set_render_task() (main.c): a highest-priority task pinned to

@@ -48,6 +48,8 @@ static bool            s_driver_up = false;
 static TickType_t      s_ready_tick = 0;
 static uint8_t         s_fail_kind;   /* 0 generic, 1 init no-mem, 2 start no-mem */
 static unsigned        s_fail_in_kb, s_fail_lg_kb;   /* heap snapshot at FAIL     */
+static StackType_t     s_wifi_task_stack[8192 / sizeof(StackType_t)];
+static StaticTask_t    s_wifi_task_tcb;
 
 static void imp_set_state(imp_dir_state_t st, const char *fmt, ...)
 {
@@ -559,9 +561,16 @@ esp_err_t wifi_importer_start(void)
      * boot screen therefore always proceeds to the normal UI; the hint strip
      * reports the AP state via status_line. */
     if (s_imp.task_created) return ESP_OK;
-    BaseType_t ok = xTaskCreatePinnedToCore(wifi_import_task, "wifi_import",
-                                            8192, NULL, 5, NULL, 1);
-    if (ok != pdPASS) return ESP_ERR_NO_MEM;
+    /* The task stack lives in our own .bss, not the heap: at click time the
+     * internal heap can be too fragmented to honor a single 8 KB request, so
+     * a heap-allocated stack would turn "start AP" into an intermittent
+     * ESP_ERR_NO_MEM. Trading 8 KB of internal RAM for a start that cannot
+     * fail on allocation is worth it on this board. */
+    TaskHandle_t th = xTaskCreateStaticPinnedToCore(
+        wifi_import_task, "wifi_import",
+        sizeof(s_wifi_task_stack) / sizeof(StackType_t),
+        NULL, 5, s_wifi_task_stack, &s_wifi_task_tcb, 1);
+    if (th == NULL) return ESP_ERR_NO_MEM;
     s_imp.task_created = true;
     return ESP_OK;
 }

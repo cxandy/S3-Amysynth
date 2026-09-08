@@ -8,6 +8,7 @@
 #include "project_snapshot.h"
 #include "esp_log.h"
 #include "esp_err.h"
+#include "esp_heap_caps.h"
 #if CONFIG_SYNTH_WIFI_IMPORT
 /* Forward decls instead of wifi_importer.h: that component links synth_core
  * (for song_import), so pulling its header in here would create a REQUIRES
@@ -348,7 +349,11 @@ bool projects_menu_handle_click(uint8_t idx)
         } else if (wifi_importer_start() == ESP_OK) {
             set_status(idx, "START..");
         } else {
-            set_status(idx, "NO MEM");
+            char m[MENU_VALUE_LEN];
+            unsigned fr = (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024);
+            unsigned lg = (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) / 1024);
+            snprintf(m, sizeof m, "NM %u/%u", fr, lg);
+            set_status(idx, m);
         }
         return false;
     }

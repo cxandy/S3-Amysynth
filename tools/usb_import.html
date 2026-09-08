@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>AMYSYNTH USB import</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 720px; margin: 24px auto; padding: 0 8px; color: #e8e8e8; background: #14161a; }
+  h1 { font-size: 1.3rem; }
+  label { display: inline-block; margin: 6px 12px 6px 0; }
+  input[type=number] { width: 5em; }
+  textarea { width: 100%; box-sizing: border-box; margin-top: 8px; font-family: ui-monospace, monospace; background: #1c1f26; color: #e8e8e8; border: 1px solid #333; }
+  button { padding: 8px 16px; margin-right: 8px; }
+  #st { font-weight: bold; }
+  #log { white-space: pre-wrap; background: #0f1114; border: 1px solid #2a2e37; padding: 8px; height: 10em; overflow-y: auto; font-family: ui-monospace, monospace; font-size: 12px; }
+  .ok { color: #6fdc8c; } .err { color: #ff7b72; }
+</style>
+</head>
+<body>
+<h1>AMYSYNTH · USB 导入</h1>
+<p>连接制作为 <b>AmyBox</b> 的 USB 串口(CDC),把 AMYSONG 文本或 .mid 直接存到机内槽位。
+   用浏览器打开本文件即可(<code>file://</code> 属于 secure context,Chrome/Edge 支持 WebSerial)。</p>
+
+<p>
+  <button id="btnConnect">连接端口</button>
+  <button id="btnDisconnect" disabled>断开</button>
+  <span id="st">未连接</span>
+</p>
+
+<p>
+  <label>槽位 <input type="number" id="slot" min="1" max="32" value="1"></label>
+  <label>MIDI 循环 <select id="bars">
+    <option value="1">1 小节</option>
+    <option value="2" selected>2 小节</option>
+  </select></label>
+</p>
+
+<p>
+  <label>文件 <input type="file" id="file" accept=".mid,.midi,.txt,.amysong"></label>
+  <button id="btnImport">导入</button>
+</p>
+
+<p>或在下面粘贴 AMYSONG 文本(.mid 走上面的文件选择):</p>
+<textarea id="txt" rows="8" spellcheck="false" placeholder="amysong 1&#10;name &quot;Demo&quot;&#10;bpm 120&#10;pattern 32&#10;layer melodic 256&#10;notes 0 . +4 . . . +7 . . . . . . . . .&#10;layer drum&#10;hit 0 x . . . x . . . x . . . x . . ."></textarea>
+
+<p>串口收发日志:</p>
+<div id="log"></div>
+
+<p style="color:#9aa4b2;font-size:12px">协议:发送 <code>PUT &lt;slot&gt; &lt;txt|mid&gt; &lt;bars&gt; &lt;len&gt;</code>,收到
+<code>ACK</code> 后紧跟原始字节,最后回 <code>OK:saved to slot N</code>(.mid 在机内用同 WiFi 页面的转换器转成循环)。</p>
+
+<script>
+'use strict';
+let port = null;
+let reader = null;
+let writer = null;
+let lineBuf = '';
+let putState = 'idle';        /* idle | ack | result */
+let pendingPayload = null;    /* Uint8Array waiting for ACK */
+const VID = 0x303a, PID = 0x8000;
+
+const $ = id => document.getElementById(id);
+
+function log(msg, cls) {
+  const d = document.createElement('div');
+  d.textContent = msg;
+  if (cls) d.className = cls;
+  $('log').appendChild(d);
+  $('log').scrollTop = $('log').scrollHeight;
+}
+function status(s, cls) { $('st').textContent = s; $('st').className = cls || ''; }
+
+function isAmyPort(p) {
+  try {
+    const info = p.getInfo();
+    return info.vendorId === VID && info.productId === PID;
+  } catch (e) { return false; }
+}
+
+async function connect() {
+  try {
+    if (!port) port = await navigator.serial.requestPort();   /* reuse remembered AmyBox */
+  } catch (e) { return; }                       /* user cancelled picker */
+  try {
+    await port.open({ baudRate: 9600 });        /* CDC ACM ignores baud */
+  } catch (e) {
+    status('打开端口失败: ' + e.message, 'err'); log('open failed: ' + e, 'err');
+    return;
+  }
+  reader = port.readable.getReader();
+  writer = port.writable.getWriter();
+  lineBuf = '';
+  status('已连接 · 握手…');
+  log('port open');
+  (async () => {
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (!value) continue;
+        const text = new TextDecoder().decode(value);
+        for (const ch of text) {
+          if (ch === '\n') { handleLine(lineBuf); lineBuf = ''; }
+          else if (ch !== '\r') lineBuf += ch;
+        }
+      }
+    } catch (e) { log('read error: ' + e, 'err'); }
+    finally {
+      putState = 'idle'; pendingPayload = null; lineBuf = '';
+      status('连接已断开', 'err');
+      $('btnConnect').disabled = false;
+      $('btnDisconnect').disabled = true;
+    }
+  })();
+  ping();
+}
+
+async function ping() {
+  if (!port) return;
+  const gotPong = new Promise(res => {
+    const t = setTimeout(() => res(false), 2500);
+    const prev = handlePong;
+    handlePong = () => { clearTimeout(t); handlePong = prev; log('PONG'); res(true); };
+  });
+  await writeLine('PING');
+  const ok = await gotPong;
+  status(ok ? '已连接 · AmyBox 就绪' : '已连接但无应答', ok ? 'ok' : 'err');
+}
+let handlePong = null;
+
+function handleLine(s) {
+  log('<< ' + s);
+  if (s === 'PONG') { if (handlePong) handlePong(); return; }
+  if (putState === 'ack') {
+    if (s === 'ACK') { putState = 'result'; sendPayload(pendingPayload); }
+    else { putState = 'idle'; pendingPayload = null; status(s || '被拒绝', 'err'); }
+    return;
+  }
+  if (putState === 'result') {
+    putState = 'idle';
+    pendingPayload = null;
+    const ok = s.startsWith('OK');
+    status(s.trim(), ok ? 'ok' : 'err');
+    return;
+  }
+  if (s) status(s.trim(), s.startsWith('ERR') ? 'err' : '');
+}
+
+async function writeLine(s) {
+  await writer.write(new TextEncoder().encode(s + '\n'));
+  log('>> ' + s);
+}
+
+function sendPayload(u8) {
+  (async () => {
+    try {
+      await writer.write(u8);
+      log('>> ' + u8.length + ' payload bytes');
+    } catch (e) {
+      putState = 'idle'; pendingPayload = null;
+      status('发送负载失败: ' + e.message, 'err');
+    }
+  })();
+}
+
+async function put(payload, fmt) {
+  if (!port) { status('还没有连接端口', 'err'); return; }
+  if (putState !== 'idle') { status('上一笔导入还没结束', 'err'); return; }
+  if (payload.byteLength === 0) { status('内容为空', 'err'); return; }
+  const slot = parseInt($('slot').value, 10);
+  if (!(slot >= 1 && slot <= 32)) { status('槽位需在 1..32', 'err'); return; }
+  const bars = fmt === 'mid' ? parseInt($('bars').value, 10) : 0;
+  pendingPayload = new Uint8Array(payload);
+  putState = 'ack';
+  status('发送帧…');
+  await writeLine('PUT ' + slot + ' ' + fmt + ' ' + bars + ' ' + payload.byteLength);
+}
+
+async function doImport() {
+  const f = $('file').files[0];
+  const isMidi = f && /\.midi?$/i.test(f.name);
+  if (f && !isMidi && /\.txt$/i.test(f.name)) { /* .txt treated as amysong */ }
+  if (f) {
+    const buf = await f.arrayBuffer();
+    await put(buf, isMidi ? 'mid' : 'txt');
+  } else {
+    const txt = $('txt').value;
+    if (!txt.trim()) { status('没有文件也没有文本', 'err'); return; }
+    await put(new TextEncoder().encode(txt), 'txt');
+  }
+}
+
+$('btnConnect').onclick = () => { connect(); };
+$('btnDisconnect').onclick = async () => {
+  try { reader && reader.cancel(); } catch (e) {}
+  try { writer && writer.releaseLock(); } catch (e) {}
+  try { await port.close(); } catch (e) {}
+  port = null; status('已断开');
+  $('btnConnect').disabled = false; $('btnDisconnect').disabled = true;
+};
+$('btnImport').onclick = doImport;
+$('file').onchange = () => { const chosen = $('file').files[0]; if (chosen) log('选了文件: ' + chosen.name); };
+
+(async () => {
+  let ports = [];
+  try { ports = await navigator.serial.getPorts(); } catch (e) {}
+  const amy = ports.filter(isAmyPort);
+  if (amy.length > 0) {
+    port = amy[0];
+    $('btnConnect').textContent = '连接已记住的端口';
+  }
+})();
+</script>
+</body>
+</html>

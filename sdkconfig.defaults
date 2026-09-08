@@ -151,6 +151,11 @@ CONFIG_SYNTH_ADDITIVE=y
 CONFIG_SYNTH_CUSTOM_FM=y
 CONFIG_SYNTH_WIFI_IMPORT=y
 CONFIG_SYNTH_WIFI_IMPORT_AUTOSTART=n
+# AUTOTEST (remote, no panel): 20s after boot a background task simulates a
+# Projects->WiFi click (wifi_importer_start). Flash via esptool
+# --after watchdog-reset, then watch the JTAG console for a re-boot and its
+# "[startup] last reset: XXXX" reason. 0 disables (production default).
+CONFIG_SYNTH_WIFI_IMPORT_AUTOTEST_DELAY_MS=20000
 CONFIG_SEQ_ARP_DEFAULT_GATE_PCT=50
 CONFIG_SEQ_ARP_DEFAULT_OCTAVES=2
 CONFIG_SEQ_ARP_DEFAULT_PATCH=1

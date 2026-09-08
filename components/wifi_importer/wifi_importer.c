@@ -389,6 +389,7 @@ esp_err_t wifi_importer_driver_init(void)
     }
     esp_wifi_set_storage(WIFI_STORAGE_RAM);
     s_driver_up = true;
+    imp_autotest_arm();
     return ESP_OK;
 }
 
@@ -576,6 +577,39 @@ const char *wifi_import_status_line(void)
     if (s_dir_state == IMP_ST_IDLE) return NULL;
     return s_state_text;                      /* mid bring-up               */
 }
+
+/* ── remote autotest trigger ────────────────────────────────────────────────
+ * Test-only: a delayed background task calls wifi_importer_start() exactly
+ * like a Projects-menu click, so on-demand AP bring-up (and any reset it may
+ * cause) can be exercised with no finger on the panel: flash the merged image
+ * via esptool --after watchdog-reset, then capture the USB-Serial/JTAG boot
+ * console while the trigger fires - "[startup] last reset: XXXX" reports what
+ * a reboot was caused by. */
+#if CONFIG_SYNTH_WIFI_IMPORT_AUTOTEST_DELAY_MS > 0
+static bool s_autotest_armed = false;
+
+static void imp_autotest_task(void *arg)
+{
+    (void)arg;
+    vTaskDelay(pdMS_TO_TICKS(CONFIG_SYNTH_WIFI_IMPORT_AUTOTEST_DELAY_MS));
+    ESP_LOGW(TAG, "[autotest] simulated Projects->WiFi click: wifi_importer_start()");
+    wifi_importer_start();
+    vTaskDelete(NULL);
+}
+
+static void imp_autotest_arm(void)
+{
+    if (s_autotest_armed) return;
+    s_autotest_armed = true;
+    TaskHandle_t th = NULL;
+    if (xTaskCreatePinnedToCore(imp_autotest_task, "wifi_autotest",
+                                4096, NULL, 3, &th, 1) != pdPASS) {
+        ESP_LOGE(TAG, "[autotest] failed to create trigger task");
+    }
+}
+#else
+#define imp_autotest_arm() ((void)0)
+#endif
 
 esp_err_t wifi_importer_start(void)
 {

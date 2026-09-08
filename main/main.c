@@ -25,7 +25,7 @@
 #include "esp_timer.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
-#include "esp_reset_reason.h"
+#include "esp_system.h"
 #include <stdio.h>
 #include "render_clock.h"
 #include "render_stats.h"

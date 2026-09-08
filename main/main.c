@@ -25,8 +25,6 @@
 #include "esp_timer.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
-#include "esp_system.h"
-#include <stdio.h>
 #include "render_clock.h"
 #include "render_stats.h"
 #include "dropout_stats.h"
@@ -43,6 +41,7 @@
 #include "project_store.h"
 #include "project_snapshot.h"
 #include "wifi_importer.h"
+#include "usb_importer.h"
 #if CONFIG_SYNTH_WIRELESS
 #include "midi_core.h"
 #include "radio_manager.h"
@@ -968,39 +967,7 @@ void app_main(void)
         return;
     }
     ESP_LOGI(TAG, "[startup] after i2c_u8g2_init");
-
-    /* If the previous boot ended in a watchdog/panic reboot (our WiFi-on-
-     * demand bring-up used to do exactly that), say why right on the panel so
-     * the reason is visible without a serial cable. Silent for clean power-on
-     * boots so normal startup stays uncluttered. */
-    {
-        esp_reset_reason_t rr = esp_reset_reason();
-        static const char *rr_name = "?";
-        switch (rr) {
-        case ESP_RST_POWERON:  rr_name = "POWERON";  break;
-        case ESP_RST_PANIC:    rr_name = "PANIC";    break;
-        case ESP_RST_INT_WDT:  rr_name = "INT_WDT";  break;
-        case ESP_RST_TASK_WDT: rr_name = "TASK_WDT"; break;
-        case ESP_RST_WDT:      rr_name = "WDT";      break;
-        case ESP_RST_SW:       rr_name = "SW";       break;
-        case ESP_RST_BROWNOUT: rr_name = "BROWNOUT"; break;
-        case ESP_RST_DEEPSLEEP: rr_name = "DEEPSLEEP"; break;
-        default: break;
-        }
-        ESP_LOGI(TAG, "[startup] last reset: %s", rr_name);
-        if (rr != ESP_RST_POWERON) {
-            char b[64];
-            snprintf(b, sizeof b, "boot: audio RST:%s", rr_name);
-            boot_banner(b);
-            /* Hold the reason on the panel long enough to be read - the very
-             * next boot stage overwrites it in a blink. Boot has not started
-             * AMY yet, so this stall is just a few seconds of idle. */
-            vTaskDelay(pdMS_TO_TICKS(5000));
-            boot_banner("boot: audio");
-        } else {
-            boot_banner("boot: audio");
-        }
-    }
+    boot_banner("boot: audio");
 
   
     // Configure and start AMY
@@ -1106,6 +1073,15 @@ void app_main(void)
     boot_banner("boot: usbaudio");
     ESP_ERROR_CHECK(usb_audio_init());
     DIAG_HEAP_CHECK("after usb_audio_init");
+
+#if CONFIG_SYNTH_USB_IMPORT
+    /* WebSerial song-import CDC port: pump task, non-fatal, needs nothing raw
+     * but the TinyUSB stack already up. Slots save via the same project store
+     * the WiFi page uses; applies happen on the ui task (usb_import_service). */
+    boot_banner("boot: usbcdc");
+    usb_importer_start();
+    DIAG_HEAP_CHECK("after usb_importer_start");
+#endif
 
     /* Project storage: non-fatal if absent/corrupt. Mounted before
      * synth_ui_init so the snapshot selftest runs single-threaded against the

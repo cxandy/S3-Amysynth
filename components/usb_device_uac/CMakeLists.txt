@@ -25,6 +25,11 @@ if(NOT CONFIG_USB_DEVICE_UAC_AS_PART)
     # descriptor symbols it defines then collide with libsynth_core.a, which is
     # force-linked via WHOLE_ARCHIVE.
     target_sources(${tusb_lib} PRIVATE "${COMPONENT_DIR}/tusb/usb_descriptors.c")
+    # WebSerial import CDC pump: needs the tinyusb public API (tusb.h), which
+    # the component target itself does not see - only the tusb_lib archive
+    # does. Same archive-member resolution as usb_descriptors.c.
+    target_sources(${tusb_lib} PRIVATE "${COMPONENT_DIR}/usb_cdc_device.c")
+    target_include_directories(${tusb_lib} PRIVATE "${COMPONENT_DIR}/include")
 endif()
 
 include(package_manager)

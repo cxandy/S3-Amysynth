@@ -103,6 +103,13 @@ extern "C" {
 #define CFG_TUD_ENDPOINT0_SIZE    64
 #endif
 
+// LOCAL EDIT (S3-Amysynth): WebSerial song-import CDC port. Composite with
+// the UAC audio function (IAD groups keep each function's interfaces
+// together); the pump task in usb_cdc_device.c reads it line-oriented.
+#define CFG_TUD_CDC              1
+#define CFG_TUD_CDC_RX_BUFSIZE   256
+#define CFG_TUD_CDC_TX_BUFSIZE   256
+
 #ifdef __cplusplus
 }
 #endif

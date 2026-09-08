@@ -42,6 +42,12 @@ void wifi_import_service(void);
 const char *wifi_import_status_line(void);
 #endif
 
+#if CONFIG_SYNTH_USB_IMPORT
+/* Same cycle-avoidance for the WebSerial (USB CDC) importer. */
+void usb_import_service(void);
+const char *usb_import_status_line(void);
+#endif
+
 static const char *TAG_TASK = "synth_ui";
 
 static u8g2_t *s_u8g2 = NULL;
@@ -160,6 +166,12 @@ static void synth_ui_task(void *pvParameters)
         wifi_import_service();
 #endif
 
+#if CONFIG_SYNTH_USB_IMPORT
+        /* Song uploads from the USB WebSerial port (usb_importer). Same
+         * single-applier contract as the WiFi importer above. */
+        usb_import_service();
+#endif
+
 #if CONFIG_SYNTH_WIRELESS
         /* Radio session start/stop queued by the Wireless page. Must run here:
          * NimBLE init/teardown blocks briefly and needs this task's 8192-byte
@@ -239,17 +251,25 @@ static void synth_ui_task(void *pvParameters)
                 } else
 #endif
                 if (synth_ui_hint_visible()) {
-#if CONFIG_SYNTH_WIFI_IMPORT
-                    /* While the import AP is bringing its radio up (own task,
-                     * may take a second or fail outright) the hint strip
-                     * reports its progress so a radio problem is visible on
-                     * screen instead of silently absent. */
-                    const char *wline = wifi_import_status_line();
-                    if (wline) {
-                        display_hint_draw(s_u8g2, wline);
+#if CONFIG_SYNTH_USB_IMPORT
+                    const char *uline = usb_import_status_line();
+                    if (uline) {
+                        display_hint_draw(s_u8g2, uline);
                     } else
 #endif
-                    display_hint_draw(s_u8g2, synth_ui_hint_text());
+                    {
+#if CONFIG_SYNTH_WIFI_IMPORT
+                        /* While the import AP is bringing its radio up (own task,
+                         * may take a second or fail outright) the hint strip
+                         * reports its progress so a radio problem is visible on
+                         * screen instead of silently absent. */
+                        const char *wline = wifi_import_status_line();
+                        if (wline) {
+                            display_hint_draw(s_u8g2, wline);
+                        } else
+#endif
+                        display_hint_draw(s_u8g2, synth_ui_hint_text());
+                    }
                 }
                 /* Output-level warning badge, top-right, composited last so it
                  * overlays every screen; part of the single physical send. */

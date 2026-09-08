@@ -21,17 +21,6 @@ config SYNTH_WIFI_IMPORT_AUTOSTART
 		froze boot; the dedicated task (pinned to the DSP core) plus an
 		on-demand trigger are the supported path.
 
-config SYNTH_WIFI_IMPORT_AUTOTEST_DELAY_MS
-	int "Autotest: delay (ms) before a programmatic Projects->WiFi click"
-	depends on SYNTH_WIFI_IMPORT
-	default 0
-	range 0 600000
-	help
-		Test-only trigger: after this many ms a background task calls
-		wifi_importer_start() exactly like a tap on the Projects->WiFi row,
-		so the on-demand SoftAP bring-up (and any reboot it causes) can be
-		exercised remotely with no finger on the panel. 0 disables.
-
 config SYNTH_WIFI_AP_SSID
 	string "AMYSYNTH SoftAP SSID"
 	depends on SYNTH_WIFI_IMPORT

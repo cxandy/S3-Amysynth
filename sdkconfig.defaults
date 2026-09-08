@@ -71,13 +71,6 @@ CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
 CONFIG_SPIRAM_ALLOW_NOINIT_SEG_EXTERNAL_MEMORY=y
 CONFIG_RINGBUF_PLACE_ISR_FUNCTIONS_INTO_FLASH=y
 CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
-# Console to the USB-Serial-JTAG port (the USB-C to the PC): the built-in
-# serial is the only debug channel here, since GPIO44/43 are not wired to a
-# UART header. Note: the USB audio/MIDI gadget (tinyusb) shares the PHY, so
-# the serial drops once the gadget initialises and only returns during boot/
-# after a reset - which is exactly when we need it, since the app stamps the
-# previous boot's reset reason at that point. Keep this on at all times.
-CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 # PERF (2026-06): double the ESP32-S3 instruction cache from 16KB to 32KB.
 # Most AMY DSP code still executes from flash through this cache (only the
@@ -151,11 +144,7 @@ CONFIG_SYNTH_ADDITIVE=y
 CONFIG_SYNTH_CUSTOM_FM=y
 CONFIG_SYNTH_WIFI_IMPORT=y
 CONFIG_SYNTH_WIFI_IMPORT_AUTOSTART=n
-# AUTOTEST (remote, no panel): 20s after boot a background task simulates a
-# Projects->WiFi click (wifi_importer_start). Flash via esptool
-# --after watchdog-reset, then watch the JTAG console for a re-boot and its
-# "[startup] last reset: XXXX" reason. 0 disables (production default).
-CONFIG_SYNTH_WIFI_IMPORT_AUTOTEST_DELAY_MS=20000
+CONFIG_SYNTH_USB_IMPORT=y
 CONFIG_SEQ_ARP_DEFAULT_GATE_PCT=50
 CONFIG_SEQ_ARP_DEFAULT_OCTAVES=2
 CONFIG_SEQ_ARP_DEFAULT_PATCH=1

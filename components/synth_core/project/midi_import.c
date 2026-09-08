@@ -1,6 +1,7 @@
 /* smf-to-AMYSONG converter - exact mirror of tools/midi2amysong.py so the
  * phone can upload a .mid straight to the device and skip the PC entirely.
- * See midi_import.h for the contract. */
+ * See midi_import.h for the contract. Moved here from wifi_importer so the
+ * WebSerial importer can reuse it without pulling in the WiFi stack. */
 
 #include "midi_import.h"
 

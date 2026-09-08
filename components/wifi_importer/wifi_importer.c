@@ -2,7 +2,6 @@
 #include "midi_import.h"
 #include "song_import.h"
 #include "project_store.h"
-#include "amy_helpers.h"
 #include "esp_wifi.h"
 #include "esp_netif.h"
 #include "esp_event.h"
@@ -47,29 +46,6 @@ static imp_dir_state_t s_dir_state;
 static char            s_state_text[64];
 static bool            s_driver_up = false;
 static TickType_t      s_ready_tick = 0;
-static uint8_t         s_fail_kind;   /* 0 generic, 1 init no-mem, 2 start no-mem */
-static unsigned        s_fail_in_kb, s_fail_lg_kb;   /* heap snapshot at FAIL     */
-static StackType_t     s_wifi_task_stack[8192 / sizeof(StackType_t)];
-static StaticTask_t    s_wifi_task_tcb;
-
-#if CONFIG_SYNTH_WIFI_IMPORT_AUTOTEST_DELAY_MS > 0
-static void imp_autotest_arm(void);
-#endif
-
-/* Park/unpark the AMY audio pipeline so radio bring-up can own both cores.
- * The DSP runs in the single render task registered via
- * amy_helpers_set_render_task() (main.c): a highest-priority task pinned to
- * the DSP core that would otherwise preempt this prio-5 task mid-bring-up
- * and slice the PHY bring-up into fragments. Suspended tasks hold no CPU and
- * are not runnable, so they cannot tickle a watchdog (the sub-second audio
- * gap during AP setup is invisible). */
-static void imp_quiet_audio(bool quiet)
-{
-    TaskHandle_t rt = amy_helpers_get_render_task();
-    if (rt == NULL) return;
-    if (quiet) vTaskSuspend(rt);
-    else       vTaskResume(rt);
-}
 
 static void imp_set_state(imp_dir_state_t st, const char *fmt, ...)
 {
@@ -80,10 +56,6 @@ static void imp_set_state(imp_dir_state_t st, const char *fmt, ...)
     va_end(ap);
     s_dir_state = st;
     if (st == IMP_ST_READY) s_ready_tick = xTaskGetTickCount();
-    if (st == IMP_ST_FAIL) {
-        s_fail_in_kb = (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024);
-        s_fail_lg_kb = (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) / 1024);
-    }
     snprintf(s_state_text, sizeof s_state_text, "%s", msg);
     ESP_LOGI(TAG, "imp AP: %s", msg);
 }
@@ -393,7 +365,6 @@ esp_err_t wifi_importer_driver_init(void)
     }
     esp_wifi_set_storage(WIFI_STORAGE_RAM);
     s_driver_up = true;
-    imp_autotest_arm();
     return ESP_OK;
 }
 
@@ -414,7 +385,6 @@ static void wifi_import_task(void *arg)
     if (err != ESP_OK) {
         unsigned ifree  = (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
         unsigned ilarge = (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
-        s_fail_kind = 1;
         imp_set_state(IMP_ST_FAIL, "WiFi:init no mem i=%uKB lg=%uKB",
                       ifree / 1024, ilarge / 1024);
         imp_self_delete();
@@ -441,26 +411,9 @@ static void wifi_import_task(void *arg)
         imp_self_delete();
         return;
     }
-
-    /* Radio bring-up owns this core for bursts (PHY calibration, RF on) and
-     * must not be sliced up by the highest-priority AMY DSP tasks sharing
-     * both cores, or the device trips a watchdog and reboots. Suspend the
-     * two AMY audio tasks for the bring-up window (a sub-second audio gap
-     * during AP setup is invisible and harmless); they are resumed the
-     * moment the radio is up and the socket is listening. */
-    imp_quiet_audio(true);
     imp_set_state(IMP_ST_START, "WiFi: start...");
     err = esp_wifi_start();
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "esp_wifi_start %s: internal free=%u largest=%u min_free=%u "
-                      "psram free=%u",
-                 esp_err_to_name(err),
-                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
-                 (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
-                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
-        s_fail_kind = 2;
-        imp_quiet_audio(false);
         imp_set_state(IMP_ST_FAIL, "WiFi: fail start %s", esp_err_to_name(err));
         imp_self_delete();
         return;
@@ -468,7 +421,6 @@ static void wifi_import_task(void *arg)
 
     /* Give the AP a moment to assign 192.168.4.1 before the socket binds. */
     vTaskDelay(pdMS_TO_TICKS(400));
-    imp_quiet_audio(false);
     imp_set_state(IMP_ST_READY, "WiFi: AP %s", CONFIG_SYNTH_WIFI_AP_SSID);
 
     int listen_fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -582,39 +534,6 @@ const char *wifi_import_status_line(void)
     return s_state_text;                      /* mid bring-up               */
 }
 
-/* ── remote autotest trigger ────────────────────────────────────────────────
- * Test-only: a delayed background task calls wifi_importer_start() exactly
- * like a Projects-menu click, so on-demand AP bring-up (and any reset it may
- * cause) can be exercised with no finger on the panel: flash the merged image
- * via esptool --after watchdog-reset, then capture the USB-Serial/JTAG boot
- * console while the trigger fires - "[startup] last reset: XXXX" reports what
- * a reboot was caused by. */
-#if CONFIG_SYNTH_WIFI_IMPORT_AUTOTEST_DELAY_MS > 0
-static bool s_autotest_armed = false;
-
-static void imp_autotest_task(void *arg)
-{
-    (void)arg;
-    vTaskDelay(pdMS_TO_TICKS(CONFIG_SYNTH_WIFI_IMPORT_AUTOTEST_DELAY_MS));
-    ESP_LOGW(TAG, "[autotest] simulated Projects->WiFi click: wifi_importer_start()");
-    wifi_importer_start();
-    vTaskDelete(NULL);
-}
-
-static void imp_autotest_arm(void)
-{
-    if (s_autotest_armed) return;
-    s_autotest_armed = true;
-    TaskHandle_t th = NULL;
-    if (xTaskCreatePinnedToCore(imp_autotest_task, "wifi_autotest",
-                                4096, NULL, 3, &th, 1) != pdPASS) {
-        ESP_LOGE(TAG, "[autotest] failed to create trigger task");
-    }
-}
-#else
-#define imp_autotest_arm() ((void)0)
-#endif
-
 esp_err_t wifi_importer_start(void)
 {
     /* Never block the caller (app_main or the Projects-menu click): all
@@ -625,16 +544,9 @@ esp_err_t wifi_importer_start(void)
      * boot screen therefore always proceeds to the normal UI; the hint strip
      * reports the AP state via status_line. */
     if (s_imp.task_created) return ESP_OK;
-    /* The task stack lives in our own .bss, not the heap: at click time the
-     * internal heap can be too fragmented to honor a single 8 KB request, so
-     * a heap-allocated stack would turn "start AP" into an intermittent
-     * ESP_ERR_NO_MEM. Trading 8 KB of internal RAM for a start that cannot
-     * fail on allocation is worth it on this board. */
-    TaskHandle_t th = xTaskCreateStaticPinnedToCore(
-        wifi_import_task, "wifi_import",
-        sizeof(s_wifi_task_stack) / sizeof(StackType_t),
-        NULL, 5, s_wifi_task_stack, &s_wifi_task_tcb, 1);
-    if (th == NULL) return ESP_ERR_NO_MEM;
+    BaseType_t ok = xTaskCreatePinnedToCore(wifi_import_task, "wifi_import",
+                                            8192, NULL, 5, NULL, 1);
+    if (ok != pdPASS) return ESP_ERR_NO_MEM;
     s_imp.task_created = true;
     return ESP_OK;
 }
@@ -652,17 +564,7 @@ const char *wifi_import_ap_state(void)
             snprintf(short_text, sizeof short_text, "AP %s",
                      CONFIG_SYNTH_WIFI_AP_SSID);
             return short_text;
-        case IMP_ST_FAIL:
-            if (s_fail_kind == 1) {
-                snprintf(short_text, sizeof short_text, "IN%u/%u",
-                         s_fail_in_kb, s_fail_lg_kb);
-            } else if (s_fail_kind == 2) {
-                snprintf(short_text, sizeof short_text, "ST%u/%u",
-                         s_fail_in_kb, s_fail_lg_kb);
-            } else {
-                snprintf(short_text, sizeof short_text, "FAIL");
-            }
-            return short_text;
+        case IMP_ST_FAIL:  return "FAIL";
         case IMP_ST_IDLE:  return "Off";
         default:           return "Start";
     }

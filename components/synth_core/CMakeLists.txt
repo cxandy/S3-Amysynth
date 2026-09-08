@@ -72,6 +72,7 @@ idf_component_register(SRCS "live_play.c" "amy_helpers.c" "amy_fx.c" "arp_core.c
 "custompatches/jukebox_demo.c"
                             "project/project_snapshot.c"
                             "project/song_import.c"
+                            "project/midi_import.c"
                             ${fm_srcs}
                             ${additive_srcs}
                             ${dev_srcs}

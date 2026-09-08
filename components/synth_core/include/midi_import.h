@@ -18,6 +18,9 @@ extern "C" {
  *
  * Returns 0 and fills `out` (NUL-terminated, at most out_cap bytes) on
  * success; returns -1 and fills `err` with a short reason otherwise.
+ *
+ * NOTE: moved here from wifi_importer (musical import lives in synth_core);
+ * the WiFi and WebSerial importers both call it.
  */
 int midi_amysong_convert(const uint8_t *data, size_t len,
                          int bars, int patch, const char *name,

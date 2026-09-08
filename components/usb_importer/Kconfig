@@ -1,0 +1,12 @@
+config SYNTH_USB_IMPORT
+	bool "Song import over USB WebSerial (USB CDC port)"
+	depends on SYNTH_PROJECT_STORE
+	default y
+	help
+		Adds a USB CDC (serial) interface alongside the USB audio stream:
+		plug the board into any computer, open tools/usb_import.html in a
+		browser (WebSerial over a secure context), and paste or upload an
+		AMYSONG text file - or a .mid, converted on the device with the
+		same converter the WiFi page uses - into a project slot. Runs on
+		the CDC pump task; the actual song apply runs on the sequencer's
+		single-applier ui task, identical to the WiFi importer.

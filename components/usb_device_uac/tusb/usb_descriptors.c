@@ -63,16 +63,28 @@ uint8_t const *tud_descriptor_device_cb(void)
 //--------------------------------------------------------------------+
 // Configuration Descriptor
 //--------------------------------------------------------------------+
-#define CONFIG_TOTAL_LEN        (TUD_CONFIG_DESC_LEN + CFG_TUD_AUDIO * TUD_AUDIO_DEVICE_DESC_LEN)
+#define CONFIG_TOTAL_LEN        (TUD_CONFIG_DESC_LEN + CFG_TUD_AUDIO * TUD_AUDIO_DEVICE_DESC_LEN + TUD_CDC_DESC_LEN)
 #define EPNUM_AUDIO_OUT   0x01
+#define EPNUM_CDC_OUT     0x02
 #define EPNUM_AUDIO_FB    0x81
 #define EPNUM_AUDIO_IN    0x82
+#define EPNUM_CDC_NOTIF   0x83
+#define EPNUM_CDC_IN      0x84
+
+// // LOCAL EDIT (S3-Amysynth): WebSerial import CDC port, appended after the
+// UAC function. The UAC group owns interfaces [0, ITF_NUM_TOTAL); CDC owns
+// the next two. EPNUM_* addresses are unique across both functions.
+#define ITF_CDC_COMM      (ITF_NUM_TOTAL)
+#define ITF_CDC_DATA      (ITF_NUM_TOTAL + 1)
 
 uint8_t const desc_configuration[] = {
     // Config number, interface count, string index, total length, attribute, power in mA
-    TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_TOTAL, 0, CONFIG_TOTAL_LEN, 0x00, 100),
+    TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_TOTAL + 2, 0, CONFIG_TOTAL_LEN, 0x00, 100),
     // Interface number, string index, EP Out & EP In address, EP size
     TUD_AUDIO_DESCRIPTOR(ITF_NUM_AUDIO_CONTROL, 4, EPNUM_AUDIO_OUT, EPNUM_AUDIO_IN, EPNUM_AUDIO_FB),
+    // LOCAL EDIT (S3-Amysynth): CDC (communications class) for WebSerial song
+    // import. Notification EP is bulk-interrupt; data EPs carry the stream.
+    TUD_CDC_DESCRIPTOR(ITF_CDC_COMM, 7, EPNUM_CDC_NOTIF, 16, EPNUM_CDC_OUT, EPNUM_CDC_IN, 64),
 };
 
 // Invoked when received GET CONFIGURATION DESCRIPTOR
@@ -101,6 +113,7 @@ char const *string_desc_arr [] = {
 #if MIC_CHANNEL_NUM
     "microphone",                   // 6: Mic Interface
 #endif
+    "amysynth cdc",                 // 7: CDC comm Interface
 };
 
 static uint16_t _desc_str[32];

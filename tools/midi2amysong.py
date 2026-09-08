@@ -82,7 +82,8 @@ def decode_track(data):
                 tempo = struct.unpack(">I", b"\x00" + data[i:i + 3])[0]
             i += ln
             continue
-        if b in (0xF0, 0xF7):               # sysex
+        if b in (0xF0, 0xF7):               # sysex: skip status, THEN len
+            i += 1
             ln, i = read_vlq(data, i)
             i += ln
             continue

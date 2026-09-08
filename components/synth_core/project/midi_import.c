@@ -114,7 +114,8 @@ static int decode_track(conv_t *s, const uint8_t *p, size_t len,
             s->i += ln;
             continue;
         }
-        if (b == 0xF0 || b == 0xF7) {          /* sysex */
+        if (b == 0xF0 || b == 0xF7) {          /* sysex: skip status, THEN len */
+            s->i++;
             uint32_t ln;
             if (vlq(s->tr, s->len, &s->i, &ln)) { set_err(err, err_cap, "bad VLQ", 0); return -1; }
             s->i += ln;
@@ -391,6 +392,7 @@ int midi_amysong_arrange_convert(const uint8_t *data, size_t len, int patch,
                 continue;
             }
             if (b == 0xF0 || b == 0xF7) {
+                i++;
                 uint32_t ln;
                 if (vlq(p, l, &i, &ln)) { set_err(err, err_cap, "bad VLQ", 0); return -1; }
                 i += ln;
@@ -481,6 +483,7 @@ int midi_amysong_arrange_convert(const uint8_t *data, size_t len, int patch,
                 continue;
             }
             if (b == 0xF0 || b == 0xF7) {
+                i++;
                 uint32_t ln;
                 if (vlq(p, l, &i, &ln)) { set_err(err, err_cap, "bad VLQ", 0); return -1; }
                 i += ln;

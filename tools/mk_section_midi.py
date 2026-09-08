@@ -47,6 +47,9 @@ def build(markers):
     t0 = [
         (0, meta(0x03, b"Section Test")),
         (0, meta(0x51, struct.pack(">I", 500000)[1:])),  # 120 bpm
+        # leading XG-style sysex: regresses the "F0 status not skipped before
+        # length VLQ" bug (real files like YAMAHA demo .mid start with this).
+        (0, b"\xf0" + vlq(8) + bytes([0x43, 0x10, 0x4c, 0x00, 0x00, 0x7e, 0x00, 0xf7])),
     ]
     if markers:
         for bar, name in [(0, b"Intro"), (2, b"Verse"), (6, b"Chorus")]:

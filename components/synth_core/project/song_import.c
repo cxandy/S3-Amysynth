@@ -19,6 +19,16 @@ static const char *TAG = "song_import";
  * session. Tone entry per (melodic track, step): NULL rest / SENTINEL uses
  * the per-entry `ofs` sign, so we carry an explicit on-flag. */
 #define IMP_REST  0x7F              /* sentinel for "no note this step" */
+#define IMP_MAX_SCENES 16           /* mirrors SONG_MAX_SCENES (seq schema) */
+#define IMP_SCENE_BARS_MIN 1
+#define IMP_SCENE_BARS_MAX 255
+#define IMP_SCENE_MASK_MAX 15       /* 4 layers: bit n = layer n audible */
+
+/* One arranged section: how many bars it lasts and which layers ring. */
+typedef struct {
+    uint8_t bars;
+    uint8_t layer_mask;
+} imp_scene_t;
 
 typedef struct {
     uint16_t patch;
@@ -41,6 +51,10 @@ typedef struct {
     uint8_t        mel_count;
     imp_drum_t     drum;
     bool           has_drum;
+    imp_scene_t    scenes[IMP_MAX_SCENES];
+    uint8_t        scene_count;
+    bool           song_enabled;
+    bool           song_loop;
 } imp_song_t;
 
 /* ── tiny line/token helpers ──────────────────────────────────────────── */
@@ -185,6 +199,48 @@ static bool parse_song(const char *text, imp_song_t *s, char *err, size_t errsz)
                 return false;
             }
             st.pattern = (uint8_t)n;
+        } else if (strcmp(kw, "scene") == 0) {
+            if (st.scene_count >= IMP_MAX_SCENES) {
+                snprintf(err, errsz, "line %d: too many scenes (max %d)",
+                         line, IMP_MAX_SCENES);
+                return false;
+            }
+            char *bv = next_token(&pp);
+            char *mv = next_token(&pp);
+            int b; int m;
+            if (!bv || !mv || !parse_signed(bv, &b) || !parse_signed(mv, &m)
+                || b < IMP_SCENE_BARS_MIN || b > IMP_SCENE_BARS_MAX
+                || m < 0 || m > IMP_SCENE_MASK_MAX) {
+                snprintf(err, errsz,
+                         "line %d: scene needs bars 1..%d and mask 1..%d",
+                         line, IMP_SCENE_BARS_MAX, IMP_SCENE_MASK_MAX);
+                return false;
+            }
+            if (m == 0) {
+                snprintf(err, errsz, "line %d: scene mask must silence at least "
+                         "one layer (mask 1..%d)", line, IMP_SCENE_MASK_MAX);
+                return false;
+            }
+            st.scenes[st.scene_count].bars = (uint8_t)b;
+            st.scenes[st.scene_count].layer_mask = (uint8_t)m;
+            st.scene_count++;
+        } else if (strcmp(kw, "song") == 0) {
+            char *key = next_token(&pp);
+            char *val = next_token(&pp);
+            int v;
+            if (!key || !val || !parse_signed(val, &v) || (v != 0 && v != 1)) {
+                snprintf(err, errsz, "line %d: song needs 'enabled 0|1' or "
+                         "'loop 0|1'", line);
+                return false;
+            }
+            if (strcmp(key, "enabled") == 0) {
+                st.song_enabled = (bool)v;
+            } else if (strcmp(key, "loop") == 0) {
+                st.song_loop = (bool)v;
+            } else {
+                snprintf(err, errsz, "line %d: unknown song key '%s'", line, key);
+                return false;
+            }
         } else if (strcmp(kw, "layer") == 0) {
             char *typ = next_token(&pp);
             if (!typ) {
@@ -306,6 +362,10 @@ static bool parse_song(const char *text, imp_song_t *s, char *err, size_t errsz)
         snprintf(err, errsz, "no layers: nothing to import");
         return false;
     }
+    if (st.scene_count == 0 && (st.song_enabled || st.song_loop)) {
+        snprintf(err, errsz, "song block needs at least one scene");
+        return false;
+    }
     memcpy(st.name, name_fb, sizeof st.name);
     memcpy(s, &st, sizeof st);
     if (err && errsz) err[0] = '\0';
@@ -354,6 +414,21 @@ static void apply_song(const imp_song_t *s, uint8_t slot, const char *name_fb)
 
     sequencer_core_set_bpm(s->bpm);
     sequencer_core_set_playing(true);
+
+    /* Scene chain (optional): drives the arranged section order. Mirrors the
+     * reuse path in project_snapshot_save's apply_song: disable, replace the
+     * whole table, then re-enable so the 20 Hz service re-applies the active
+     * scene's mask against the freshly rebuilt layers. */
+    if (s->scene_count > 0) {
+        sequencer_core_song_set_enabled(false);
+        sequencer_core_song_set_count(s->scene_count);
+        for (uint8_t i = 0; i < s->scene_count; i++) {
+            sequencer_core_song_set_scene(i, s->scenes[i].bars,
+                                          s->scenes[i].layer_mask);
+        }
+        sequencer_core_song_set_loop(s->song_loop);
+        if (s->song_enabled) sequencer_core_song_set_enabled(true);
+    }
 
     /* Persist as a project so a later Load replays it exactly. */
     char proj_name[PROJECT_NAME_LEN];

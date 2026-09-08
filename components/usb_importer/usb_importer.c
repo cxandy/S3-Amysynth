@@ -18,6 +18,7 @@
 #include "usb_cdc_device.h"
 #include "midi_import.h"
 #include "song_import.h"
+#include "sequencer_core.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
@@ -40,7 +41,7 @@ typedef struct {
     SemaphoreHandle_t done_sem;
     /* request descriptor, written by the CDC pump task on the PUT line    */
     uint8_t          slot;
-    uint8_t          is_midi;
+    uint8_t          mode;          /* 0 txt, 1 mid (loop), 2 arr (whole)   */
     uint8_t          bars;
     /* payload, released-published by the pump after the last byte         */
     uint8_t         *body;
@@ -75,6 +76,23 @@ static esp_err_t cdc_on_line(const char *line, size_t len, void *ctx)
         return usb_cdc_reply("PONG\n");
     }
 
+    if (len == 8 && strncmp(line, "GET song", 8) == 0) {
+        /* Diagnostic dump of the live song chain (read-only accessors). */
+        uint8_t count = sequencer_core_song_get_count();
+        char msg[384];
+        int n = snprintf(msg, sizeof msg, "OK:song count=%u enabled=%d loop=%d",
+                         (unsigned)count,
+                         sequencer_core_song_get_enabled() ? 1 : 0,
+                         sequencer_core_song_get_loop() ? 1 : 0);
+        for (uint8_t i = 0; i < count && i < 16 && n < (int)sizeof msg - 24; i++) {
+            uint8_t bars = 0, mask = 0;
+            sequencer_core_song_get_scene(i, &bars, &mask);
+            n += snprintf(msg + n, sizeof msg - (size_t)n, " | s%u:%u/%u",
+                          (unsigned)i, (unsigned)bars, (unsigned)mask);
+        }
+        return usb_cdc_reply(msg);
+    }
+
     char fmt[8];
     unsigned slot = 0, bars = 0;
     size_t plen = 0;
@@ -88,14 +106,17 @@ static esp_err_t cdc_on_line(const char *line, size_t len, void *ctx)
                  (unsigned)CONFIG_SYNTH_PROJECT_MAX_SLOTS);
         return usb_cdc_reply(msg);
     }
-    uint8_t is_midi;
+    uint8_t mode;
     if (strcmp(fmt, "txt") == 0) {
-        is_midi = 0;
+        mode = 0;
     } else if (strcmp(fmt, "mid") == 0) {
-        is_midi = 1;
+        mode = 1;
         if (bars != 1 && bars != 2) return usb_cdc_reply("ERR:bars 1..2\n");
+    } else if (strcmp(fmt, "arr") == 0) {
+        mode = 2;
+        if (bars != 0) return usb_cdc_reply("ERR:arr needs bars 0\n");
     } else {
-        return usb_cdc_reply("ERR:fmt txt|mid\n");
+        return usb_cdc_reply("ERR:fmt txt|mid|arr\n");
     }
     if (plen == 0 || plen > IMP_MAX_BODY) {
         return usb_cdc_reply("ERR:len 1..61440\n");
@@ -107,7 +128,7 @@ static esp_err_t cdc_on_line(const char *line, size_t len, void *ctx)
     /* Stash the request; the payload callback finishes the handoff. */
     portENTER_CRITICAL(&s_mux);
     s_imp.slot    = (uint8_t)(slot - 1);
-    s_imp.is_midi = is_midi;
+    s_imp.mode    = mode;
     s_imp.bars    = (uint8_t)bars;
     portEXIT_CRITICAL(&s_mux);
 
@@ -141,7 +162,7 @@ void usb_import_service(void)
 {
     uint8_t *body;
     size_t   len;
-    uint8_t  slot, is_midi, bars;
+    uint8_t  slot, mode, bars;
 
     portENTER_CRITICAL(&s_mux);
     if (!s_imp.pending) {
@@ -151,7 +172,7 @@ void usb_import_service(void)
     body    = s_imp.body;
     len     = s_imp.len;
     slot    = s_imp.slot;
-    is_midi = s_imp.is_midi;
+    mode    = s_imp.mode;
     bars    = s_imp.bars;
     s_imp.pending = false;
     portEXIT_CRITICAL(&s_mux);
@@ -160,7 +181,7 @@ void usb_import_service(void)
     out[0] = '\0';
     bool ok = false;
 
-    if (is_midi) {
+    if (mode != 0) {
         char *text = heap_caps_malloc(IMP_MIDI_TEXT_CAP, MALLOC_CAP_SPIRAM);
         if (!text) {
             snprintf(s_imp.result, sizeof s_imp.result, "ERR:no mem");
@@ -168,9 +189,14 @@ void usb_import_service(void)
             return;
         }
         char cvt_err[96];
-        if (midi_amysong_convert(body, len, (int)bars, 256, NULL,
-                                 text, IMP_MIDI_TEXT_CAP,
-                                 cvt_err, sizeof cvt_err) != 0) {
+        int cvt = (mode == 1)
+                  ? midi_amysong_convert(body, len, (int)bars, 256, NULL,
+                                         text, IMP_MIDI_TEXT_CAP,
+                                         cvt_err, sizeof cvt_err)
+                  : midi_amysong_arrange_convert(body, len, 256, NULL,
+                                                 text, IMP_MIDI_TEXT_CAP,
+                                                 cvt_err, sizeof cvt_err);
+        if (cvt != 0) {
             snprintf(s_imp.result, sizeof s_imp.result, "ERR:%s",
                      cvt_err[0] ? cvt_err : "midi parse failed");
         } else {

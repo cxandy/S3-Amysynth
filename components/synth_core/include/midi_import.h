@@ -27,6 +27,25 @@ int midi_amysong_convert(const uint8_t *data, size_t len,
                          char *out, size_t out_cap,
                          char *err, size_t err_cap);
 
+/* Whole-song arrangement: 0xFF 0x06/0x07 section markers split the file into
+ * scenes; each section's leading one/two bars become loop cells assigned to
+ * the 3 melodic layers in first-appearance order (later sections reuse a cell
+ * via the scene mask), the densest-drum section owns the drum cell, and the
+ * output ends in a `scene`/`song` block that replays the section order.
+ *
+ * Requires at least 2 distinct in-time section markers; otherwise returns -1
+ * with "need at least 2 section markers...". `patch` is the fallback melodic
+ * patch when no program change precedes a section (prg changes win), `name`
+ * is a fallback for the MIDI song-name meta.
+ *
+ * Workspace is module-static: call from the single sequencer-applier task
+ * only (usb_import_service / wifi_import_service), like song_import_apply.
+ */
+int midi_amysong_arrange_convert(const uint8_t *data, size_t len, int patch,
+                                 const char *name,
+                                 char *out, size_t out_cap,
+                                 char *err, size_t err_cap);
+
 #ifdef __cplusplus
 }
 #endif

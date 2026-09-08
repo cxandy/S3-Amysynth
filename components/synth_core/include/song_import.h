@@ -24,7 +24,16 @@ extern "C" {
  *   layer drum             opens the drum block (at most one)
  *     hit <track> <tok>..  track 0..3 (kick/snare/hat1/hat2), `.` off /
  *                          `x` on; max 4 rows
+ *   scene <bars> <mask>    optional section in the song chain (max 16):
+ *                          bars 1..255, mask 1..15 (bit n = layer n audible)
+ *   song <key> <0|1>       optional song flags before the scene lines:
+ *                          `enabled` engages song mode, `loop` wraps to
+ *                          scene 0 after the last scene (defaults: off/off)
  *
+ * The scene block is how a whole-song import is kept as an arrangement: the
+ * section order is replayed by stepping the scene chain while each layer
+ * loops its own cell. Mirror the order used by project_snapshot so Loading
+ * the saved slot reproduces the same table.
  * Steps read up to `pattern` per row; extra tokens are ignored, missing
  * tokens are rests. Parse-then-apply is atomic: on any error nothing is
  * applied and NO save happens.

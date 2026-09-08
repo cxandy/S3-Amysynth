@@ -28,9 +28,10 @@
 
 <p>
   <label>槽位 <input type="number" id="slot" min="1" max="32" value="1"></label>
-  <label>MIDI 循环 <select id="bars">
-    <option value="1">1 小节</option>
-    <option value="2" selected>2 小节</option>
+  <label>MIDI 模式 <select id="bars">
+    <option value="1">循环 · 1 小节</option>
+    <option value="2" selected>循环 · 2 小节</option>
+    <option value="0">整曲 · 自动分段(需 marker)</option>
   </select></label>
 </p>
 
@@ -45,8 +46,9 @@
 <p>串口收发日志:</p>
 <div id="log"></div>
 
-<p style="color:#9aa4b2;font-size:12px">协议:发送 <code>PUT &lt;slot&gt; &lt;txt|mid&gt; &lt;bars&gt; &lt;len&gt;</code>,收到
-<code>ACK</code> 后紧跟原始字节,最后回 <code>OK:saved to slot N</code>(.mid 在机内用同 WiFi 页面的转换器转成循环)。</p>
+<p style="color:#9aa4b2;font-size:12px">协议:发送 <code>PUT &lt;slot&gt; &lt;txt|mid|arr&gt; &lt;bars&gt; &lt;len&gt;</code>,收到
+<code>ACK</code> 后紧跟原始字节,最后回 <code>OK:saved to slot N</code>。<code>mid</code> 把 .mid 前 1/2 小节转成循环;
+<code>arr</code> 按 .mid 里的段落 marker(text/marker 事件)切成场景链整曲导入。整曲输出含 <code>song</code>/<code>scene</code> 块。</p>
 
 <script>
 'use strict';
@@ -168,7 +170,7 @@ async function put(payload, fmt) {
   if (payload.byteLength === 0) { status('内容为空', 'err'); return; }
   const slot = parseInt($('slot').value, 10);
   if (!(slot >= 1 && slot <= 32)) { status('槽位需在 1..32', 'err'); return; }
-  const bars = fmt === 'mid' ? parseInt($('bars').value, 10) : 0;
+  const bars = fmt === 'mid' ? $('bars').value : '0';
   pendingPayload = new Uint8Array(payload);
   putState = 'ack';
   status('发送帧…');
@@ -178,10 +180,14 @@ async function put(payload, fmt) {
 async function doImport() {
   const f = $('file').files[0];
   const isMidi = f && /\.midi?$/i.test(f.name);
-  if (f && !isMidi && /\.txt$/i.test(f.name)) { /* .txt treated as amysong */ }
   if (f) {
     const buf = await f.arrayBuffer();
-    await put(buf, isMidi ? 'mid' : 'txt');
+    if (isMidi) {
+      const sel = parseInt($('bars').value, 10);
+      await put(buf, sel === 0 ? 'arr' : 'mid');
+    } else {
+      await put(buf, 'txt');
+    }
   } else {
     const txt = $('txt').value;
     if (!txt.trim()) { status('没有文件也没有文本', 'err'); return; }

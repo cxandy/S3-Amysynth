@@ -37,6 +37,9 @@ static const char *TAG = "usb_import";
 #define IMP_RESULT_WAIT_MS  (12000)
 #define IMP_STATUS_LINGER_MS (6000)
 
+/* Firmware build tag (DIAG-N). Query with: GET ver */
+#define IMP_VERSION_STR     "DIAG-1"
+
 typedef struct {
     SemaphoreHandle_t done_sem;
     /* request descriptor, written by the CDC pump task on the PUT line    */
@@ -74,6 +77,12 @@ static esp_err_t cdc_on_line(const char *line, size_t len, void *ctx)
     (void)ctx;
     if (len == 4 && strncmp(line, "PING", 4) == 0) {
         return usb_cdc_reply("PONG\n");
+    }
+
+    if (len == 7 && strncmp(line, "GET ver", 7) == 0) {
+        char msg[48];
+        snprintf(msg, sizeof msg, "OK:S3-Amysynth %s\n", IMP_VERSION_STR);
+        return usb_cdc_reply(msg);
     }
 
     if (len == 8 && strncmp(line, "GET song", 8) == 0) {
@@ -179,6 +188,7 @@ void usb_import_service(void)
 
     char out[256];
     out[0] = '\0';
+    s_imp.result[0] = '\0';
     bool ok = false;
 
     if (mode != 0) {
@@ -189,6 +199,8 @@ void usb_import_service(void)
             return;
         }
         char cvt_err[96];
+        char ctext[128];
+        ctext[0] = '\0';
         int cvt = (mode == 1)
                   ? midi_amysong_convert(body, len, (int)bars, 256, NULL,
                                          text, IMP_MIDI_TEXT_CAP,
@@ -201,6 +213,12 @@ void usb_import_service(void)
                      cvt_err[0] ? cvt_err : "midi parse failed");
         } else {
             ok = song_import_apply(slot, text, NULL, out, sizeof out);
+            if (!ok) {
+                snprintf(ctext, sizeof ctext, "%.127s", text);
+                snprintf(s_imp.result, sizeof s_imp.result,
+                         "ERR:apply failed out='%.120s' conv='%.127s'",
+                         out, ctext);
+            }
         }
         heap_caps_free(text);
     } else {
@@ -210,6 +228,8 @@ void usb_import_service(void)
     if (ok) {
         snprintf(s_imp.result, sizeof s_imp.result,
                  "OK:saved to slot %u", (unsigned)(slot + 1));
+    } else if (out[0] == '\0' || s_imp.result[0] == 'E') {
+        /* keep the diagnostic reply (already set) or the generic one */
     } else {
         snprintf(s_imp.result, sizeof s_imp.result, "ERR:%s",
                  out[0] ? out : "import failed");

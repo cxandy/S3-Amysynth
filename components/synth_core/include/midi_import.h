@@ -11,7 +11,8 @@ extern "C" {
  *
  * Mirror of tools/midi2amysong.py: the first `bars` bars (16 or 32 sixteenths)
  * are quantized to the 16th grid and the rest is dropped, so the result is a
- * loop. Channel drumch (default 10) is split into the drum layer's kick/snare/
+ * loop. Channel drumch (default 9 = MIDI channel 10) is split into the drum
+ * layer's kick/snare/
  * hat1/perc tracks (GM note map); up to 3 non-drum channels become melodic
  * layers, single-note-per-step, top note wins. Tempo comes from set-tempo meta
  * (or 120 bpm), patch defaults to 256.

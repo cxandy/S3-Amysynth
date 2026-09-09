@@ -17,7 +17,7 @@ Options:
   --bars 1|2    loop length in bars (16 or 32 steps)  [2]
   --patch N     AMY patch for every melodic layer     [256 built-in piano]
   --bpm N       tempo override (default: from the file's set-tempo meta) [120]
-  --drumch N    channel number treated as drums       [10]
+  --drumch N    channel number treated as drums       [9]
   --name TEXT   song name shown on the device         [default "SONG"]
 """
 
@@ -128,7 +128,7 @@ def main():
     ap.add_argument("--bars", type=int, default=2, choices=(1, 2))
     ap.add_argument("--patch", type=int, default=256)
     ap.add_argument("--bpm", type=int, default=None)
-    ap.add_argument("--drumch", type=int, default=10)
+    ap.add_argument("--drumch", type=int, default=9)
     ap.add_argument("--name", default=None)
     args = ap.parse_args()
 

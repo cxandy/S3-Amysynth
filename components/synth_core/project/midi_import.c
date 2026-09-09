@@ -70,7 +70,7 @@ static void note_on(conv_t *s, uint32_t tick, uint8_t ch, uint8_t note)
     int step = (int)(((uint64_t)tick * 4u + (uint32_t)s->div / 2u) / (uint32_t)s->div);
     if (step >= s->steps) return;
 
-    if ((ch % 16) == 10) {                     /* drum channel (GM 10) */
+    if ((ch % 16) == 9) {                      /* drum channel (GM 10, status 0x99) */
         int tr = 3;
         if (note == 35 || note == 36)      tr = 0;
         else if (note == 37 || note == 38 || note == 40) tr = 1;
@@ -260,7 +260,7 @@ int midi_amysong_convert(const uint8_t *data, size_t len,
 #define ARR_MAX_STEPS     32
 #define ARR_MAX_CELLS     3
 #define ARR_NAME_MAX      16
-#define ARR_DRUM_CH       10
+#define ARR_DRUM_CH       9
 
 typedef struct {
     uint8_t grid[ARR_MAX_STEPS];   /* note + 1, 0 = empty          */
@@ -300,7 +300,8 @@ static void arr_fill_note(arr_sec_t *secs, const uint32_t *starts, int nsecs,
     if (s < 0 || s >= nsecs) return;
     uint32_t w0 = starts[s];
     if (tick < w0 || tick >= w0 + win) return;   /* keep the leading loop only */
-    int step = (int)(((uint64_t)tick * 4u + (uint64_t)div / 2u) / (uint64_t)div);
+    uint32_t rel = tick - w0;
+    int step = (int)(((uint64_t)rel * 4u + (uint64_t)div / 2u) / (uint64_t)div);
     if (step < 0 || step >= (int)steps) return;
 
     arr_sec_t *sec = &secs[s];

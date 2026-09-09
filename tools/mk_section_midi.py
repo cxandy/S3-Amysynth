@@ -85,8 +85,9 @@ def build(markers):
         for s in range(0, 16, 2):
             t3.append((b0 + s * STEP, bytes([0x99, 42, 80])))
 
-    file_data = (b"MThd" + struct.pack(">IHHH", 6, 1, 2, DIV) +
-                 track_body(t0) + track_body(t1) + track_body(t2) + track_body(t3))
+    bodies = [track_body(t0), track_body(t1), track_body(t2), track_body(t3)]
+    file_data = (b"MThd" + struct.pack(">IHHH", 6, 1, len(bodies), DIV) +
+                 b"".join(bodies))
     return file_data
 
 

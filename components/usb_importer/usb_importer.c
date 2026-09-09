@@ -38,7 +38,7 @@ static const char *TAG = "usb_import";
 #define IMP_STATUS_LINGER_MS (6000)
 
 /* Firmware build tag (DIAG-N). Query with: GET ver */
-#define IMP_VERSION_STR     "DIAG-2"
+#define IMP_VERSION_STR     "DIAG-3"
 
 typedef struct {
     SemaphoreHandle_t done_sem;

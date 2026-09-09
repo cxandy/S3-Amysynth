@@ -42,7 +42,7 @@ static const char *TAG = "usb_import";
 #define IMP_STATUS_LINGER_MS (6000)
 
 /* Firmware build tag (DIAG-N). Query with: GET ver */
-#define IMP_VERSION_STR     "DIAG-8"
+#define IMP_VERSION_STR     "DIAG-9"
 
 typedef struct {
     SemaphoreHandle_t done_sem;
@@ -65,15 +65,16 @@ typedef struct {
 static cdc_imp_t s_imp;
 static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
 
-/* RTC-domain sentinels for the RST boot diagnostic (DIAG-8).
+/* RTC-domain sentinels for the RST boot diagnostic (DIAG-8+).
  *
  * These live in .rtc_noinit (RTC slow memory), which SURVIVES a
- * RESET_SYSTEM (the WDT stage0 action DIAG-7+ uses) but is wiped by a full
- * chip / RTC reset or a power cycle. The RST boot handler bumps
- * s_rst_armed_seq right before arming the WDT; GET rst reports whether that
- * value is still intact afterwards, plus esp_reset_reason(). Together they
- * prove, on the very next app boot, whether the reset kept the RTC domain
- * (and FORCE_DOWNLOAD_BOOT with it) or nuked everything. */
+ * RESET_SYSTEM (the reset class DIAG-9 triggers via RTC_CNTL_SW_SYS_RST /
+ * the RTC WDT stage0 fallback) but is wiped by a full chip / RTC reset or
+ * a power cycle. The RST boot handler bumps s_rst_armed_seq right before
+ * arming the reset; GET rst reports whether that value is still intact
+ * afterwards, plus esp_reset_reason(). Together they prove, on the very
+ * next app boot, whether the reset kept the RTC domain (and
+ * FORCE_DOWNLOAD_BOOT with it) or nuked everything. */
 #define IMP_RST_MAGIC   (0xA7E57E11u)   /* arbitrary non-zero marker value   */
 static RTC_NOINIT_ATTR uint32_t s_rst_seq;   /* armed seq, stays if RTC kept */
 static RTC_NOINIT_ATTR uint32_t s_rst_magic; /* MAGIC if RST boot armed WDT  */
@@ -131,49 +132,55 @@ static esp_err_t cdc_on_line(const char *line, size_t len, void *ctx)
         /* Software reset into the ROM download/flash mode. No physical
          * BOOT+RESET needed.
          *
-         * The ROM honors RTC_CNTL_OPTION1_REG / FORCE_DOWNLOAD_BOOT on the
-         * next reset. Two things must stay true across that reset:
+         * DIAG-9 rewrite. DIAG-7/8 armed the RTC WDT with STG0=3
+         * (RESET_SYSTEM) to preserve the RTC domain across the reset, but
+         * wrote SYS_RESET_LENGTH (bits 15:13) as 0: on this chip that yields
+         * no reset pulse at all, so the WDT never fired and the chip kept
+         * running (the USB instance path never changed - GET rst could not be
+         * read because we had also cleared the live USB_CONF PAD_ENABLE bits,
+         * killing the active CDC on the spot; the ROM's download-mode USB-OTG
+         * (PID 1001 / COM8) is configured by the ROM itself and never needed
+         * that pad hand-over. Both were wrong.
          *
-         * 1. FORCE_DOWNLOAD_BOOT must SURVIVE the reset. DIAG-6 used the
-         *    `--after watchdog-reset` config esptool writes (STG0=5 +
-         *    WDT_CHIP_RESET_EN): that is a full CHIP reset which wipes the
-         *    whole RTC domain, FORCE_DOWNLOAD_BOOT included, so the ROM re-
-         *    sampled a clean boot and landed back in the app (screen rebooted,
-         *    still woke up as PID 8000). A software/esp_restart() on this
-         *    board never completed the reboot at all. So we arm the RTC WDT
-         *    with STG0=3 (RWDT_LL_STG_SEL_RESET_SYSTEM): it waits ~1s then
-         *    triggers a SYSTEM reset, which resets CPU + digital peripherals
-         *    but PRESERVES the RTC domain (RTC_CNTL_OPTION1 keeps its bits).
-         *    That is the exact reset class arduino/esp32 and esptool rely on
-         *    when they set FORCE_DOWNLOAD_BOOT and reboot into download mode.
-         *
-         * 2. D+/D- must go back to the native USB-Serial/JTAG (ROM download
-         *    enumerates as PID 1001 on COM8) instead of staying routed to the
-         *    USB-OTG the app uses. The OTG routing lives in RTC_CNTL_USB_CONF
-         *    (set by the app at boot, RTC-domain so it also survives a SYSTEM
-         *    reset), so we clear its PHY/PAD select bits before arming the WDT.
+         * Correct path - the same mechanism esp_restart() uses internally:
+         *   1. Set RTC_CNTL_FORCE_DOWNLOAD_BOOT. It lives in the RTC domain
+         *      and therefore SURVIVES a SYSTEM-class reset.
+         *   2. Trigger a software system reset by poking
+         *      RTC_CNTL_REG::RTC_CNTL_SW_SYS_RST (bit 31). This resets the
+         *      CPU + digital peripherals but PRESERVES the RTC domain, so the
+         *      ROM re-boot sees FORCE_DOWNLOAD_BOOT and enters download mode.
+         *      Unlike esp_restart() there is no long shutdown-handler chain
+         *      that can stall. The reset takes effect on the next clock edge.
+         *   3. As a fallback, arm the RTC WDT STG0=3 too (with a real
+         *      SYS_RESET_LENGTH this time, 200ns) - whichever fires first
+         *      wins, and BOTH are SYSTEM-class so the RTC domain (FORCE + the
+         *      sentinels below) is preserved either way.
          *
          * The WDT unlock key is the literal 0x50D83AA1 - the rtc_cntl_reg.h
          * macro RTC_CNTL_WDT_WKEY is only the 32-bit field mask (0xFFFFFFFF)
          * and MUST NOT be used. */
         usb_cdc_reply("OK:reboot to bootloader\n");
         vTaskDelay(pdMS_TO_TICKS(100));
-        /* DIAG-8: record the arm in the RTC domain BEFORE the reset, so the
-         * next app boot can prove (via GET rst) whether the RTC domain and
+        /* Record the arm in the RTC domain BEFORE the reset, so the next app
+         * boot can prove (via GET rst) whether the RTC domain and
          * FORCE_DOWNLOAD_BOOT survived the reset. */
         s_rst_seq++;
         s_rst_magic = IMP_RST_MAGIC;
         REG_WRITE(RTC_CNTL_OPTION1_REG, RTC_CNTL_FORCE_DOWNLOAD_BOOT);
-        CLEAR_PERI_REG_MASK(RTC_CNTL_USB_CONF_REG,
-                            RTC_CNTL_SW_HW_USB_PHY_SEL | RTC_CNTL_SW_USB_PHY_SEL |
-                                RTC_CNTL_USB_PAD_ENABLE | RTC_CNTL_USB_PAD_ENABLE_OVERRIDE);
+        /* Fallback reset: RTC WDT, STG0=RESET_SYSTEM, SYS_RESET_LENGTH=1
+         * (200ns), so the reset pulse is actually generated if it ever fires.
+         * Unlocked with the literal WDT key (the reg-h header's WKEY mask is
+         * all-ones and would re-lock instead). */
         REG_WRITE(RTC_CNTL_WDTWPROTECT_REG, 0x50D83AA1u);
         REG_WRITE(RTC_CNTL_WDTCONFIG1_REG, 2000); /* stage0 hold */
-        REG_WRITE(RTC_CNTL_WDTCONFIG0_REG, (1u << 31) | (3u << 28)); /* WDT_EN + STG0=RESET_SYSTEM */
+        REG_WRITE(RTC_CNTL_WDTCONFIG0_REG, (1u << 31) | (3u << 28) | (1u << 13));
         REG_WRITE(RTC_CNTL_WDTWPROTECT_REG, 0);
-        /* Do not attempt the software reboot; the armed WDT system-resets the
-         * chip ~1s later on its own, even if this task stalls. Return now. */
-        return ESP_OK;
+        /* Primary reset: software system reset preserving the RTC domain.
+         * Immediate - the chip resets within a few cycles. If we somehow
+         * survive this write (e.g. interrupts masked), the WDT above still
+         * fires ~1s later. Either way we should never get past this line. */
+        REG_WRITE(RTC_CNTL_REG, RTC_CNTL_SW_SYS_RST);
+        for (;;) vTaskDelay(pdMS_TO_TICKS(1000)); /* not reached */
     }
 
     if (len == 8 && strncmp(line, "GET song", 8) == 0) {

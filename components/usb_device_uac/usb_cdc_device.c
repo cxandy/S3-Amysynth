@@ -34,6 +34,7 @@ typedef struct {
     size_t           payload_expect;
     size_t           payload_got;
     uint8_t         *payload_buf;
+    bool             payload_sanitize_nul;   /* txt only: 0x00 -> ' ' */
 } cdc_device_t;
 
 static cdc_device_t s_cdc;

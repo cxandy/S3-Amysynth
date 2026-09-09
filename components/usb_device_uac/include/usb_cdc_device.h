@@ -11,7 +11,7 @@
  *
  * Protocol (host -> device, LF-terminated commands):
  *   PING\n                       -> "PONG\n"
- *   PUT <slot> <len>\n           -> "ACK\n" (or "ERR:...\n"), then the
+ *   PUT <slot> <fmt> <bars> <len>\n -> "ACK\n" (or "ERR:...\n"), then the
  *                                    next <len> raw bytes arrive as one
  *                                    payload block; the payload callback
  *                                    is responsible for the eventual
@@ -56,8 +56,13 @@ esp_err_t usb_cdc_device_init(cdc_line_cb_t line_cb, cdc_payload_cb_t payload_cb
  * @return ESP_OK, or ESP_ERR_INVALID_STATE outside a line callback /
  *         already capturing, ESP_ERR_NO_MEM on allocation failure (in which
  *         case "ERR:no mem\n" is written before returning to line mode).
+ *
+ * @param len        exact payload byte count to capture.
+ * @param sanitize_nul true for text payloads: NUL bytes are replaced with
+ *                     spaces so a WebSerial text read cannot truncate the
+ *                     buffer; pass false for raw binary .mid bodies.
  */
-esp_err_t usb_cdc_begin_payload(size_t len);
+esp_err_t usb_cdc_begin_payload(size_t len, bool sanitize_nul);
 
 /**
  * @brief Write a response and flush it. Callable only from the pump task

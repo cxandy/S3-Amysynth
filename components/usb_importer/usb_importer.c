@@ -38,7 +38,7 @@ static const char *TAG = "usb_import";
 #define IMP_STATUS_LINGER_MS (6000)
 
 /* Firmware build tag (DIAG-N). Query with: GET ver */
-#define IMP_VERSION_STR     "DIAG-1"
+#define IMP_VERSION_STR     "DIAG-2"
 
 typedef struct {
     SemaphoreHandle_t done_sem;
@@ -141,7 +141,7 @@ static esp_err_t cdc_on_line(const char *line, size_t len, void *ctx)
     s_imp.bars    = (uint8_t)bars;
     portEXIT_CRITICAL(&s_mux);
 
-    esp_err_t err = usb_cdc_begin_payload(plen);
+    esp_err_t err = usb_cdc_begin_payload(plen, mode == 0);
     if (err != ESP_OK) return ESP_OK;   /* begin_payload already replied ERR */
     return usb_cdc_reply("ACK\n");
 }

@@ -60,7 +60,7 @@ esp_err_t usb_cdc_reply(const char *s)
     return ESP_OK;
 }
 
-esp_err_t usb_cdc_begin_payload(size_t len)
+esp_err_t usb_cdc_begin_payload(size_t len, bool sanitize_nul)
 {
     if (s_cdc.framing != CDC_FRAMING_LINE) return ESP_ERR_INVALID_STATE;
     if (len == 0) return ESP_ERR_INVALID_ARG;
@@ -71,10 +71,11 @@ esp_err_t usb_cdc_begin_payload(size_t len)
         cdc_reply_raw("ERR:no mem\n");
         return ESP_ERR_NO_MEM;
     }
-    s_cdc.payload_buf     = buf;
-    s_cdc.payload_expect  = len;
-    s_cdc.payload_got     = 0;
-    s_cdc.framing         = CDC_FRAMING_PAYLOAD;
+    s_cdc.payload_buf          = buf;
+    s_cdc.payload_expect       = len;
+    s_cdc.payload_got          = 0;
+    s_cdc.payload_sanitize_nul = sanitize_nul;
+    s_cdc.framing              = CDC_FRAMING_PAYLOAD;
     return ESP_OK;
 }
 
@@ -111,9 +112,11 @@ static void cdc_pump_task(void *arg)
                 s_cdc.payload_got += n;
                 if (s_cdc.payload_got >= s_cdc.payload_expect) {
                     s_cdc.payload_buf[s_cdc.payload_expect] = '\0';
-                    for (size_t i = 0; i < s_cdc.payload_expect; i++) {
-                        if (s_cdc.payload_buf[i] == '\0') {
-                            s_cdc.payload_buf[i] = ' ';
+                    if (s_cdc.payload_sanitize_nul) {
+                        for (size_t i = 0; i < s_cdc.payload_expect; i++) {
+                            if (s_cdc.payload_buf[i] == '\0') {
+                                s_cdc.payload_buf[i] = ' ';
+                            }
                         }
                     }
                     void *ctx = s_cdc.ctx;

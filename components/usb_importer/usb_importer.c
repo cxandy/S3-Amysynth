@@ -23,6 +23,7 @@
 #include "esp_heap_caps.h"
 #include "esp_system.h"
 #include "soc/rtc_cntl_reg.h"
+#include "soc/usb_serial_jtag_reg.h"
 #include "soc/soc.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -41,7 +42,7 @@ static const char *TAG = "usb_import";
 #define IMP_STATUS_LINGER_MS (6000)
 
 /* Firmware build tag (DIAG-N). Query with: GET ver */
-#define IMP_VERSION_STR     "DIAG-4"
+#define IMP_VERSION_STR     "DIAG-5"
 
 typedef struct {
     SemaphoreHandle_t done_sem;
@@ -89,13 +90,29 @@ static esp_err_t cdc_on_line(const char *line, size_t len, void *ctx)
     }
 
     if (len == 8 && strcmp(line, "RST boot") == 0) {
-        /* Software reset into the ROM download/flash mode: set the RTC
-         * FORCE_DOWNLOAD_BOOT strap override, then reboot. The ROM honors
-         * this bit on reset even with GPIO0 high, so no physical BOOT+RESET
-         * is needed and it is immune to pad timing on the soft reboot. */
+        /* Software reset into the ROM download/flash mode.
+         *
+         * Two things must happen before the reboot, or the ROM either boots
+         * the app again or cannot enumerate on USB:
+         *   1. Hand the shared D+/D- pads from USB-OTG (TinyUSB UAC) back to
+         *      the native USB-Serial/JTAG controller. This mirrors the Arduino
+         *      core's usb_switch_to_cdc_jtag() (espressif/arduino-esp32#10204,
+         *      IDFGH-12237): while TinyUSB holds the pads, the FORCE_DOWNLOAD
+         *      reset silently lands back in the app.
+         *   2. Set the RTC FORCE_DOWNLOAD_BOOT strap override so the ROM
+         *      enters download mode on reset even with GPIO0 high - no
+         *      physical BOOT+RESET needed. */
         usb_cdc_reply("OK:reboot to bootloader\n");
         vTaskDelay(pdMS_TO_TICKS(100));
-        REG_SET_BIT(RTC_CNTL_OPTION1_REG, RTC_CNTL_FORCE_DOWNLOAD_BOOT);
+        /* 1a. Point the internal USB PHY at the native Serial/JTAG controller */
+        CLEAR_PERI_REG_MASK(RTC_CNTL_USB_CONF_REG,
+                            RTC_CNTL_SW_HW_USB_PHY_SEL | RTC_CNTL_SW_USB_PHY_SEL | RTC_CNTL_USB_PAD_ENABLE);
+        CLEAR_PERI_REG_MASK(USB_SERIAL_JTAG_CONF0_REG, USB_SERIAL_JTAG_PHY_SEL);
+        /* 1b. Release the pads, then re-connect them to Serial/JTAG */
+        CLEAR_PERI_REG_MASK(USB_SERIAL_JTAG_CONF0_REG, USB_SERIAL_JTAG_USB_PAD_ENABLE);
+        SET_PERI_REG_MASK(USB_SERIAL_JTAG_CONF0_REG, USB_SERIAL_JTAG_USB_PAD_ENABLE);
+        /* 2. Force download mode on the next reset */
+        REG_WRITE(RTC_CNTL_OPTION1_REG, RTC_CNTL_FORCE_DOWNLOAD_BOOT);
         esp_restart();
         return ESP_OK;
     }

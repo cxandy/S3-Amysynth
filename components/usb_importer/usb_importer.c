@@ -41,7 +41,7 @@ static const char *TAG = "usb_import";
 #define IMP_STATUS_LINGER_MS (6000)
 
 /* Firmware build tag (DIAG-N). Query with: GET ver */
-#define IMP_VERSION_STR     "DIAG-6"
+#define IMP_VERSION_STR     "DIAG-7"
 
 typedef struct {
     SemaphoreHandle_t done_sem;
@@ -93,34 +93,42 @@ static esp_err_t cdc_on_line(const char *line, size_t len, void *ctx)
          * BOOT+RESET needed.
          *
          * The ROM honors RTC_CNTL_OPTION1_REG / FORCE_DOWNLOAD_BOOT on the
-         * next reset. A plain esp_restart() did NOT work here: it is a soft
-         * CPU/system reset whose shutdown path may not complete, and it does
-         * not necessarily re-sample the boot strapping. Instead we use the
-         * RTC watchdog chip-reset sequence that esptool's --after
-         * watchdog-reset uses in the field (verified repeatedly on this
-         * exact board): unlock the WDT, arm a short timeout, trigger a
-         * hardware chip reset which re-samples FORCE_DOWNLOAD_BOOT and
-         * hands D+/D- back to the native Serial/JTAG controller so the ROM
-         * download mode enumerates as PID 1001 on COM8. */
+         * next reset. Two things must stay true across that reset:
+         *
+         * 1. FORCE_DOWNLOAD_BOOT must SURVIVE the reset. DIAG-6 used the
+         *    `--after watchdog-reset` config esptool writes (STG0=5 +
+         *    WDT_CHIP_RESET_EN): that is a full CHIP reset which wipes the
+         *    whole RTC domain, FORCE_DOWNLOAD_BOOT included, so the ROM re-
+         *    sampled a clean boot and landed back in the app (screen rebooted,
+         *    still woke up as PID 8000). A software/esp_restart() on this
+         *    board never completed the reboot at all. So we arm the RTC WDT
+         *    with STG0=3 (RWDT_LL_STG_SEL_RESET_SYSTEM): it waits ~1s then
+         *    triggers a SYSTEM reset, which resets CPU + digital peripherals
+         *    but PRESERVES the RTC domain (RTC_CNTL_OPTION1 keeps its bits).
+         *    That is the exact reset class arduino/esp32 and esptool rely on
+         *    when they set FORCE_DOWNLOAD_BOOT and reboot into download mode.
+         *
+         * 2. D+/D- must go back to the native USB-Serial/JTAG (ROM download
+         *    enumerates as PID 1001 on COM8) instead of staying routed to the
+         *    USB-OTG the app uses. The OTG routing lives in RTC_CNTL_USB_CONF
+         *    (set by the app at boot, RTC-domain so it also survives a SYSTEM
+         *    reset), so we clear its PHY/PAD select bits before arming the WDT.
+         *
+         * The WDT unlock key is the literal 0x50D83AA1 - the rtc_cntl_reg.h
+         * macro RTC_CNTL_WDT_WKEY is only the 32-bit field mask (0xFFFFFFFF)
+         * and MUST NOT be used. */
         usb_cdc_reply("OK:reboot to bootloader\n");
         vTaskDelay(pdMS_TO_TICKS(100));
         REG_WRITE(RTC_CNTL_OPTION1_REG, RTC_CNTL_FORCE_DOWNLOAD_BOOT);
-        /* Arm the RTC WDT for an unconditional hardware chip reset, exactly
-         * as esptool's esp32s3.watchdog_reset() does (proven on this board:
-         * the only reset that reliably re-samples the boot strap). This
-         * bypasses esp_restart()'s software shutdown path which never
-         * completed the reboot here. NOTE: the unlock key is the literal
-         * 0x50D83AA1 - the rtc_cntl_reg.h macro RTC_CNTL_WDT_WKEY is only
-         * the 32-bit field mask (0xFFFFFFFF) and MUST NOT be used. */
+        CLEAR_PERI_REG_MASK(RTC_CNTL_USB_CONF_REG,
+                            RTC_CNTL_SW_HW_USB_PHY_SEL | RTC_CNTL_SW_USB_PHY_SEL |
+                                RTC_CNTL_USB_PAD_ENABLE | RTC_CNTL_USB_PAD_ENABLE_OVERRIDE);
         REG_WRITE(RTC_CNTL_WDTWPROTECT_REG, 0x50D83AA1u);
-        REG_WRITE(RTC_CNTL_WDTCONFIG1_REG, 2000);
-        REG_WRITE(RTC_CNTL_WDTCONFIG0_REG, (1u << 31) | (5u << 28) | (1u << 8) | 2u);
+        REG_WRITE(RTC_CNTL_WDTCONFIG1_REG, 2000); /* stage0 hold */
+        REG_WRITE(RTC_CNTL_WDTCONFIG0_REG, (1u << 31) | (3u << 28)); /* WDT_EN + STG0=RESET_SYSTEM */
         REG_WRITE(RTC_CNTL_WDTWPROTECT_REG, 0);
-        /* Do not attempt the software reboot (it never completed here); the
-         * armed WDT hard-resets the chip ~1s later, on its own, even if this
-         * task stalls. Return now; the reset happens regardless. The ROM
-         * bootloader then samples FORCE_DOWNLOAD_BOOT and enters download
-         * mode as PID 1001 on COM8. */
+        /* Do not attempt the software reboot; the armed WDT system-resets the
+         * chip ~1s later on its own, even if this task stalls. Return now. */
         return ESP_OK;
     }
 

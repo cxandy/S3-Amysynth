@@ -21,6 +21,8 @@
 #include "sequencer_core.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include "esp_system.h"
+#include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
@@ -83,6 +85,19 @@ static esp_err_t cdc_on_line(const char *line, size_t len, void *ctx)
         char msg[48];
         snprintf(msg, sizeof msg, "OK:S3-Amysynth %s\n", IMP_VERSION_STR);
         return usb_cdc_reply(msg);
+    }
+
+    if (len == 8 && strcmp(line, "RST boot") == 0) {
+        /* Software reset into the ROM download/flash mode: pull the BOOT
+         * strapping pin (GPIO0) low, then reboot. The ROM samples GPIO0 on
+         * reset and enters download mode when it is low, so no physical
+         * BOOT+RESET is needed. */
+        usb_cdc_reply("OK:reboot to bootloader\n");
+        vTaskDelay(pdMS_TO_TICKS(100));
+        gpio_set_direction(GPIO_NUM_0, GPIO_MODE_OUTPUT);
+        gpio_set_level(GPIO_NUM_0, 0);
+        esp_restart();
+        return ESP_OK;
     }
 
     if (len == 8 && strncmp(line, "GET song", 8) == 0) {

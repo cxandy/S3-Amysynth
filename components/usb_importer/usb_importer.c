@@ -23,7 +23,6 @@
 #include "esp_heap_caps.h"
 #include "esp_system.h"
 #include "soc/rtc_cntl_reg.h"
-#include "soc/usb_serial_jtag_reg.h"
 #include "soc/soc.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -42,7 +41,7 @@ static const char *TAG = "usb_import";
 #define IMP_STATUS_LINGER_MS (6000)
 
 /* Firmware build tag (DIAG-N). Query with: GET ver */
-#define IMP_VERSION_STR     "DIAG-5"
+#define IMP_VERSION_STR     "DIAG-6"
 
 typedef struct {
     SemaphoreHandle_t done_sem;
@@ -90,30 +89,38 @@ static esp_err_t cdc_on_line(const char *line, size_t len, void *ctx)
     }
 
     if (len == 8 && strcmp(line, "RST boot") == 0) {
-        /* Software reset into the ROM download/flash mode.
+        /* Software reset into the ROM download/flash mode. No physical
+         * BOOT+RESET needed.
          *
-         * Two things must happen before the reboot, or the ROM either boots
-         * the app again or cannot enumerate on USB:
-         *   1. Hand the shared D+/D- pads from USB-OTG (TinyUSB UAC) back to
-         *      the native USB-Serial/JTAG controller. This mirrors the Arduino
-         *      core's usb_switch_to_cdc_jtag() (espressif/arduino-esp32#10204,
-         *      IDFGH-12237): while TinyUSB holds the pads, the FORCE_DOWNLOAD
-         *      reset silently lands back in the app.
-         *   2. Set the RTC FORCE_DOWNLOAD_BOOT strap override so the ROM
-         *      enters download mode on reset even with GPIO0 high - no
-         *      physical BOOT+RESET needed. */
+         * The ROM honors RTC_CNTL_OPTION1_REG / FORCE_DOWNLOAD_BOOT on the
+         * next reset. A plain esp_restart() did NOT work here: it is a soft
+         * CPU/system reset whose shutdown path may not complete, and it does
+         * not necessarily re-sample the boot strapping. Instead we use the
+         * RTC watchdog chip-reset sequence that esptool's --after
+         * watchdog-reset uses in the field (verified repeatedly on this
+         * exact board): unlock the WDT, arm a short timeout, trigger a
+         * hardware chip reset which re-samples FORCE_DOWNLOAD_BOOT and
+         * hands D+/D- back to the native Serial/JTAG controller so the ROM
+         * download mode enumerates as PID 1001 on COM8. */
         usb_cdc_reply("OK:reboot to bootloader\n");
         vTaskDelay(pdMS_TO_TICKS(100));
-        /* 1a. Point the internal USB PHY at the native Serial/JTAG controller */
-        CLEAR_PERI_REG_MASK(RTC_CNTL_USB_CONF_REG,
-                            RTC_CNTL_SW_HW_USB_PHY_SEL | RTC_CNTL_SW_USB_PHY_SEL | RTC_CNTL_USB_PAD_ENABLE);
-        CLEAR_PERI_REG_MASK(USB_SERIAL_JTAG_CONF0_REG, USB_SERIAL_JTAG_PHY_SEL);
-        /* 1b. Release the pads, then re-connect them to Serial/JTAG */
-        CLEAR_PERI_REG_MASK(USB_SERIAL_JTAG_CONF0_REG, USB_SERIAL_JTAG_USB_PAD_ENABLE);
-        SET_PERI_REG_MASK(USB_SERIAL_JTAG_CONF0_REG, USB_SERIAL_JTAG_USB_PAD_ENABLE);
-        /* 2. Force download mode on the next reset */
         REG_WRITE(RTC_CNTL_OPTION1_REG, RTC_CNTL_FORCE_DOWNLOAD_BOOT);
-        esp_restart();
+        /* Arm the RTC WDT for an unconditional hardware chip reset, exactly
+         * as esptool's esp32s3.watchdog_reset() does (proven on this board:
+         * the only reset that reliably re-samples the boot strap). This
+         * bypasses esp_restart()'s software shutdown path which never
+         * completed the reboot here. NOTE: the unlock key is the literal
+         * 0x50D83AA1 - the rtc_cntl_reg.h macro RTC_CNTL_WDT_WKEY is only
+         * the 32-bit field mask (0xFFFFFFFF) and MUST NOT be used. */
+        REG_WRITE(RTC_CNTL_WDTWPROTECT_REG, 0x50D83AA1u);
+        REG_WRITE(RTC_CNTL_WDTCONFIG1_REG, 2000);
+        REG_WRITE(RTC_CNTL_WDTCONFIG0_REG, (1u << 31) | (5u << 28) | (1u << 8) | 2u);
+        REG_WRITE(RTC_CNTL_WDTWPROTECT_REG, 0);
+        /* Do not attempt the software reboot (it never completed here); the
+         * armed WDT hard-resets the chip ~1s later, on its own, even if this
+         * task stalls. Return now; the reset happens regardless. The ROM
+         * bootloader then samples FORCE_DOWNLOAD_BOOT and enters download
+         * mode as PID 1001 on COM8. */
         return ESP_OK;
     }
 

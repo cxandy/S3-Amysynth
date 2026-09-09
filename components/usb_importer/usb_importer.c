@@ -22,7 +22,8 @@
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_system.h"
-#include "driver/gpio.h"
+#include "soc/rtc_cntl_reg.h"
+#include "soc/soc.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
@@ -40,7 +41,7 @@ static const char *TAG = "usb_import";
 #define IMP_STATUS_LINGER_MS (6000)
 
 /* Firmware build tag (DIAG-N). Query with: GET ver */
-#define IMP_VERSION_STR     "DIAG-3"
+#define IMP_VERSION_STR     "DIAG-4"
 
 typedef struct {
     SemaphoreHandle_t done_sem;
@@ -88,14 +89,13 @@ static esp_err_t cdc_on_line(const char *line, size_t len, void *ctx)
     }
 
     if (len == 8 && strcmp(line, "RST boot") == 0) {
-        /* Software reset into the ROM download/flash mode: pull the BOOT
-         * strapping pin (GPIO0) low, then reboot. The ROM samples GPIO0 on
-         * reset and enters download mode when it is low, so no physical
-         * BOOT+RESET is needed. */
+        /* Software reset into the ROM download/flash mode: set the RTC
+         * FORCE_DOWNLOAD_BOOT strap override, then reboot. The ROM honors
+         * this bit on reset even with GPIO0 high, so no physical BOOT+RESET
+         * is needed and it is immune to pad timing on the soft reboot. */
         usb_cdc_reply("OK:reboot to bootloader\n");
         vTaskDelay(pdMS_TO_TICKS(100));
-        gpio_set_direction(GPIO_NUM_0, GPIO_MODE_OUTPUT);
-        gpio_set_level(GPIO_NUM_0, 0);
+        REG_SET_BIT(RTC_CNTL_OPTION1_REG, RTC_CNTL_FORCE_DOWNLOAD_BOOT);
         esp_restart();
         return ESP_OK;
     }

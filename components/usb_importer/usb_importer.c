@@ -22,6 +22,7 @@
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_system.h"
+#include "esp_attr.h"
 #include "soc/rtc_cntl_reg.h"
 #include "soc/soc.h"
 #include "freertos/FreeRTOS.h"
@@ -41,7 +42,7 @@ static const char *TAG = "usb_import";
 #define IMP_STATUS_LINGER_MS (6000)
 
 /* Firmware build tag (DIAG-N). Query with: GET ver */
-#define IMP_VERSION_STR     "DIAG-7"
+#define IMP_VERSION_STR     "DIAG-8"
 
 typedef struct {
     SemaphoreHandle_t done_sem;
@@ -64,6 +65,19 @@ typedef struct {
 static cdc_imp_t s_imp;
 static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
 
+/* RTC-domain sentinels for the RST boot diagnostic (DIAG-8).
+ *
+ * These live in .rtc_noinit (RTC slow memory), which SURVIVES a
+ * RESET_SYSTEM (the WDT stage0 action DIAG-7+ uses) but is wiped by a full
+ * chip / RTC reset or a power cycle. The RST boot handler bumps
+ * s_rst_armed_seq right before arming the WDT; GET rst reports whether that
+ * value is still intact afterwards, plus esp_reset_reason(). Together they
+ * prove, on the very next app boot, whether the reset kept the RTC domain
+ * (and FORCE_DOWNLOAD_BOOT with it) or nuked everything. */
+#define IMP_RST_MAGIC   (0xA7E57E11u)   /* arbitrary non-zero marker value   */
+static RTC_NOINIT_ATTR uint32_t s_rst_seq;   /* armed seq, stays if RTC kept */
+static RTC_NOINIT_ATTR uint32_t s_rst_magic; /* MAGIC if RST boot armed WDT  */
+
 static void imp_set_status(const char *fmt, ...)
 {
     va_list ap;
@@ -85,6 +99,31 @@ static esp_err_t cdc_on_line(const char *line, size_t len, void *ctx)
     if (len == 7 && strncmp(line, "GET ver", 7) == 0) {
         char msg[48];
         snprintf(msg, sizeof msg, "OK:S3-Amysynth %s\n", IMP_VERSION_STR);
+        return usb_cdc_reply(msg);
+    }
+
+    if (len == 7 && strcmp(line, "GET rst") == 0) {
+        /* Reset-reason diagnostic (DIAG-8). */
+        const char *reason;
+        switch (esp_reset_reason()) {
+        case ESP_RST_POWERON:   reason = "POWERON"; break;
+        case ESP_RST_EXT:       reason = "EXT"; break;
+        case ESP_RST_SW:        reason = "SW"; break;
+        case ESP_RST_PANIC:     reason = "PANIC"; break;
+        case ESP_RST_INT_WDT:   reason = "INT_WDT"; break;
+        case ESP_RST_TASK_WDT:  reason = "TASK_WDT"; break;
+        case ESP_RST_WDT:       reason = "WDT"; break;
+        case ESP_RST_DEEPSLEEP: reason = "DEEPSLEEP"; break;
+        case ESP_RST_BROWNOUT:  reason = "BROWNOUT"; break;
+        case ESP_RST_SDIO:      reason = "SDIO"; break;
+        default:                reason = "UNKNOWN"; break;
+        }
+        uint32_t state = REG_READ(RTC_CNTL_RESET_STATE_REG);
+        int kept = (s_rst_magic == IMP_RST_MAGIC) ? 1 : 0;
+        char msg[96];
+        snprintf(msg, sizeof msg,
+                 "OK:rst reason=%s state=0x%08x rtc_kept=%d seq=%u\n",
+                 reason, (unsigned)state, kept, (unsigned)s_rst_seq);
         return usb_cdc_reply(msg);
     }
 
@@ -119,6 +158,11 @@ static esp_err_t cdc_on_line(const char *line, size_t len, void *ctx)
          * and MUST NOT be used. */
         usb_cdc_reply("OK:reboot to bootloader\n");
         vTaskDelay(pdMS_TO_TICKS(100));
+        /* DIAG-8: record the arm in the RTC domain BEFORE the reset, so the
+         * next app boot can prove (via GET rst) whether the RTC domain and
+         * FORCE_DOWNLOAD_BOOT survived the reset. */
+        s_rst_seq++;
+        s_rst_magic = IMP_RST_MAGIC;
         REG_WRITE(RTC_CNTL_OPTION1_REG, RTC_CNTL_FORCE_DOWNLOAD_BOOT);
         CLEAR_PERI_REG_MASK(RTC_CNTL_USB_CONF_REG,
                             RTC_CNTL_SW_HW_USB_PHY_SEL | RTC_CNTL_SW_USB_PHY_SEL |

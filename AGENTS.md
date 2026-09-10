@@ -61,14 +61,19 @@ operational facts live here so nothing has to be re-derived every session.
     - **COM11** = app mode (PID_8000 composite: UAC + USB CDC). Speaks the
       import protocol at **9600 baud** (NOT 115200).
     - **COM8** = ROM download mode (PID_1001, USB-Serial/JTAG).
-    - Entering download mode is normally physical **BOOT+RESET**; GPIO0 is
+    - Entering download mode: first try `RST boot` (software, no buttons,
+      DIAG-14+); fall back to physical **BOOT+RESET** if unusable. GPIO0 is
       both the BOOT strap and the SHIFT button
       (`CONFIG_AMYSYNTH_BTN_SHIFT_GPIO 0`).
-- Correct flash command (verified working):
+- Correct flash command (verified working with the software `RST boot` path):
   ```
   python -m esptool --chip esp32s3 --no-stub -p COM8 --baud 460800 \
-    --after watchdog-reset write-flash 0x0 <merged.bin>
+    --before usb-reset --after watchdog-reset write-flash 0x0 <merged.bin>
   ```
+  - `--before usb-reset` is REQUIRED for the software-RST-boot path: the ROM
+    download console's CDC needs a USB-level soft reset or esptool dies with
+    "Write timeout" while connecting. It keeps the FORCE_DOWNLOAD_BOOT state
+    (device stays in download mode) instead of pushing back to the app.
   - `--after watchdog-reset` is REQUIRED so the device boots straight into
     the app (the two `hard_reset`/`soft_reset` variants do not work on this
     board). It leaves the D+/D- mux back to OTG so COM11 reappears.
@@ -83,6 +88,12 @@ operational facts live here so nothing has to be re-derived every session.
       download/flash mode (software reset, no buttons). Implemented DIAG-4+
       via `RTC_CNTL_OPTION1_REG / RTC_CNTL_FORCE_DOWNLOAD_BOOT` (the earlier
       GPIO0-low approach did NOT work - pad goes input+pullup during reset).
+      DIAG-14: one-shot SW_SYS_RST, NO RTC WDT armed (DIAG-13's WDT
+      survived the reset it triggered and left the ROM download console in
+      an infinite ~62ms reset loop - rst:0x9 RTCWDT_SYS_RST, ~35 reboots/s,
+      so esptool could never connect). If ever stuck in that loop, escape
+      with `%TEMP%\opencode\wdt_escape.py` (sends exact-esptool-framed
+      WRITE_REG to WDTCONFIG0=0 during the banner listen window).
 - Probing the port from PowerShell needs care: use
   `New-Object System.IO.Ports.SerialPort $port, 9600`, `Open()`, small
   sleeps; a bare speak/read sometimes returns empty until the device has

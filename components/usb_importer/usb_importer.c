@@ -24,7 +24,10 @@
 #include "esp_system.h"
 #include "esp_attr.h"
 #include "soc/rtc_cntl_reg.h"
+#include "soc/usb_serial_jtag_reg.h"
 #include "soc/soc.h"
+#include "esp_private/periph_ctrl.h"
+#include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
@@ -42,7 +45,7 @@ static const char *TAG = "usb_import";
 #define IMP_STATUS_LINGER_MS (6000)
 
 /* Firmware build tag (DIAG-N). Query with: GET ver */
-#define IMP_VERSION_STR     "DIAG-9"
+#define IMP_VERSION_STR     "DIAG-10"
 
 typedef struct {
     SemaphoreHandle_t done_sem;
@@ -132,29 +135,31 @@ static esp_err_t cdc_on_line(const char *line, size_t len, void *ctx)
         /* Software reset into the ROM download/flash mode. No physical
          * BOOT+RESET needed.
          *
-         * DIAG-9 rewrite. DIAG-7/8 armed the RTC WDT with STG0=3
-         * (RESET_SYSTEM) to preserve the RTC domain across the reset, but
-         * wrote SYS_RESET_LENGTH (bits 15:13) as 0: on this chip that yields
-         * no reset pulse at all, so the WDT never fired and the chip kept
-         * running (the USB instance path never changed - GET rst could not be
-         * read because we had also cleared the live USB_CONF PAD_ENABLE bits,
-         * killing the active CDC on the spot; the ROM's download-mode USB-OTG
-         * (PID 1001 / COM8) is configured by the ROM itself and never needed
-         * that pad hand-over. Both were wrong.
+         * DIAG-10. The reset class is now proven: DIAG-9 armed
+         * FORCE_DOWNLOAD_BOOT + RTC_CNTL_SW_SYS_RST, the chip DID reset
+         * (device vanished off the bus, unlike DIAG-8 where the WDT with
+         * SYS_RESET_LENGTH=0 never fired) but no PID 1001 ever appeared: the
+         * D+/D- pads were still routed to USB-OTG (RTC_CNTL_USB_CONF is in
+         * the RTC domain and survives the SYSTEM reset), while the ROM USB
+         * download console lives on the USB-Serial/JTAG controller. Result:
+         * ROM download mode with an enumerable dead pad - invisible to the
+         * host.
          *
-         * Correct path - the same mechanism esp_restart() uses internally:
-         *   1. Set RTC_CNTL_FORCE_DOWNLOAD_BOOT. It lives in the RTC domain
-         *      and therefore SURVIVES a SYSTEM-class reset.
-         *   2. Trigger a software system reset by poking
-         *      RTC_CNTL_REG::RTC_CNTL_SW_SYS_RST (bit 31). This resets the
-         *      CPU + digital peripherals but PRESERVES the RTC domain, so the
-         *      ROM re-boot sees FORCE_DOWNLOAD_BOOT and enters download mode.
-         *      Unlike esp_restart() there is no long shutdown-handler chain
-         *      that can stall. The reset takes effect on the next clock edge.
-         *   3. As a fallback, arm the RTC WDT STG0=3 too (with a real
-         *      SYS_RESET_LENGTH this time, 200ns) - whichever fires first
-         *      wins, and BOTH are SYSTEM-class so the RTC domain (FORCE + the
-         *      sentinels below) is preserved either way.
+         * Correct path (mirrors arduino-esp32 usb_persist_restart,
+         * RESTART_BOOTLOADER on ESP32-S3, esp32-hal-tinyusb.c):
+         *   1. usb_switch_to_cdc_jtag(): route the D+/D- pins away from
+         *      USB-OTG and over to the USB-Serial/JTAG controller
+         *      (RTC_CNTL_USB_CONF PHY/PAD selects -> 0, then set
+         *      USB_SERIAL_JTAG_CONF0 USB_PAD_ENABLE), so the ROM download
+         *      console has live pads when it boots.
+         *   2. Set RTC_CNTL_FORCE_DOWNLOAD_BOOT (RTC domain, survives a
+         *      SYSTEM-class reset).
+         *   3. Software system reset via RTC_CNTL_REG::RTC_CNTL_SW_SYS_RST
+         *      (bit 31) - same class esp_restart() uses internally, without
+         *      the stalling shutdown-handler chain.
+         *   4. RTC WDT STG0=RESET_SYSTEM fallback (now with SYS_RESET_LENGTH
+         *      =1, 200ns, so it produces a real pulse) - a safe second path
+         *      should the SW_SYS_RST write not take effect.
          *
          * The WDT unlock key is the literal 0x50D83AA1 - the rtc_cntl_reg.h
          * macro RTC_CNTL_WDT_WKEY is only the 32-bit field mask (0xFFFFFFFF)
@@ -166,8 +171,31 @@ static esp_err_t cdc_on_line(const char *line, size_t len, void *ctx)
          * FORCE_DOWNLOAD_BOOT survived the reset. */
         s_rst_seq++;
         s_rst_magic = IMP_RST_MAGIC;
+
+        /* 1. Switch D+/D- routing from USB-OTG to USB-Serial/JTAG (the ROM
+         * download console). arduino-esp32 does exactly this in
+         * usb_switch_to_cdc_jtag() before returning to the bootloader. */
+        periph_module_reset(PERIPH_USB_MODULE);
+        periph_module_disable(PERIPH_USB_MODULE);
+        CLEAR_PERI_REG_MASK(RTC_CNTL_USB_CONF_REG,
+                            RTC_CNTL_SW_HW_USB_PHY_SEL | RTC_CNTL_SW_USB_PHY_SEL |
+                                RTC_CNTL_USB_PAD_ENABLE);
+        CLEAR_PERI_REG_MASK(USB_SERIAL_JTAG_CONF0_REG, USB_SERIAL_JTAG_PHY_SEL);
+        CLEAR_PERI_REG_MASK(USB_SERIAL_JTAG_CONF0_REG,
+                            USB_SERIAL_JTAG_USB_PAD_ENABLE);
+        /* GPIO19/20 are hardwired D+/D- (USBPHY_DM/DP); tri-state them so the
+         * host sees a disconnect and is ready to re-enumerate the download
+         * console. Matches arduino's pinMode(...,OD,OUTPUT_LOW) intent. */
+        gpio_set_direction(19, GPIO_MODE_OUTPUT_OD);
+        gpio_set_direction(20, GPIO_MODE_OUTPUT_OD);
+        gpio_set_level(19, 0);
+        gpio_set_level(20, 0);
+        SET_PERI_REG_MASK(USB_SERIAL_JTAG_CONF0_REG,
+                          USB_SERIAL_JTAG_USB_PAD_ENABLE);
+
+        /* 2. Force the ROM into download mode on the next boot. */
         REG_WRITE(RTC_CNTL_OPTION1_REG, RTC_CNTL_FORCE_DOWNLOAD_BOOT);
-        /* Fallback reset: RTC WDT, STG0=RESET_SYSTEM, SYS_RESET_LENGTH=1
+        /* 4. Fallback reset: RTC WDT, STG0=RESET_SYSTEM, SYS_RESET_LENGTH=1
          * (200ns), so the reset pulse is actually generated if it ever fires.
          * Unlocked with the literal WDT key (the reg-h header's WKEY mask is
          * all-ones and would re-lock instead). */
@@ -175,7 +203,7 @@ static esp_err_t cdc_on_line(const char *line, size_t len, void *ctx)
         REG_WRITE(RTC_CNTL_WDTCONFIG1_REG, 2000); /* stage0 hold */
         REG_WRITE(RTC_CNTL_WDTCONFIG0_REG, (1u << 31) | (3u << 28) | (1u << 13));
         REG_WRITE(RTC_CNTL_WDTWPROTECT_REG, 0);
-        /* Primary reset: software system reset preserving the RTC domain.
+        /* 3. Primary reset: software system reset preserving the RTC domain.
          * Immediate - the chip resets within a few cycles. If we somehow
          * survive this write (e.g. interrupts masked), the WDT above still
          * fires ~1s later. Either way we should never get past this line. */

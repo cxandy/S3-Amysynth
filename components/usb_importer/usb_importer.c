@@ -44,7 +44,7 @@ static const char *TAG = "usb_import";
 #define IMP_STATUS_LINGER_MS (6000)
 
 /* Firmware build tag (DIAG-N). Query with: GET ver */
-#define IMP_VERSION_STR     "DIAG-13"
+#define IMP_VERSION_STR     "DIAG-14"
 
 typedef struct {
     SemaphoreHandle_t done_sem;
@@ -109,16 +109,10 @@ static void rst_boot_task(void *arg)
     tud_disconnect();
     vTaskDelay(pdMS_TO_TICKS(150));
 
-    /* 1. Arm the RTC WDT (STG0=RESET_SYSTEM) as the guaranteed reset. */
-    REG_WRITE(RTC_CNTL_WDTWPROTECT_REG, 0x50D83AA1u);
-    REG_WRITE(RTC_CNTL_WDTCONFIG1_REG, 2000);
-    REG_WRITE(RTC_CNTL_WDTCONFIG0_REG, (1u << 31) | (3u << 28) | (1u << 13));
-    REG_WRITE(RTC_CNTL_WDTWPROTECT_REG, 0);
-
-    /* 2. Force the ROM into download mode on the next boot. */
+    /* Force the ROM into download mode on the next boot. */
     REG_WRITE(RTC_CNTL_OPTION1_REG, RTC_CNTL_FORCE_DOWNLOAD_BOOT);
 
-    /* 3. Re-route D+/D- to the USB-Serial/JTAG controller (the ROM
+    /* Re-route D+/D- to the USB-Serial/JTAG controller (the ROM
      * download console). Mirrors usb_phy_ll_int_jtag_enable. */
     CLEAR_PERI_REG_MASK(RTC_CNTL_USB_CONF_REG,
                         RTC_CNTL_SW_HW_USB_PHY_SEL | RTC_CNTL_SW_USB_PHY_SEL);
@@ -127,7 +121,8 @@ static void rst_boot_task(void *arg)
     SET_PERI_REG_MASK(USB_SERIAL_JTAG_CONF0_REG,
                       USB_SERIAL_JTAG_USB_PAD_ENABLE);
 
-    /* 4. Fast-path software system reset preserving the RTC domain. */
+    /* Software system reset preserving the RTC domain (so FORCE_DOWNLOAD
+     * and the pad re-route survive). One-shot - no WDT left armed. */
     REG_WRITE(RTC_CNTL_REG, RTC_CNTL_SW_SYS_RST);
     for (;;) vTaskDelay(pdMS_TO_TICKS(1000)); /* not reached */
 }
@@ -175,31 +170,17 @@ static esp_err_t cdc_on_line(const char *line, size_t len, void *ctx)
         /* Software reset into the ROM download/flash mode. No physical
          * BOOT+RESET needed.
          *
-         * DIAG-13. DIAG-12 still ran the pad handover from within the CDC
-         * pump task, with the TinyUSB session live: re-routing D+/D- out
-         * from under tud_cdc_read()/write wedges and the RESET_SYSTEM-class
-         * WDT never fired cleanly (observed frozen: still enumerated
-         * PID_8000, CDC unopenable, screen frozen). arduino-esp32 avoids
-         * this by periph_module_reset/disable(PERIPH_USB_MODULE) BEFORE
-         * touching the pads (plus a BUS_RESET semaphore).
+         * DIAG-14. DIAG-13's only flaw was arming the RTC WDT as a
+         * "guaranteed reset". The RTC WDT is RTC-domain: it survives the
+         * SW_SYS_RST it triggers, so every ~62ms (2000 ticks) the ROM
+         * download console resets again - an infinite reboot loop (observed:
+         * 106 'ESP-ROM:' banners in 3s, rst:0x9 RTCWDT_SYS_RST). esptool
+         * can never connect.
          *
-         * Correct sequence (three-part handoff):
-         *   1. Return from cdc_on_line immediately and run the rest on a
-         *      dedicated high-priority task, so we never touch TinyUSB
-         *      registers from inside the pump's own CCC callback.
-         *   2. tud_disconnect() first and sleep ~150ms: this lets the CDC
-         *      pump task drop out of its read loop (tud_cdc_connected()
-         *      -> false) and lets the host see the device detach BEFORE we
-         *      steal the D+/D- pads. Only then is the pad handover safe.
-         *   3. On the task: arm the RTC WDT (STG0=RESET_SYSTEM, ~1s) as the
-         *      guaranteed reset, set RTC_CNTL_FORCE_DOWNLOAD_BOOT, re-route
-         *      the pads to USB-Serial/JTAG (mirrors
-         *      usb_phy_ll_int_jtag_enable), then SW_SYS_RST as the fast
-         *      path.
-         *
-         * The WDT unlock key is the literal 0x50D83AA1 - the rtc_cntl_reg.h
-         * macro RTC_CNTL_WDT_WKEY is only the 32-bit field mask (0xFFFFFFFF)
-         * and MUST NOT be used. */
+         * DIAG-13 proved the rest works: tud_disconnect() drops the CDC
+         * pump, then FORCE + pad re-route + SW_SYS_RST lands the chip cleanly
+         * in ROM download with PID 1001 enumerating. SW_SYS_RST is itself the
+         * reset - one shot, nothing left armed. No WDT.
 
         /* Replying through the CDC is what the pump task is doing right now;
          * keep it short and fast-path back out of the callback, then let the

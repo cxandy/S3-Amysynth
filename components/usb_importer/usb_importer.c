@@ -181,6 +181,7 @@ static esp_err_t cdc_on_line(const char *line, size_t len, void *ctx)
          * pump, then FORCE + pad re-route + SW_SYS_RST lands the chip cleanly
          * in ROM download with PID 1001 enumerating. SW_SYS_RST is itself the
          * reset - one shot, nothing left armed. No WDT.
+         */
 
         /* Replying through the CDC is what the pump task is doing right now;
          * keep it short and fast-path back out of the callback, then let the

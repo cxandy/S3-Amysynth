@@ -43,7 +43,7 @@ static const char *TAG = "usb_import";
 #define IMP_STATUS_LINGER_MS (6000)
 
 /* Firmware build tag (DIAG-N). Query with: GET ver */
-#define IMP_VERSION_STR     "DIAG-11"
+#define IMP_VERSION_STR     "DIAG-12"
 
 typedef struct {
     SemaphoreHandle_t done_sem;
@@ -133,36 +133,35 @@ static esp_err_t cdc_on_line(const char *line, size_t len, void *ctx)
         /* Software reset into the ROM download/flash mode. No physical
          * BOOT+RESET needed.
          *
-         * DIAG-11. DIAG-10 diff vs -9: added arduino's usb_switch_to_cdc_jtag
-         * pad-handover INCLUDING its GPIO19/20 open-drain digitalWrite(LOW)
-         * BUS_RESET poke. That was wrong for our path: it ripped the pads out
-         * from under the live TinyUSB session (CDC wedged, device stayed up)
-         * and we never wait for the arduino reset semaphore anyway - the
-         * reset is a hard system reset. DIAG-9 proved the reset class works
-         * (chip vanished off the bus) but no PID 1001 ever appeared because
-         * the D+/D- pads were still routed to USB-OTG (RTC_CNTL_USB_CONF is
-         * in the RTC domain and survives the SYSTEM reset), while the ROM USB
-         * download console lives on USB-Serial/JTAG.
+         * DIAG-12. DIAG-11 kept arduino's pad handover (sw_hw=1, sw_sel=0,
+         * JTAG USB_PAD_ENABLE on USB_SERIAL_JTAG_CONF0) but ordered it wrong:
+         * the pad re-routing ran FIRST, then FORCE, then WDT, then
+         * SW_SYS_RST. Re-routing D+/D- away from a live TinyUSB session
+         * wedges the USB/UI machinery so hard the CPU never reaches the
+         * reset writes - observed as a frozen screen, no sound, still
+         * enumerated PID_8000, CDC unopenable. arduino-esp32 avoids this
+         * because it first periph_module_reset/disable(PERIPH_USB_MODULE)
+         * and waits for a BUS_RESET semaphore before touching the pads.
          *
-         * Correct path, final form (mirrors usb_phy_ll_int_jtag_enable, the
-         * exact LL helper the app itself uses for its OTG setup, only pointed
-         * at the Serial/JTAG controller instead):
-         *   1. Point RTC_CNTL_USB_CONF sw_hw=1, sw_usb_phy_sel=0 so the
-         *      internal PHY feeds the USB-Serial/JTAG controller (whose
-         *      USB_PAD_ENABLE we set) - the ROM download console then has
-         *      live D+/D- when it boots. No GPIO19/20 poking.
+         * Robust ordering instead of a fragile ISP-safe sequence:
+         *   1. Arm the RTC WDT FIRST (STG0=RESET_SYSTEM, ~1s) - the WDT is
+         *      RTC-domain hardware, entirely independent of the CPU. Even if
+         *      the pad handover below hard-freezes the app (ISR storm, panic,
+         *      anything), the WDT fires 1s later and forces a SYSTEM-class
+         *      reset, which produces exactly the same end state.
          *   2. Set RTC_CNTL_FORCE_DOWNLOAD_BOOT (RTC domain, survives a
          *      SYSTEM-class reset).
-         *   3. Software system reset via RTC_CNTL_REG::RTC_CNTL_SW_SYS_RST
-         *      (bit 31) - same class esp_restart() uses internally, without
-         *      the stalling shutdown-handler chain.
-         *   4. RTC WDT STG0=RESET_SYSTEM fallback (SYS_RESET_LENGTH=1,
-         *      200ns, so it produces a real pulse) - a safe second path
-         *      should the SW_SYS_RST write not take effect.
+         *   3. Re-route the pads to USB-Serial/JTAG (the ROM download
+         *      console) - mirrors usb_phy_ll_int_jtag_enable: INTERNAL phy
+         *      via sw_hw=1, sw_sel=0, JWAG PHY_SEL=0, USB_PAD_ENABLE=1. If
+         *      this wedges the app, the WDT from step 1 still takes us to
+         *      ROM download with live pads.
+         *   4. SW_SYS_RST (RTC_CNTL_REG bit31) as the fast path; the WDT is
+         *      the guaranteed one.
          *
-         * The WDT unlock key is the literal 0x50D83AA1 - the rtc_cntl_reg.h
-         * macro RTC_CNTL_WDT_WKEY is only the 32-bit field mask (0xFFFFFFFF)
-         * and MUST NOT be used. */
+         *  The WDT unlock key is the literal 0x50D83AA1 - the rtc_cntl_reg.h
+         *  macro RTC_CNTL_WDT_WKEY is only the 32-bit field mask (0xFFFFFFFF)
+         *  and MUST NOT be used. */
         usb_cdc_reply("OK:reboot to bootloader\n");
         vTaskDelay(pdMS_TO_TICKS(100));
         /* Record the arm in the RTC domain BEFORE the reset, so the next app
@@ -171,14 +170,20 @@ static esp_err_t cdc_on_line(const char *line, size_t len, void *ctx)
         s_rst_seq++;
         s_rst_magic = IMP_RST_MAGIC;
 
-        /* 1. Switch D+/D- routing from USB-OTG to USB-Serial/JTAG (the ROM
-         * download console). Matches usb_phy_ll_int_jtag_enable(): the app
-         * currently holds the internal PHY on USB-OTG (sw_hw=1, sw_sel=1);
-         * point it at the USB-Serial/JTAG controller (sw_sel=0) and give the
-         * ROM live D+/D- pads through USB_SERIAL_JTAG_CONF0. No GPIO poking:
-         * arduino's digitalWrite(D+/D-, LOW) hack only matters when waiting
-         * for a BUS_RESET in the SAME USB session - here we are about to do a
-         * hard system reset anyway and the ROM configures the pads itself. */
+        /* Step 1: Arm the RTC WDT FIRST. RTC-domain hardware, independent of
+         * the CPU - even if the pad handover below wedges the app, the WDT
+         * fires ~1s later and forces a SYSTEM-class reset with
+         * FORCE_DOWNLOAD_BOOT + JTAG pads already in place. */
+        REG_WRITE(RTC_CNTL_WDTWPROTECT_REG, 0x50D83AA1u);
+        REG_WRITE(RTC_CNTL_WDTCONFIG1_REG, 2000);   /* stage0 hold ~1s */
+        REG_WRITE(RTC_CNTL_WDTCONFIG0_REG, (1u << 31) | (3u << 28) | (1u << 13));
+        REG_WRITE(RTC_CNTL_WDTWPROTECT_REG, 0);
+
+        /* Step 2: Force the ROM into download mode on the next boot. */
+        REG_WRITE(RTC_CNTL_OPTION1_REG, RTC_CNTL_FORCE_DOWNLOAD_BOOT);
+
+        /* Step 3: Switch D+/D- routing from USB-OTG to USB-Serial/JTAG (the
+         * ROM download console). Mirrors usb_phy_ll_int_jtag_enable. */
         CLEAR_PERI_REG_MASK(RTC_CNTL_USB_CONF_REG,
                             RTC_CNTL_SW_HW_USB_PHY_SEL | RTC_CNTL_SW_USB_PHY_SEL);
         SET_PERI_REG_MASK(RTC_CNTL_USB_CONF_REG, RTC_CNTL_SW_HW_USB_PHY_SEL);
@@ -186,20 +191,9 @@ static esp_err_t cdc_on_line(const char *line, size_t len, void *ctx)
         SET_PERI_REG_MASK(USB_SERIAL_JTAG_CONF0_REG,
                           USB_SERIAL_JTAG_USB_PAD_ENABLE);
 
-        /* 2. Force the ROM into download mode on the next boot. */
-        REG_WRITE(RTC_CNTL_OPTION1_REG, RTC_CNTL_FORCE_DOWNLOAD_BOOT);
-        /* 4. Fallback reset: RTC WDT, STG0=RESET_SYSTEM, SYS_RESET_LENGTH=1
-         * (200ns), so the reset pulse is actually generated if it ever fires.
-         * Unlocked with the literal WDT key (the reg-h header's WKEY mask is
-         * all-ones and would re-lock instead). */
-        REG_WRITE(RTC_CNTL_WDTWPROTECT_REG, 0x50D83AA1u);
-        REG_WRITE(RTC_CNTL_WDTCONFIG1_REG, 2000); /* stage0 hold */
-        REG_WRITE(RTC_CNTL_WDTCONFIG0_REG, (1u << 31) | (3u << 28) | (1u << 13));
-        REG_WRITE(RTC_CNTL_WDTWPROTECT_REG, 0);
-        /* 3. Primary reset: software system reset preserving the RTC domain.
-         * Immediate - the chip resets within a few cycles. If we somehow
-         * survive this write (e.g. interrupts masked), the WDT above still
-         * fires ~1s later. Either way we should never get past this line. */
+        /* Step 4: Fast-path software system reset preserving the RTC domain.
+         * If the pad handover above killed the CPU (the WDT from step 1 is
+         * the guaranteed fallback), we should never reach here anyway. */
         REG_WRITE(RTC_CNTL_REG, RTC_CNTL_SW_SYS_RST);
         for (;;) vTaskDelay(pdMS_TO_TICKS(1000)); /* not reached */
     }

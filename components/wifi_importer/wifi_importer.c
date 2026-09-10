@@ -22,7 +22,7 @@
 
 static const char *TAG = "wifi_import";
 
-#define IMP_MAX_BODY  (60 * 1024)          /* AMYSONG text cap        */
+#define IMP_MAX_BODY  (128 * 1024)         /* AMYSONG / MIDI cap      */
 #define IMP_HEAD_CAP  (2048)               /* HTTP head cap           */
 #define IMP_RESULT_WAIT_MS (12000)
 #define IMP_STATUS_LINGER_MS (6000)        /* show "ap up" line this long */

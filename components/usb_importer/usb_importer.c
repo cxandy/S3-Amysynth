@@ -38,13 +38,13 @@
 
 static const char *TAG = "usb_import";
 
-#define IMP_MAX_BODY        (60 * 1024)      /* AMYSONG text cap      */
+#define IMP_MAX_BODY        (128 * 1024)     /* AMYSONG / MIDI cap    */
 #define IMP_MIDI_TEXT_CAP   (2048)           /* on-chip SMF -> text   */
 #define IMP_RESULT_WAIT_MS  (12000)
 #define IMP_STATUS_LINGER_MS (6000)
 
 /* Firmware build tag (DIAG-N). Query with: GET ver */
-#define IMP_VERSION_STR     "DIAG-14"
+#define IMP_VERSION_STR     "DIAG-15"
 
 typedef struct {
     SemaphoreHandle_t done_sem;
@@ -237,7 +237,7 @@ static esp_err_t cdc_on_line(const char *line, size_t len, void *ctx)
         return usb_cdc_reply("ERR:fmt txt|mid|arr\n");
     }
     if (plen == 0 || plen > IMP_MAX_BODY) {
-        return usb_cdc_reply("ERR:len 1..61440\n");
+        return usb_cdc_reply("ERR:len 1..131072\n");
     }
     if (s_imp.pending) {
         return usb_cdc_reply("ERR:busy\n");

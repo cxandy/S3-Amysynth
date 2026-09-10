@@ -26,7 +26,6 @@
 #include "soc/rtc_cntl_reg.h"
 #include "soc/usb_serial_jtag_reg.h"
 #include "soc/soc.h"
-#include "esp_private/periph_ctrl.h"
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -175,8 +174,6 @@ static esp_err_t cdc_on_line(const char *line, size_t len, void *ctx)
         /* 1. Switch D+/D- routing from USB-OTG to USB-Serial/JTAG (the ROM
          * download console). arduino-esp32 does exactly this in
          * usb_switch_to_cdc_jtag() before returning to the bootloader. */
-        periph_module_reset(PERIPH_USB_MODULE);
-        periph_module_disable(PERIPH_USB_MODULE);
         CLEAR_PERI_REG_MASK(RTC_CNTL_USB_CONF_REG,
                             RTC_CNTL_SW_HW_USB_PHY_SEL | RTC_CNTL_SW_USB_PHY_SEL |
                                 RTC_CNTL_USB_PAD_ENABLE);

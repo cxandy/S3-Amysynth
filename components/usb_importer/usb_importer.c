@@ -26,7 +26,6 @@
 #include "soc/rtc_cntl_reg.h"
 #include "soc/usb_serial_jtag_reg.h"
 #include "soc/soc.h"
-#include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
@@ -44,7 +43,7 @@ static const char *TAG = "usb_import";
 #define IMP_STATUS_LINGER_MS (6000)
 
 /* Firmware build tag (DIAG-N). Query with: GET ver */
-#define IMP_VERSION_STR     "DIAG-10"
+#define IMP_VERSION_STR     "DIAG-11"
 
 typedef struct {
     SemaphoreHandle_t done_sem;
@@ -134,30 +133,31 @@ static esp_err_t cdc_on_line(const char *line, size_t len, void *ctx)
         /* Software reset into the ROM download/flash mode. No physical
          * BOOT+RESET needed.
          *
-         * DIAG-10. The reset class is now proven: DIAG-9 armed
-         * FORCE_DOWNLOAD_BOOT + RTC_CNTL_SW_SYS_RST, the chip DID reset
-         * (device vanished off the bus, unlike DIAG-8 where the WDT with
-         * SYS_RESET_LENGTH=0 never fired) but no PID 1001 ever appeared: the
-         * D+/D- pads were still routed to USB-OTG (RTC_CNTL_USB_CONF is in
-         * the RTC domain and survives the SYSTEM reset), while the ROM USB
-         * download console lives on the USB-Serial/JTAG controller. Result:
-         * ROM download mode with an enumerable dead pad - invisible to the
-         * host.
+         * DIAG-11. DIAG-10 diff vs -9: added arduino's usb_switch_to_cdc_jtag
+         * pad-handover INCLUDING its GPIO19/20 open-drain digitalWrite(LOW)
+         * BUS_RESET poke. That was wrong for our path: it ripped the pads out
+         * from under the live TinyUSB session (CDC wedged, device stayed up)
+         * and we never wait for the arduino reset semaphore anyway - the
+         * reset is a hard system reset. DIAG-9 proved the reset class works
+         * (chip vanished off the bus) but no PID 1001 ever appeared because
+         * the D+/D- pads were still routed to USB-OTG (RTC_CNTL_USB_CONF is
+         * in the RTC domain and survives the SYSTEM reset), while the ROM USB
+         * download console lives on USB-Serial/JTAG.
          *
-         * Correct path (mirrors arduino-esp32 usb_persist_restart,
-         * RESTART_BOOTLOADER on ESP32-S3, esp32-hal-tinyusb.c):
-         *   1. usb_switch_to_cdc_jtag(): route the D+/D- pins away from
-         *      USB-OTG and over to the USB-Serial/JTAG controller
-         *      (RTC_CNTL_USB_CONF PHY/PAD selects -> 0, then set
-         *      USB_SERIAL_JTAG_CONF0 USB_PAD_ENABLE), so the ROM download
-         *      console has live pads when it boots.
+         * Correct path, final form (mirrors usb_phy_ll_int_jtag_enable, the
+         * exact LL helper the app itself uses for its OTG setup, only pointed
+         * at the Serial/JTAG controller instead):
+         *   1. Point RTC_CNTL_USB_CONF sw_hw=1, sw_usb_phy_sel=0 so the
+         *      internal PHY feeds the USB-Serial/JTAG controller (whose
+         *      USB_PAD_ENABLE we set) - the ROM download console then has
+         *      live D+/D- when it boots. No GPIO19/20 poking.
          *   2. Set RTC_CNTL_FORCE_DOWNLOAD_BOOT (RTC domain, survives a
          *      SYSTEM-class reset).
          *   3. Software system reset via RTC_CNTL_REG::RTC_CNTL_SW_SYS_RST
          *      (bit 31) - same class esp_restart() uses internally, without
          *      the stalling shutdown-handler chain.
-         *   4. RTC WDT STG0=RESET_SYSTEM fallback (now with SYS_RESET_LENGTH
-         *      =1, 200ns, so it produces a real pulse) - a safe second path
+         *   4. RTC WDT STG0=RESET_SYSTEM fallback (SYS_RESET_LENGTH=1,
+         *      200ns, so it produces a real pulse) - a safe second path
          *      should the SW_SYS_RST write not take effect.
          *
          * The WDT unlock key is the literal 0x50D83AA1 - the rtc_cntl_reg.h
@@ -172,21 +172,17 @@ static esp_err_t cdc_on_line(const char *line, size_t len, void *ctx)
         s_rst_magic = IMP_RST_MAGIC;
 
         /* 1. Switch D+/D- routing from USB-OTG to USB-Serial/JTAG (the ROM
-         * download console). arduino-esp32 does exactly this in
-         * usb_switch_to_cdc_jtag() before returning to the bootloader. */
+         * download console). Matches usb_phy_ll_int_jtag_enable(): the app
+         * currently holds the internal PHY on USB-OTG (sw_hw=1, sw_sel=1);
+         * point it at the USB-Serial/JTAG controller (sw_sel=0) and give the
+         * ROM live D+/D- pads through USB_SERIAL_JTAG_CONF0. No GPIO poking:
+         * arduino's digitalWrite(D+/D-, LOW) hack only matters when waiting
+         * for a BUS_RESET in the SAME USB session - here we are about to do a
+         * hard system reset anyway and the ROM configures the pads itself. */
         CLEAR_PERI_REG_MASK(RTC_CNTL_USB_CONF_REG,
-                            RTC_CNTL_SW_HW_USB_PHY_SEL | RTC_CNTL_SW_USB_PHY_SEL |
-                                RTC_CNTL_USB_PAD_ENABLE);
+                            RTC_CNTL_SW_HW_USB_PHY_SEL | RTC_CNTL_SW_USB_PHY_SEL);
+        SET_PERI_REG_MASK(RTC_CNTL_USB_CONF_REG, RTC_CNTL_SW_HW_USB_PHY_SEL);
         CLEAR_PERI_REG_MASK(USB_SERIAL_JTAG_CONF0_REG, USB_SERIAL_JTAG_PHY_SEL);
-        CLEAR_PERI_REG_MASK(USB_SERIAL_JTAG_CONF0_REG,
-                            USB_SERIAL_JTAG_USB_PAD_ENABLE);
-        /* GPIO19/20 are hardwired D+/D- (USBPHY_DM/DP); tri-state them so the
-         * host sees a disconnect and is ready to re-enumerate the download
-         * console. Matches arduino's pinMode(...,OD,OUTPUT_LOW) intent. */
-        gpio_set_direction(19, GPIO_MODE_OUTPUT_OD);
-        gpio_set_direction(20, GPIO_MODE_OUTPUT_OD);
-        gpio_set_level(19, 0);
-        gpio_set_level(20, 0);
         SET_PERI_REG_MASK(USB_SERIAL_JTAG_CONF0_REG,
                           USB_SERIAL_JTAG_USB_PAD_ENABLE);
 

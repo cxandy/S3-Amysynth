@@ -23,6 +23,7 @@
 #include "esp_heap_caps.h"
 #include "esp_system.h"
 #include "esp_attr.h"
+#include "tusb.h"
 #include "soc/rtc_cntl_reg.h"
 #include "soc/usb_serial_jtag_reg.h"
 #include "soc/soc.h"
@@ -43,7 +44,7 @@ static const char *TAG = "usb_import";
 #define IMP_STATUS_LINGER_MS (6000)
 
 /* Firmware build tag (DIAG-N). Query with: GET ver */
-#define IMP_VERSION_STR     "DIAG-12"
+#define IMP_VERSION_STR     "DIAG-13"
 
 typedef struct {
     SemaphoreHandle_t done_sem;
@@ -90,6 +91,47 @@ static void imp_set_status(const char *fmt, ...)
     ESP_LOGI(TAG, "%s", s_imp.status);
 }
 
+#define RST_BOOT_STACK (4096)
+#define RST_BOOT_PRIO  (5)
+
+/* Runs on its own high-priority task (NOT the CDC pump). Handles the
+ * pad handover + reset chain from a context outside TinyUSB's callback
+ * surface so the live CDC session is gone before D+/D- change owner. */
+static void rst_boot_task(void *arg)
+{
+    (void)arg;
+
+    /* 0. Gracefully detach the USB session first. This lets the CDC pump
+     * task drop out of tud_cdc_available()/read (tud_cdc_connected() ->
+     * false) and lets the host see the device disconnect BEFORE we steal
+     * the D+/D- pads. Without this the pad re-route wedges the live
+     * session and the reset never happens (DIAG-11/12). */
+    tud_disconnect();
+    vTaskDelay(pdMS_TO_TICKS(150));
+
+    /* 1. Arm the RTC WDT (STG0=RESET_SYSTEM) as the guaranteed reset. */
+    REG_WRITE(RTC_CNTL_WDTWPROTECT_REG, 0x50D83AA1u);
+    REG_WRITE(RTC_CNTL_WDTCONFIG1_REG, 2000);
+    REG_WRITE(RTC_CNTL_WDTCONFIG0_REG, (1u << 31) | (3u << 28) | (1u << 13));
+    REG_WRITE(RTC_CNTL_WDTWPROTECT_REG, 0);
+
+    /* 2. Force the ROM into download mode on the next boot. */
+    REG_WRITE(RTC_CNTL_OPTION1_REG, RTC_CNTL_FORCE_DOWNLOAD_BOOT);
+
+    /* 3. Re-route D+/D- to the USB-Serial/JTAG controller (the ROM
+     * download console). Mirrors usb_phy_ll_int_jtag_enable. */
+    CLEAR_PERI_REG_MASK(RTC_CNTL_USB_CONF_REG,
+                        RTC_CNTL_SW_HW_USB_PHY_SEL | RTC_CNTL_SW_USB_PHY_SEL);
+    SET_PERI_REG_MASK(RTC_CNTL_USB_CONF_REG, RTC_CNTL_SW_HW_USB_PHY_SEL);
+    CLEAR_PERI_REG_MASK(USB_SERIAL_JTAG_CONF0_REG, USB_SERIAL_JTAG_PHY_SEL);
+    SET_PERI_REG_MASK(USB_SERIAL_JTAG_CONF0_REG,
+                      USB_SERIAL_JTAG_USB_PAD_ENABLE);
+
+    /* 4. Fast-path software system reset preserving the RTC domain. */
+    REG_WRITE(RTC_CNTL_REG, RTC_CNTL_SW_SYS_RST);
+    for (;;) vTaskDelay(pdMS_TO_TICKS(1000)); /* not reached */
+}
+
 /* Runs on the CDC pump task: complete command line. */
 static esp_err_t cdc_on_line(const char *line, size_t len, void *ctx)
 {
@@ -133,69 +175,41 @@ static esp_err_t cdc_on_line(const char *line, size_t len, void *ctx)
         /* Software reset into the ROM download/flash mode. No physical
          * BOOT+RESET needed.
          *
-         * DIAG-12. DIAG-11 kept arduino's pad handover (sw_hw=1, sw_sel=0,
-         * JTAG USB_PAD_ENABLE on USB_SERIAL_JTAG_CONF0) but ordered it wrong:
-         * the pad re-routing ran FIRST, then FORCE, then WDT, then
-         * SW_SYS_RST. Re-routing D+/D- away from a live TinyUSB session
-         * wedges the USB/UI machinery so hard the CPU never reaches the
-         * reset writes - observed as a frozen screen, no sound, still
-         * enumerated PID_8000, CDC unopenable. arduino-esp32 avoids this
-         * because it first periph_module_reset/disable(PERIPH_USB_MODULE)
-         * and waits for a BUS_RESET semaphore before touching the pads.
+         * DIAG-13. DIAG-12 still ran the pad handover from within the CDC
+         * pump task, with the TinyUSB session live: re-routing D+/D- out
+         * from under tud_cdc_read()/write wedges and the RESET_SYSTEM-class
+         * WDT never fired cleanly (observed frozen: still enumerated
+         * PID_8000, CDC unopenable, screen frozen). arduino-esp32 avoids
+         * this by periph_module_reset/disable(PERIPH_USB_MODULE) BEFORE
+         * touching the pads (plus a BUS_RESET semaphore).
          *
-         * Robust ordering instead of a fragile ISP-safe sequence:
-         *   1. Arm the RTC WDT FIRST (STG0=RESET_SYSTEM, ~1s) - the WDT is
-         *      RTC-domain hardware, entirely independent of the CPU. Even if
-         *      the pad handover below hard-freezes the app (ISR storm, panic,
-         *      anything), the WDT fires 1s later and forces a SYSTEM-class
-         *      reset, which produces exactly the same end state.
-         *   2. Set RTC_CNTL_FORCE_DOWNLOAD_BOOT (RTC domain, survives a
-         *      SYSTEM-class reset).
-         *   3. Re-route the pads to USB-Serial/JTAG (the ROM download
-         *      console) - mirrors usb_phy_ll_int_jtag_enable: INTERNAL phy
-         *      via sw_hw=1, sw_sel=0, JWAG PHY_SEL=0, USB_PAD_ENABLE=1. If
-         *      this wedges the app, the WDT from step 1 still takes us to
-         *      ROM download with live pads.
-         *   4. SW_SYS_RST (RTC_CNTL_REG bit31) as the fast path; the WDT is
-         *      the guaranteed one.
+         * Correct sequence (three-part handoff):
+         *   1. Return from cdc_on_line immediately and run the rest on a
+         *      dedicated high-priority task, so we never touch TinyUSB
+         *      registers from inside the pump's own CCC callback.
+         *   2. tud_disconnect() first and sleep ~150ms: this lets the CDC
+         *      pump task drop out of its read loop (tud_cdc_connected()
+         *      -> false) and lets the host see the device detach BEFORE we
+         *      steal the D+/D- pads. Only then is the pad handover safe.
+         *   3. On the task: arm the RTC WDT (STG0=RESET_SYSTEM, ~1s) as the
+         *      guaranteed reset, set RTC_CNTL_FORCE_DOWNLOAD_BOOT, re-route
+         *      the pads to USB-Serial/JTAG (mirrors
+         *      usb_phy_ll_int_jtag_enable), then SW_SYS_RST as the fast
+         *      path.
          *
-         *  The WDT unlock key is the literal 0x50D83AA1 - the rtc_cntl_reg.h
-         *  macro RTC_CNTL_WDT_WKEY is only the 32-bit field mask (0xFFFFFFFF)
-         *  and MUST NOT be used. */
+         * The WDT unlock key is the literal 0x50D83AA1 - the rtc_cntl_reg.h
+         * macro RTC_CNTL_WDT_WKEY is only the 32-bit field mask (0xFFFFFFFF)
+         * and MUST NOT be used. */
+
+        /* Replying through the CDC is what the pump task is doing right now;
+         * keep it short and fast-path back out of the callback, then let the
+         * task take over the (now quiescent) stack. */
         usb_cdc_reply("OK:reboot to bootloader\n");
-        vTaskDelay(pdMS_TO_TICKS(100));
-        /* Record the arm in the RTC domain BEFORE the reset, so the next app
-         * boot can prove (via GET rst) whether the RTC domain and
-         * FORCE_DOWNLOAD_BOOT survived the reset. */
         s_rst_seq++;
         s_rst_magic = IMP_RST_MAGIC;
-
-        /* Step 1: Arm the RTC WDT FIRST. RTC-domain hardware, independent of
-         * the CPU - even if the pad handover below wedges the app, the WDT
-         * fires ~1s later and forces a SYSTEM-class reset with
-         * FORCE_DOWNLOAD_BOOT + JTAG pads already in place. */
-        REG_WRITE(RTC_CNTL_WDTWPROTECT_REG, 0x50D83AA1u);
-        REG_WRITE(RTC_CNTL_WDTCONFIG1_REG, 2000);   /* stage0 hold ~1s */
-        REG_WRITE(RTC_CNTL_WDTCONFIG0_REG, (1u << 31) | (3u << 28) | (1u << 13));
-        REG_WRITE(RTC_CNTL_WDTWPROTECT_REG, 0);
-
-        /* Step 2: Force the ROM into download mode on the next boot. */
-        REG_WRITE(RTC_CNTL_OPTION1_REG, RTC_CNTL_FORCE_DOWNLOAD_BOOT);
-
-        /* Step 3: Switch D+/D- routing from USB-OTG to USB-Serial/JTAG (the
-         * ROM download console). Mirrors usb_phy_ll_int_jtag_enable. */
-        CLEAR_PERI_REG_MASK(RTC_CNTL_USB_CONF_REG,
-                            RTC_CNTL_SW_HW_USB_PHY_SEL | RTC_CNTL_SW_USB_PHY_SEL);
-        SET_PERI_REG_MASK(RTC_CNTL_USB_CONF_REG, RTC_CNTL_SW_HW_USB_PHY_SEL);
-        CLEAR_PERI_REG_MASK(USB_SERIAL_JTAG_CONF0_REG, USB_SERIAL_JTAG_PHY_SEL);
-        SET_PERI_REG_MASK(USB_SERIAL_JTAG_CONF0_REG,
-                          USB_SERIAL_JTAG_USB_PAD_ENABLE);
-
-        /* Step 4: Fast-path software system reset preserving the RTC domain.
-         * If the pad handover above killed the CPU (the WDT from step 1 is
-         * the guaranteed fallback), we should never reach here anyway. */
-        REG_WRITE(RTC_CNTL_REG, RTC_CNTL_SW_SYS_RST);
-        for (;;) vTaskDelay(pdMS_TO_TICKS(1000)); /* not reached */
+        BaseType_t ok = xTaskCreate(rst_boot_task, "rst_boot", RST_BOOT_STACK,
+                                    NULL, RST_BOOT_PRIO, NULL);
+        return (ok == pdPASS) ? ESP_OK : ESP_FAIL;
     }
 
     if (len == 8 && strncmp(line, "GET song", 8) == 0) {
